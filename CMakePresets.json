@@ -1,0 +1,32 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 21,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "release",
+            "binaryDir": "${sourceDir}/build-release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "OPENEYE_ROOT": {"type": "PATH", "value": "$env{OPENEYE_ROOT}"},
+                "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"}
+            }
+        },
+        {
+            "name": "debug",
+            "binaryDir": "${sourceDir}/build-debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "OPENEYE_ROOT": {"type": "PATH", "value": "$env{OPENEYE_ROOT}"},
+                "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"}
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "release", "configurePreset": "release" },
+        { "name": "debug", "configurePreset": "debug" }
+    ]
+}

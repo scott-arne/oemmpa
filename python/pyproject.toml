@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oemmpa"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "openeye-toolkits>=2025.2",
+]
+
+[tool.setuptools]
+packages = ["oemmpa"]

@@ -1,0 +1,481 @@
+name: Build Wheels
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+env:
+  OPENEYE_VERSION: ${{ vars.OPENEYE_VERSION }}
+
+jobs:
+  build-linux:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            container: rockylinux:8
+            python: python3.11
+            dnf_repo: powertools
+            manylinux_plat: manylinux_2_28_x86_64
+
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            container: rockylinux:9
+            python: python3.11
+            dnf_repo: crb
+            manylinux_plat: manylinux_2_34_aarch64
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+
+    steps:
+      - name: Install prerequisites
+        run: |
+          dnf install -y epel-release
+          dnf config-manager --set-enabled ${{ matrix.dnf_repo }}
+          dnf install -y --allowerasing \
+            git curl unzip gcc gcc-c++ cmake ninja-build \
+            python3.11 python3.11-devel \
+            zlib-devel cairo
+
+      - uses: actions/checkout@v6
+
+      - name: Setup Python environment
+        run: |
+          ${{ matrix.python }} -m venv /opt/venv
+          echo "/opt/venv/bin" >> $GITHUB_PATH
+          /opt/venv/bin/pip install --upgrade pip setuptools wheel
+          /opt/venv/bin/pip install scikit-build-core ninja cmake build swig auditwheel patchelf
+
+      - name: Validate configuration
+        run: |
+          errors=0
+          if [ -z "${{ vars.OPENEYE_VERSION }}" ]; then
+            echo "::error::GitHub variable OPENEYE_VERSION is not set"
+            errors=1
+          fi
+          if [ -z "${{ vars.SDK_BUCKET }}" ]; then
+            echo "::error::GitHub variable SDK_BUCKET is not set"
+            errors=1
+          fi
+          SDK_FILENAME="${{ matrix.arch == 'x86_64' && vars.SDK_LINUX_X86_64 || vars.SDK_LINUX_AARCH64 }}"
+          if [ -z "$SDK_FILENAME" ]; then
+            echo "::error::GitHub variable for SDK filename (SDK_LINUX_X86_64 or SDK_LINUX_AARCH64) is not set"
+            errors=1
+          fi
+          if [ "$errors" -ne 0 ]; then
+            echo "::error::Configure required variables in Settings > Variables > Actions"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        env:
+          SDK_FILENAME: ${{ matrix.arch == 'x86_64' && vars.SDK_LINUX_X86_64 || vars.SDK_LINUX_AARCH64 }}
+        run: |
+          mkdir -p /opt/openeye
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/$SDK_FILENAME" \
+            -o /tmp/sdk.tar.gz
+          tar -xzf /tmp/sdk.tar.gz -C /opt/openeye --strip-components=2
+          rm /tmp/sdk.tar.gz
+          ls -la /opt/openeye/
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/oe_license.txt" \
+            -o /opt/openeye/oe_license.txt
+          echo "OE_LICENSE=/opt/openeye/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          /opt/venv/bin/pip install openeye-toolkits==${{ vars.OPENEYE_VERSION }} \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          echo "--- Verifying openeye-toolkits installation ---"
+          /opt/venv/bin/pip show openeye-toolkits
+          /opt/venv/bin/python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Build wheel
+        env:
+          OPENEYE_ROOT: /opt/openeye
+        run: |
+          /opt/venv/bin/python scripts/build_python.py \
+            --openeye-root /opt/openeye \
+            --python /opt/venv/bin/python \
+            --verbose
+
+      - name: Repair wheel for manylinux
+        run: |
+          OE_LIB_DIR=$(/opt/venv/bin/python -c \
+            "from openeye import libs; print(libs.FindOpenEyeDLLSDirectory())")
+          EXCLUDE_ARGS=""
+          for lib in "$OE_LIB_DIR"/lib*.so; do
+            EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude $(basename $lib)"
+          done
+          LD_LIBRARY_PATH="$OE_LIB_DIR" auditwheel repair \
+            $EXCLUDE_ARGS \
+            --plat ${{ matrix.manylinux_plat }} \
+            --wheel-dir dist-repaired/ \
+            dist/oemmpa-*.whl
+          rm dist/oemmpa-*.whl
+          mv dist-repaired/*.whl dist/
+
+      - name: Fix RPATH for OpenEye shared libraries
+        run: |
+          OE_PLATFORM=$(/opt/venv/bin/python -c \
+            "from openeye import libs; import os; print(os.path.basename(libs.FindOpenEyeDLLSDirectory()))")
+          WHEEL=$(ls dist/oemmpa-*.whl)
+          TMPDIR=$(mktemp -d)
+          unzip -q "$WHEEL" -d "$TMPDIR"
+          SO_FILE=$(find "$TMPDIR" -name '_oemmpa*.so' | head -1)
+          if [ -n "$SO_FILE" ]; then
+            patchelf --add-rpath '$ORIGIN' "$SO_FILE"
+            patchelf --add-rpath "\$ORIGIN/../openeye/libs/$OE_PLATFORM" "$SO_FILE"
+            echo "RPATH set to: $(patchelf --print-rpath "$SO_FILE")"
+          fi
+          rm "$WHEEL"
+          /opt/venv/bin/python -m wheel pack "$TMPDIR" -d dist/
+          rm -rf "$TMPDIR"
+
+      - name: Test wheel
+        run: |
+          /opt/venv/bin/pip install pytest
+          /opt/venv/bin/pip install dist/oemmpa-*.whl
+          /opt/venv/bin/pytest tests/python/ -v -s
+
+      - name: List built artifacts
+        run: |
+          ls -la dist/
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-linux-${{ matrix.arch }}
+          path: dist/*.whl
+          retention-days: 2
+  build-macos:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          brew install swig
+          pip install --upgrade pip setuptools wheel
+          pip install scikit-build-core ninja cmake build delocate
+
+      - name: Validate configuration
+        run: |
+          errors=0
+          if [ -z "${{ vars.OPENEYE_VERSION }}" ]; then
+            echo "::error::GitHub variable OPENEYE_VERSION is not set"
+            errors=1
+          fi
+          if [ -z "${{ vars.SDK_BUCKET }}" ]; then
+            echo "::error::GitHub variable SDK_BUCKET is not set"
+            errors=1
+          fi
+          if [ -z "${{ vars.SDK_MACOS }}" ]; then
+            echo "::error::GitHub variable SDK_MACOS is not set"
+            errors=1
+          fi
+          if [ "$errors" -ne 0 ]; then
+            echo "::error::Configure required variables in Settings > Variables > Actions"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p ${{ runner.temp }}/openeye
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/${{ vars.SDK_MACOS }}" \
+            -o /tmp/sdk.tar.gz
+          tar -xzf /tmp/sdk.tar.gz -C ${{ runner.temp }}/openeye --strip-components=2
+          rm /tmp/sdk.tar.gz
+          ls -la ${{ runner.temp }}/openeye/
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/oe_license.txt" \
+            -o ${{ runner.temp }}/openeye/oe_license.txt
+          echo "OE_LICENSE=${{ runner.temp }}/openeye/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          pip install openeye-toolkits==${{ vars.OPENEYE_VERSION }} \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          echo "--- Verifying openeye-toolkits installation ---"
+          pip show openeye-toolkits
+          python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Build wheel
+        env:
+          OPENEYE_ROOT: ${{ runner.temp }}/openeye
+        run: |
+          python scripts/build_python.py \
+            --openeye-root ${{ runner.temp }}/openeye \
+            --python $(which python) \
+            --verbose
+
+      - name: Test wheel
+        run: |
+          pip install pytest
+          pip install dist/oemmpa-*.whl
+          pytest tests/python/ -v -s
+
+      - name: List built artifacts
+        run: |
+          ls -la dist/
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-macos-universal2
+          path: dist/*.whl
+          retention-days: 2
+
+  build-windows:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # ilammy/msvc-dev-cmd still ships with `using: node20`; opt in to Node.js 24
+      # so the action keeps working past GitHub's June 2 2026 cutover without
+      # waiting on an upstream release.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install scikit-build-core ninja cmake build swig pytest
+
+      - name: Validate configuration
+        run: |
+          errors=0
+          if [ -z "${{ vars.OPENEYE_VERSION }}" ]; then
+            echo "::error::GitHub variable OPENEYE_VERSION is not set"
+            errors=1
+          fi
+          if [ -z "${{ vars.SDK_BUCKET }}" ]; then
+            echo "::error::GitHub variable SDK_BUCKET is not set"
+            errors=1
+          fi
+          if [ -z "${{ vars.SDK_WINDOWS }}" ]; then
+            echo "::error::GitHub variable SDK_WINDOWS is not set"
+            errors=1
+          fi
+          if [ "$errors" -ne 0 ]; then
+            echo "::error::Configure required variables in Settings > Variables > Actions"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p "${RUNNER_TEMP}/openeye-extract"
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/${{ vars.SDK_WINDOWS }}" \
+            -o "${RUNNER_TEMP}/sdk.zip"
+          unzip -q "${RUNNER_TEMP}/sdk.zip" -d "${RUNNER_TEMP}/openeye-extract"
+          rm "${RUNNER_TEMP}/sdk.zip"
+          sdk_inner=$(find "${RUNNER_TEMP}/openeye-extract" -maxdepth 1 -mindepth 1 -type d | head -n1)
+          echo "OPENEYE_ROOT=${sdk_inner}" >> $GITHUB_ENV
+          ls "${sdk_inner}"
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ vars.SDK_BUCKET }}/oe_license.txt" \
+            -o "${RUNNER_TEMP}/oe_license.txt"
+          echo "OE_LICENSE=${RUNNER_TEMP}/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          pip install "openeye-toolkits==${{ vars.OPENEYE_VERSION }}" \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          echo "--- Verifying openeye-toolkits installation ---"
+          pip show openeye-toolkits
+          python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Build wheel
+        run: |
+          python scripts/build_python.py \
+            --openeye-root "${OPENEYE_ROOT}" \
+            --python "$(which python)" \
+            --verbose
+
+      - name: Validate abi3 import table
+        run: |
+          # The wheel advertises cp310-abi3-win_amd64; the compiled .pyd must
+          # link python3.dll (stable ABI) and must NOT link python3XX.dll
+          # (versioned), otherwise the wheel silently breaks on any Python
+          # minor other than the build Python.
+          WHEEL=$(ls dist/oemmpa-*.whl)
+          TMPDIR=$(mktemp -d)
+          unzip -q "$WHEEL" -d "$TMPDIR"
+          PYD=$(find "$TMPDIR" -name '_oemmpa*.pyd' | head -1)
+          if [ -z "$PYD" ]; then
+            echo "::error::_oemmpa*.pyd not found in wheel"
+            exit 1
+          fi
+          dumpbin //dependents "$PYD" > deps.txt
+          cat deps.txt
+          if grep -Eiq '\bpython3[0-9]+\.dll\b' deps.txt; then
+            echo "::error::abi3 wheel links versioned Python DLL (python3XX.dll)"
+            grep -Ei '\bpython3[0-9]+\.dll\b' deps.txt
+            exit 1
+          fi
+          if ! grep -iq '\bpython3\.dll\b' deps.txt; then
+            echo "::error::abi3 wheel does not link python3.dll"
+            exit 1
+          fi
+          echo "OK: extension links python3.dll only"
+
+      - name: Test wheel
+        run: |
+          pip install dist/oemmpa-*.whl
+          pytest tests/python/ -v -s
+
+      - name: List built artifacts
+        run: |
+          ls -la dist/
+
+      - name: Setup Python 3.13 (abi3 cross-version smoke test)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: abi3 smoke test under Python 3.13
+        run: |
+          # Install the wheel into a different Python minor than the build
+          # Python (3.11) to verify the stable-ABI contract actually holds.
+          python -m pip install --upgrade pip
+          pip install "openeye-toolkits==${{ vars.OPENEYE_VERSION }}" \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          pip install dist/oemmpa-*.whl
+          python -c "import oemmpa; print('oemmpa', oemmpa.__version__, 'loaded under Python', __import__('sys').version)"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-windows-x64
+          path: dist/*.whl
+          retention-days: 2
+
+  # Collect all wheels into a single artifact
+  collect-wheels:
+
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+
+      - name: List all wheels
+        run: |
+          ls -la wheels/
+
+      - name: Upload combined wheels artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: all-wheels
+          path: wheels/*.whl
+          retention-days: 2
+  # Publish to PyPI on release tags
+  publish:
+
+    needs: collect-wheels
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: pypi
+    permissions:
+      id-token: write  # Required for trusted publishing
+    steps:
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: all-wheels
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          # For TestPyPI, uncomment:
+          # repository-url: https://test.pypi.org/legacy/

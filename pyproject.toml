@@ -1,0 +1,71 @@
+[build-system]
+requires = ["scikit-build-core>=0.8", "swig>=4.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "oemmpa"
+version = "0.1.0"
+description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [
+    { name = "Scott Johnson", email = "scott.johnson@bms.com" },
+]
+keywords = ["chemistry", "openeye", "swig"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+]
+dependencies = [
+    "openeye-toolkits>=2025.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "vrzn>=0.1.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+python_files = ["test_*.py"]
+addopts = "-v"
+
+[tool.scikit-build]
+cmake.version = ">=3.21"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+build.targets = ["oemmpa_python"]
+wheel.install-dir = "."
+logging.level = "INFO"
+strict-config = false
+wheel.py-api = "cp310"
+wheel.exclude = ["**.pyc", "**/__pycache__", "*.a", "CMakeFiles/**"]
+
+[tool.scikit-build.cmake.define]
+OEMMPA_BUILD_TESTS = "OFF"
+OEMMPA_BUILD_PYTHON = "ON"
+OPENEYE_USE_SHARED = "ON"
+OEMMPA_USE_STABLE_ABI = "ON"
+OEMMPA_UNIVERSAL2 = "OFF"
+
+# =============================================================================
+# TOML-driven build configuration for scripts/build_python.py
+# =============================================================================
+# This section is read by build_python.py to parameterize the build.
+# The script itself is identical across all projects — only this config changes.
+[tool.oe-build]
+package-name = "oemmpa"
+cmake-test-flag = "OEMMPA_BUILD_TESTS"
+rpath-strategy = "platform"  # "platform" = @loader_path/../openeye/libs/{platform}, "simple" = @loader_path
+
+# OpenEye libraries that are expected to be missing from delocate
+# (they are provided at runtime by openeye-toolkits, not bundled in the wheel)
+expected-missing-libs = [
+    "liboechem", "liboesystem", "liboeplatform",
+    "liboemath", "libzstd",
+]
+
+# Additional CMake defines passed during wheel build (beyond the standard ones)
+[tool.oe-build.extra-cmake-defines]
