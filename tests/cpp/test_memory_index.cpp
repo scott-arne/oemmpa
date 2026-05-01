@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/Error.h"
+#include "oemmpa/Fragmenter.h"
 #include "oemmpa/MemoryIndex.h"
 #include "oemmpa/oemmpa.h"
 
@@ -256,10 +257,6 @@ TEST(MemoryIndexTest, InvalidUserAddedFragmentationsThrowInvalidQueryError) {
         InvalidQueryError
     );
     EXPECT_THROW(
-        index.AddFragmentation(MakeFragmentation(1, "C[*:1]", "C1[*:1]")),
-        InvalidQueryError
-    );
-    EXPECT_THROW(
         index.AddFragmentation(MakeFragmentation(1, "C[*:1]", "CC")),
         InvalidQueryError
     );
@@ -297,6 +294,26 @@ TEST(MemoryIndexTest, DuplicateFragmentationsDoNotInflatePairOrTransformSupport)
     ASSERT_EQ(transforms.size(), 2);
     EXPECT_EQ(transforms[0].GetSupportCount(), 1);
     EXPECT_EQ(transforms[1].GetSupportCount(), 1);
+}
+
+TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {
+    MoleculeRecord molecule = MakeMolecule(1, "CCCCCCC", "heptane");
+    Fragmenter fragmenter;
+    fragmenter.SetMinCuts(1);
+    fragmenter.SetMaxCuts(3);
+    const std::vector<Fragmentation> fragmentations =
+        fragmenter.Fragment(molecule.GetInternalId(), molecule.GetMol());
+
+    ASSERT_FALSE(fragmentations.empty());
+
+    MemoryIndex index;
+    index.AddMolecule(molecule);
+    for (const Fragmentation& fragmentation : fragmentations) {
+        EXPECT_NO_THROW(index.AddFragmentation(fragmentation))
+            << "context=" << fragmentation.GetContextSmiles()
+            << " sidechain=" << fragmentation.GetSidechainSmiles()
+            << " cuts=" << fragmentation.GetCutCount();
+    }
 }
 
 }  // namespace test

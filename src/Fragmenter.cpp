@@ -211,7 +211,7 @@ size_t SelectMultiCutContext(
         return static_cast<size_t>(std::distance(components.begin(), all_labels_component));
     }
 
-    return SelectSingleCutContext(components);
+    return components.size();
 }
 
 std::string JoinSidechainSmiles(
@@ -307,6 +307,9 @@ void AddFragmentationForCombination(
     const size_t context_index = cut_count == 1 ?
         SelectSingleCutContext(components) :
         SelectMultiCutContext(components, cut_count);
+    if (context_index >= components.size()) {
+        return;
+    }
 
     const std::string& context_smiles = components[context_index].smiles;
     const std::string sidechain_smiles = JoinSidechainSmiles(components, context_index);
