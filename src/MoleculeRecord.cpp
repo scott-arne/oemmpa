@@ -32,8 +32,8 @@ MoleculeRecord MoleculeRecord::FromSmiles(
     OEChem::OEGraphMol strict_mol;
     OEChem::OEParseSmilesOptions options(false, true, true);
 
-    // OESmilesToMol can accept trailing title text; strict parsing keeps this
-    // constructor limited to a single SMILES string.
+    // Keep the file-format conversion path while using the parser's strict
+    // mode to reject inputs that OESmilesToMol would otherwise tolerate.
     if (
         !OEChem::OESmilesToMol(mol, smiles) ||
         !OEChem::OEParseSmiles(strict_mol, smiles, options)
@@ -94,6 +94,10 @@ unsigned int MoleculeRecord::GetHeavyBondCount() const {
 }
 
 const OEChem::OEGraphMol& MoleculeRecord::GetMol() const {
+    if (!mol_) {
+        throw InvalidMoleculeError("molecule record has no molecule");
+    }
+
     return *mol_;
 }
 
