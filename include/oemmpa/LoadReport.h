@@ -7,7 +7,7 @@
 namespace OEMMPA {
 
 struct LoadError {
-    unsigned int row;
+    unsigned int row = 0;
     std::string message;
 };
 
