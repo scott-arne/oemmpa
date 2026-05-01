@@ -25,7 +25,10 @@ copyright = "2026, Scott Johnson"
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx_autodoc_typehints",
     "breathe",
     "exhale",
 ]
@@ -35,6 +38,7 @@ source_suffix = {
     ".md": "markdown",
 }
 master_doc = "index"
+templates_path = ["_templates"]
 exclude_patterns = [
     "_build",
     "_doxygen",
@@ -43,9 +47,20 @@ exclude_patterns = [
 ]
 
 html_theme = "sphinx_rtd_theme"
+html_static_path = ["_static"]
+html_theme_options = {
+    "collapse_navigation": False,
+    "includehidden": True,
+    "navigation_depth": 4,
+    "prev_next_buttons_location": "bottom",
+    "sticky_navigation": True,
+    "style_external_links": False,
+    "titles_only": False,
+}
 
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
+autodoc_typehints_format = "short"
 napoleon_google_docstring = False
 napoleon_numpy_docstring = False
 

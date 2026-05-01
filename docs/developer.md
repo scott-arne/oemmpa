@@ -3,7 +3,8 @@
 ## Documentation Build
 
 The documentation build uses Sphinx, MyST, autodoc, Doxygen, Breathe, and
-Exhale. Generated files are ignored:
+Exhale. It follows the same Makefile-backed Invoke workflow as `oeselect`.
+Generated files are ignored:
 
 - `docs/_build/`
 - `docs/_doxygen/`
@@ -18,13 +19,25 @@ python -m invoke docs-check
 Build without warnings-as-errors:
 
 ```bash
-python -m invoke docs-build
+python -m invoke docs
 ```
 
-Serve an already-built HTML tree with:
+Build and serve the HTML tree:
 
 ```bash
-python -m invoke docs-serve
+python -m invoke serve-docs
+```
+
+Serve with live rebuilds when `sphinx-autobuild` is installed:
+
+```bash
+python -m invoke serve-docs --watch
+```
+
+Install the documentation dependency set from the docs requirements file:
+
+```bash
+python -m invoke docs-deps
 ```
 
 ## Verification Gate

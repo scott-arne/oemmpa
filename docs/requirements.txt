@@ -1,0 +1,22 @@
+# OEMMPA Documentation Build Dependencies
+# Install with: python -m pip install -r docs/requirements.txt
+
+# Core Sphinx
+sphinx>=7.0
+
+# Theme
+sphinx-rtd-theme>=2.0
+
+# Markdown support
+myst-parser>=2.0
+
+# C++ documentation
+breathe>=4.35
+exhale>=0.3
+
+# Python documentation
+sphinx-autodoc-typehints>=2.0
+
+# Task and live-reload helpers
+invoke>=2.0
+sphinx-autobuild>=2024.0

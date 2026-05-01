@@ -199,6 +199,12 @@ Documentation checks:
 python -m invoke docs-check
 ```
 
+Build and serve the local documentation:
+
+```bash
+python -m invoke serve-docs
+```
+
 ## CMake Options
 
 | Option | Default | Description |
@@ -323,8 +329,8 @@ python/oemmpa_cli/   CLI package for file-backed analytics workflows.
 tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
 benchmarks/          RDKit comparison harness and reference data.
-docs/                Focused user and developer documentation.
-tasks.py             Invoke tasks for strict documentation builds.
+docs/                Sphinx user, API, benchmark, and developer documentation.
+tasks.py             Invoke tasks for documentation builds and serving.
 scripts/             Wheel build helper.
 ```
 
