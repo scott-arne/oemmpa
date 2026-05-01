@@ -6,6 +6,8 @@
 #define OEMMPA_VERSION_MINOR 1
 #define OEMMPA_VERSION_PATCH 0
 
+#include "oemmpa/Error.h"
+
 #include <oechem.h>
 
 namespace OEMMPA {

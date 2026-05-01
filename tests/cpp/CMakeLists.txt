@@ -9,6 +9,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(oemmpa_tests
+    test_errors.cpp
     test_oemmpa.cpp
 )
 
