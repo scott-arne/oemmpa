@@ -123,6 +123,19 @@ TEST(PairScoringTest, FewerCutsThenHeavyBondChangePrioritizesCutCount) {
     EXPECT_EQ(selected[0].GetCutCount(), 1);
 }
 
+TEST(PairScoringTest, FewerCutsThenHeavyBondChangeUsesBondDeltaWhenCutCountTies) {
+    std::vector<MatchedPair> pairs;
+    pairs.emplace_back(1, 2, "a", "b", "CC", "CO", "C[*:1]", "CC[*:1]", "O[*:1]", 1, 0, 4);
+    pairs.emplace_back(1, 2, "a", "b", "CC", "CO", "C[*:1]", "C[*:1]", "O[*:1]", 1, 0, -2);
+
+    ScoringOptions options;
+    options.SetMode(ScoringMode::FewerCutsThenHeavyBondChange);
+
+    std::vector<MatchedPair> selected = PairScoring::Select(pairs, options);
+    ASSERT_EQ(selected.size(), 1);
+    EXPECT_EQ(selected[0].GetHeavyBondDelta(), -2);
+}
+
 TEST(PairScoringTest, TiedCandidatesSelectSamePairIndependentOfInputOrder) {
     MatchedPair lower_id_pair(
         1, 5, "a", "e",
@@ -148,6 +161,33 @@ TEST(PairScoringTest, TiedCandidatesSelectSamePairIndependentOfInputOrder) {
     ASSERT_EQ(reverse_selected.size(), 1);
     EXPECT_EQ(forward_selected[0].GetSourceMoleculeId(), 1);
     EXPECT_EQ(reverse_selected[0].GetSourceMoleculeId(), 1);
+}
+
+TEST(PairScoringTest, ContextSmilesBreaksOtherwiseTiedCandidatesDeterministically) {
+    MatchedPair later_context_pair(
+        1, 2, "a", "b",
+        "CC", "CO", "N[*:1]", "C[*:1]", "O[*:1]",
+        1, 1, 1
+    );
+    MatchedPair earlier_context_pair(
+        1, 2, "a", "b",
+        "CC", "CO", "C[*:1]", "C[*:1]", "O[*:1]",
+        1, 1, 1
+    );
+
+    ScoringOptions options;
+    options.SetMode(ScoringMode::MinimalHeavyAtomChange);
+
+    std::vector<MatchedPair> forward = {later_context_pair, earlier_context_pair};
+    std::vector<MatchedPair> reverse = {earlier_context_pair, later_context_pair};
+
+    std::vector<MatchedPair> forward_selected = PairScoring::Select(forward, options);
+    std::vector<MatchedPair> reverse_selected = PairScoring::Select(reverse, options);
+
+    ASSERT_EQ(forward_selected.size(), 1);
+    ASSERT_EQ(reverse_selected.size(), 1);
+    EXPECT_EQ(forward_selected[0].GetContextSmiles(), "C[*:1]");
+    EXPECT_EQ(reverse_selected[0].GetContextSmiles(), "C[*:1]");
 }
 
 TEST(PairScoringTest, InvalidScoringModeThrows) {

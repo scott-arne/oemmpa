@@ -20,6 +20,11 @@ auto tie_breaker_metrics(const MatchedPair& pair) {
         absolute_delta(pair.GetHeavyBondDelta()),
         pair.GetSourceMoleculeId(),
         pair.GetTargetMoleculeId(),
+        pair.GetSourceExternalId(),
+        pair.GetTargetExternalId(),
+        pair.GetSourceSmiles(),
+        pair.GetTargetSmiles(),
+        pair.GetContextSmiles(),
         pair.GetTransformSmiles(),
         pair.GetSourceSidechainSmiles(),
         pair.GetTargetSidechainSmiles()
