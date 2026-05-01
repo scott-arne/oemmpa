@@ -13,6 +13,8 @@ add_executable(oemmpa_tests
     test_molecule_record.cpp
     test_load_report.cpp
     test_oemmpa.cpp
+    test_data_objects.cpp
+    test_pair_scoring.cpp
 )
 
 target_link_libraries(oemmpa_tests

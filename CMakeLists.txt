@@ -54,6 +54,11 @@ set(OEMMPA_SOURCES
     src/oemmpa.cpp
     src/MoleculeRecord.cpp
     src/LoadReport.cpp
+    src/Fragmentation.cpp
+    src/MatchedPair.cpp
+    src/Transform.cpp
+    src/QueryOptions.cpp
+    src/PairScoring.cpp
 )
 
 add_library(oemmpa ${OEMMPA_SOURCES})
