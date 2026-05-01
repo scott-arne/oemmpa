@@ -56,6 +56,17 @@ class PairResult:
         """
         return self._raw_pair.GetPropertyDelta(name)
 
+    def apply_transform(self):
+        """Apply this pair's observed transform to its source molecule.
+
+        :returns: Deduplicated canonical product SMILES.
+        :raises ValueError: If the pair transform is unsupported by the
+            current transform-application layer.
+        """
+        from ._transform import apply_pair_transform
+
+        return apply_pair_transform(self)
+
     def to_dict(self):
         """Return a serializable mapping for this pair.
 

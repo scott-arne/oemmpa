@@ -149,13 +149,32 @@ products = apply_transform_smirks(
 )
 ```
 
-Invalid source molecules or invalid transform SMIRKS raise `ValueError` from
-the facade. The raw C++ binding also exposes `TransformApplicator`,
+`build_variable_transform_smirks()` converts supported observed OEMMPA
+transforms to explicit SMIRKS, and `apply_variable_transform()` applies them:
+
+```python
+from oemmpa import apply_variable_transform, build_variable_transform_smirks
+
+smirks = build_variable_transform_smirks("C[*:1]>>O[*:1]")
+products = apply_variable_transform("Cc1ccccc1", "C[*:1]>>O[*:1]")
+```
+
+`PairResult.apply_transform()` applies that pair's observed transform to its
+source molecule:
+
+```python
+pair = analyzer.analyze().pairs()[0]
+products = pair.apply_transform()
+```
+
+Invalid source molecules, invalid transform SMIRKS, malformed observed
+transforms, and unsupported observed transforms raise `ValueError` from the
+facade. The raw C++ binding also exposes `TransformApplicator`,
 `TransformProduct`, and `TransformProductVector` through `oemmpa._oemmpa`.
 
-The current helper expects reaction-ready SMIRKS. It does not yet convert
-observed matched-pair transform strings such as `C[*:1]>>O[*:1]` into explicit
-SMIRKS.
+Observed-transform conversion currently supports single-cut, single-atom
+variables such as `C[*:1]>>O[*:1]`. Multi-atom and multi-cut transforms raise
+explicit errors until their reaction semantics are implemented.
 
 ## Dataframe Export
 
@@ -241,9 +260,8 @@ lets direct single-row failures propagate.
 ## Deferred APIs
 
 OEMMPA does not yet expose broader OEMedChem-specific workflows, a separate
-fragment-index store, materialized transform refresh,
-observed-transform-to-SMIRKS conversion, rule-environment statistics, or
-production CLI analytics. The method-selection, storage, and explicit-transform
-application boundaries are in place so later capabilities can be added without
-changing the basic `Analyzer` loading/query workflow or the common result
-objects.
+fragment-index store, materialized transform refresh, multi-atom transform
+generation, rule-environment statistics, or production CLI analytics. The
+method-selection, storage, and transform-application boundaries are in place so
+later capabilities can be added without changing the basic `Analyzer`
+loading/query workflow or the common result objects.

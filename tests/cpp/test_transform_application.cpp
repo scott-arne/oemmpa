@@ -75,5 +75,79 @@ TEST(TransformApplicationTest, InvalidSmirksThrowsInvalidQueryError) {
     }
 }
 
+TEST(TransformApplicationTest, BuildsSmirksForSingleAtomVariableTransform) {
+    const std::string smirks =
+        TransformApplicator::BuildVariableTransformSmirks("C[*:1]>>O[*:1]");
+
+    EXPECT_EQ(smirks, "[*:1][CH3:2]>>[*:1][OH:2]");
+}
+
+TEST(TransformApplicationTest, AppliesSingleAtomVariableTransform) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "Cc1ccccc1",
+            "C[*:1]>>O[*:1]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+}
+
+TEST(TransformApplicationTest, AppliesSingleAtomVariableTransformFromPair) {
+    const MatchedPair pair(
+        1,
+        2,
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "[*:1]c1ccccc1",
+        "C[*:1]",
+        "O[*:1]",
+        1,
+        0,
+        0
+    );
+
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyPairTransform(pair);
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+}
+
+TEST(TransformApplicationTest, RejectsMalformedVariableTransform) {
+    try {
+        TransformApplicator::BuildVariableTransformSmirks("C[*:1]");
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(error.what(), "invalid variable transform SMILES: C[*:1]");
+    }
+}
+
+TEST(TransformApplicationTest, RejectsMultiAtomVariableTransform) {
+    try {
+        TransformApplicator::BuildVariableTransformSmirks("CC[*:1]>>O[*:1]");
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "only single-cut single-atom variable transforms are supported: CC[*:1]"
+        );
+    }
+}
+
+TEST(TransformApplicationTest, RejectsMultiCutVariableTransform) {
+    try {
+        TransformApplicator::BuildVariableTransformSmirks("C([*:1])[*:2]>>O[*:1]");
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "only single-cut single-atom variable transforms are supported: C([*:1])[*:2]"
+        );
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

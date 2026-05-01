@@ -134,9 +134,29 @@ products = apply_transform_smirks(
 )
 ```
 
-This helper intentionally does not yet convert OEMMPA's observed
-variable-to-variable transform strings such as `C[*:1]>>O[*:1]` into reaction
-SMIRKS. That conversion is the next transform-generation layer.
+Use `apply_variable_transform()` when you have an observed OEMMPA transform in
+`source_variable>>target_variable` form:
+
+```python
+from oemmpa import apply_variable_transform
+
+products = apply_variable_transform(
+    "Cc1ccccc1",
+    "C[*:1]>>O[*:1]",
+)
+```
+
+Matched-pair wrappers expose the same behavior for the source molecule in that
+pair:
+
+```python
+pair = analyzer.pairs()[0]
+products = pair.apply_transform()
+```
+
+The observed-transform helper currently supports single-cut, single-atom
+variables. Multi-atom and multi-cut transforms raise `ValueError` until their
+reaction semantics are implemented.
 
 ## Persistent Storage
 
@@ -180,5 +200,5 @@ persistence covers optional schema initialization, molecule/property/pair row
 storage, whitespace SMILES file loading, property CSV loading,
 analyzer-to-store persistence, stored-pair query options, and Python storage
 helpers. A separate fragment-index store, materialized transform refresh,
-observed-transform-to-SMIRKS conversion, rule-environment statistics, and
-production CLI analytics are deferred follow-on phases.
+multi-atom transform generation, rule-environment statistics, and production
+CLI analytics are deferred follow-on phases.

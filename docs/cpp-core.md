@@ -75,9 +75,27 @@ std::vector<OEMMPA::TransformProduct> products =
 objects. Invalid source molecules raise `InvalidMoleculeError`; invalid
 transform SMIRKS raise `InvalidQueryError`.
 
-The current API expects reaction-ready SMIRKS. Converting observed matched-pair
-transform strings such as `C[*:1]>>O[*:1]` into explicit reaction SMIRKS is a
-later transform-generation layer.
+`BuildVariableTransformSmirks()` converts supported observed variable
+transforms to explicit SMIRKS, and `ApplyVariableTransform()` applies them:
+
+```cpp
+std::string smirks =
+    OEMMPA::TransformApplicator::BuildVariableTransformSmirks(
+        "C[*:1]>>O[*:1]"
+    );
+
+std::vector<OEMMPA::TransformProduct> products =
+    OEMMPA::TransformApplicator::ApplyVariableTransform(
+        "Cc1ccccc1",
+        "C[*:1]>>O[*:1]"
+    );
+```
+
+`ApplyPairTransform()` applies the observed transform represented by a
+`MatchedPair` to that pair's source molecule. Observed-transform conversion
+currently supports single-cut, single-atom variables. Multi-atom and multi-cut
+transforms raise `InvalidQueryError` until their reaction semantics are
+implemented.
 
 ## Fragmentation
 
@@ -237,9 +255,10 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 
 The fragmentation, DMCSS, and initial OEMedChem methods are implemented behind
 the analyzer method boundary. Explicit unimolecular SMIRKS transform
-application is available through `TransformApplicator`. DuckDB persistence has
-an optional MMPDB-style schema, SMILES-file molecule loading, property CSV
-loading, molecule/property, pair, transform-query, query-option, analyzer-save,
-and Python storage-helper boundary, while a separate fragment-index store,
-materialized transform refresh, observed-transform-to-SMIRKS conversion,
+application and single-cut, single-atom observed-transform application are
+available through `TransformApplicator`. DuckDB persistence has an optional
+MMPDB-style schema, SMILES-file molecule loading, property CSV loading,
+molecule/property, pair, transform-query, query-option, analyzer-save, and
+Python storage-helper boundary, while a separate fragment-index store,
+materialized transform refresh, multi-atom transform generation,
 rule-environment statistics, and production CLI analytics are later phases.

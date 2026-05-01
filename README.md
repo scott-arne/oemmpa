@@ -19,13 +19,12 @@ small, stable core:
 
 The analyzer method boundary supports `fragmentation`, the initial `dmcss`
 backend, and an initial `oemedchem` backend that converts OpenEye's native
-matched pairs into OEMMPA's common constant/variable result model. The first
-transform-generation slice applies chemically explicit unimolecular SMIRKS to a
-source molecule and returns deduplicated canonical products. Later phases will
-connect observed OEMMPA variable-to-variable transforms to that application
-engine. Full DuckDB-backed analytics, persistent transform-table generation,
-and production CLI analytics are intentionally deferred and are not required
-for the current API.
+matched pairs into OEMMPA's common constant/variable result model. Transform
+generation applies chemically explicit unimolecular SMIRKS and can also convert
+single-cut, single-atom observed OEMMPA transforms such as `C[*:1]>>O[*:1]`
+into reaction-ready SMIRKS. Full DuckDB-backed analytics, persistent
+transform-table generation, and production CLI analytics are intentionally
+deferred and are not required for the current API.
 
 ## Quick Example
 
@@ -56,6 +55,14 @@ products = apply_transform_smirks(
     "[CH3:2][*:1]>>[OH:2][*:1]",
 )
 print(products)
+```
+
+Observed single-cut, single-atom transforms from analyzer results can be
+applied directly:
+
+```python
+for pair in analyzer.pairs():
+    print(pair.transform, pair.apply_transform())
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
@@ -248,8 +255,9 @@ The umbrella header is `include/oemmpa/oemmpa.h`. The main user-facing C++ class
 is `OEMMPA::Analyzer`, backed by `FragmentationMethod`, `Fragmenter`, and
 `MemoryIndex`. Query filtering is configured with `QueryOptions` and
 `ScoringOptions`; `PairScoring` performs the actual pair selection.
-`TransformApplicator` applies explicit unimolecular SMIRKS to source molecules
-and deduplicates canonical products.
+`TransformApplicator` applies explicit unimolecular SMIRKS to source molecules,
+converts supported observed variable transforms to SMIRKS, and deduplicates
+canonical products.
 
 See [docs/cpp-core.md](docs/cpp-core.md) for the C++ surface.
 
