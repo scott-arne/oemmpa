@@ -15,6 +15,7 @@ option(OEMMPA_BUILD_TESTS "Build tests" ON)
 option(OEMMPA_BUILD_PYTHON "Build Python bindings" ON)
 option(OEMMPA_UNIVERSAL2 "Build universal2 binary for macOS" OFF)
 option(OEMMPA_USE_STABLE_ABI "Use Python stable ABI" ON)
+option(OEMMPA_BUILD_DUCKDB "Build optional DuckDB-backed storage when DuckDB is available" OFF)
 
 if(APPLE AND OEMMPA_UNIVERSAL2)
     set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures" FORCE)
@@ -28,6 +29,7 @@ endif()
 
 # Dependencies
 include(FetchContent)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 FetchContent_Declare(
     cmake_openeye
@@ -48,6 +50,19 @@ if(OPENEYE_USE_SHARED)
 endif()
 
 find_package(OpenEye REQUIRED)
+
+if(OEMMPA_BUILD_DUCKDB)
+    find_package(DuckDB QUIET)
+endif()
+
+if(OEMMPA_BUILD_DUCKDB AND DuckDB_FOUND)
+    set(OEMMPA_HAS_DUCKDB TRUE)
+else()
+    set(OEMMPA_HAS_DUCKDB FALSE)
+    if(OEMMPA_BUILD_DUCKDB)
+        message(STATUS "DuckDB not found; DuckDB-backed storage is disabled")
+    endif()
+endif()
 
 if(TARGET OpenEye::OEMedChem)
     set(OEMMPA_HAS_OEMEDCHEM TRUE)
@@ -73,6 +88,10 @@ set(OEMMPA_SOURCES
     src/MemoryIndex.cpp
 )
 
+if(OEMMPA_HAS_DUCKDB)
+    list(APPEND OEMMPA_SOURCES src/DuckDBStore.cpp)
+endif()
+
 if(OEMMPA_HAS_OEMEDCHEM)
     list(APPEND OEMMPA_SOURCES src/OEMedChemMethod.cpp)
 endif()
@@ -97,6 +116,13 @@ if(OEMMPA_HAS_OEMEDCHEM)
     target_link_libraries(oemmpa PUBLIC OpenEye::OEMedChem)
 else()
     target_compile_definitions(oemmpa PUBLIC OEMMPA_HAS_OEMEDCHEM=0)
+endif()
+
+if(OEMMPA_HAS_DUCKDB)
+    target_compile_definitions(oemmpa PUBLIC OEMMPA_HAS_DUCKDB=1)
+    target_link_libraries(oemmpa PUBLIC DuckDB::DuckDB)
+else()
+    target_compile_definitions(oemmpa PUBLIC OEMMPA_HAS_DUCKDB=0)
 endif()
 
 # Tests

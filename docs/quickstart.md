@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide covers the implemented Phase 1 workflow: load molecules, add optional
+This guide covers the current workflow: load molecules, add optional
 properties, run analysis, and query matched pairs or transforms.
 
 ## Single Molecules
@@ -66,8 +66,8 @@ Nc1ccccc1 aniline
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
-This Phase 1 file loader is intentionally narrow. Richer file formats and
-large-scale deferred loading belong in later workflow layers.
+The facade file loader is intentionally narrow. DuckDB-enabled builds also
+support C++-layer SMILES file loading for persistent workflows.
 
 ## Loading From Dataframes
 
@@ -119,9 +119,29 @@ pandas_frame = pairs.to_dataframe()
 polars_frame = pairs.to_dataframe(library="polars")
 ```
 
+## Persistent Storage
+
+DuckDB-enabled builds expose persistent storage through `DuckDBStore`:
+
+```python
+from oemmpa import DuckDBStore
+
+store = DuckDBStore("analysis.duckdb")
+store.load_molecules_from_file("molecules.smi")
+store.load_properties_from_csv("properties.csv", id_column="id")
+```
+
+The property CSV format uses one ID column and numeric property columns. Values
+of `*` or blank strings are treated as missing. Row-level failures are returned
+in `LoadReport`, matching the molecule-loading APIs. The backing schema uses
+MMPDB-style normalized tables such as `compound`, `property_name`,
+`compound_property`, `rule_smiles`, `rule`, `rule_environment`,
+`constant_smiles`, and `pair`.
+
 ## Current Scope
 
-The current implementation is an in-memory API and benchmarkable core.
+The current implementation is an in-memory API plus an optional persistent
+DuckDB storage boundary.
 `fragmentation` is the default analyzer method. `dmcss` is available as an
 initial pairwise maximum common substructure backend:
 
@@ -137,5 +157,9 @@ analyzer = Analyzer(method="oemedchem")
 
 The first OEMedChem slice converts native single-cut matched pairs into the
 same constant/variable result model used by the other methods. DuckDB
-persistence, persistent transform-table generation, and production CLI
-analytics are deferred follow-on phases.
+persistence covers optional schema initialization, molecule/property/pair row
+storage, whitespace SMILES file loading, property CSV loading,
+analyzer-to-store persistence, stored-pair query options, and Python storage
+helpers. A separate fragment-index store, materialized transform refresh,
+rule-environment statistics, and production CLI analytics are deferred
+follow-on phases.

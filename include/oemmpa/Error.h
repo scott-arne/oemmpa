@@ -48,6 +48,12 @@ public:
         : OEMMPAError(message) {}
 };
 
+class StorageError : public OEMMPAError {
+public:
+    explicit StorageError(const std::string& message)
+        : OEMMPAError(message) {}
+};
+
 }  // namespace OEMMPA
 
 #endif  // OEMMPA_ERROR_H

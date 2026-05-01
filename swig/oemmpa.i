@@ -409,6 +409,9 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/PairScoring.h"
 %include "../include/oemmpa/AnalysisMethod.h"
 %include "../include/oemmpa/FragmentationMethod.h"
+#if OEMMPA_HAS_DUCKDB
+%include "../include/oemmpa/DuckDBStore.h"
+#endif
 %include "../include/oemmpa/Analyzer.h"
 %include "../include/oemmpa/oemmpa.h"
 

@@ -168,6 +168,29 @@ def test_query_options_and_scoring_options_binding():
     assert options.GetScoringOptions().GetMode() == _oemmpa.ScoringMode_KeepAll
 
 
+def test_optional_duckdb_store_binding_loads_smiles_file(tmp_path):
+    package = import_worktree_oemmpa()
+    if not package.duckdb_available():
+        pytest.skip("DuckDBStore binding is only available in DuckDB-enabled builds")
+
+    smiles_path = tmp_path / "molecules.smi"
+    smiles_path.write_text(
+        "Cc1ccccc1 toluene\n"
+        "not-a-smiles bad\n"
+        "Oc1ccccc1 phenol\n",
+        encoding="utf-8",
+    )
+
+    store = package.DuckDBStore()
+    report = store.load_molecules_from_file(smiles_path)
+
+    assert report.accepted_ids == ["toluene", "phenol"]
+    assert report.accepted_count == 2
+    assert report.rejected_count == 1
+    assert report.errors[0].row == 2
+    assert store.row_count("compound") == 2
+
+
 def test_cpp_exceptions_surface_as_runtime_error():
     _oemmpa = import_worktree_raw_bindings()
 

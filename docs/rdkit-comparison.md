@@ -1,7 +1,7 @@
 # RDKit Comparison
 
-OEMMPA includes a focused benchmark harness for comparing Phase 1 output against
-RDKit's `rdMMPA` on the same SMILES input.
+OEMMPA includes a focused benchmark harness for comparing current analyzer
+output against RDKit's `rdMMPA` on the same SMILES input.
 
 ## Run The Harness
 
@@ -70,6 +70,7 @@ installed.
 ## Current Scope
 
 This is a focused comparison script, not a production CLI analytics layer.
-Larger benchmark suites, DuckDB-backed result storage, DMCSS-specific benchmark
-coverage, broader OEMedChem-specific analyses, and persistent transform-table
-generation are deferred.
+Larger benchmark suites, DuckDB-backed comparison result storage beyond the
+initial queryable analyzer-result, molecule-file, and property-file boundary,
+DMCSS-specific benchmark coverage, broader OEMedChem-specific analyses, and
+persistent transform-table generation are deferred.

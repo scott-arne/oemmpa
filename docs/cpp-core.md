@@ -53,9 +53,9 @@ a change site.
 
 `Transform` groups matched pairs by transform SMILES and tracks support count.
 
-`LoadReport` stores accepted IDs and row-level `LoadError` records. Phase 1 uses
-the Python facade for most loading convenience, but the C++ type is part of the
-stable surface for later C++ loaders.
+`LoadReport` stores accepted IDs and row-level `LoadError` records. The Python
+facade uses it for ergonomic loading reports, and the DuckDB C++ loader methods
+use it for row-level file loading diagnostics.
 
 ## Fragmentation
 
@@ -110,6 +110,77 @@ configuration without changing normal `Analyzer` workflows.
 deduplicates fragmentations and builds matched pairs from molecules that share a
 constant but have different variables.
 
+## DuckDB Storage
+
+`DuckDBStore` is the optional persistent-storage boundary. It is built only
+when `OEMMPA_BUILD_DUCKDB=ON` and CMake finds DuckDB headers and `libduckdb`.
+
+```cpp
+OEMMPA::DuckDBStore store("analysis.duckdb");
+store.InitializeSchema();
+```
+
+`InitializeSchema()` creates an MMPDB-style normalized schema: `dataset`,
+`compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
+`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
+`AddMolecule()` persists molecule rows by internal ID and rejects duplicate
+external IDs. `AddMoleculesFromSmilesFile()` loads whitespace SMILES files
+directly into DuckDB with row-level `LoadReport` errors so large file loads do
+not need to cross the Python/SWIG boundary one molecule at a time.
+`AddMoleculeProperty()` stores or replaces numeric property values for stored
+molecules. `AddPropertiesFromCsvFile()` loads property tables by external ID;
+the default ID-column convention follows MMPDB's `id`/`ID`/`Name`/`name`
+pattern, non-ID columns are inferred when not supplied, and `*` or blank values
+are treated as missing. `AddPair()` and `AddPairs()` persist analyzed pairs into
+normalized rule, rule-environment, constant, and pair tables; `GetPairs()` and
+`GetTransforms()` rebuild the common result objects from DuckDB rows. The
+overloads accepting `QueryOptions` support symmetric/asymmetric selection,
+heavy-atom filters, relative heavy-atom filters, and pair scoring over stored
+rows.
+
+```cpp
+store.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+store.AddMoleculeProperty(1, "pIC50", 6.5);
+```
+
+For SMILES files, blank lines and `#` comment lines are skipped. The first token
+is SMILES and the optional second token is the external molecule ID. Missing IDs
+receive stable `molecule_<internal_id>` identifiers:
+
+```cpp
+OEMMPA::LoadReport report =
+    store.AddMoleculesFromSmilesFile("molecules.smi");
+```
+
+For property CSV files, header names define property names. Rows with unknown
+molecule IDs or non-numeric property values are recorded in `LoadReport` and do
+not stop later rows:
+
+```cpp
+OEMMPA::LoadReport property_report =
+    store.AddPropertiesFromCsvFile("properties.csv", "id");
+```
+
+For normal analyzer workflows, use `Analyzer::SaveTo()` after analysis:
+
+```cpp
+OEMMPA::Analyzer analyzer;
+analyzer.AddMolecule("Cc1ccccc1", "tol");
+analyzer.AddMolecule("Oc1ccccc1", "phenol");
+analyzer.Analyze();
+analyzer.SaveTo(store);
+```
+
+MMPDB keeps a separate fragment database for raw fragmentations, then stores
+the final matched-pair database in normalized `compound`, `rule_smiles`,
+`rule`, `environment_fingerprint`, `rule_environment`, `constant_smiles`, and
+`pair` tables. OEMMPA is following that cue: fragmentations remain an
+intermediate analysis artifact and are not exposed as a stable DuckDB table in
+this storage slice. The stored pair model already has the rule-environment
+boundary needed for future atom-context fingerprints. Materialized transform
+refresh, rule-environment statistics, a separate fragment-index store, and
+production analytics remain later work.
+
 ## Querying And Scoring
 
 `QueryOptions` controls pair filtering:
@@ -142,7 +213,9 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 
 ## Current Scope
 
-The C++ core is intentionally in-memory at this stage. The fragmentation,
-DMCSS, and initial OEMedChem methods are implemented behind the analyzer method
-boundary. DuckDB persistence, persistent transform-table generation, and
-production CLI analytics are later phases.
+The fragmentation, DMCSS, and initial OEMedChem methods are implemented behind
+the analyzer method boundary. DuckDB persistence has an optional MMPDB-style
+schema, SMILES-file molecule loading, property CSV loading, molecule/property,
+pair, transform-query, query-option, analyzer-save, and Python storage-helper
+boundary, while a separate fragment-index store, materialized transform refresh,
+rule-environment statistics, and production CLI analytics are later phases.

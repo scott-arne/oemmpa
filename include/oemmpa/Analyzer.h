@@ -15,6 +15,8 @@
 
 namespace OEMMPA {
 
+class DuckDBStore;
+
 /// \brief User-facing matched-pair analyzer.
 class Analyzer {
 public:
@@ -71,6 +73,13 @@ public:
     /// Throws if Analyze() has not succeeded since the last mutation.
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
+#if OEMMPA_HAS_DUCKDB
+    /// \brief Save staged molecules, properties, and analyzed pairs to DuckDB.
+    ///
+    /// Throws if Analyze() has not succeeded since the last mutation.
+    void SaveTo(DuckDBStore& store) const;
+#endif
+
     /// \brief Reset molecules, properties, external IDs, internal ID sequence,
     /// and analysis state.
     void Clear();
@@ -86,6 +95,7 @@ private:
 
     std::unique_ptr<AnalysisMethod> method_;
     std::string method_name_;
+    std::vector<MoleculeRecord> molecules_;
     std::unordered_map<std::string, unsigned int> external_ids_;
     PropertyMap properties_;
     unsigned int next_internal_id_ = 1;

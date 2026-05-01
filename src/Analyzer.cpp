@@ -1,6 +1,9 @@
 #include "oemmpa/Analyzer.h"
 
 #include "oemmpa/DMCSSMethod.h"
+#if OEMMPA_HAS_DUCKDB
+#include "oemmpa/DuckDBStore.h"
+#endif
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/MoleculeRecord.h"
@@ -81,6 +84,7 @@ unsigned int Analyzer::AddMolecule(
     const MoleculeRecord record = MoleculeRecord::FromSmiles(internal_id, smiles, external_id);
 
     method_->AddMolecule(record);
+    molecules_.push_back(record);
     if (!external_id.empty()) {
         external_ids_[external_id] = internal_id;
     }
@@ -99,6 +103,7 @@ unsigned int Analyzer::AddMolecule(
     const MoleculeRecord record = MoleculeRecord::FromMol(internal_id, mol, external_id);
 
     method_->AddMolecule(record);
+    molecules_.push_back(record);
     if (!external_id.empty()) {
         external_ids_[external_id] = internal_id;
     }
@@ -145,8 +150,45 @@ std::vector<Transform> Analyzer::GetTransforms(const QueryOptions& options) cons
     return build_transforms(GetPairs(options));
 }
 
+#if OEMMPA_HAS_DUCKDB
+void Analyzer::SaveTo(DuckDBStore& store) const {
+    RequireAnalyzed();
+
+    store.InitializeSchema();
+    store.Execute("begin transaction");
+    try {
+        for (const MoleculeRecord& molecule : molecules_) {
+            store.AddMolecule(molecule);
+        }
+
+        for (const auto& entry : properties_) {
+            const auto id_iter = external_ids_.find(entry.first);
+            if (id_iter == external_ids_.end()) {
+                continue;
+            }
+            for (const auto& property : entry.second) {
+                store.AddMoleculeProperty(id_iter->second, property.first, property.second);
+            }
+        }
+
+        for (const MatchedPair& pair : GetPairs()) {
+            store.AddPair(pair);
+        }
+
+        store.Execute("commit");
+    } catch (...) {
+        try {
+            store.Execute("rollback");
+        } catch (const StorageError&) {
+        }
+        throw;
+    }
+}
+#endif
+
 void Analyzer::Clear() {
     method_->Clear();
+    molecules_.clear();
     external_ids_.clear();
     properties_.clear();
     next_internal_id_ = 1;

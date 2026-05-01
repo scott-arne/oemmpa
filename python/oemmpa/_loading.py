@@ -56,6 +56,20 @@ class LoadReport:
         self.errors.append(RowError(row=int(row), message=str(message)))
 
 
+def load_report_from_raw(raw_report):
+    """Convert a raw C++ ``LoadReport`` proxy into the Python facade report.
+
+    :param raw_report: SWIG-wrapped C++ ``LoadReport``.
+    :returns: Python :class:`LoadReport`.
+    """
+    report = LoadReport()
+    for accepted_id in raw_report.GetAcceptedIds():
+        report.record_accepted(accepted_id)
+    for error in raw_report.GetErrors():
+        report.record_rejected(error.row, error.message)
+    return report
+
+
 def iter_dataframe_records(frame):
     """Yield one-based row numbers and mapping-like dataframe records.
 

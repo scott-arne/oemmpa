@@ -48,9 +48,9 @@ as `RowError(row, message)` objects in `report.errors`.
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
-The file format is whitespace-delimited `SMILES [id]`. This function keeps file
-loading in the Python facade for Phase 1 while preserving the API shape needed
-for later C++-layer file loaders.
+The file format is whitespace-delimited `SMILES [id]`. This function keeps a
+lightweight loader in the Python facade; DuckDB-enabled builds also provide
+C++-layer file loading for persistent workflows.
 
 ### add_molecules_from_dataframe
 
@@ -145,6 +145,41 @@ polars_frame = analyzer.pairs().to_dataframe(library="polars")
 
 Use `to_dicts()` when you need dependency-free structured output.
 
+## DuckDB Storage
+
+DuckDB storage is optional. Use `duckdb_available()` to check whether the
+current build includes it.
+
+```python
+from oemmpa import DuckDBStore, duckdb_available
+
+if duckdb_available():
+    store = DuckDBStore("analysis.duckdb")
+```
+
+`DuckDBStore` is a Python wrapper around the raw C++ store. It keeps file and
+property loading in C++ while returning Python `LoadReport` and result wrapper
+objects. The physical schema follows MMPDB's normalized model with
+`compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
+`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`
+tables. Raw fragmentations are intentionally not exposed as a stable queryable
+table yet.
+
+```python
+store.load_molecules_from_file("molecules.smi")
+store.load_properties_from_csv("properties.csv", id_column="id")
+store.save_analyzer(analyzer)
+pairs = store.pairs()
+transforms = store.transforms()
+print(store.row_count("compound"))
+print(store.row_count("pair"))
+```
+
+`load_properties_from_csv()` follows the same long-form property model as the
+C++ layer: one row per molecule ID, one column per numeric property, `*` or
+blank for missing values, and row-level errors for unknown IDs or non-numeric
+values. When `property_columns` is omitted, all non-ID columns are loaded.
+
 ## Raw Binding Access
 
 The raw SWIG layer is available as `oemmpa._oemmpa`.
@@ -182,8 +217,8 @@ lets direct single-row failures propagate.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose DuckDB-backed persistence, broader
-OEMedChem-specific workflows, persistent transform-table generation, or
-production CLI analytics. The method-selection boundary is in place so later
-capabilities can be added without changing the basic `Analyzer` loading and
-query workflow or the common result objects.
+OEMMPA does not yet expose broader OEMedChem-specific workflows, a separate
+fragment-index store, materialized transform refresh, rule-environment
+statistics, or production CLI analytics. The method-selection and storage
+boundaries are in place so later capabilities can be added without changing the
+basic `Analyzer` loading/query workflow or the common result objects.

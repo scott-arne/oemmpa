@@ -22,6 +22,10 @@ add_executable(oemmpa_tests
     test_analyzer.cpp
 )
 
+if(OEMMPA_HAS_DUCKDB)
+    target_sources(oemmpa_tests PRIVATE test_duckdb_store.cpp)
+endif()
+
 target_link_libraries(oemmpa_tests
     PRIVATE
         oemmpa

@@ -389,9 +389,14 @@ _RAW_BINDING_EXPORTS = (
     "ScoringMode_MinimalHeavyBondChange",
     "ScoringOptions",
     "SmartsFragmentationStrategy",
+    "StorageError",
     "StringVector",
     "Transform",
     "TransformVector",
+)
+
+_OPTIONAL_RAW_BINDING_EXPORTS = (
+    "DuckDBStore",
 )
 
 _missing_raw_exports = []
@@ -408,6 +413,12 @@ if _missing_raw_exports:
         + ", ".join(_missing_raw_exports)
     )
 
+for _name in _OPTIONAL_RAW_BINDING_EXPORTS:
+    if hasattr(_swig_proxy, _name):
+        if not hasattr(_oemmpa, _name):
+            setattr(_oemmpa, _name, getattr(_swig_proxy, _name))
+        globals()[_name] = getattr(_oemmpa, _name)
+
 from .oemmpa import ( # type: ignore
     calculate_molecular_weight,
 )
@@ -419,14 +430,16 @@ from ._results import (
     TransformCollection,
     TransformResult,
 )
+from ._storage import DuckDBStore, duckdb_available
 
-del _missing_raw_exports, _name, _swig_proxy
+del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _name, _swig_proxy
 
 __all__ = [
     "__version__",
     "__version_info__",
     "_oemmpa",
     "Analyzer",
+    "DuckDBStore",
     "LoadReport",
     "PairCollection",
     "PairResult",
@@ -434,4 +447,5 @@ __all__ = [
     "TransformCollection",
     "TransformResult",
     "calculate_molecular_weight",
+    "duckdb_available",
 ]

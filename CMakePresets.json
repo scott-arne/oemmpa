@@ -21,7 +21,8 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "OPENEYE_ROOT": {"type": "PATH", "value": "$env{OPENEYE_ROOT}"},
-                "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"}
+                "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"},
+                "OEMMPA_BUILD_DUCKDB": "ON"
             }
         }
     ],

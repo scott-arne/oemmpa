@@ -9,15 +9,19 @@ small, stable core:
   queries, transform summaries, and dataframe export.
 - C++ APIs for fragmentation, pairwise DMCSS analysis, native OEMedChem-backed
   analysis, in-memory indexing, query filtering, and scoring.
+- Optional DuckDB storage schema initialization plus whitespace SMILES file
+  loading, property CSV loading, molecule/property row persistence, analyzed
+  pair round-tripping, stored-pair query filters, analyzer-to-store
+  persistence, and Python storage helpers.
 - A focused RDKit comparison harness for measuring pair-surface agreement and
   runtime on shared SMILES data.
 
 The analyzer method boundary supports `fragmentation`, the initial `dmcss`
 backend, and an initial `oemedchem` backend that converts OpenEye's native
 matched pairs into OEMMPA's common constant/variable result model. Later phases
-will add larger-scale storage and workflow layers. DuckDB-backed analytics,
-persistent transform-table generation, and production CLI analytics are
-intentionally deferred and are not required for the current API.
+will add larger workflow layers. Full DuckDB-backed analytics, persistent
+transform-table generation, and production CLI analytics are intentionally
+deferred and are not required for the current API.
 
 ## Quick Example
 
@@ -38,7 +42,8 @@ print(pairs[0].property_delta("pIC50"))
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
-[docs/python-api.md](docs/python-api.md) for the facade API.
+[docs/python-api.md](docs/python-api.md) for the facade API and optional raw
+DuckDB binding notes.
 
 ## Prerequisites
 
@@ -47,6 +52,7 @@ See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
 - CMake >= 3.16.
 - SWIG >= 4.0.
 - Python >= 3.10.
+- DuckDB C++ library and headers for optional persistent-storage development.
 
 Set `OPENEYE_ROOT` to the OpenEye C++ SDK directory containing `include/` and
 `lib/`:
@@ -66,6 +72,9 @@ cmake --build build-debug
 ```
 
 The debug preset builds the C++ library, C++ tests, and SWIG Python extension.
+It also enables the optional DuckDB storage backend when DuckDB is installed in
+a standard Homebrew or `DUCKDB_ROOT` location. Generic CMake/scikit-build
+builds leave DuckDB disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided.
 Release builds use the matching preset:
 
 ```bash
@@ -172,6 +181,23 @@ frame_report = frame_analyzer.add_molecules_from_dataframe(
 `LoadReport` records accepted facade IDs and row-level errors without stopping
 later rows.
 
+DuckDB-enabled builds also expose a Python storage helper for persistent
+workflows. The storage schema follows MMPDB's final database model with
+normalized compound, property, rule, rule-environment, constant, and pair
+tables; raw fragmentations remain an analysis-stage artifact until a dedicated
+fragment-index store is added.
+
+```python
+from oemmpa import DuckDBStore
+
+store = DuckDBStore("analysis.duckdb")
+store.load_molecules_from_file("molecules.smi")
+store.load_properties_from_csv("properties.csv", id_column="id")
+store.save_analyzer(analyzer)
+pairs = store.pairs()
+print(store.row_count("compound"), store.row_count("pair"))
+```
+
 ## RDKit Comparison
 
 The comparison harness runs OEMMPA and RDKit on the same whitespace-delimited
@@ -195,7 +221,7 @@ python/oemmpa/       Python package, facade, loading helpers, and result wrapper
 tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
 benchmarks/          RDKit comparison harness and reference data.
-docs/                Focused Phase 1 documentation.
+docs/                Focused user and developer documentation.
 scripts/             Wheel build helper.
 ```
 
@@ -206,7 +232,7 @@ is `OEMMPA::Analyzer`, backed by `FragmentationMethod`, `Fragmenter`, and
 `MemoryIndex`. Query filtering is configured with `QueryOptions` and
 `ScoringOptions`; `PairScoring` performs the actual pair selection.
 
-See [docs/cpp-core.md](docs/cpp-core.md) for the Phase 1 C++ surface.
+See [docs/cpp-core.md](docs/cpp-core.md) for the C++ surface.
 
 ## Build Tools
 
