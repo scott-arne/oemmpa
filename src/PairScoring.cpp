@@ -1,37 +1,81 @@
 #include "oemmpa/PairScoring.h"
 
+#include "oemmpa/Error.h"
+
 #include <algorithm>
-#include <cstdlib>
+#include <tuple>
 
 namespace OEMMPA {
 namespace {
 
-int absolute_delta(int value) {
-    return std::abs(value);
+long long absolute_delta(int value) {
+    const long long widened_value = value;
+    return widened_value < 0 ? -widened_value : widened_value;
 }
 
-bool compare_heavy_atom_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
-    return absolute_delta(lhs.GetHeavyAtomDelta()) < absolute_delta(rhs.GetHeavyAtomDelta());
+auto tie_breaker_metrics(const MatchedPair& pair) {
+    return std::make_tuple(
+        pair.GetCutCount(),
+        absolute_delta(pair.GetHeavyAtomDelta()),
+        absolute_delta(pair.GetHeavyBondDelta()),
+        pair.GetSourceMoleculeId(),
+        pair.GetTargetMoleculeId(),
+        pair.GetTransformSmiles(),
+        pair.GetSourceSidechainSmiles(),
+        pair.GetTargetSidechainSmiles()
+    );
 }
 
-bool compare_heavy_bond_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
-    return absolute_delta(lhs.GetHeavyBondDelta()) < absolute_delta(rhs.GetHeavyBondDelta());
+bool compare_after_primary(const MatchedPair& lhs, const MatchedPair& rhs) {
+    return tie_breaker_metrics(lhs) < tie_breaker_metrics(rhs);
 }
 
-bool compare_cuts_then_heavy_atom_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
+bool compare_by_atom_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
+    const long long lhs_delta = absolute_delta(lhs.GetHeavyAtomDelta());
+    const long long rhs_delta = absolute_delta(rhs.GetHeavyAtomDelta());
+    if (lhs_delta != rhs_delta) {
+        return lhs_delta < rhs_delta;
+    }
+
+    return compare_after_primary(lhs, rhs);
+}
+
+bool compare_by_bond_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
+    const long long lhs_delta = absolute_delta(lhs.GetHeavyBondDelta());
+    const long long rhs_delta = absolute_delta(rhs.GetHeavyBondDelta());
+    if (lhs_delta != rhs_delta) {
+        return lhs_delta < rhs_delta;
+    }
+
+    return compare_after_primary(lhs, rhs);
+}
+
+bool compare_by_cuts_then_atom_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
     if (lhs.GetCutCount() != rhs.GetCutCount()) {
         return lhs.GetCutCount() < rhs.GetCutCount();
     }
 
-    return compare_heavy_atom_delta(lhs, rhs);
+    const long long lhs_delta = absolute_delta(lhs.GetHeavyAtomDelta());
+    const long long rhs_delta = absolute_delta(rhs.GetHeavyAtomDelta());
+    if (lhs_delta != rhs_delta) {
+        return lhs_delta < rhs_delta;
+    }
+
+    return compare_after_primary(lhs, rhs);
 }
 
-bool compare_cuts_then_heavy_bond_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
+bool compare_by_cuts_then_bond_delta(const MatchedPair& lhs, const MatchedPair& rhs) {
     if (lhs.GetCutCount() != rhs.GetCutCount()) {
         return lhs.GetCutCount() < rhs.GetCutCount();
     }
 
-    return compare_heavy_bond_delta(lhs, rhs);
+    const long long lhs_delta = absolute_delta(lhs.GetHeavyBondDelta());
+    const long long rhs_delta = absolute_delta(rhs.GetHeavyBondDelta());
+    if (lhs_delta != rhs_delta) {
+        return lhs_delta < rhs_delta;
+    }
+
+    return compare_after_primary(lhs, rhs);
 }
 
 using PairComparator = bool (*)(const MatchedPair&, const MatchedPair&);
@@ -39,17 +83,18 @@ using PairComparator = bool (*)(const MatchedPair&, const MatchedPair&);
 PairComparator comparator_for_mode(ScoringMode mode) {
     switch (mode) {
         case ScoringMode::MinimalHeavyBondChange:
-            return compare_heavy_bond_delta;
+            return compare_by_bond_delta;
         case ScoringMode::FewerCutsThenHeavyAtomChange:
-            return compare_cuts_then_heavy_atom_delta;
+            return compare_by_cuts_then_atom_delta;
         case ScoringMode::FewerCutsThenHeavyBondChange:
-            return compare_cuts_then_heavy_bond_delta;
-        case ScoringMode::KeepAll:
+            return compare_by_cuts_then_bond_delta;
         case ScoringMode::MinimalHeavyAtomChange:
-            return compare_heavy_atom_delta;
+            return compare_by_atom_delta;
+        case ScoringMode::KeepAll:
+            break;
     }
 
-    return compare_heavy_atom_delta;
+    throw InvalidQueryError("unknown scoring mode");
 }
 
 }  // namespace

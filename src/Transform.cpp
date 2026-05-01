@@ -1,11 +1,22 @@
 #include "oemmpa/Transform.h"
 
+#include "oemmpa/Error.h"
+
 namespace OEMMPA {
 
 Transform::Transform(const std::string& transform_smiles)
     : transform_smiles_(transform_smiles) {}
 
 void Transform::AddPair(const MatchedPair& pair) {
+    if (pairs_.empty() && transform_smiles_.empty()) {
+        transform_smiles_ = pair.GetTransformSmiles();
+    } else if (pair.GetTransformSmiles() != transform_smiles_) {
+        throw AnalysisStateError(
+            "matched pair transform does not match transform group: " +
+            pair.GetTransformSmiles() + " != " + transform_smiles_
+        );
+    }
+
     pairs_.push_back(pair);
 }
 

@@ -1,9 +1,21 @@
 #include "oemmpa/QueryOptions.h"
 
+#include "oemmpa/Error.h"
+
 namespace OEMMPA {
 
 void ScoringOptions::SetMode(ScoringMode mode) {
-    mode_ = mode;
+    switch (mode) {
+        case ScoringMode::KeepAll:
+        case ScoringMode::MinimalHeavyAtomChange:
+        case ScoringMode::MinimalHeavyBondChange:
+        case ScoringMode::FewerCutsThenHeavyAtomChange:
+        case ScoringMode::FewerCutsThenHeavyBondChange:
+            mode_ = mode;
+            return;
+    }
+
+    throw InvalidQueryError("unknown scoring mode");
 }
 
 ScoringMode ScoringOptions::GetMode() const {

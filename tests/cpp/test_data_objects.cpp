@@ -16,6 +16,28 @@ TEST(DataObjectTest, FragmentationStoresContextAndSidechain) {
     EXPECT_EQ(fragmentation.GetCutCount(), 1);
 }
 
+TEST(DataObjectTest, DefaultConstructedObjectsHaveSafeDefaults) {
+    Fragmentation fragmentation;
+    EXPECT_EQ(fragmentation.GetMoleculeId(), 0);
+    EXPECT_EQ(fragmentation.GetContextSmiles(), "");
+    EXPECT_EQ(fragmentation.GetSidechainSmiles(), "");
+    EXPECT_EQ(fragmentation.GetCutCount(), 0);
+
+    MatchedPair pair;
+    EXPECT_EQ(pair.GetSourceMoleculeId(), 0);
+    EXPECT_EQ(pair.GetTargetMoleculeId(), 0);
+    EXPECT_EQ(pair.GetTransformSmiles(), "");
+    EXPECT_EQ(pair.GetCutCount(), 0);
+    EXPECT_EQ(pair.GetHeavyAtomDelta(), 0);
+    EXPECT_EQ(pair.GetHeavyBondDelta(), 0);
+    EXPECT_THROW(pair.GetPropertyDelta("pIC50"), MissingPropertyError);
+
+    Transform transform;
+    EXPECT_EQ(transform.GetTransformSmiles(), "");
+    EXPECT_EQ(transform.GetSupportCount(), 0);
+    EXPECT_TRUE(transform.GetPairs().empty());
+}
+
 TEST(DataObjectTest, MatchedPairComputesDirectionalPropertyDelta) {
     MatchedPair pair(
         1, 2, "cmpd-a", "cmpd-b",
@@ -50,6 +72,39 @@ TEST(DataObjectTest, TransformGroupsSupportingPairs) {
     Transform transform("C[*:1]>>O[*:1]");
     transform.AddPair(pair);
     EXPECT_EQ(transform.GetTransformSmiles(), "C[*:1]>>O[*:1]");
+    EXPECT_EQ(transform.GetSupportCount(), 1);
+}
+
+TEST(DataObjectTest, DefaultConstructedTransformAdoptsFirstPairTransform) {
+    MatchedPair pair(
+        1, 2, "a", "b",
+        "CC", "CO", "C[*:1]", "C[*:1]", "O[*:1]",
+        1, 0, 0
+    );
+    Transform transform;
+
+    transform.AddPair(pair);
+
+    EXPECT_EQ(transform.GetTransformSmiles(), "C[*:1]>>O[*:1]");
+    EXPECT_EQ(transform.GetSupportCount(), 1);
+}
+
+TEST(DataObjectTest, TransformRejectsMismatchedPairTransform) {
+    MatchedPair matching_pair(
+        1, 2, "a", "b",
+        "CC", "CO", "C[*:1]", "C[*:1]", "O[*:1]",
+        1, 0, 0
+    );
+    MatchedPair mismatched_pair(
+        3, 4, "c", "d",
+        "CN", "CO", "C[*:1]", "N[*:1]", "O[*:1]",
+        1, 0, 0
+    );
+    Transform transform("C[*:1]>>O[*:1]");
+
+    transform.AddPair(matching_pair);
+
+    EXPECT_THROW(transform.AddPair(mismatched_pair), AnalysisStateError);
     EXPECT_EQ(transform.GetSupportCount(), 1);
 }
 
