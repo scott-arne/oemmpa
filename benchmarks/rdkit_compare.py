@@ -13,13 +13,6 @@ from time import perf_counter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "python"
-if PYTHON_ROOT.is_dir() and str(PYTHON_ROOT) not in sys.path:
-    sys.path.insert(0, str(PYTHON_ROOT))
-sys.meta_path[:] = [
-    finder
-    for finder in sys.meta_path
-    if type(finder).__module__ != "_oemmpa_editable"
-]
 
 
 def read_smiles(path):
@@ -48,7 +41,7 @@ def run_oemmpa(path):
     :param path: SMILES file path.
     :returns: Benchmark result dictionary.
     """
-    from oemmpa import Analyzer
+    Analyzer = _import_worktree_analyzer()
 
     rows = read_smiles(path)
     analyzer = Analyzer()
@@ -135,11 +128,17 @@ def compare(path):
     """
     oemmpa_result = run_oemmpa(path)
     rdkit_result = run_rdkit(path)
-    oemmpa_keys = {_pair_key(pair) for pair in oemmpa_result["pairs"]}
-    rdkit_keys = {_pair_key(pair) for pair in rdkit_result["pairs"]}
+    oemmpa_keys = {_normalized_pair_key(pair) for pair in oemmpa_result["pairs"]}
+    rdkit_keys = {_normalized_pair_key(pair) for pair in rdkit_result["pairs"]}
+    oemmpa_molecule_keys = {_molecule_pair_key(pair) for pair in oemmpa_result["pairs"]}
+    rdkit_molecule_keys = {_molecule_pair_key(pair) for pair in rdkit_result["pairs"]}
     return {
         "oemmpa": oemmpa_result,
         "rdkit": rdkit_result,
+        "common_molecule_pairs": sorted(oemmpa_molecule_keys & rdkit_molecule_keys),
+        "oemmpa_molecule_only": sorted(oemmpa_molecule_keys - rdkit_molecule_keys),
+        "rdkit_molecule_only": sorted(rdkit_molecule_keys - oemmpa_molecule_keys),
+        "common_chemistry_pairs": sorted(oemmpa_keys & rdkit_keys),
         "oemmpa_only": sorted(oemmpa_keys - rdkit_keys),
         "rdkit_only": sorted(rdkit_keys - oemmpa_keys),
     }
@@ -174,6 +173,45 @@ def main(argv=None):
         print(f"RDKit: unavailable ({rdkit_result['error']})")
     print(f"OEMMPA-only pairs: {len(result['oemmpa_only'])}")
     print(f"RDKit-only pairs: {len(result['rdkit_only'])}")
+    print(f"Common molecule pairs: {len(result['common_molecule_pairs'])}")
+    print(f"Common chemistry pairs: {len(result['common_chemistry_pairs'])}")
+
+
+def _import_worktree_analyzer():
+    if PYTHON_ROOT.is_dir() and str(PYTHON_ROOT) not in sys.path:
+        sys.path.insert(0, str(PYTHON_ROOT))
+
+    existing = sys.modules.get("oemmpa")
+    if existing is not None and not _is_worktree_package(existing):
+        for module_name in list(sys.modules):
+            if module_name == "oemmpa" or module_name.startswith("oemmpa."):
+                del sys.modules[module_name]
+
+    original_meta_path = sys.meta_path[:]
+    sys.meta_path[:] = [
+        finder
+        for finder in original_meta_path
+        if type(finder).__module__ != "_oemmpa_editable"
+    ]
+    try:
+        from oemmpa import Analyzer
+    finally:
+        sys.meta_path[:] = original_meta_path
+
+    imported = sys.modules.get("oemmpa")
+    if imported is not None and not _is_worktree_package(imported):
+        raise ImportError(f"benchmark imported non-worktree oemmpa: {imported.__file__}")
+    return Analyzer
+
+
+def _is_worktree_package(module):
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        return False
+    try:
+        return Path(module_file).resolve().is_relative_to(PYTHON_ROOT.resolve())
+    except OSError:
+        return False
 
 
 def _rdkit_context_records(core, sidechains):
@@ -218,7 +256,26 @@ def _rdkit_pairs_from_contexts(fragments_by_context):
 
 
 def _canonical_components(smiles):
-    return ".".join(sorted(part for part in smiles.split(".") if part))
+    return ".".join(sorted(_canonical_smiles(part) for part in smiles.split(".") if part))
+
+
+def _molecule_pair_key(pair):
+    return tuple(sorted((pair["source_id"], pair["target_id"])))
+
+
+def _normalized_pair_key(pair):
+    return (
+        *_molecule_pair_key(pair),
+        _canonical_components(pair["context"]),
+        tuple(
+            sorted(
+                (
+                    _canonical_components(pair["source_sidechain"]),
+                    _canonical_components(pair["target_sidechain"]),
+                )
+            )
+        ),
+    )
 
 
 def _pair_key(pair):
@@ -229,6 +286,18 @@ def _pair_key(pair):
         pair["source_sidechain"],
         pair["target_sidechain"],
     )
+
+
+def _canonical_smiles(smiles):
+    try:
+        chem = importlib.import_module("rdkit.Chem")
+    except ImportError:
+        return smiles
+
+    molecule = chem.MolFromSmiles(smiles)
+    if molecule is None:
+        return smiles
+    return chem.MolToSmiles(molecule, canonical=True)
 
 
 if __name__ == "__main__":

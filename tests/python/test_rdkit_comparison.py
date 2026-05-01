@@ -1,6 +1,10 @@
 """Tests for the focused RDKit comparison benchmark."""
 
+import sys
+import types
 from pathlib import Path
+
+import pytest
 
 
 BENCHMARK_DATA = (
@@ -38,6 +42,28 @@ def test_run_oemmpa_returns_pairs_and_timing_metadata():
     assert len(result["pairs"]) == result["pair_count"]
 
 
+def test_importing_benchmark_does_not_mutate_meta_path():
+    import importlib
+
+    before = list(sys.meta_path)
+    importlib.import_module("benchmarks.rdkit_compare")
+
+    assert sys.meta_path == before
+
+
+def test_run_oemmpa_uses_worktree_package_when_stale_package_is_imported(monkeypatch):
+    stale = types.ModuleType("oemmpa")
+    stale.__file__ = "/tmp/stale/oemmpa/__init__.py"
+    monkeypatch.setitem(sys.modules, "oemmpa", stale)
+
+    from benchmarks.rdkit_compare import run_oemmpa
+
+    result = run_oemmpa(BENCHMARK_DATA)
+
+    assert result["pair_count"] > 0
+    assert sys.modules["oemmpa"].__file__.startswith(str(BENCHMARK_DATA.parents[2]))
+
+
 def test_run_rdkit_reports_unavailable_when_rdkit_import_fails(monkeypatch):
     import importlib
 
@@ -69,6 +95,24 @@ def test_compare_returns_expected_top_level_keys():
     assert set(result) == {
         "oemmpa",
         "rdkit",
+        "common_molecule_pairs",
+        "oemmpa_molecule_only",
+        "rdkit_molecule_only",
+        "common_chemistry_pairs",
         "oemmpa_only",
         "rdkit_only",
     }
+
+
+def test_compare_reports_normalized_overlap_when_rdkit_is_available():
+    try:
+        import rdkit  # noqa: F401
+    except ImportError:
+        pytest.skip("RDKit is not installed")
+
+    from benchmarks.rdkit_compare import compare
+
+    result = compare(BENCHMARK_DATA)
+
+    assert len(result["common_molecule_pairs"]) > 0
+    assert len(result["common_chemistry_pairs"]) > 0
