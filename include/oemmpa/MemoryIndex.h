@@ -7,7 +7,9 @@
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/Transform.h"
 
+#include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -24,9 +26,11 @@ public:
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
 private:
+    using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
+
     std::unordered_map<unsigned int, MoleculeRecord> molecules_;
     std::unordered_map<std::string, std::vector<Fragmentation>> context_buckets_;
-    std::unordered_map<unsigned int, std::vector<Fragmentation>> molecule_contexts_;
+    std::set<FragmentationKey> fragmentation_keys_;
 };
 
 }  // namespace OEMMPA
