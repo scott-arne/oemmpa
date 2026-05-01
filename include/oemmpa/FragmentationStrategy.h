@@ -34,6 +34,10 @@ public:
 };
 
 /// \brief Fragmentation strategy backed by one or more SMARTS queries.
+///
+/// When a SMARTS match contains both atom maps ``:1`` and ``:2``, those mapped
+/// target atoms identify the cut endpoints. Matches without both maps fall
+/// back to the first two matched target atoms.
 class SmartsFragmentationStrategy : public FragmentationStrategy {
 public:
     explicit SmartsFragmentationStrategy(const std::string& smarts);

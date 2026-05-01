@@ -20,13 +20,18 @@ OEChem::OEGraphMol MolFromSmiles(const std::string& smiles) {
     return mol;
 }
 
-void ExpectBondMatchesCut(const OEChem::OEMolBase& mol, const CutBond& cut) {
+OEChem::OEBondBase* GetBondForCut(const OEChem::OEMolBase& mol, const CutBond& cut) {
     OEChem::OEAtomBase* begin_atom = mol.GetAtom(OEChem::OEHasAtomIdx(cut.begin_atom_idx));
     OEChem::OEAtomBase* end_atom = mol.GetAtom(OEChem::OEHasAtomIdx(cut.end_atom_idx));
-    ASSERT_NE(begin_atom, nullptr);
-    ASSERT_NE(end_atom, nullptr);
+    if (begin_atom == nullptr || end_atom == nullptr) {
+        return nullptr;
+    }
 
-    OEChem::OEBondBase* bond = mol.GetBond(begin_atom, end_atom);
+    return mol.GetBond(begin_atom, end_atom);
+}
+
+void ExpectBondMatchesCut(const OEChem::OEMolBase& mol, const CutBond& cut) {
+    OEChem::OEBondBase* bond = GetBondForCut(mol, cut);
     ASSERT_NE(bond, nullptr);
     EXPECT_EQ(bond->GetIdx(), cut.bond_idx);
     EXPECT_FALSE(bond->IsInRing());
@@ -51,6 +56,17 @@ TEST(FragmentationStrategyTest, CustomSmartsFindsAmideBond) {
     ASSERT_EQ(cuts.size(), 1);
     EXPECT_LT(cuts[0].begin_atom_idx, cuts[0].end_atom_idx);
     ExpectBondMatchesCut(mol, cuts[0]);
+
+    OEChem::OEBondBase* bond = GetBondForCut(mol, cuts[0]);
+    ASSERT_NE(bond, nullptr);
+    EXPECT_EQ(bond->GetOrder(), 1);
+
+    const unsigned int begin_atomic_num = bond->GetBgn()->GetAtomicNum();
+    const unsigned int end_atomic_num = bond->GetEnd()->GetAtomicNum();
+    EXPECT_TRUE(
+        (begin_atomic_num == 6 && end_atomic_num == 7) ||
+        (begin_atomic_num == 7 && end_atomic_num == 6)
+    );
 }
 
 TEST(FragmentationStrategyTest, RDKitCompatibleFindsAcyclicSingleBond) {
@@ -81,6 +97,15 @@ TEST(FragmentationStrategyTest, DefaultPresetSkipsRingBonds) {
     EXPECT_TRUE(cuts.empty());
 }
 
+TEST(FragmentationStrategyTest, CustomSmartsSkipsMatchedRingBonds) {
+    OEChem::OEGraphMol mol = MolFromSmiles("C1CCCCC1");
+    SmartsFragmentationStrategy strategy("[C:1]-[C:2]");
+
+    std::vector<CutBond> cuts = strategy.FindCutBonds(mol);
+
+    EXPECT_TRUE(cuts.empty());
+}
+
 TEST(FragmentationStrategyTest, DuplicateSmartsDoNotDuplicateBonds) {
     OEChem::OEGraphMol mol = MolFromSmiles("CCO");
     SmartsFragmentationStrategy strategy(std::vector<std::string>{
@@ -92,6 +117,28 @@ TEST(FragmentationStrategyTest, DuplicateSmartsDoNotDuplicateBonds) {
 
     ASSERT_EQ(cuts.size(), 1);
     ExpectBondMatchesCut(mol, cuts[0]);
+}
+
+TEST(FragmentationStrategyTest, ReverseEndpointPatternsDeduplicateUnorderedAtomPair) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCO");
+    SmartsFragmentationStrategy strategy(std::vector<std::string>{
+        "[C:1]-[O:2]",
+        "[O:1]-[C:2]"
+    });
+
+    std::vector<CutBond> cuts = strategy.FindCutBonds(mol);
+
+    ASSERT_EQ(cuts.size(), 1);
+    OEChem::OEBondBase* bond = GetBondForCut(mol, cuts[0]);
+    ASSERT_NE(bond, nullptr);
+    EXPECT_EQ(bond->GetOrder(), 1);
+
+    const unsigned int begin_atomic_num = bond->GetBgn()->GetAtomicNum();
+    const unsigned int end_atomic_num = bond->GetEnd()->GetAtomicNum();
+    EXPECT_TRUE(
+        (begin_atomic_num == 6 && end_atomic_num == 8) ||
+        (begin_atomic_num == 8 && end_atomic_num == 6)
+    );
 }
 
 TEST(FragmentationStrategyTest, ClonePreservesMatchingBehavior) {
