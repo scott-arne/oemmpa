@@ -204,7 +204,25 @@ TEST(FragmenterTest, DuplicateCutBondsDoNotDuplicateFragmentations) {
 
     std::vector<Fragmentation> fragmentations = fragmenter.Fragment(19, mol);
 
-    EXPECT_EQ(fragmentations.size(), 1);
+    EXPECT_EQ(fragmentations.size(), 2);
+}
+
+TEST(FragmenterTest, SingleCutEmitsBothComponentOrientations) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCO");
+    Fragmenter fragmenter = MakeCarbonOxygenFragmenter();
+    fragmenter.SetMaxCuts(1);
+
+    const std::vector<Fragmentation> fragmentations = fragmenter.Fragment(21, mol);
+    const std::set<FragmentationRecord> records = NormalizeFragmentations(fragmentations);
+
+    ASSERT_EQ(records.size(), 2);
+    for (const Fragmentation& fragmentation : fragmentations) {
+        EXPECT_EQ(records.count({
+            fragmentation.GetSidechainSmiles(),
+            fragmentation.GetContextSmiles(),
+            fragmentation.GetCutCount()
+        }), 1);
+    }
 }
 
 TEST(FragmenterTest, SparseAtomIndicesAfterDeletingLeadingAtomMatchDenseComponent) {

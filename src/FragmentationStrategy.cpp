@@ -129,20 +129,4 @@ SmartsFragmentationStrategy SmartsFragmentationStrategy::RDKitCompatible() {
     return DefaultPreset();
 }
 
-SmartsFragmentationStrategy SmartsFragmentationStrategy::HussainRea() {
-    return DefaultPreset();
-}
-
-SmartsFragmentationStrategy SmartsFragmentationStrategy::Wirth() {
-    return DefaultPreset();
-}
-
-SmartsFragmentationStrategy SmartsFragmentationStrategy::Matsy() {
-    return DefaultPreset();
-}
-
-SmartsFragmentationStrategy SmartsFragmentationStrategy::Retrosynthetic() {
-    return DefaultPreset();
-}
-
 }  // namespace OEMMPA

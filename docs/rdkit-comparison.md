@@ -16,12 +16,12 @@ lines are skipped.
 Example output:
 
 ```text
-OEMMPA: 5 molecules, 20 pairs, 20 transforms, 0.032000s
-RDKit: 5 molecules, 11 pairs, 7 fragments, 0.900000s
+OEMMPA: 5 molecules, 22 pairs, 22 transforms, 0.071000s
+RDKit: 5 molecules, 11 pairs, 7 fragments, 0.819000s
 OEMMPA-only pairs: 0
-RDKit-only pairs: 1
+RDKit-only pairs: 0
 Common molecule pairs: 10
-Common chemistry pairs: 10
+Common chemistry pairs: 11
 ```
 
 Timings are wall-clock measurements for the local run and should be interpreted

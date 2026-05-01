@@ -61,6 +61,25 @@ TEST(AnalyzerTest, AnalyzeFindsPairsForToluenePhenol) {
     EXPECT_TRUE(std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol));
 }
 
+TEST(AnalyzerTest, AnalyzeFindsSmallSingleCutContextPairs) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("CC1CCCCC1", "methylcyclohexane");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+
+    EXPECT_TRUE(std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceExternalId() == "toluene" &&
+                pair.GetTargetExternalId() == "methylcyclohexane" &&
+                pair.GetContextSmiles() == "[*:1]C";
+        }
+    ));
+}
+
 TEST(AnalyzerTest, PropertyDeltaInjectionUsesMatchingSourceAndTargetProperties) {
     Analyzer analyzer = MakeToluenePhenolAnalyzer();
     analyzer.AddProperty("tol", "pIC50", 6.0);

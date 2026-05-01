@@ -48,14 +48,8 @@ stable surface for later C++ loaders.
 ## Fragmentation
 
 `FragmentationStrategy` is the abstract bond-selection interface.
-`SmartsFragmentationStrategy` implements SMARTS-backed selection and provides
-named presets:
-
-- `RDKitCompatible()`
-- `HussainRea()`
-- `Wirth()`
-- `Matsy()`
-- `Retrosynthetic()`
+`SmartsFragmentationStrategy` implements SMARTS-backed selection and provides an
+`RDKitCompatible()` preset.
 
 `Fragmenter` owns a strategy and generates normalized fragmentation records for
 cut counts from `min_cuts` through `max_cuts`.
@@ -67,6 +61,10 @@ OEMMPA::Fragmenter fragmenter(
 fragmenter.SetMinCuts(1);
 fragmenter.SetMaxCuts(3);
 ```
+
+Additional named chemistry strategies such as Hussain-Rea, Wirth, MATSY, and
+retrosynthetic rule sets are deferred until they can be represented with
+distinct tested behavior.
 
 ## Analysis Backend
 

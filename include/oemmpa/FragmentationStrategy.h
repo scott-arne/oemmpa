@@ -47,10 +47,6 @@ public:
     std::unique_ptr<FragmentationStrategy> Clone() const override;
 
     static SmartsFragmentationStrategy RDKitCompatible();
-    static SmartsFragmentationStrategy HussainRea();
-    static SmartsFragmentationStrategy Wirth();
-    static SmartsFragmentationStrategy Matsy();
-    static SmartsFragmentationStrategy Retrosynthetic();
 
 private:
     std::vector<std::string> smarts_;

@@ -180,22 +180,6 @@ bool ContainsAllAttachmentLabels(const ComponentRecord& component, unsigned int 
     return true;
 }
 
-size_t SelectSingleCutContext(const std::vector<ComponentRecord>& components) {
-    return static_cast<size_t>(std::distance(
-        components.begin(),
-        std::max_element(
-            components.begin(),
-            components.end(),
-            [](const ComponentRecord& lhs, const ComponentRecord& rhs) {
-                if (lhs.heavy_atom_count != rhs.heavy_atom_count) {
-                    return lhs.heavy_atom_count < rhs.heavy_atom_count;
-                }
-                return lhs.smiles > rhs.smiles;
-            }
-        )
-    ));
-}
-
 size_t SelectMultiCutContext(
     const std::vector<ComponentRecord>& components,
     unsigned int cut_count
@@ -212,6 +196,30 @@ size_t SelectMultiCutContext(
     }
 
     return components.size();
+}
+
+std::vector<size_t> SelectContextIndices(
+    const std::vector<ComponentRecord>& components,
+    unsigned int cut_count
+) {
+    std::vector<size_t> context_indices;
+
+    if (cut_count == 1) {
+        context_indices.reserve(components.size());
+        for (size_t i = 0; i < components.size(); ++i) {
+            if (ContainsAllAttachmentLabels(components[i], cut_count)) {
+                context_indices.push_back(i);
+            }
+        }
+        return context_indices;
+    }
+
+    const size_t context_index = SelectMultiCutContext(components, cut_count);
+    if (context_index < components.size()) {
+        context_indices.push_back(context_index);
+    }
+
+    return context_indices;
 }
 
 std::string JoinSidechainSmiles(
@@ -304,35 +312,33 @@ void AddFragmentationForCombination(
     }
 
     const unsigned int cut_count = static_cast<unsigned int>(combination.size());
-    const size_t context_index = cut_count == 1 ?
-        SelectSingleCutContext(components) :
-        SelectMultiCutContext(components, cut_count);
-    if (context_index >= components.size()) {
-        return;
-    }
+    for (const size_t context_index : SelectContextIndices(components, cut_count)) {
+        const std::string& context_smiles = components[context_index].smiles;
+        const std::string sidechain_smiles = JoinSidechainSmiles(
+            components,
+            context_index
+        );
+        if (context_smiles.empty() || sidechain_smiles.empty()) {
+            continue;
+        }
 
-    const std::string& context_smiles = components[context_index].smiles;
-    const std::string sidechain_smiles = JoinSidechainSmiles(components, context_index);
-    if (context_smiles.empty() || sidechain_smiles.empty()) {
-        return;
-    }
+        const auto key = std::make_tuple(
+            molecule_id,
+            context_smiles,
+            sidechain_smiles,
+            cut_count
+        );
+        if (!seen.insert(key).second) {
+            continue;
+        }
 
-    const auto key = std::make_tuple(
-        molecule_id,
-        context_smiles,
-        sidechain_smiles,
-        cut_count
-    );
-    if (!seen.insert(key).second) {
-        return;
+        fragmentations.emplace_back(
+            molecule_id,
+            context_smiles,
+            sidechain_smiles,
+            cut_count
+        );
     }
-
-    fragmentations.emplace_back(
-        molecule_id,
-        context_smiles,
-        sidechain_smiles,
-        cut_count
-    );
 }
 
 void SortFragmentations(std::vector<Fragmentation>& fragmentations) {
