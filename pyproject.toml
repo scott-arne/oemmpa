@@ -24,6 +24,9 @@ dependencies = [
     "openeye-toolkits>=2025.2",
 ]
 
+[project.scripts]
+oemmpa-cli = "oemmpa_cli.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "vrzn>=0.1.0"]
 

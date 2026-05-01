@@ -10,5 +10,8 @@ dependencies = [
     "openeye-toolkits>=2025.2",
 ]
 
+[project.scripts]
+oemmpa-cli = "oemmpa_cli.cli:main"
+
 [tool.setuptools]
-packages = ["oemmpa"]
+packages = ["oemmpa", "oemmpa_cli"]

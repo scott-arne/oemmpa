@@ -1,12 +1,16 @@
 """Parity checks derived from the MMPDB test corpus."""
 
 import csv
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "mmpdb"
+PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
 
 EXPECTED_IDS = [
     "phenol",
@@ -70,6 +74,43 @@ def _read_mmpdb_property_rows():
 def _read_mmpdb_generate_rows():
     with (DATA_DIR / "generate_pyridinol.tsv").open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle, delimiter="\t"))
+
+
+def _tsv_rows(output):
+    lines = output.rstrip("\n").splitlines()
+    header = lines[0].split("\t")
+    return [dict(zip(header, line.split("\t"))) for line in lines[1:]]
+
+
+def _run_oemmpa_cli(*args):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(PYTHON_ROOT), env.get("PYTHONPATH", "")]
+    )
+    return subprocess.run(
+        [sys.executable, "-m", "oemmpa_cli", *args],
+        check=True,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _mmpdb_reference_analyzer(property_names=("MW", "MP")):
+    from oemmpa import Analyzer
+
+    properties_by_id = _read_mmpdb_property_rows()
+    analyzer = Analyzer()
+    report = analyzer.add_molecules_from_file(DATA_DIR / "test_data.smi")
+    assert report.rejected_count == 0
+
+    for molecule_id, row in properties_by_id.items():
+        for property_name in property_names:
+            value = row[property_name]
+            if value != "*":
+                analyzer.add_property(molecule_id, property_name, float(value))
+
+    return analyzer.analyze()
 
 
 def _mmpdb_reference_transform(row, support_count=None):
@@ -210,3 +251,120 @@ def test_mmpdb_generate_min_pairs_matches_collection_generation_support_filter()
     }
 
     assert observed == expected
+
+
+def test_mmpdb_reference_mw_statistics_match_supported_transform_rows():
+    from oemmpa import compute_transform_statistics
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MW",))
+
+    statistics = compute_transform_statistics(analyzer.transforms(), "MW")
+
+    chlorine = statistics["[*:1]O>>[*:1]Cl"]
+    assert chlorine.count == 1
+    assert chlorine.avg == pytest.approx(18.5)
+    assert chlorine.std is None
+    assert chlorine.min == pytest.approx(18.5)
+    assert chlorine.q1 == pytest.approx(18.5)
+    assert chlorine.median == pytest.approx(18.5)
+    assert chlorine.q3 == pytest.approx(18.5)
+    assert chlorine.max == pytest.approx(18.5)
+
+    amine = statistics["[*:1]O>>[*:1]N"]
+    assert amine.count == 3
+    assert amine.avg == pytest.approx(-1.0)
+    assert amine.std == pytest.approx(0.0)
+    assert amine.skewness == pytest.approx(0.0)
+    assert amine.min == pytest.approx(-1.0)
+    assert amine.q1 == pytest.approx(-1.0)
+    assert amine.median == pytest.approx(-1.0)
+    assert amine.q3 == pytest.approx(-1.0)
+    assert amine.max == pytest.approx(-1.0)
+    assert amine.paired_t == pytest.approx(100000000.0)
+
+
+def test_mmpdb_reference_mp_statistics_preserve_directional_moments():
+    from oemmpa import compute_transform_statistics
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MP",))
+
+    statistics = compute_transform_statistics(analyzer.transforms(), "MP")
+    amine = statistics["[*:1]O>>[*:1]N"]
+
+    assert amine.count == 3
+    assert amine.avg == pytest.approx(-16.6666666667)
+    assert amine.std == pytest.approx(75.2351868033)
+    assert amine.kurtosis == pytest.approx(-1.5)
+    # MMPDB can report this row through a reversed stored rule and negates
+    # averages/quartiles but not shape statistics. OEMMPA recomputes from the
+    # requested directional deltas, so these signs are intentionally directional.
+    assert amine.skewness == pytest.approx(0.33764150595)
+    assert amine.min == pytest.approx(-72.0)
+    assert amine.q1 == pytest.approx(-65.75)
+    assert amine.median == pytest.approx(-47.0)
+    assert amine.q3 == pytest.approx(40.0)
+    assert amine.max == pytest.approx(69.0)
+    assert amine.paired_t == pytest.approx(-0.383696973265)
+    assert amine.p_value == pytest.approx(0.738151698615)
+
+
+def test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope():
+    from oemmpa import compute_transform_statistics
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MW",))
+
+    statistics = compute_transform_statistics(analyzer.transforms(), "MW")
+
+    # MMPDB emits an O>>H deletion transform for this fixture. OEMMPA's current
+    # observed-transform support is restricted to explicit non-hydrogen
+    # single-atom substitutions.
+    assert statistics.get("[*:1]O>>[*:1][H]") is None
+
+
+def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():
+    result = _run_oemmpa_cli(
+        "refresh-stats",
+        "--smiles",
+        str(DATA_DIR / "test_data.smi"),
+        "--properties",
+        str(DATA_DIR / "test_data.csv"),
+        "--property",
+        "MW",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    by_transform = {row["transform"]: row for row in rows}
+
+    assert by_transform["[*:1]O>>[*:1]Cl"]["count"] == "1"
+    assert by_transform["[*:1]O>>[*:1]Cl"]["avg"] == "18.5"
+    assert by_transform["[*:1]O>>[*:1]N"]["count"] == "3"
+    assert by_transform["[*:1]O>>[*:1]N"]["avg"] == "-1"
+    assert by_transform["[*:1]O>>[*:1]N"]["paired_t"] == "1e+08"
+
+
+def test_cli_predict_matches_mmpdb_predict_basic_examples():
+    mw_result = _run_oemmpa_cli(
+        "predict",
+        "--smiles",
+        str(DATA_DIR / "test_data.smi"),
+        "--properties",
+        str(DATA_DIR / "test_data.csv"),
+        "--property",
+        "MW",
+        "--transform",
+        "[*:1]Cl>>[*:1]O",
+    )
+    mp_result = _run_oemmpa_cli(
+        "predict",
+        "--smiles",
+        str(DATA_DIR / "test_data.smi"),
+        "--properties",
+        str(DATA_DIR / "test_data.csv"),
+        "--property",
+        "MP",
+        "--transform",
+        "[*:1]Cl>>[*:1]O",
+    )
+
+    assert _tsv_rows(mw_result.stdout)[0]["predicted_delta"] == "-18.5"
+    assert _tsv_rows(mp_result.stdout)[0]["predicted_delta"] == "97"

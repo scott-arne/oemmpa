@@ -438,6 +438,13 @@ from ._results import (
     TransformCollection,
     TransformResult,
 )
+from ._analytics import (
+    PredictionResult,
+    TransformStatisticsCollection,
+    TransformStatisticsResult,
+    compute_transform_statistics,
+    predict_transform_delta,
+)
 from ._storage import DuckDBStore, duckdb_available
 from ._transform import (
     apply_pair_transform,
@@ -460,14 +467,19 @@ __all__ = [
     "LoadReport",
     "PairCollection",
     "PairResult",
+    "PredictionResult",
     "RowError",
     "TransformCollection",
     "TransformResult",
+    "TransformStatisticsCollection",
+    "TransformStatisticsResult",
     "apply_pair_transform",
     "apply_transform_smirks",
     "apply_variable_transform",
     "build_variable_transform_smirks",
     "calculate_molecular_weight",
+    "compute_transform_statistics",
     "duckdb_available",
     "generate_products",
+    "predict_transform_delta",
 ]

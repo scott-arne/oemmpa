@@ -1,7 +1,8 @@
 # Quickstart
 
 This guide covers the current workflow: load molecules, add optional
-properties, run analysis, and query matched pairs or transforms.
+properties, run analysis, query matched pairs or transforms, compute transform
+statistics, and generate products.
 
 ## Single Molecules
 
@@ -176,6 +177,75 @@ The observed-transform helper currently supports single-cut, single-atom
 variables. Multi-atom and multi-cut transforms raise `ValueError` until their
 reaction semantics are implemented.
 
+## Transform Statistics And Prediction
+
+`compute_transform_statistics()` aggregates directional property deltas by
+transform. The field names follow MMPDB's statistics surface: `count`, `avg`,
+`std`, `kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`,
+`paired_t`, and `p_value`. SciPy is optional; when it is unavailable or the
+sample does not support a t-test, `p_value` is `None`.
+
+```python
+from oemmpa import compute_transform_statistics, predict_transform_delta
+
+statistics = compute_transform_statistics(
+    analyzer.transforms(),
+    "pIC50",
+    min_count=1,
+)
+
+prediction = predict_transform_delta(
+    statistics,
+    "[*:1]C>>[*:1]O",
+    aggregation="avg",
+)
+print(prediction.to_dict())
+```
+
+Pass statistics into `generate_products()` to add prediction metadata to
+generated product rows:
+
+```python
+products = generate_products(
+    "Cc1ccccc1",
+    analyzer.transforms(),
+    statistics=statistics,
+)
+print(products.to_dicts())
+```
+
+## CLI Workflows
+
+The `oemmpa-cli` package provides the first file-backed analytics surface. It
+uses the same whitespace SMILES format and CSV property format described above.
+
+```bash
+oemmpa-cli refresh-stats \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50
+```
+
+```bash
+oemmpa-cli predict \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --transform '[*:1]C>>[*:1]O'
+```
+
+```bash
+oemmpa-cli generate \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --source Cc1ccccc1 \
+  --min-support 1
+```
+
+These commands currently build an in-memory analyzer from the input files.
+Persistent DuckDB-backed statistics refresh remains a later storage slice.
+
 ## Persistent Storage
 
 DuckDB-enabled builds expose persistent storage through `DuckDBStore`:
@@ -217,6 +287,7 @@ same constant/variable result model used by the other methods. DuckDB
 persistence covers optional schema initialization, molecule/property/pair row
 storage, whitespace SMILES file loading, property CSV loading,
 analyzer-to-store persistence, stored-pair query options, and Python storage
-helpers. A separate fragment-index store, materialized transform refresh,
-multi-atom transform generation, rule-environment statistics, and production
-CLI analytics are deferred follow-on phases.
+helpers. Python transform statistics, prediction helpers, and the first CLI
+analytics workflows are available. A separate fragment-index store,
+materialized transform refresh, multi-atom transform generation, and
+rule-environment statistics are deferred follow-on phases.

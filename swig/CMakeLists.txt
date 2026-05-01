@@ -33,3 +33,18 @@ openeye_add_swig_module(
         ${OEMMPA_SWIG_EXPECTED_LIB_VARS}
     INIT_PY ${CMAKE_SOURCE_DIR}/python/oemmpa/__init__.py
 )
+
+install(FILES
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_analytics.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_facade.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_loading.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_results.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_storage.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_transform.py
+    DESTINATION oemmpa
+)
+
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/python/oemmpa_cli
+    DESTINATION .
+    FILES_MATCHING PATTERN "*.py"
+)

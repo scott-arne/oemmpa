@@ -104,6 +104,7 @@ def generate_products(
     transforms,
     min_support=1,
     skip_unsupported=True,
+    statistics=None,
 ):
     """Generate products from a collection of observed transforms.
 
@@ -116,6 +117,8 @@ def generate_products(
     :param skip_unsupported: Whether malformed or unsupported observed
         transforms should be ignored. When ``False``, those errors raise
         :class:`ValueError`.
+    :param statistics: Optional transform statistics used to attach prediction
+        metadata to generated products.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
     :raises ValueError: If the source molecule is invalid, ``min_support`` is
         negative, or unsupported transforms are not skipped.
@@ -137,8 +140,13 @@ def generate_products(
     except RuntimeError as exc:
         _transform_error_to_value_error(exc)
 
+    from ._analytics import _find_statistics
     from ._results import GeneratedProductCollection, GeneratedProductResult
 
     return GeneratedProductCollection(
-        GeneratedProductResult(product) for product in products
+        GeneratedProductResult(
+            product,
+            _find_statistics(statistics, product.GetTransformSmiles()),
+        )
+        for product in products
     )

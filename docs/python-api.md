@@ -185,6 +185,22 @@ print(products.to_dicts())
 `GeneratedProductCollection.to_dataframe()` imports pandas or polars lazily,
 matching the pair export helpers.
 
+Pass `statistics=` to attach transform-level prediction metadata to generated
+products:
+
+```python
+from oemmpa import compute_transform_statistics, generate_products
+
+statistics = compute_transform_statistics(analyzer.transforms(), "pIC50")
+products = generate_products(
+    "Cc1ccccc1",
+    analyzer.transforms(),
+    statistics=statistics,
+)
+print(products[0].predicted_delta())
+print(products[0].to_dict())
+```
+
 Invalid source molecules, invalid transform SMIRKS, malformed observed
 transforms, and unsupported observed transforms raise `ValueError` from the
 facade. During collection-level generation, unsupported observed transforms are
@@ -196,6 +212,68 @@ C++ binding also exposes `GenerationOptions`, `GeneratedProduct`,
 Observed-transform conversion currently supports single-cut, single-atom
 variables such as `C[*:1]>>O[*:1]`. Multi-atom and multi-cut transforms raise
 explicit errors until their reaction semantics are implemented.
+
+## Transform Statistics And Prediction
+
+`compute_transform_statistics()` consumes a transform collection and a property
+name, then aggregates all property-bearing pairs behind each transform.
+
+```python
+from oemmpa import compute_transform_statistics, predict_transform_delta
+
+statistics = compute_transform_statistics(
+    analyzer.transforms(),
+    "pIC50",
+    min_count=1,
+)
+
+row = statistics["[*:1]C>>[*:1]O"]
+print(row.avg, row.std, row.median)
+print(row.to_dict())
+
+prediction = predict_transform_delta(
+    statistics,
+    "[*:1]C>>[*:1]O",
+    aggregation="median",
+)
+print(prediction.to_dict())
+```
+
+The statistics result names follow MMPDB's aggregate surface: `count`, `avg`,
+`std`, `kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`,
+`paired_t`, and `p_value`. Standard deviation uses sample variance. Quartiles
+use the same method-3 convention used by MMPDB. SciPy is imported lazily and is
+only needed for `p_value`; unsupported p-values are returned as `None`.
+
+`TransformStatisticsCollection.to_dataframe()` mirrors the other export helpers
+and imports pandas or polars only when requested.
+
+## CLI
+
+The separate `oemmpa_cli` package provides the `oemmpa-cli` console script and
+also supports module execution:
+
+```bash
+python -m oemmpa_cli refresh-stats \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50
+
+python -m oemmpa_cli predict \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --transform '[*:1]C>>[*:1]O'
+
+python -m oemmpa_cli generate \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --source Cc1ccccc1
+```
+
+The current CLI commands use the in-memory analyzer. DuckDB-backed materialized
+statistics can be added later without changing the file formats.
 
 ## Dataframe Export
 
@@ -281,8 +359,8 @@ lets direct single-row failures propagate.
 ## Deferred APIs
 
 OEMMPA does not yet expose broader OEMedChem-specific workflows, a separate
-fragment-index store, materialized transform refresh, multi-atom transform
-generation, rule-environment statistics, or production CLI analytics. The
-method-selection, storage, and transform-application boundaries are in place so
+fragment-index store, DuckDB-backed materialized transform refresh, multi-atom
+transform generation, or rule-environment statistics. The method-selection,
+storage, analytics, CLI, and transform-application boundaries are in place so
 later capabilities can be added without changing the basic `Analyzer`
 loading/query workflow or the common result objects.

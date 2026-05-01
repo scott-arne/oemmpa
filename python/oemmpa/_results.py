@@ -164,10 +164,12 @@ class GeneratedProductResult:
     """Generated product result wrapper.
 
     :param raw_product: Raw ``_oemmpa.GeneratedProduct`` instance to wrap.
+    :param statistics: Optional transform statistics for prediction metadata.
     """
 
-    def __init__(self, raw_product):
+    def __init__(self, raw_product, statistics=None):
         self._raw_product = raw_product
+        self._statistics = statistics
 
     @property
     def smiles(self):
@@ -184,17 +186,45 @@ class GeneratedProductResult:
         """Number of matched pairs supporting the generating transform."""
         return self._raw_product.GetSupportCount()
 
+    @property
+    def statistics(self):
+        """Statistics attached to this generating transform, if available."""
+        return self._statistics
+
+    def predicted_delta(self, aggregation="avg"):
+        """Return a predicted property delta from attached statistics.
+
+        :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
+        :returns: Predicted delta, or ``None`` when no statistics were
+            attached.
+        :raises ValueError: If ``aggregation`` is unsupported.
+        """
+        if self._statistics is None:
+            return None
+        return self._statistics.predicted_delta(aggregation)
+
     def to_dict(self):
         """Return a serializable mapping for this generated product.
 
         :returns: Dictionary containing product SMILES, transform, and support
             count.
         """
-        return {
+        row = {
             "smiles": self.smiles,
             "transform": self.transform,
             "support_count": self.support_count,
         }
+        if self._statistics is not None:
+            row.update(
+                {
+                    "property": self._statistics.property_name,
+                    "predicted_delta": self._statistics.predicted_delta(),
+                    "count": self._statistics.count,
+                    "std": self._statistics.std,
+                    "p_value": self._statistics.p_value,
+                }
+            )
+        return row
 
 
 class GeneratedProductCollection(list):

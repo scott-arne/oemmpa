@@ -277,6 +277,8 @@ application and single-cut, single-atom observed-transform application are
 available through `TransformApplicator`. DuckDB persistence has an optional
 MMPDB-style schema, SMILES-file molecule loading, property CSV loading,
 molecule/property, pair, transform-query, query-option, analyzer-save, and
-Python storage-helper boundary, while a separate fragment-index store,
-materialized transform refresh, multi-atom transform generation,
-rule-environment statistics, and production CLI analytics are later phases.
+Python storage-helper boundary. Python-level transform statistics, prediction
+helpers, and file-backed CLI analytics are available on top of the common
+result objects, while a separate fragment-index store, materialized DuckDB
+transform refresh, multi-atom transform generation, rule-environment
+statistics, and C++ analytics APIs are later phases.

@@ -6,7 +6,8 @@ small, stable core:
 
 - In-memory matched-pair analysis from SMILES or OpenEye molecule objects.
 - Python facade APIs for ergonomic molecule loading, property loading, pair
-  queries, transform summaries, and dataframe export.
+  queries, transform summaries, transform statistics, prediction helpers, and
+  dataframe export.
 - C++ APIs for fragmentation, pairwise DMCSS analysis, native OEMedChem-backed
   analysis, in-memory indexing, query filtering, scoring, and explicit SMIRKS
   transform application.
@@ -14,6 +15,9 @@ small, stable core:
   loading, property CSV loading, molecule/property row persistence, analyzed
   pair round-tripping, stored-pair query filters, analyzer-to-store
   persistence, and Python storage helpers.
+- A small `oemmpa-cli` command surface for statistics refresh, transform
+  prediction, and statistics-annotated product generation from SMILES and
+  property files.
 - A focused RDKit comparison harness for measuring pair-surface agreement and
   runtime on shared SMILES data.
 
@@ -22,9 +26,12 @@ backend, and an initial `oemedchem` backend that converts OpenEye's native
 matched pairs into OEMMPA's common constant/variable result model. Transform
 generation applies chemically explicit unimolecular SMIRKS and can also convert
 single-cut, single-atom observed OEMMPA transforms such as `C[*:1]>>O[*:1]`
-into reaction-ready SMIRKS. Full DuckDB-backed analytics, persistent
-transform-table generation, and production CLI analytics are intentionally
-deferred and are not required for the current API.
+into reaction-ready SMIRKS. Python analytics can aggregate directional property
+deltas with MMPDB-style statistic names, use those statistics for simple
+transform predictions, and attach prediction metadata to generated products.
+Persistent transform-table refresh, rule-environment statistics, and broader
+multi-atom generation are intentionally deferred and are not required for the
+current API.
 
 ## Quick Example
 
@@ -73,6 +80,49 @@ from oemmpa import generate_products
 
 products = generate_products("Cc1ccccc1", analyzer.transforms(), min_support=2)
 print(products.to_dicts())
+```
+
+Transform statistics and prediction helpers work directly from analyzed
+transforms:
+
+```python
+from oemmpa import compute_transform_statistics, predict_transform_delta
+
+statistics = compute_transform_statistics(analyzer.transforms(), "pIC50")
+prediction = predict_transform_delta(statistics, "[*:1]C>>[*:1]O")
+print(prediction.predicted_delta)
+```
+
+The same statistics can annotate generated products:
+
+```python
+products = generate_products(
+    "Cc1ccccc1",
+    analyzer.transforms(),
+    statistics=statistics,
+)
+print(products.to_dicts())
+```
+
+The first CLI surface uses file-backed workflows:
+
+```bash
+oemmpa-cli refresh-stats \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50
+
+oemmpa-cli predict \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --transform '[*:1]C>>[*:1]O'
+
+oemmpa-cli generate \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --source Cc1ccccc1
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
@@ -141,7 +191,7 @@ pytest tests/python -q
 
 The Python suite uses the local worktree package and verifies the raw SWIG layer,
 the Python facade, loading workflows, result wrappers, transform application,
-and the RDKit comparison harness.
+analytics helpers, CLI workflows, and the RDKit comparison harness.
 
 ## CMake Options
 
@@ -252,6 +302,7 @@ include/oemmpa/      Public C++ headers.
 src/                 C++ implementation.
 swig/                SWIG interface and CMake build rules.
 python/oemmpa/       Python package, facade, loading helpers, and result wrappers.
+python/oemmpa_cli/   CLI package for file-backed analytics workflows.
 tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
 benchmarks/          RDKit comparison harness and reference data.
