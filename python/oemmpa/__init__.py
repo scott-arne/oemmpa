@@ -62,7 +62,7 @@ def _ensure_library_compat():
     (build-time) library names to the actual (runtime) library files.
     """
     try:
-        from . import _build_info
+        from . import _build_info # type: ignore
     except ImportError:
         return False
 
@@ -140,7 +140,7 @@ def _preload_shared_libs():
         return
 
     try:
-        from . import _build_info
+        from . import _build_info # type: ignore
     except ImportError:
         return
 
@@ -312,7 +312,7 @@ def _preload_extension_openeye_libs():
 def _check_openeye_version():
     """Check that the OpenEye version matches what was used at build time."""
     try:
-        from . import _build_info
+        from . import _build_info # type: ignore
     except ImportError:
         return
 
@@ -406,7 +406,7 @@ if _missing_raw_exports:
         + ", ".join(_missing_raw_exports)
     )
 
-from .oemmpa import (
+from .oemmpa import ( # type: ignore
     calculate_molecular_weight,
 )
 from ._facade import Analyzer

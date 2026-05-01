@@ -36,6 +36,26 @@ bool TransformContainsTolueneToPhenolPair(const Transform& transform) {
     return std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol);
 }
 
+bool HasUnorderedPair(
+    const std::vector<MatchedPair>& pairs,
+    const std::string& first_id,
+    const std::string& second_id
+) {
+    return std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [&first_id, &second_id](const MatchedPair& pair) {
+            return (
+                pair.GetSourceExternalId() == first_id &&
+                pair.GetTargetExternalId() == second_id
+            ) || (
+                pair.GetSourceExternalId() == second_id &&
+                pair.GetTargetExternalId() == first_id
+            );
+        }
+    );
+}
+
 const MatchedPair& FindTolueneToPhenolPair(const std::vector<Transform>& transforms) {
     const auto transform_iter = std::find_if(
         transforms.begin(),
@@ -61,7 +81,7 @@ TEST(AnalyzerTest, AnalyzeFindsPairsForToluenePhenol) {
     EXPECT_TRUE(std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol));
 }
 
-TEST(AnalyzerTest, AnalyzeFindsSmallSingleCutContextPairs) {
+TEST(AnalyzerTest, AnalyzeFindsSmallSingleCutConstantPairs) {
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "toluene");
     analyzer.AddMolecule("CC1CCCCC1", "methylcyclohexane");
@@ -75,9 +95,22 @@ TEST(AnalyzerTest, AnalyzeFindsSmallSingleCutContextPairs) {
         [](const MatchedPair& pair) {
             return pair.GetSourceExternalId() == "toluene" &&
                 pair.GetTargetExternalId() == "methylcyclohexane" &&
-                pair.GetContextSmiles() == "[*:1]C";
+                pair.GetConstantSmiles() == "[*:1]C";
         }
     ));
+}
+
+TEST(AnalyzerTest, MMPDBReferenceDoesNotPairDisconnectedTwoCutSubstituentSwaps) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Oc1ccccc1O", "catechol");
+    analyzer.AddMolecule("Nc1ccccc1N", "o-phenylenediamine");
+    analyzer.AddMolecule("Oc1ccccc1Cl", "2-chlorophenol");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+
+    EXPECT_FALSE(HasUnorderedPair(pairs, "catechol", "o-phenylenediamine"));
+    EXPECT_FALSE(HasUnorderedPair(pairs, "2-chlorophenol", "o-phenylenediamine"));
 }
 
 TEST(AnalyzerTest, PropertyDeltaInjectionUsesMatchingSourceAndTargetProperties) {

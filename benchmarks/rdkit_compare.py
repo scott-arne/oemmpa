@@ -91,23 +91,23 @@ def run_rdkit(path):
         }
 
     start = perf_counter()
-    fragments_by_context = defaultdict(list)
+    fragments_by_constant = defaultdict(list)
     fragment_count = 0
     for smiles, molecule_id in rows:
         molecule = chem.MolFromSmiles(smiles)
         if molecule is None:
             raise ValueError(f"RDKit could not parse SMILES for {molecule_id}: {smiles}")
-        for core, sidechains in rdmmpa.FragmentMol(molecule, resultsAsMols=False):
+        for core, variables in rdmmpa.FragmentMol(molecule, resultsAsMols=False):
             fragment_count += 1
-            for context, sidechain in _rdkit_context_records(core, sidechains):
-                fragments_by_context[context].append(
+            for constant, variable in _rdkit_constant_records(core, variables):
+                fragments_by_constant[constant].append(
                     {
                         "molecule_id": molecule_id,
-                        "sidechain": sidechain,
+                        "variable": variable,
                     }
                 )
 
-    pairs = _rdkit_pairs_from_contexts(fragments_by_context)
+    pairs = _rdkit_pairs_from_constants(fragments_by_constant)
     elapsed = perf_counter() - start
     return {
         "engine": "rdkit",
@@ -214,26 +214,26 @@ def _is_worktree_package(module):
         return False
 
 
-def _rdkit_context_records(core, sidechains):
+def _rdkit_constant_records(core, variables):
     if core:
-        yield core, _canonical_components(sidechains)
+        yield core, _canonical_components(variables)
         return
 
-    components = sidechains.split(".")
+    components = variables.split(".")
     if len(components) < 2:
         return
 
-    for index, context in enumerate(components):
+    for index, constant in enumerate(components):
         remaining = components[:index] + components[index + 1 :]
-        yield context, _canonical_components(".".join(remaining))
+        yield constant, _canonical_components(".".join(remaining))
 
 
-def _rdkit_pairs_from_contexts(fragments_by_context):
+def _rdkit_pairs_from_constants(fragments_by_constant):
     pair_keys = set()
     pairs = []
-    for context, fragments in fragments_by_context.items():
+    for constant, fragments in fragments_by_constant.items():
         unique_fragments = {
-            (fragment["molecule_id"], fragment["sidechain"])
+            (fragment["molecule_id"], fragment["variable"])
             for fragment in fragments
         }
         for left, right in combinations(sorted(unique_fragments), 2):
@@ -242,9 +242,9 @@ def _rdkit_pairs_from_contexts(fragments_by_context):
             pair = {
                 "source_id": left[0],
                 "target_id": right[0],
-                "context": context,
-                "source_sidechain": left[1],
-                "target_sidechain": right[1],
+                "constant": constant,
+                "source_variable": left[1],
+                "target_variable": right[1],
                 "transform": f"{left[1]}>>{right[1]}",
             }
             key = _pair_key(pair)
@@ -266,12 +266,12 @@ def _molecule_pair_key(pair):
 def _normalized_pair_key(pair):
     return (
         *_molecule_pair_key(pair),
-        _canonical_components(pair["context"]),
+        _canonical_components(pair["constant"]),
         tuple(
             sorted(
                 (
-                    _canonical_components(pair["source_sidechain"]),
-                    _canonical_components(pair["target_sidechain"]),
+                    _canonical_components(pair["source_variable"]),
+                    _canonical_components(pair["target_variable"]),
                 )
             )
         ),
@@ -282,9 +282,9 @@ def _pair_key(pair):
     return (
         pair["source_id"],
         pair["target_id"],
-        pair["context"],
-        pair["source_sidechain"],
-        pair["target_sidechain"],
+        pair["constant"],
+        pair["source_variable"],
+        pair["target_variable"],
     )
 
 

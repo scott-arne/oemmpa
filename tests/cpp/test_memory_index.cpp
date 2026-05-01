@@ -24,11 +24,16 @@ MoleculeRecord MakeMolecule(
 
 Fragmentation MakeFragmentation(
     unsigned int molecule_id,
-    const std::string& context_smiles,
-    const std::string& sidechain_smiles,
+    const std::string& constant_smiles,
+    const std::string& variable_smiles,
     unsigned int cut_count = 1
 ) {
-    return Fragmentation(molecule_id, context_smiles, sidechain_smiles, cut_count);
+    return Fragmentation(molecule_id, constant_smiles, variable_smiles, cut_count);
+}
+
+Fragmenter MakeAcyclicHeavyAtomFragmenter() {
+    SmartsFragmentationStrategy strategy("[!#1:1]-!@[!#1:2]");
+    return Fragmenter(strategy);
 }
 
 MemoryIndex MakeToluenePhenolIndex() {
@@ -52,7 +57,7 @@ bool HasTransform(const std::vector<MatchedPair>& pairs, const std::string& tran
 
 }  // namespace
 
-TEST(MemoryIndexTest, SharedContextBuildsTwoOrientedPairsByDefault) {
+TEST(MemoryIndexTest, SharedConstantBuildsTwoOrientedPairsByDefault) {
     MemoryIndex index = MakeToluenePhenolIndex();
 
     const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
@@ -62,9 +67,9 @@ TEST(MemoryIndexTest, SharedContextBuildsTwoOrientedPairsByDefault) {
     EXPECT_EQ(pairs[0].GetTargetMoleculeId(), 2);
     EXPECT_EQ(pairs[0].GetSourceExternalId(), "toluene");
     EXPECT_EQ(pairs[0].GetTargetExternalId(), "phenol");
-    EXPECT_EQ(pairs[0].GetContextSmiles(), "c1ccccc1[*:1]");
-    EXPECT_EQ(pairs[0].GetSourceSidechainSmiles(), "C[*:1]");
-    EXPECT_EQ(pairs[0].GetTargetSidechainSmiles(), "O[*:1]");
+    EXPECT_EQ(pairs[0].GetConstantSmiles(), "c1ccccc1[*:1]");
+    EXPECT_EQ(pairs[0].GetSourceVariableSmiles(), "C[*:1]");
+    EXPECT_EQ(pairs[0].GetTargetVariableSmiles(), "O[*:1]");
     EXPECT_EQ(pairs[0].GetHeavyAtomDelta(), 0);
     EXPECT_EQ(pairs[1].GetSourceMoleculeId(), 2);
     EXPECT_EQ(pairs[1].GetTargetMoleculeId(), 1);
@@ -128,7 +133,7 @@ TEST(MemoryIndexTest, AsymmetricQueryReturnsOneDeterministicOrientation) {
     EXPECT_EQ(pairs[0].GetTargetMoleculeId(), 2);
 }
 
-TEST(MemoryIndexTest, MaxHeavyAtomChangeFilterExcludesLargeSidechainDeltas) {
+TEST(MemoryIndexTest, MaxHeavyAtomChangeFilterExcludesLargeVariableDeltas) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "C", "methane"));
     index.AddMolecule(MakeMolecule(2, "CCCC", "butane"));
@@ -159,7 +164,7 @@ TEST(MemoryIndexTest, RelativeHeavyAtomFilterUsesSourceMoleculeForEachOrientatio
     EXPECT_EQ(pairs[0].GetHeavyAtomDelta(), -3);
 }
 
-TEST(MemoryIndexTest, HeavyBondDeltaUsesParsedSidechainTopology) {
+TEST(MemoryIndexTest, HeavyBondDeltaUsesParsedVariableTopology) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
     index.AddMolecule(MakeMolecule(2, "CCC", "propane"));
@@ -174,7 +179,7 @@ TEST(MemoryIndexTest, HeavyBondDeltaUsesParsedSidechainTopology) {
     EXPECT_EQ(pairs[0].GetHeavyBondDelta(), 1);
 }
 
-TEST(MemoryIndexTest, DotSeparatedMultiCutSidechainsCanPair) {
+TEST(MemoryIndexTest, DotSeparatedMultiCutVariablesCanPair) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CCO", "ethanol"));
     index.AddMolecule(MakeMolecule(2, "CCCN", "propylamine"));
@@ -217,7 +222,7 @@ TEST(MemoryIndexTest, TransformGroupingKeepsPairSupportUnderInvariantEnforcement
     }
 }
 
-TEST(MemoryIndexTest, ScoringOptionsSelectDuplicateCandidateWithinSourceTargetContextGroup) {
+TEST(MemoryIndexTest, ScoringOptionsSelectDuplicateCandidateWithinSourceTargetConstantGroup) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
     index.AddMolecule(MakeMolecule(2, "CCC", "propane"));
@@ -237,7 +242,7 @@ TEST(MemoryIndexTest, ScoringOptionsSelectDuplicateCandidateWithinSourceTargetCo
     EXPECT_EQ(pairs[0].GetSourceMoleculeId(), 1);
     EXPECT_EQ(pairs[0].GetTargetMoleculeId(), 2);
     EXPECT_EQ(pairs[0].GetCutCount(), 1);
-    EXPECT_EQ(pairs[0].GetSourceSidechainSmiles(), "C[*:1]");
+    EXPECT_EQ(pairs[0].GetSourceVariableSmiles(), "C[*:1]");
 }
 
 TEST(MemoryIndexTest, InvalidUserAddedFragmentationsThrowInvalidQueryError) {
@@ -270,7 +275,7 @@ TEST(MemoryIndexTest, InvalidUserAddedFragmentationsThrowInvalidQueryError) {
     );
 }
 
-TEST(MemoryIndexTest, MixedCutCountsInSharedContextDoNotPair) {
+TEST(MemoryIndexTest, MixedCutCountsInSharedConstantDoNotPair) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
     index.AddMolecule(MakeMolecule(2, "CCC", "propane"));
@@ -298,7 +303,7 @@ TEST(MemoryIndexTest, DuplicateFragmentationsDoNotInflatePairOrTransformSupport)
 
 TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {
     MoleculeRecord molecule = MakeMolecule(1, "CCCCCCC", "heptane");
-    Fragmenter fragmenter;
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
     fragmenter.SetMinCuts(1);
     fragmenter.SetMaxCuts(3);
     const std::vector<Fragmentation> fragmentations =
@@ -310,8 +315,8 @@ TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {
     index.AddMolecule(molecule);
     for (const Fragmentation& fragmentation : fragmentations) {
         EXPECT_NO_THROW(index.AddFragmentation(fragmentation))
-            << "context=" << fragmentation.GetContextSmiles()
-            << " sidechain=" << fragmentation.GetSidechainSmiles()
+            << "constant=" << fragmentation.GetConstantSmiles()
+            << " variable=" << fragmentation.GetVariableSmiles()
             << " cuts=" << fragmentation.GetCutCount();
     }
 }

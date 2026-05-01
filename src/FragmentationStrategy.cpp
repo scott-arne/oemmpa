@@ -11,7 +11,8 @@
 namespace OEMMPA {
 namespace {
 
-const char* kDefaultAcyclicHeavyAtomSingleBondSmarts = "[!#1:1]-!@[!#1:2]";
+const char* kMMPDBDefaultCutSmarts =
+    "[#6+0;!$(*=,#[!#6])]!@!=!#[!#0;!#1;!$([CH2]);!$([CH3][CH2])]";
 
 std::vector<OEChem::OEAtomBase*> GetMatchedCutAtoms(const OEChem::OEMatchBase& match) {
     OEChem::OEAtomBase* mapped_begin = nullptr;
@@ -55,7 +56,7 @@ std::vector<OEChem::OEAtomBase*> GetMatchedCutAtoms(const OEChem::OEMatchBase& m
 }
 
 SmartsFragmentationStrategy DefaultPreset() {
-    return SmartsFragmentationStrategy(kDefaultAcyclicHeavyAtomSingleBondSmarts);
+    return SmartsFragmentationStrategy(kMMPDBDefaultCutSmarts);
 }
 
 }  // namespace

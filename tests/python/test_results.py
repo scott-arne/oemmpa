@@ -17,13 +17,13 @@ class FakePair:
     def GetTargetExternalId(self):
         return "phenol"
 
-    def GetContextSmiles(self):
+    def GetConstantSmiles(self):
         return "c1ccccc1[*:1]"
 
-    def GetSourceSidechainSmiles(self):
+    def GetSourceVariableSmiles(self):
         return "C[*:1]"
 
-    def GetTargetSidechainSmiles(self):
+    def GetTargetVariableSmiles(self):
         return "O[*:1]"
 
     def GetTransformSmiles(self):
@@ -66,17 +66,17 @@ def test_pair_to_dict_includes_expected_keys():
 
     assert result.source_id == "tol"
     assert result.target_id == "phenol"
-    assert result.context == "c1ccccc1[*:1]"
-    assert result.source_sidechain == "C[*:1]"
-    assert result.target_sidechain == "O[*:1]"
+    assert result.constant == "c1ccccc1[*:1]"
+    assert result.source_variable == "C[*:1]"
+    assert result.target_variable == "O[*:1]"
     assert result.transform == "C[*:1]>>O[*:1]"
     assert result.property_delta("pIC50") == 1.0
     assert result.to_dict() == {
         "source_id": "tol",
         "target_id": "phenol",
-        "context": "c1ccccc1[*:1]",
-        "source_sidechain": "C[*:1]",
-        "target_sidechain": "O[*:1]",
+        "constant": "c1ccccc1[*:1]",
+        "source_variable": "C[*:1]",
+        "target_variable": "O[*:1]",
         "transform": "C[*:1]>>O[*:1]",
         "cut_count": 1,
         "heavy_atom_delta": 0,

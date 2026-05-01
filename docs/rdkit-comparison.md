@@ -36,14 +36,14 @@ The harness reports both molecule-level and chemistry-level overlap:
   fragment chemistry.
 - `oemmpa_molecule_only`: molecule ID pairs found only by OEMMPA.
 - `rdkit_molecule_only`: molecule ID pairs found only by RDKit.
-- `common_chemistry_pairs`: normalized molecule/context/sidechain keys found by
+- `common_chemistry_pairs`: normalized molecule/constant/variable keys found by
   both engines.
 - `oemmpa_only`: normalized chemistry keys found only by OEMMPA.
 - `rdkit_only`: normalized chemistry keys found only by RDKit.
 
 The chemistry keys canonicalize fragment SMILES with RDKit when RDKit is
 available, treat source/target molecule order as unordered, and sort the two
-sidechains so direction alone does not create a mismatch.
+variables so direction alone does not create a mismatch.
 
 ## Interpreting Differences
 
@@ -51,7 +51,7 @@ Differences can come from several places:
 
 - Fragmentation chemistry choices, including SMARTS coverage and cut-count
   behavior.
-- Canonicalization differences for contexts or sidechains.
+- Canonicalization differences for constants or variables.
 - Attachment-label differences.
 - Filtering or scoring differences.
 - OEMMPA defects.

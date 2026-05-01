@@ -6,10 +6,10 @@ namespace OEMMPA {
 namespace {
 
 std::string make_transform_smiles(
-    const std::string& source_sidechain_smiles,
-    const std::string& target_sidechain_smiles
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
 ) {
-    return source_sidechain_smiles + ">>" + target_sidechain_smiles;
+    return source_variable_smiles + ">>" + target_variable_smiles;
 }
 
 }  // namespace
@@ -21,9 +21,9 @@ MatchedPair::MatchedPair(
     const std::string& target_external_id,
     const std::string& source_smiles,
     const std::string& target_smiles,
-    const std::string& context_smiles,
-    const std::string& source_sidechain_smiles,
-    const std::string& target_sidechain_smiles,
+    const std::string& constant_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles,
     unsigned int cut_count,
     int heavy_atom_delta,
     int heavy_bond_delta
@@ -33,10 +33,10 @@ MatchedPair::MatchedPair(
     target_external_id_(target_external_id),
     source_smiles_(source_smiles),
     target_smiles_(target_smiles),
-    context_smiles_(context_smiles),
-    source_sidechain_smiles_(source_sidechain_smiles),
-    target_sidechain_smiles_(target_sidechain_smiles),
-    transform_smiles_(make_transform_smiles(source_sidechain_smiles, target_sidechain_smiles)),
+    constant_smiles_(constant_smiles),
+    source_variable_smiles_(source_variable_smiles),
+    target_variable_smiles_(target_variable_smiles),
+    transform_smiles_(make_transform_smiles(source_variable_smiles, target_variable_smiles)),
     cut_count_(cut_count),
     heavy_atom_delta_(heavy_atom_delta),
     heavy_bond_delta_(heavy_bond_delta) {}
@@ -65,16 +65,16 @@ const std::string& MatchedPair::GetTargetSmiles() const {
     return target_smiles_;
 }
 
-const std::string& MatchedPair::GetContextSmiles() const {
-    return context_smiles_;
+const std::string& MatchedPair::GetConstantSmiles() const {
+    return constant_smiles_;
 }
 
-const std::string& MatchedPair::GetSourceSidechainSmiles() const {
-    return source_sidechain_smiles_;
+const std::string& MatchedPair::GetSourceVariableSmiles() const {
+    return source_variable_smiles_;
 }
 
-const std::string& MatchedPair::GetTargetSidechainSmiles() const {
-    return target_sidechain_smiles_;
+const std::string& MatchedPair::GetTargetVariableSmiles() const {
+    return target_variable_smiles_;
 }
 
 const std::string& MatchedPair::GetTransformSmiles() const {

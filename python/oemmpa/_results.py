@@ -29,19 +29,19 @@ class PairResult:
         )
 
     @property
-    def context(self):
-        """Matched-pair context SMILES."""
-        return self._raw_pair.GetContextSmiles()
+    def constant(self):
+        """Matched-pair constant SMILES."""
+        return self._raw_pair.GetConstantSmiles()
 
     @property
-    def source_sidechain(self):
-        """Source sidechain SMILES."""
-        return self._raw_pair.GetSourceSidechainSmiles()
+    def source_variable(self):
+        """Source variable SMILES."""
+        return self._raw_pair.GetSourceVariableSmiles()
 
     @property
-    def target_sidechain(self):
-        """Target sidechain SMILES."""
-        return self._raw_pair.GetTargetSidechainSmiles()
+    def target_variable(self):
+        """Target variable SMILES."""
+        return self._raw_pair.GetTargetVariableSmiles()
 
     @property
     def transform(self):
@@ -65,9 +65,9 @@ class PairResult:
         return {
             "source_id": self.source_id,
             "target_id": self.target_id,
-            "context": self.context,
-            "source_sidechain": self.source_sidechain,
-            "target_sidechain": self.target_sidechain,
+            "constant": self.constant,
+            "source_variable": self.source_variable,
+            "target_variable": self.target_variable,
             "transform": self.transform,
             "cut_count": self._raw_pair.GetCutCount(),
             "heavy_atom_delta": self._raw_pair.GetHeavyAtomDelta(),

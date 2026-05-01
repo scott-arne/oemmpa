@@ -20,7 +20,7 @@ struct SmilesMetrics {
     std::set<unsigned int> attachment_labels;
 };
 
-using SidechainMetricsCache = std::map<std::string, SmilesMetrics>;
+using VariableMetricsCache = std::map<std::string, SmilesMetrics>;
 
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
     return atom != nullptr && atom->GetAtomicNum() > 1;
@@ -62,18 +62,18 @@ SmilesMetrics parse_smiles_metrics(const std::string& smiles, const std::string&
     };
 }
 
-const SmilesMetrics& get_sidechain_metrics(
-    const std::string& sidechain_smiles,
-    SidechainMetricsCache& cache
+const SmilesMetrics& get_variable_metrics(
+    const std::string& variable_smiles,
+    VariableMetricsCache& cache
 ) {
-    const auto cached = cache.find(sidechain_smiles);
+    const auto cached = cache.find(variable_smiles);
     if (cached != cache.end()) {
         return cached->second;
     }
 
     return cache.emplace(
-        sidechain_smiles,
-        parse_smiles_metrics(sidechain_smiles, "sidechain")
+        variable_smiles,
+        parse_smiles_metrics(variable_smiles, "variable")
     ).first->second;
 }
 
@@ -100,23 +100,23 @@ bool contains_all_labels(
 
 void validate_fragmentation_labels(
     const Fragmentation& fragmentation,
-    const SmilesMetrics& sidechain_metrics,
-    const SmilesMetrics& context_metrics
+    const SmilesMetrics& variable_metrics,
+    const SmilesMetrics& constant_metrics
 ) {
     const std::set<unsigned int> expected_labels =
         expected_attachment_labels(fragmentation.GetCutCount());
 
-    if (sidechain_metrics.attachment_labels != expected_labels) {
+    if (variable_metrics.attachment_labels != expected_labels) {
         throw InvalidQueryError(
-            "sidechain attachment labels must be exactly 1..cut_count: " +
-            fragmentation.GetSidechainSmiles()
+            "variable attachment labels must be exactly 1..cut_count: " +
+            fragmentation.GetVariableSmiles()
         );
     }
 
-    if (!contains_all_labels(context_metrics.attachment_labels, expected_labels)) {
+    if (!contains_all_labels(constant_metrics.attachment_labels, expected_labels)) {
         throw InvalidQueryError(
-            "context attachment labels must include 1..cut_count: " +
-            fragmentation.GetContextSmiles()
+            "constant attachment labels must include 1..cut_count: " +
+            fragmentation.GetConstantSmiles()
         );
     }
 }
@@ -125,18 +125,18 @@ void validate_fragmentation_shape(const Fragmentation& fragmentation) {
     if (fragmentation.GetCutCount() == 0) {
         throw InvalidQueryError("fragmentation cut_count must be at least 1");
     }
-    if (fragmentation.GetContextSmiles().empty()) {
-        throw InvalidQueryError("fragmentation context SMILES must not be empty");
+    if (fragmentation.GetConstantSmiles().empty()) {
+        throw InvalidQueryError("fragmentation constant SMILES must not be empty");
     }
-    if (fragmentation.GetSidechainSmiles().empty()) {
-        throw InvalidQueryError("fragmentation sidechain SMILES must not be empty");
+    if (fragmentation.GetVariableSmiles().empty()) {
+        throw InvalidQueryError("fragmentation variable SMILES must not be empty");
     }
 
-    const SmilesMetrics sidechain_metrics =
-        parse_smiles_metrics(fragmentation.GetSidechainSmiles(), "sidechain");
-    const SmilesMetrics context_metrics =
-        parse_smiles_metrics(fragmentation.GetContextSmiles(), "context");
-    validate_fragmentation_labels(fragmentation, sidechain_metrics, context_metrics);
+    const SmilesMetrics variable_metrics =
+        parse_smiles_metrics(fragmentation.GetVariableSmiles(), "variable");
+    const SmilesMetrics constant_metrics =
+        parse_smiles_metrics(fragmentation.GetConstantSmiles(), "constant");
+    validate_fragmentation_labels(fragmentation, variable_metrics, constant_metrics);
 }
 
 long long absolute_delta(int value) {
@@ -144,17 +144,17 @@ long long absolute_delta(int value) {
     return widened_value < 0 ? -widened_value : widened_value;
 }
 
-std::vector<std::string> sorted_contexts(
-    const std::unordered_map<std::string, std::vector<Fragmentation>>& context_buckets
+std::vector<std::string> sorted_constants(
+    const std::unordered_map<std::string, std::vector<Fragmentation>>& constant_buckets
 ) {
-    std::vector<std::string> contexts;
-    contexts.reserve(context_buckets.size());
-    for (const auto& entry : context_buckets) {
-        contexts.push_back(entry.first);
+    std::vector<std::string> constants;
+    constants.reserve(constant_buckets.size());
+    for (const auto& entry : constant_buckets) {
+        constants.push_back(entry.first);
     }
 
-    std::sort(contexts.begin(), contexts.end());
-    return contexts;
+    std::sort(constants.begin(), constants.end());
+    return constants;
 }
 
 std::vector<Fragmentation> sorted_fragmentations(const std::vector<Fragmentation>& fragmentations) {
@@ -165,14 +165,14 @@ std::vector<Fragmentation> sorted_fragmentations(const std::vector<Fragmentation
         [](const Fragmentation& lhs, const Fragmentation& rhs) {
             return std::make_tuple(
                 lhs.GetMoleculeId(),
-                lhs.GetSidechainSmiles(),
+                lhs.GetVariableSmiles(),
                 lhs.GetCutCount(),
-                lhs.GetContextSmiles()
+                lhs.GetConstantSmiles()
             ) < std::make_tuple(
                 rhs.GetMoleculeId(),
-                rhs.GetSidechainSmiles(),
+                rhs.GetVariableSmiles(),
                 rhs.GetCutCount(),
-                rhs.GetContextSmiles()
+                rhs.GetConstantSmiles()
             );
         }
     );
@@ -181,22 +181,22 @@ std::vector<Fragmentation> sorted_fragmentations(const std::vector<Fragmentation
 
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
     return std::make_tuple(
-        lhs.GetContextSmiles(),
+        lhs.GetConstantSmiles(),
         lhs.GetSourceMoleculeId(),
         lhs.GetTargetMoleculeId(),
         lhs.GetTransformSmiles(),
-        lhs.GetSourceSidechainSmiles(),
-        lhs.GetTargetSidechainSmiles(),
+        lhs.GetSourceVariableSmiles(),
+        lhs.GetTargetVariableSmiles(),
         lhs.GetCutCount(),
         lhs.GetHeavyAtomDelta(),
         lhs.GetHeavyBondDelta()
     ) < std::make_tuple(
-        rhs.GetContextSmiles(),
+        rhs.GetConstantSmiles(),
         rhs.GetSourceMoleculeId(),
         rhs.GetTargetMoleculeId(),
         rhs.GetTransformSmiles(),
-        rhs.GetSourceSidechainSmiles(),
-        rhs.GetTargetSidechainSmiles(),
+        rhs.GetSourceVariableSmiles(),
+        rhs.GetTargetVariableSmiles(),
         rhs.GetCutCount(),
         rhs.GetHeavyAtomDelta(),
         rhs.GetHeavyBondDelta()
@@ -231,8 +231,8 @@ bool passes_atom_delta_filters(
 bool compatible_fragmentation_topology(
     const Fragmentation& source_fragmentation,
     const Fragmentation& target_fragmentation,
-    const SmilesMetrics& source_sidechain_metrics,
-    const SmilesMetrics& target_sidechain_metrics
+    const SmilesMetrics& source_variable_metrics,
+    const SmilesMetrics& target_variable_metrics
 ) {
     if (source_fragmentation.GetCutCount() != target_fragmentation.GetCutCount()) {
         return false;
@@ -240,8 +240,8 @@ bool compatible_fragmentation_topology(
 
     const std::set<unsigned int> expected_labels =
         expected_attachment_labels(source_fragmentation.GetCutCount());
-    return source_sidechain_metrics.attachment_labels == expected_labels &&
-        target_sidechain_metrics.attachment_labels == expected_labels;
+    return source_variable_metrics.attachment_labels == expected_labels &&
+        target_variable_metrics.attachment_labels == expected_labels;
 }
 
 MatchedPair make_pair(
@@ -249,7 +249,7 @@ MatchedPair make_pair(
     const Fragmentation& target_fragmentation,
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
-    const std::string& context_smiles,
+    const std::string& constant_smiles,
     int heavy_atom_delta,
     int heavy_bond_delta
 ) {
@@ -260,9 +260,9 @@ MatchedPair make_pair(
         target_record.GetExternalId(),
         source_record.GetCanonicalSmiles(),
         target_record.GetCanonicalSmiles(),
-        context_smiles,
-        source_fragmentation.GetSidechainSmiles(),
-        target_fragmentation.GetSidechainSmiles(),
+        constant_smiles,
+        source_fragmentation.GetVariableSmiles(),
+        target_fragmentation.GetVariableSmiles(),
         source_fragmentation.GetCutCount(),
         heavy_atom_delta,
         heavy_bond_delta
@@ -277,29 +277,29 @@ void add_candidate_if_allowed(
     const Fragmentation& target_fragmentation,
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
-    const std::string& context_smiles,
+    const std::string& constant_smiles,
     const QueryOptions& options,
-    SidechainMetricsCache& metrics_cache
+    VariableMetricsCache& metrics_cache
 ) {
-    const SmilesMetrics& source_sidechain_metrics =
-        get_sidechain_metrics(source_fragmentation.GetSidechainSmiles(), metrics_cache);
-    const SmilesMetrics& target_sidechain_metrics =
-        get_sidechain_metrics(target_fragmentation.GetSidechainSmiles(), metrics_cache);
+    const SmilesMetrics& source_variable_metrics =
+        get_variable_metrics(source_fragmentation.GetVariableSmiles(), metrics_cache);
+    const SmilesMetrics& target_variable_metrics =
+        get_variable_metrics(target_fragmentation.GetVariableSmiles(), metrics_cache);
     if (!compatible_fragmentation_topology(
         source_fragmentation,
         target_fragmentation,
-        source_sidechain_metrics,
-        target_sidechain_metrics
+        source_variable_metrics,
+        target_variable_metrics
     )) {
         return;
     }
 
     const int heavy_atom_delta =
-        static_cast<int>(target_sidechain_metrics.heavy_atom_count) -
-        static_cast<int>(source_sidechain_metrics.heavy_atom_count);
+        static_cast<int>(target_variable_metrics.heavy_atom_count) -
+        static_cast<int>(source_variable_metrics.heavy_atom_count);
     const int heavy_bond_delta =
-        static_cast<int>(target_sidechain_metrics.heavy_bond_count) -
-        static_cast<int>(source_sidechain_metrics.heavy_bond_count);
+        static_cast<int>(target_variable_metrics.heavy_bond_count) -
+        static_cast<int>(source_variable_metrics.heavy_bond_count);
 
     if (!passes_atom_delta_filters(
         heavy_atom_delta,
@@ -314,13 +314,13 @@ void add_candidate_if_allowed(
         target_fragmentation,
         source_record,
         target_record,
-        context_smiles,
+        constant_smiles,
         heavy_atom_delta,
         heavy_bond_delta
     );
 
     candidates_by_group[
-        {context_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()}
+        {constant_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()}
     ].push_back(pair);
 }
 
@@ -328,7 +328,7 @@ void add_candidate_if_allowed(
 
 void MemoryIndex::Clear() {
     molecules_.clear();
-    context_buckets_.clear();
+    constant_buckets_.clear();
     fragmentation_keys_.clear();
 }
 
@@ -355,15 +355,15 @@ void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
 
     const FragmentationKey key = {
         molecule_id,
-        fragmentation.GetContextSmiles(),
-        fragmentation.GetSidechainSmiles(),
+        fragmentation.GetConstantSmiles(),
+        fragmentation.GetVariableSmiles(),
         fragmentation.GetCutCount()
     };
     if (!fragmentation_keys_.insert(key).second) {
         return;
     }
 
-    context_buckets_[fragmentation.GetContextSmiles()].push_back(fragmentation);
+    constant_buckets_[fragmentation.GetConstantSmiles()].push_back(fragmentation);
 }
 
 bool MemoryIndex::HasMolecule(unsigned int internal_id) const {
@@ -381,11 +381,11 @@ const MoleculeRecord& MemoryIndex::GetMolecule(unsigned int internal_id) const {
 
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
     std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
-    SidechainMetricsCache metrics_cache;
+    VariableMetricsCache metrics_cache;
 
-    for (const std::string& context_smiles : sorted_contexts(context_buckets_)) {
+    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
         const std::vector<Fragmentation> fragmentations =
-            sorted_fragmentations(context_buckets_.at(context_smiles));
+            sorted_fragmentations(constant_buckets_.at(constant_smiles));
 
         for (size_t source_index = 0; source_index < fragmentations.size(); ++source_index) {
             for (
@@ -399,7 +399,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 if (lhs.GetMoleculeId() == rhs.GetMoleculeId()) {
                     continue;
                 }
-                if (lhs.GetSidechainSmiles() == rhs.GetSidechainSmiles()) {
+                if (lhs.GetVariableSmiles() == rhs.GetVariableSmiles()) {
                     continue;
                 }
 
@@ -411,7 +411,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                     rhs,
                     lhs_record,
                     rhs_record,
-                    context_smiles,
+                    constant_smiles,
                     options,
                     metrics_cache
                 );
@@ -423,7 +423,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                         lhs,
                         rhs_record,
                         lhs_record,
-                        context_smiles,
+                        constant_smiles,
                         options,
                         metrics_cache
                     );

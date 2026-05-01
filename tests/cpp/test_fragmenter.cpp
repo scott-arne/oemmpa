@@ -32,12 +32,17 @@ bool ContainsAttachmentLabel(const std::string& smiles, unsigned int label) {
 }
 
 bool FragmentationHasAttachmentLabel(const Fragmentation& fragmentation, unsigned int label) {
-    return ContainsAttachmentLabel(fragmentation.GetContextSmiles(), label) &&
-        ContainsAttachmentLabel(fragmentation.GetSidechainSmiles(), label);
+    return ContainsAttachmentLabel(fragmentation.GetConstantSmiles(), label) &&
+        ContainsAttachmentLabel(fragmentation.GetVariableSmiles(), label);
 }
 
 Fragmenter MakeCarbonOxygenFragmenter() {
     SmartsFragmentationStrategy strategy("[C:1]-[O:2]");
+    return Fragmenter(strategy);
+}
+
+Fragmenter MakeAcyclicHeavyAtomFragmenter() {
+    SmartsFragmentationStrategy strategy("[!#1:1]-!@[!#1:2]");
     return Fragmenter(strategy);
 }
 
@@ -47,8 +52,8 @@ std::set<FragmentationRecord> NormalizeFragmentations(
     std::set<FragmentationRecord> records;
     for (const Fragmentation& fragmentation : fragmentations) {
         records.insert({
-            fragmentation.GetContextSmiles(),
-            fragmentation.GetSidechainSmiles(),
+            fragmentation.GetConstantSmiles(),
+            fragmentation.GetVariableSmiles(),
             fragmentation.GetCutCount()
         });
     }
@@ -65,8 +70,8 @@ bool SameFragmentationRecords(
 
     for (size_t i = 0; i < lhs.size(); ++i) {
         if (lhs[i].GetMoleculeId() != rhs[i].GetMoleculeId() ||
-            lhs[i].GetContextSmiles() != rhs[i].GetContextSmiles() ||
-            lhs[i].GetSidechainSmiles() != rhs[i].GetSidechainSmiles() ||
+            lhs[i].GetConstantSmiles() != rhs[i].GetConstantSmiles() ||
+            lhs[i].GetVariableSmiles() != rhs[i].GetVariableSmiles() ||
             lhs[i].GetCutCount() != rhs[i].GetCutCount()) {
             return false;
         }
@@ -115,6 +120,28 @@ TEST(FragmenterTest, DefaultsToOneThroughThreeCuts) {
     EXPECT_EQ(fragmenter.GetMaxCuts(), 3);
 }
 
+TEST(FragmenterTest, DefaultStrategyMatchesMMPDBAlkylChainExclusion) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter;
+
+    EXPECT_TRUE(fragmenter.Fragment(5, mol).empty());
+}
+
+TEST(FragmenterTest, DefaultStrategyMatchesMMPDBPhenolSingleCutOrientations) {
+    OEChem::OEGraphMol mol = MolFromSmiles("c1ccccc1O");
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const std::set<FragmentationRecord> records =
+        NormalizeFragmentations(fragmenter.Fragment(7, mol));
+
+    const std::set<FragmentationRecord> expected = {
+        {"[*:1]O", "[*:1]c1ccccc1", 1},
+        {"[*:1]c1ccccc1", "[*:1]O", 1},
+    };
+    EXPECT_EQ(records, expected);
+}
+
 TEST(FragmenterTest, InvalidCutBoundsThrowFragmentationError) {
     Fragmenter fragmenter;
 
@@ -146,7 +173,7 @@ TEST(FragmenterTest, EthanolFragmentsWithAttachmentLabels) {
 
 TEST(FragmenterTest, MaxCutsIsRespected) {
     OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
-    Fragmenter fragmenter;
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
     fragmenter.SetMaxCuts(1);
 
     std::vector<Fragmentation> fragmentations = fragmenter.Fragment(11, mol);
@@ -174,7 +201,7 @@ TEST(FragmenterTest, StrategyIsOwnedByClone) {
 
 TEST(FragmenterTest, TwoCutFragmentationUsesSequentialAttachmentLabels) {
     OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
-    Fragmenter fragmenter;
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
     fragmenter.SetMinCuts(2);
     fragmenter.SetMaxCuts(2);
 
@@ -185,12 +212,28 @@ TEST(FragmenterTest, TwoCutFragmentationUsesSequentialAttachmentLabels) {
         fragmentations.end(),
         [](const Fragmentation& fragmentation) {
             return fragmentation.GetCutCount() == 2 &&
-                ContainsAttachmentLabel(fragmentation.GetContextSmiles(), 1) &&
-                ContainsAttachmentLabel(fragmentation.GetContextSmiles(), 2) &&
-                ContainsAttachmentLabel(fragmentation.GetSidechainSmiles(), 1) &&
-                ContainsAttachmentLabel(fragmentation.GetSidechainSmiles(), 2);
+                ContainsAttachmentLabel(fragmentation.GetConstantSmiles(), 1) &&
+                ContainsAttachmentLabel(fragmentation.GetConstantSmiles(), 2) &&
+                ContainsAttachmentLabel(fragmentation.GetVariableSmiles(), 1) &&
+                ContainsAttachmentLabel(fragmentation.GetVariableSmiles(), 2);
         }
     ));
+}
+
+TEST(FragmenterTest, MultiCutFragmentationUsesDisconnectedPiecesAsConstant) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMinCuts(2);
+    fragmenter.SetMaxCuts(2);
+
+    const std::set<FragmentationRecord> records =
+        NormalizeFragmentations(fragmenter.Fragment(17, mol));
+
+    EXPECT_EQ(records.count({
+        "[*:1]C.[*:2]C",
+        "[*:1]CC[*:2]",
+        2
+    }), 1);
 }
 
 TEST(FragmenterTest, DuplicateCutBondsDoNotDuplicateFragmentations) {
@@ -218,8 +261,8 @@ TEST(FragmenterTest, SingleCutEmitsBothComponentOrientations) {
     ASSERT_EQ(records.size(), 2);
     for (const Fragmentation& fragmentation : fragmentations) {
         EXPECT_EQ(records.count({
-            fragmentation.GetSidechainSmiles(),
-            fragmentation.GetContextSmiles(),
+            fragmentation.GetVariableSmiles(),
+            fragmentation.GetConstantSmiles(),
             fragmentation.GetCutCount()
         }), 1);
     }

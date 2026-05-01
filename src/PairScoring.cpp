@@ -24,10 +24,10 @@ auto tie_breaker_metrics(const MatchedPair& pair) {
         pair.GetTargetExternalId(),
         pair.GetSourceSmiles(),
         pair.GetTargetSmiles(),
-        pair.GetContextSmiles(),
+        pair.GetConstantSmiles(),
         pair.GetTransformSmiles(),
-        pair.GetSourceSidechainSmiles(),
-        pair.GetTargetSidechainSmiles()
+        pair.GetSourceVariableSmiles(),
+        pair.GetTargetVariableSmiles()
     );
 }
 

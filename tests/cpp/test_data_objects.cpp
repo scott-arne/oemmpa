@@ -8,19 +8,19 @@
 namespace OEMMPA {
 namespace test {
 
-TEST(DataObjectTest, FragmentationStoresContextAndSidechain) {
+TEST(DataObjectTest, FragmentationStoresConstantAndVariable) {
     Fragmentation fragmentation(4, "c1ccccc1[*:1]", "C[*:1]", 1);
     EXPECT_EQ(fragmentation.GetMoleculeId(), 4);
-    EXPECT_EQ(fragmentation.GetContextSmiles(), "c1ccccc1[*:1]");
-    EXPECT_EQ(fragmentation.GetSidechainSmiles(), "C[*:1]");
+    EXPECT_EQ(fragmentation.GetConstantSmiles(), "c1ccccc1[*:1]");
+    EXPECT_EQ(fragmentation.GetVariableSmiles(), "C[*:1]");
     EXPECT_EQ(fragmentation.GetCutCount(), 1);
 }
 
 TEST(DataObjectTest, DefaultConstructedObjectsHaveSafeDefaults) {
     Fragmentation fragmentation;
     EXPECT_EQ(fragmentation.GetMoleculeId(), 0);
-    EXPECT_EQ(fragmentation.GetContextSmiles(), "");
-    EXPECT_EQ(fragmentation.GetSidechainSmiles(), "");
+    EXPECT_EQ(fragmentation.GetConstantSmiles(), "");
+    EXPECT_EQ(fragmentation.GetVariableSmiles(), "");
     EXPECT_EQ(fragmentation.GetCutCount(), 0);
 
     MatchedPair pair;

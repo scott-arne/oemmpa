@@ -10,20 +10,20 @@ public:
     Fragmentation() = default;
     Fragmentation(
         unsigned int molecule_id,
-        const std::string& context_smiles,
-        const std::string& sidechain_smiles,
+        const std::string& constant_smiles,
+        const std::string& variable_smiles,
         unsigned int cut_count
     );
 
     unsigned int GetMoleculeId() const;
-    const std::string& GetContextSmiles() const;
-    const std::string& GetSidechainSmiles() const;
+    const std::string& GetConstantSmiles() const;
+    const std::string& GetVariableSmiles() const;
     unsigned int GetCutCount() const;
 
 private:
     unsigned int molecule_id_ = 0;
-    std::string context_smiles_;
-    std::string sidechain_smiles_;
+    std::string constant_smiles_;
+    std::string variable_smiles_;
     unsigned int cut_count_ = 0;
 };
 

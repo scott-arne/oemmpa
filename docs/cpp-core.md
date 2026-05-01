@@ -32,12 +32,17 @@ prior analysis results until `Analyze()` succeeds again.
 `MoleculeRecord` stores the internal ID, optional external ID, canonical SMILES,
 and molecule object used by the analysis method.
 
-`Fragmentation` stores one normalized context/sidechain record for a molecule
+`Fragmentation` stores one normalized constant/variable record for a molecule
 and cut count.
 
 `MatchedPair` stores source/target molecule identifiers, source/target SMILES,
-context SMILES, sidechain SMILES, transform SMILES, cut count, heavy-atom delta,
+constant SMILES, variable SMILES, transform SMILES, cut count, heavy-atom delta,
 heavy-bond delta, and optional numeric property values.
+
+The public API follows MMPDB terminology. A constant is the shared pairing
+region, while variables are the source and target regions that change.
+`Context` is intentionally reserved for future atom-environment metadata around
+a change site.
 
 `Transform` groups matched pairs by transform SMILES and tracks support count.
 
@@ -79,9 +84,9 @@ distinct tested behavior.
 `FragmentationMethod` is the Phase 1 backend. It fragments staged molecules into
 a `MemoryIndex`, then answers pair and transform queries from that index.
 
-`MemoryIndex` stores molecule records and fragmentations in context buckets. It
+`MemoryIndex` stores molecule records and fragmentations in constant buckets. It
 deduplicates fragmentations and builds matched pairs from molecules that share a
-context but have different sidechains.
+constant but have different variables.
 
 ## Querying And Scoring
 

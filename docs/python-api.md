@@ -100,9 +100,9 @@ The result is a `PairCollection`, which is a list of `PairResult` wrappers.
 pair = pairs[0]
 print(pair.source_id)
 print(pair.target_id)
-print(pair.context)
-print(pair.source_sidechain)
-print(pair.target_sidechain)
+print(pair.constant)
+print(pair.source_variable)
+print(pair.target_variable)
 print(pair.transform)
 print(pair.property_delta("pIC50"))
 print(pair.to_dict())
@@ -110,6 +110,10 @@ print(pair.to_dict())
 
 `PairResult.to_dict()` returns identifiers, fragment strings, transform SMILES,
 cut count, and heavy-atom/heavy-bond deltas.
+
+The Python facade uses MMPDB naming: `constant` is the shared pairing region,
+and `source_variable`/`target_variable` are the changing regions. `context` is
+reserved for future atom-environment metadata around a change site.
 
 ### transforms
 

@@ -16,9 +16,9 @@ public:
         const std::string& target_external_id,
         const std::string& source_smiles,
         const std::string& target_smiles,
-        const std::string& context_smiles,
-        const std::string& source_sidechain_smiles,
-        const std::string& target_sidechain_smiles,
+        const std::string& constant_smiles,
+        const std::string& source_variable_smiles,
+        const std::string& target_variable_smiles,
         unsigned int cut_count,
         int heavy_atom_delta,
         int heavy_bond_delta
@@ -30,9 +30,9 @@ public:
     const std::string& GetTargetExternalId() const;
     const std::string& GetSourceSmiles() const;
     const std::string& GetTargetSmiles() const;
-    const std::string& GetContextSmiles() const;
-    const std::string& GetSourceSidechainSmiles() const;
-    const std::string& GetTargetSidechainSmiles() const;
+    const std::string& GetConstantSmiles() const;
+    const std::string& GetSourceVariableSmiles() const;
+    const std::string& GetTargetVariableSmiles() const;
     const std::string& GetTransformSmiles() const;
     unsigned int GetCutCount() const;
     int GetHeavyAtomDelta() const;
@@ -57,9 +57,9 @@ private:
     std::string target_external_id_;
     std::string source_smiles_;
     std::string target_smiles_;
-    std::string context_smiles_;
-    std::string source_sidechain_smiles_;
-    std::string target_sidechain_smiles_;
+    std::string constant_smiles_;
+    std::string source_variable_smiles_;
+    std::string target_variable_smiles_;
     std::string transform_smiles_;
     unsigned int cut_count_ = 0;
     int heavy_atom_delta_ = 0;

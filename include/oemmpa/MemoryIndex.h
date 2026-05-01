@@ -29,7 +29,7 @@ private:
     using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
 
     std::unordered_map<unsigned int, MoleculeRecord> molecules_;
-    std::unordered_map<std::string, std::vector<Fragmentation>> context_buckets_;
+    std::unordered_map<std::string, std::vector<Fragmentation>> constant_buckets_;
     std::set<FragmentationKey> fragmentation_keys_;
 };
 
