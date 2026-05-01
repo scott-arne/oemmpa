@@ -61,6 +61,7 @@ set(OEMMPA_SOURCES
     src/Transform.cpp
     src/QueryOptions.cpp
     src/PairScoring.cpp
+    src/MemoryIndex.cpp
 )
 
 add_library(oemmpa ${OEMMPA_SOURCES})

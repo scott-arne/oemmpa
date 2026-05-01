@@ -12,6 +12,7 @@
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
+#include "oemmpa/MemoryIndex.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/PairScoring.h"
 #include "oemmpa/QueryOptions.h"
