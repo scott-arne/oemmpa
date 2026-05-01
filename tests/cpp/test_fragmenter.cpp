@@ -7,13 +7,18 @@
 #include <oechem.h>
 
 #include <algorithm>
+#include <memory>
+#include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace OEMMPA {
 namespace test {
 
 namespace {
+
+using FragmentationRecord = std::tuple<std::string, std::string, unsigned int>;
 
 OEChem::OEGraphMol MolFromSmiles(const std::string& smiles) {
     OEChem::OEGraphMol mol;
@@ -35,6 +40,71 @@ Fragmenter MakeCarbonOxygenFragmenter() {
     SmartsFragmentationStrategy strategy("[C:1]-[O:2]");
     return Fragmenter(strategy);
 }
+
+std::set<FragmentationRecord> NormalizeFragmentations(
+    const std::vector<Fragmentation>& fragmentations
+) {
+    std::set<FragmentationRecord> records;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        records.insert({
+            fragmentation.GetContextSmiles(),
+            fragmentation.GetSidechainSmiles(),
+            fragmentation.GetCutCount()
+        });
+    }
+    return records;
+}
+
+bool SameFragmentationRecords(
+    const std::vector<Fragmentation>& lhs,
+    const std::vector<Fragmentation>& rhs
+) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i < lhs.size(); ++i) {
+        if (lhs[i].GetMoleculeId() != rhs[i].GetMoleculeId() ||
+            lhs[i].GetContextSmiles() != rhs[i].GetContextSmiles() ||
+            lhs[i].GetSidechainSmiles() != rhs[i].GetSidechainSmiles() ||
+            lhs[i].GetCutCount() != rhs[i].GetCutCount()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+class ExplicitCutOrderStrategy : public FragmentationStrategy {
+public:
+    explicit ExplicitCutOrderStrategy(bool reverse_order)
+        : reverse_order_(reverse_order) {}
+
+    std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const override {
+        std::vector<CutBond> cuts;
+        for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+            if (bond->IsInRing()) {
+                continue;
+            }
+            const unsigned int begin_idx = bond->GetBgn()->GetIdx();
+            const unsigned int end_idx = bond->GetEnd()->GetIdx();
+            const auto endpoints = std::minmax(begin_idx, end_idx);
+            cuts.push_back({endpoints.first, endpoints.second, bond->GetIdx()});
+        }
+
+        if (reverse_order_) {
+            std::reverse(cuts.begin(), cuts.end());
+        }
+        return cuts;
+    }
+
+    std::unique_ptr<FragmentationStrategy> Clone() const override {
+        return std::make_unique<ExplicitCutOrderStrategy>(*this);
+    }
+
+private:
+    bool reverse_order_ = false;
+};
 
 }  // namespace
 
@@ -114,11 +184,11 @@ TEST(FragmenterTest, TwoCutFragmentationUsesSequentialAttachmentLabels) {
         fragmentations.begin(),
         fragmentations.end(),
         [](const Fragmentation& fragmentation) {
-            const std::string combined =
-                fragmentation.GetContextSmiles() + "." + fragmentation.GetSidechainSmiles();
             return fragmentation.GetCutCount() == 2 &&
-                ContainsAttachmentLabel(combined, 1) &&
-                ContainsAttachmentLabel(combined, 2);
+                ContainsAttachmentLabel(fragmentation.GetContextSmiles(), 1) &&
+                ContainsAttachmentLabel(fragmentation.GetContextSmiles(), 2) &&
+                ContainsAttachmentLabel(fragmentation.GetSidechainSmiles(), 1) &&
+                ContainsAttachmentLabel(fragmentation.GetSidechainSmiles(), 2);
         }
     ));
 }
@@ -135,6 +205,63 @@ TEST(FragmenterTest, DuplicateCutBondsDoNotDuplicateFragmentations) {
     std::vector<Fragmentation> fragmentations = fragmenter.Fragment(19, mol);
 
     EXPECT_EQ(fragmentations.size(), 1);
+}
+
+TEST(FragmenterTest, SparseAtomIndicesAfterDeletingLeadingAtomMatchDenseComponent) {
+    OEChem::OEGraphMol dense_mol = MolFromSmiles("CCO");
+    OEChem::OEGraphMol sparse_mol = MolFromSmiles("N.CCO");
+    OEChem::OEAtomBase* nitrogen = sparse_mol.GetAtom(OEChem::OEHasAtomicNum(7));
+    ASSERT_NE(nitrogen, nullptr);
+    ASSERT_TRUE(sparse_mol.DeleteAtom(nitrogen));
+
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    std::vector<Fragmentation> dense_fragmentations = fragmenter.Fragment(23, dense_mol);
+    std::vector<Fragmentation> sparse_fragmentations = fragmenter.Fragment(23, sparse_mol);
+
+    EXPECT_EQ(
+        NormalizeFragmentations(sparse_fragmentations),
+        NormalizeFragmentations(dense_fragmentations)
+    );
+}
+
+TEST(FragmenterTest, CutOrderDoesNotChangeFragmentationRecords) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    ExplicitCutOrderStrategy forward_strategy(false);
+    ExplicitCutOrderStrategy reverse_strategy(true);
+    Fragmenter forward_fragmenter(forward_strategy);
+    Fragmenter reverse_fragmenter(reverse_strategy);
+
+    std::vector<Fragmentation> forward_fragmentations = forward_fragmenter.Fragment(29, mol);
+    std::vector<Fragmentation> reverse_fragmentations = reverse_fragmenter.Fragment(29, mol);
+
+    EXPECT_TRUE(SameFragmentationRecords(forward_fragmentations, reverse_fragmentations));
+}
+
+TEST(FragmenterTest, CopyClonesStrategyAndKeepsIndependentBounds) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCO");
+    Fragmenter original = MakeCarbonOxygenFragmenter();
+    Fragmenter copy(original);
+
+    original.SetMinCuts(2);
+    copy.SetMaxCuts(1);
+
+    EXPECT_TRUE(original.Fragment(31, mol).empty());
+
+    std::vector<Fragmentation> copy_fragmentations = copy.Fragment(31, mol);
+    ASSERT_FALSE(copy_fragmentations.empty());
+    for (const Fragmentation& fragmentation : copy_fragmentations) {
+        EXPECT_EQ(fragmentation.GetCutCount(), 1);
+        EXPECT_TRUE(FragmentationHasAttachmentLabel(fragmentation, 1));
+    }
+
+    Fragmenter assigned;
+    assigned = copy;
+    copy.SetMaxCuts(2);
+    copy.SetMinCuts(2);
+    EXPECT_FALSE(assigned.Fragment(31, mol).empty());
+    EXPECT_TRUE(copy.Fragment(31, mol).empty());
 }
 
 }  // namespace test

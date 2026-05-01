@@ -16,6 +16,10 @@ class Fragmenter {
 public:
     Fragmenter();
     explicit Fragmenter(const FragmentationStrategy& strategy);
+    Fragmenter(const Fragmenter& other);
+    Fragmenter& operator=(const Fragmenter& other);
+    Fragmenter(Fragmenter&& other) noexcept = default;
+    Fragmenter& operator=(Fragmenter&& other) noexcept = default;
 
     void SetStrategy(const FragmentationStrategy& strategy);
     void SetMinCuts(unsigned int min_cuts);
