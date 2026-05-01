@@ -57,6 +57,8 @@ set(OEMMPA_SOURCES
     src/Fragmentation.cpp
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
+    src/FragmentationMethod.cpp
+    src/Analyzer.cpp
     src/MatchedPair.cpp
     src/Transform.cpp
     src/QueryOptions.cpp

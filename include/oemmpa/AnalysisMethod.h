@@ -1,0 +1,26 @@
+#ifndef OEMMPA_ANALYSIS_METHOD_H
+#define OEMMPA_ANALYSIS_METHOD_H
+
+#include "oemmpa/MatchedPair.h"
+#include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/QueryOptions.h"
+#include "oemmpa/Transform.h"
+
+#include <vector>
+
+namespace OEMMPA {
+
+/// \brief Interface for matched-pair analysis backends.
+class AnalysisMethod {
+public:
+    virtual ~AnalysisMethod() = default;
+    virtual void Clear() = 0;
+    virtual void AddMolecule(const MoleculeRecord& record) = 0;
+    virtual void Analyze() = 0;
+    virtual std::vector<MatchedPair> GetPairs(const QueryOptions& options) const = 0;
+    virtual std::vector<Transform> GetTransforms(const QueryOptions& options) const = 0;
+};
+
+}  // namespace OEMMPA
+
+#endif  // OEMMPA_ANALYSIS_METHOD_H

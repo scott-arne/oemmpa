@@ -19,6 +19,7 @@ add_executable(oemmpa_tests
     test_fragmentation_strategy.cpp
     test_fragmenter.cpp
     test_memory_index.cpp
+    test_analyzer.cpp
 )
 
 target_link_libraries(oemmpa_tests

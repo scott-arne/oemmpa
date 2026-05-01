@@ -6,8 +6,11 @@
 #define OEMMPA_VERSION_MINOR 1
 #define OEMMPA_VERSION_PATCH 0
 
+#include "oemmpa/AnalysisMethod.h"
+#include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
+#include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/FragmentationStrategy.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/LoadReport.h"
