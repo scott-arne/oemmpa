@@ -71,5 +71,5 @@ installed.
 
 This is a focused comparison script, not a production CLI analytics layer.
 Larger benchmark suites, DuckDB-backed result storage, DMCSS-specific benchmark
-coverage, OEMedChem-specific analyses, and persistent transform-table generation
-are deferred.
+coverage, broader OEMedChem-specific analyses, and persistent transform-table
+generation are deferred.

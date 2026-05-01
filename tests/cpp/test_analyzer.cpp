@@ -187,8 +187,20 @@ TEST(AnalyzerTest, DMCSSBuildsDisconnectedConstantsForChangedLinkers) {
     EXPECT_EQ(CollectAttachmentLabels(pair_iter->GetTargetVariableSmiles()), expected_labels);
 }
 
-TEST(AnalyzerTest, FutureMethodsRaiseUnavailableMethodErrors) {
-    EXPECT_THROW(Analyzer("oemedchem"), InvalidQueryError);
+TEST(AnalyzerTest, OEMedChemMethodUsesCommonResultModel) {
+    Analyzer analyzer("oemedchem");
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+
+    ASSERT_FALSE(pairs.empty());
+    EXPECT_EQ(analyzer.GetMethodName(), "oemedchem");
+    const MatchedPair& pair = FindTolueneToPhenolPair(pairs);
+    EXPECT_EQ(pair.GetConstantSmiles(), "[*:1]c1ccccc1");
+    EXPECT_EQ(pair.GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(pair.GetTargetVariableSmiles(), "[*:1]O");
 }
 
 TEST(AnalyzerTest, UnknownMethodsRaiseUnsupportedMethodErrors) {

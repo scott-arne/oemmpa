@@ -239,7 +239,7 @@ def _preload_extension_openeye_libs():
         return
 
     pattern = (
-        rb"lib(?:oechem|oemath|oesystem|oeplatform|oezstd|zstd)"
+        rb"lib(?:oechem|oemedchem|oegraphsim|oemath|oesystem|oeplatform|oezstd|zstd)"
         rb"[A-Za-z0-9._+-]*(?:\.dylib|\.so(?:\.\d+)*)"
     )
     lib_names = {
@@ -294,6 +294,8 @@ def _preload_extension_openeye_libs():
             "liboegrid",
             "liboemath",
             "liboechem",
+            "liboegraphsim",
+            "liboemedchem",
         )
         for index, prefix in enumerate(order):
             if lib_name.startswith(prefix):

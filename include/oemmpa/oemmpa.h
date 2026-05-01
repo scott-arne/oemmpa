@@ -18,6 +18,9 @@
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MemoryIndex.h"
 #include "oemmpa/MoleculeRecord.h"
+#if OEMMPA_HAS_OEMEDCHEM
+#include "oemmpa/OEMedChemMethod.h"
+#endif
 #include "oemmpa/PairScoring.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/Transform.h"

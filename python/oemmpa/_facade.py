@@ -14,7 +14,7 @@ class Analyzer:
     """Pythonic matched-pair analyzer facade.
 
     :param method: Analysis method to use. Supported values are
-        ``"fragmentation"`` and ``"dmcss"``.
+        ``"fragmentation"``, ``"dmcss"``, and ``"oemedchem"``.
     :raises ValueError: If ``method`` is unsupported.
     """
 

@@ -4,6 +4,9 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/MoleculeRecord.h"
+#if OEMMPA_HAS_OEMEDCHEM
+#include "oemmpa/OEMedChemMethod.h"
+#endif
 
 #include <map>
 
@@ -45,7 +48,11 @@ std::unique_ptr<AnalysisMethod> make_analysis_method(const std::string& method_n
         return std::make_unique<DMCSSMethod>();
     }
     if (method_name == "oemedchem") {
+#if OEMMPA_HAS_OEMEDCHEM
+        return std::make_unique<OEMedChemMethod>();
+#else
         throw InvalidQueryError("analysis method is not available: " + method_name);
+#endif
     }
 
     throw InvalidQueryError("unsupported analysis method: " + method_name);

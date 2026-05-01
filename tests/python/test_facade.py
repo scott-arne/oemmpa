@@ -88,6 +88,28 @@ def test_dmcss_method_builds_disconnected_constants_for_changed_linkers():
     assert row["target_variable"].count("[*:") == 2
 
 
+def test_oemedchem_method_uses_common_result_model():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer(method="oemedchem")
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    rows = analyzer.analyze().pairs().to_dicts()
+    row = next(
+        row
+        for row in rows
+        if row["source_id"] == "tol" and row["target_id"] == "phenol"
+    )
+
+    assert analyzer.method == "oemedchem"
+    assert row["constant"] == "[*:1]c1ccccc1"
+    assert row["source_variable"] == "[*:1]C"
+    assert row["target_variable"] == "[*:1]O"
+    assert "method" not in row
+    assert "method_options" not in row
+
+
 def test_facade_property_delta_delegates_to_pair_wrapper():
     from oemmpa import Analyzer
 
@@ -144,13 +166,6 @@ def test_unsupported_method_raises_value_error():
 
     with pytest.raises(ValueError, match="unsupported analysis method"):
         Analyzer(method="memory")
-
-
-def test_future_methods_raise_unavailable_value_error():
-    from oemmpa import Analyzer
-
-    with pytest.raises(ValueError, match="analysis method is not available"):
-        Analyzer(method="oemedchem")
 
 
 def test_top_level_analyzer_is_facade_and_raw_analyzer_remains_available():

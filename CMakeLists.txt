@@ -49,6 +49,12 @@ endif()
 
 find_package(OpenEye REQUIRED)
 
+if(TARGET OpenEye::OEMedChem)
+    set(OEMMPA_HAS_OEMEDCHEM TRUE)
+else()
+    set(OEMMPA_HAS_OEMEDCHEM FALSE)
+endif()
+
 # Library
 set(OEMMPA_SOURCES
     src/oemmpa.cpp
@@ -67,6 +73,10 @@ set(OEMMPA_SOURCES
     src/MemoryIndex.cpp
 )
 
+if(OEMMPA_HAS_OEMEDCHEM)
+    list(APPEND OEMMPA_SOURCES src/OEMedChemMethod.cpp)
+endif()
+
 add_library(oemmpa ${OEMMPA_SOURCES})
 
 set_target_properties(oemmpa PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -81,6 +91,13 @@ target_link_libraries(oemmpa
     PUBLIC
         OpenEye::OEChem
 )
+
+if(OEMMPA_HAS_OEMEDCHEM)
+    target_compile_definitions(oemmpa PUBLIC OEMMPA_HAS_OEMEDCHEM=1)
+    target_link_libraries(oemmpa PUBLIC OpenEye::OEMedChem)
+else()
+    target_compile_definitions(oemmpa PUBLIC OEMMPA_HAS_OEMEDCHEM=0)
+endif()
 
 # Tests
 if(OEMMPA_BUILD_TESTS)

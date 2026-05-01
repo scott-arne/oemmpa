@@ -129,6 +129,13 @@ initial pairwise maximum common substructure backend:
 analyzer = Analyzer(method="dmcss")
 ```
 
-`oemedchem` is a reserved method name behind the analyzer boundary, but its
-backend is not implemented yet. DuckDB persistence, persistent transform-table
-generation, and production CLI analytics are deferred follow-on phases.
+`oemedchem` is available as an initial native OpenEye OEMedChem backend:
+
+```python
+analyzer = Analyzer(method="oemedchem")
+```
+
+The first OEMedChem slice converts native single-cut matched pairs into the
+same constant/variable result model used by the other methods. DuckDB
+persistence, persistent transform-table generation, and production CLI
+analytics are deferred follow-on phases.

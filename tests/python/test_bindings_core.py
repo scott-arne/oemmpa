@@ -127,11 +127,16 @@ def test_cpp_analyzer_binding_accepts_dmcss_method():
     assert len(analyzer.GetPairs()) > 0
 
 
-def test_cpp_analyzer_binding_reports_unavailable_future_methods():
+def test_cpp_analyzer_binding_accepts_oemedchem_method():
     _oemmpa = import_worktree_raw_bindings()
 
-    with pytest.raises(RuntimeError, match="analysis method is not available"):
-        _oemmpa.Analyzer("oemedchem")
+    analyzer = _oemmpa.Analyzer("oemedchem")
+    assert analyzer.GetMethodName() == "oemedchem"
+    analyzer.AddMolecule("Cc1ccccc1", "tol")
+    analyzer.AddMolecule("Oc1ccccc1", "phenol")
+    analyzer.Analyze()
+
+    assert len(analyzer.GetPairs()) > 0
 
 
 def test_cpp_analyzer_binding_accepts_openeye_molecules():

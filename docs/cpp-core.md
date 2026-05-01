@@ -14,7 +14,8 @@ All public types live in the `OEMMPA` namespace.
 `Analyzer` is the main user-facing C++ entry point. The default constructor
 uses the fragmentation method; `Analyzer("fragmentation")` selects it
 explicitly. `Analyzer("dmcss")` selects the initial pairwise maximum common
-substructure backend.
+substructure backend. `Analyzer("oemedchem")` selects the initial native
+OpenEye OEMedChem backend.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -30,10 +31,8 @@ std::vector<OEMMPA::MatchedPair> pairs = analyzer.GetPairs();
 Non-empty external IDs must be unique. Adding molecules or properties invalidates
 prior analysis results until `Analyze()` succeeds again.
 
-`Analyzer::GetMethodName()` returns the selected method name. `oemedchem` is a
-reserved Phase 2 method name and currently raises `InvalidQueryError` until the
-native toolkit backend is implemented. Unknown method names also raise
-`InvalidQueryError`.
+`Analyzer::GetMethodName()` returns the selected method name. Unknown method
+names raise `InvalidQueryError`.
 
 ## Data Objects
 
@@ -100,8 +99,12 @@ fragmentation backend, labels constant/variable attachment points with the same
 filters. The first slice is intentionally conservative: it emits heavy-atom
 substitutions where both variables have matching attachment counts.
 
-The method-selection layer keeps both backends behind `AnalysisMethod` so later
-OEMedChem integration can use the same pair and transform result model.
+`OEMedChemMethod` wraps OpenEye's native matched-pair analyzer and converts
+native mapped pair SMILES into the same `MatchedPair` and `Transform` objects.
+This first slice indexes single-cut changes with the native Hussain-Rea
+processor, uses Bond0 transform extraction, and keeps OEMedChem-specific
+context out of the common result model. Later slices can add method-specific
+configuration without changing normal `Analyzer` workflows.
 
 `MemoryIndex` stores molecule records and fragmentations in constant buckets. It
 deduplicates fragmentations and builds matched pairs from molecules that share a
@@ -139,7 +142,7 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 
 ## Current Scope
 
-The C++ core is intentionally in-memory at this stage. The fragmentation and
-DMCSS methods are implemented behind the analyzer method boundary. OEMedChem,
-DuckDB persistence, persistent transform-table generation, and production CLI
-analytics are later phases.
+The C++ core is intentionally in-memory at this stage. The fragmentation,
+DMCSS, and initial OEMedChem methods are implemented behind the analyzer method
+boundary. DuckDB persistence, persistent transform-table generation, and
+production CLI analytics are later phases.

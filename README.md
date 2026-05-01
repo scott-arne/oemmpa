@@ -7,17 +7,17 @@ small, stable core:
 - In-memory matched-pair analysis from SMILES or OpenEye molecule objects.
 - Python facade APIs for ergonomic molecule loading, property loading, pair
   queries, transform summaries, and dataframe export.
-- C++ APIs for fragmentation, pairwise DMCSS analysis, in-memory indexing,
-  query filtering, and scoring.
+- C++ APIs for fragmentation, pairwise DMCSS analysis, native OEMedChem-backed
+  analysis, in-memory indexing, query filtering, and scoring.
 - A focused RDKit comparison harness for measuring pair-surface agreement and
   runtime on shared SMILES data.
 
-The analyzer method boundary supports `fragmentation` and the initial `dmcss`
-backend. `oemedchem` is still reserved for a later native toolkit integration.
-Later phases will add larger-scale storage and workflow layers. DuckDB-backed
-analytics, native method integrations, persistent transform-table generation,
-and production CLI analytics are intentionally deferred and are not required for
-the current API.
+The analyzer method boundary supports `fragmentation`, the initial `dmcss`
+backend, and an initial `oemedchem` backend that converts OpenEye's native
+matched pairs into OEMMPA's common constant/variable result model. Later phases
+will add larger-scale storage and workflow layers. DuckDB-backed analytics,
+persistent transform-table generation, and production CLI analytics are
+intentionally deferred and are not required for the current API.
 
 ## Quick Example
 

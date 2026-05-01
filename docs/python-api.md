@@ -14,12 +14,9 @@ analyzer = Analyzer()
 
 The default method is `fragmentation`. `Analyzer(method="fragmentation")`
 selects it explicitly. `Analyzer(method="dmcss")` selects the initial pairwise
-maximum common substructure backend. `analyzer.method` reports the selected
-method.
-
-`oemedchem` is a reserved method name and currently raises `ValueError` with an
-unavailable-method message until that native toolkit backend is implemented.
-Unknown method names also raise `ValueError`.
+maximum common substructure backend. `Analyzer(method="oemedchem")` selects the
+initial native OpenEye OEMedChem backend. `analyzer.method` reports the
+selected method. Unknown method names raise `ValueError`.
 
 ### add_molecule
 
@@ -185,8 +182,8 @@ lets direct single-row failures propagate.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose DuckDB-backed persistence, OEMedChem-specific
-workflows, persistent transform-table generation, or production CLI analytics.
-The method-selection boundary is in place so later methods can be added without
-changing the basic `Analyzer` loading and query workflow or the common result
-objects.
+OEMMPA does not yet expose DuckDB-backed persistence, broader
+OEMedChem-specific workflows, persistent transform-table generation, or
+production CLI analytics. The method-selection boundary is in place so later
+capabilities can be added without changing the basic `Analyzer` loading and
+query workflow or the common result objects.
