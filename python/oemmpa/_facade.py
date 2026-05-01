@@ -21,6 +21,8 @@ class Analyzer:
         if method != "fragmentation":
             raise ValueError(f"unsupported analysis method: {method}")
         self._raw_analyzer = _oemmpa.Analyzer()
+        self._used_external_ids = set()
+        self._next_generated_id = 1
 
     @property
     def raw(self):
@@ -31,12 +33,15 @@ class Analyzer:
         """Add a molecule to the analyzer.
 
         :param molecule: SMILES string or supported molecule object.
-        :param id: Optional external molecule identifier.
-        :returns: Assigned molecule id from the raw analyzer.
+        :param id: Optional external molecule identifier. When omitted, a
+            stable facade identifier is generated so later property calls and
+            result rows can refer to the molecule.
+        :returns: External molecule identifier used by the facade.
         """
-        if id is None:
-            return self._raw_analyzer.AddMolecule(molecule)
-        return self._raw_analyzer.AddMolecule(molecule, id)
+        external_id = self._coerce_or_generate_id(id)
+        self._raw_analyzer.AddMolecule(molecule, external_id)
+        self._used_external_ids.add(external_id)
+        return external_id
 
     def add_property(self, molecule_id, name, value):
         """Add a numeric property for a molecule.
@@ -46,7 +51,11 @@ class Analyzer:
         :param value: Numeric property value.
         :returns: Return value from the raw analyzer.
         """
-        return self._raw_analyzer.AddProperty(molecule_id, name, value)
+        return self._raw_analyzer.AddProperty(
+            str(molecule_id),
+            str(name),
+            float(value),
+        )
 
     def analyze(self):
         """Run analysis and return this analyzer.
@@ -81,3 +90,15 @@ class Analyzer:
         return TransformCollection(
             TransformResult(transform) for transform in raw_transforms
         )
+
+    def _coerce_or_generate_id(self, id):
+        if id is not None:
+            external_id = str(id)
+            if external_id:
+                return external_id
+
+        while True:
+            external_id = f"molecule_{self._next_generated_id}"
+            self._next_generated_id += 1
+            if external_id not in self._used_external_ids:
+                return external_id

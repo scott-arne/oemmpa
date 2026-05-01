@@ -5,6 +5,12 @@ import types
 
 
 class FakePair:
+    def GetSourceMoleculeId(self):
+        return 1
+
+    def GetTargetMoleculeId(self):
+        return 2
+
     def GetSourceExternalId(self):
         return "tol"
 
@@ -35,6 +41,14 @@ class FakePair:
     def GetPropertyDelta(self, name):
         assert name == "pIC50"
         return 1.0
+
+
+class FakePairWithoutExternalIds(FakePair):
+    def GetSourceExternalId(self):
+        return ""
+
+    def GetTargetExternalId(self):
+        return ""
 
 
 class FakeTransform:
@@ -68,6 +82,17 @@ def test_pair_to_dict_includes_expected_keys():
         "heavy_atom_delta": 0,
         "heavy_bond_delta": 0,
     }
+
+
+def test_pair_result_falls_back_to_internal_ids_when_external_ids_are_blank():
+    from oemmpa import PairResult
+
+    result = PairResult(FakePairWithoutExternalIds())
+
+    assert result.source_id == 1
+    assert result.target_id == 2
+    assert result.to_dict()["source_id"] == 1
+    assert result.to_dict()["target_id"] == 2
 
 
 def test_pair_collection_to_dicts():

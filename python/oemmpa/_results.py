@@ -15,12 +15,18 @@ class PairResult:
     @property
     def source_id(self):
         """Source molecule external identifier."""
-        return self._raw_pair.GetSourceExternalId()
+        return self._id_or_internal(
+            self._raw_pair.GetSourceExternalId(),
+            self._raw_pair.GetSourceMoleculeId,
+        )
 
     @property
     def target_id(self):
         """Target molecule external identifier."""
-        return self._raw_pair.GetTargetExternalId()
+        return self._id_or_internal(
+            self._raw_pair.GetTargetExternalId(),
+            self._raw_pair.GetTargetMoleculeId,
+        )
 
     @property
     def context(self):
@@ -67,6 +73,12 @@ class PairResult:
             "heavy_atom_delta": self._raw_pair.GetHeavyAtomDelta(),
             "heavy_bond_delta": self._raw_pair.GetHeavyBondDelta(),
         }
+
+    @staticmethod
+    def _id_or_internal(external_id, internal_id_getter):
+        if external_id:
+            return external_id
+        return internal_id_getter()
 
 
 class PairCollection(list):
