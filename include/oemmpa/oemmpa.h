@@ -9,6 +9,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/FragmentationStrategy.h"
+#include "oemmpa/Fragmenter.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"

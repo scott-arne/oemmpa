@@ -17,6 +17,7 @@ add_executable(oemmpa_tests
     test_pair_scoring.cpp
     test_query_options.cpp
     test_fragmentation_strategy.cpp
+    test_fragmenter.cpp
 )
 
 target_link_libraries(oemmpa_tests

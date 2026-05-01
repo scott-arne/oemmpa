@@ -56,6 +56,7 @@ set(OEMMPA_SOURCES
     src/LoadReport.cpp
     src/Fragmentation.cpp
     src/FragmentationStrategy.cpp
+    src/Fragmenter.cpp
     src/MatchedPair.cpp
     src/Transform.cpp
     src/QueryOptions.cpp
