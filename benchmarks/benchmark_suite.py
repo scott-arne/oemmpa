@@ -1,0 +1,387 @@
+"""Phase 6 benchmark suite for OEMMPA workflows."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+import os
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
+from time import perf_counter
+
+from .rdkit_compare import compare, run_oemmpa
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = REPO_ROOT / "python"
+
+
+def rdkit_report_rows(smiles_paths, repeats=3):
+    """Return RDKit comparison benchmark rows.
+
+    :param smiles_paths: Iterable of whitespace ``SMILES id`` files.
+    :param repeats: Number of comparison runs per input file.
+    :returns: List of CSV-ready dictionaries.
+    """
+    rows = []
+    for smiles_path in smiles_paths:
+        smiles_path = Path(smiles_path)
+        results = [compare(smiles_path) for _ in range(int(repeats))]
+        result = results[-1]
+        rows.append(
+            {
+                "benchmark": "rdkit_report",
+                "dataset": smiles_path.name,
+                "molecule_count": result["oemmpa"]["molecule_count"],
+                "oemmpa_pair_count": result["oemmpa"]["pair_count"],
+                "oemmpa_transform_count": result["oemmpa"]["transform_count"],
+                "oemmpa_seconds": _mean(
+                    item["oemmpa"]["elapsed_seconds"] for item in results
+                ),
+                "rdkit_available": result["rdkit"]["available"],
+                "rdkit_pair_count": result["rdkit"]["pair_count"],
+                "rdkit_fragment_count": result["rdkit"].get("fragment_count", 0),
+                "rdkit_seconds": _mean(
+                    item["rdkit"]["elapsed_seconds"] for item in results
+                ),
+                "common_molecule_pairs": len(result["common_molecule_pairs"]),
+                "common_chemistry_pairs": len(result["common_chemistry_pairs"]),
+                "oemmpa_only": len(result["oemmpa_only"]),
+                "rdkit_only": len(result["rdkit_only"]),
+            }
+        )
+    return rows
+
+
+def thread_scaling_rows(smiles_path, workers=(1, 2, 4), repeats=3):
+    """Benchmark independent analyzer throughput across worker counts.
+
+    This measures portable concurrent analyzer jobs rather than assuming an
+    internal threading API. It is useful for identifying OpenEye/SWIG/GIL
+    behavior and future C++ parallelism regressions.
+
+    :param smiles_path: Whitespace ``SMILES id`` file.
+    :param workers: Iterable of worker counts.
+    :param repeats: Jobs per worker count multiplier.
+    :returns: List of CSV-ready dictionaries.
+    """
+    smiles_path = Path(smiles_path)
+    rows = []
+    for worker_count in workers:
+        worker_count = int(worker_count)
+        job_count = max(1, worker_count * int(repeats))
+        start = perf_counter()
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            results = list(
+                executor.map(lambda _: run_oemmpa(smiles_path), range(job_count))
+            )
+        elapsed = perf_counter() - start
+        last = results[-1]
+        rows.append(
+            {
+                "benchmark": "thread_scaling",
+                "dataset": smiles_path.name,
+                "workers": worker_count,
+                "jobs_completed": job_count,
+                "wall_seconds": elapsed,
+                "jobs_per_second": job_count / elapsed if elapsed else 0.0,
+                "molecule_count": last["molecule_count"],
+                "pair_count": last["pair_count"],
+                "transform_count": last["transform_count"],
+            }
+        )
+    return rows
+
+
+def storage_rows(smiles_path, properties_path=None, property_columns=None, repeats=3):
+    """Benchmark DuckDB storage loading and analyzer persistence.
+
+    :param smiles_path: Whitespace ``SMILES id`` file.
+    :param properties_path: Optional property CSV/TSV file.
+    :param property_columns: Optional iterable of numeric property columns to load.
+    :param repeats: Number of runs.
+    :returns: List with one CSV-ready dictionary.
+    """
+    smiles_path = Path(smiles_path)
+    properties_path = Path(properties_path) if properties_path else None
+    property_columns = list(property_columns or [])
+
+    from oemmpa import DuckDBStore, duckdb_available
+
+    if not duckdb_available():
+        return [
+            {
+                "benchmark": "storage",
+                "dataset": smiles_path.name,
+                "duckdb_available": False,
+                "total_seconds": 0.0,
+            }
+        ]
+
+    timings = []
+    final_counts = {}
+    for _ in range(int(repeats)):
+        with TemporaryDirectory(prefix="oemmpa-storage-bench-") as tmp_dir:
+            db_path = Path(tmp_dir) / "analysis.duckdb"
+            store = DuckDBStore(db_path)
+            start = perf_counter()
+            molecule_report = store.load_molecules_from_file(smiles_path)
+            property_report = None
+            if properties_path is not None:
+                property_report = store.load_properties_from_csv(
+                    properties_path,
+                    property_columns=property_columns or None,
+                )
+            elapsed = perf_counter() - start
+            timings.append(elapsed)
+            final_counts = {
+                "molecule_count": molecule_report.accepted_count,
+                "compound_rows": store.row_count("compound"),
+                "property_rows": (
+                    store.row_count("compound_property")
+                    if properties_path is not None
+                    else 0
+                ),
+                "property_accepted_count": (
+                    property_report.accepted_count
+                    if property_report is not None
+                    else 0
+                ),
+                "property_rejected_count": (
+                    property_report.rejected_count
+                    if property_report is not None
+                    else 0
+                ),
+            }
+
+    return [
+        {
+            "benchmark": "storage",
+            "dataset": smiles_path.name,
+            "duckdb_available": True,
+            "total_seconds": _mean(timings),
+            **final_counts,
+        }
+    ]
+
+
+def cli_workflow_rows(
+    smiles_path,
+    properties_path,
+    property_name,
+    source_smiles,
+    transform="[*:1]C>>[*:1]O",
+    repeats=3,
+):
+    """Benchmark Phase 5 CLI analytics workflows.
+
+    :param smiles_path: Whitespace ``SMILES id`` file.
+    :param properties_path: Property CSV/TSV file.
+    :param property_name: Property column to use.
+    :param source_smiles: Source SMILES for generation.
+    :param transform: Transform SMILES for prediction.
+    :param repeats: Number of runs per command.
+    :returns: List of CSV-ready dictionaries.
+    """
+    commands = [
+        (
+            "refresh-stats",
+            [
+                "refresh-stats",
+                "--smiles",
+                str(smiles_path),
+                "--properties",
+                str(properties_path),
+                "--property",
+                property_name,
+            ],
+        ),
+        (
+            "predict",
+            [
+                "predict",
+                "--smiles",
+                str(smiles_path),
+                "--properties",
+                str(properties_path),
+                "--property",
+                property_name,
+                "--transform",
+                transform,
+            ],
+        ),
+        (
+            "generate",
+            [
+                "generate",
+                "--smiles",
+                str(smiles_path),
+                "--properties",
+                str(properties_path),
+                "--property",
+                property_name,
+                "--source",
+                source_smiles,
+            ],
+        ),
+    ]
+
+    rows = []
+    for command_name, command_args in commands:
+        results = [_run_cli(command_args) for _ in range(int(repeats))]
+        last = results[-1]
+        rows.append(
+            {
+                "benchmark": "cli_workflow",
+                "command": command_name,
+                "dataset": Path(smiles_path).name,
+                "returncode": last.returncode,
+                "seconds": _mean(item.elapsed_seconds for item in results),
+                "stdout_lines": len(last.stdout.rstrip("\n").splitlines()),
+                "stderr": last.stderr.strip(),
+            }
+        )
+    return rows
+
+
+def write_csv(rows, output_path=None):
+    """Write benchmark rows as CSV."""
+    rows = list(rows)
+    if not rows:
+        return
+    columns = sorted({column for row in rows for column in row})
+    context = (
+        open(output_path, "w", newline="", encoding="utf-8")
+        if output_path
+        else nullcontext(sys.stdout)
+    )
+    with context as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def main(argv=None):
+    """Run benchmark suite commands."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="Optional CSV output path.")
+    parser.add_argument("--repeats", type=int, default=3)
+    command_options = argparse.ArgumentParser(add_help=False)
+    command_options.add_argument(
+        "--output",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Optional CSV output path.",
+    )
+    command_options.add_argument(
+        "--repeats",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="Number of repeated runs.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    rdkit_parser = subparsers.add_parser(
+        "rdkit-report",
+        parents=[command_options],
+    )
+    rdkit_parser.add_argument("smiles", nargs="+", type=Path)
+
+    thread_parser = subparsers.add_parser(
+        "thread-scaling",
+        parents=[command_options],
+    )
+    thread_parser.add_argument("smiles", type=Path)
+    thread_parser.add_argument("--workers", default="1,2,4")
+
+    storage_parser = subparsers.add_parser("storage", parents=[command_options])
+    storage_parser.add_argument("smiles", type=Path)
+    storage_parser.add_argument("--properties", type=Path)
+    storage_parser.add_argument(
+        "--property-columns",
+        help="Comma-separated numeric property columns to load from --properties.",
+    )
+
+    cli_parser = subparsers.add_parser(
+        "cli-workflow",
+        parents=[command_options],
+    )
+    cli_parser.add_argument("smiles", type=Path)
+    cli_parser.add_argument("--properties", type=Path, required=True)
+    cli_parser.add_argument("--property", required=True)
+    cli_parser.add_argument("--source", required=True)
+    cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
+
+    args = parser.parse_args(argv)
+    if args.command == "rdkit-report":
+        rows = rdkit_report_rows(args.smiles, repeats=args.repeats)
+    elif args.command == "thread-scaling":
+        rows = thread_scaling_rows(
+            args.smiles,
+            workers=[int(value) for value in args.workers.split(",") if value],
+            repeats=args.repeats,
+        )
+    elif args.command == "storage":
+        rows = storage_rows(
+            args.smiles,
+            properties_path=args.properties,
+            property_columns=_split_csv_option(args.property_columns),
+            repeats=args.repeats,
+        )
+    else:
+        rows = cli_workflow_rows(
+            args.smiles,
+            args.properties,
+            property_name=args.property,
+            source_smiles=args.source,
+            transform=args.transform,
+            repeats=args.repeats,
+        )
+
+    write_csv(rows, args.output)
+    return 0
+
+
+class _CliResult:
+    def __init__(self, completed, elapsed_seconds):
+        self.returncode = completed.returncode
+        self.stdout = completed.stdout
+        self.stderr = completed.stderr
+        self.elapsed_seconds = elapsed_seconds
+
+
+def _run_cli(command_args):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(PYTHON_ROOT), env.get("PYTHONPATH", "")]
+    )
+    start = perf_counter()
+    completed = subprocess.run(
+        [sys.executable, "-m", "oemmpa_cli", *command_args],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    elapsed = perf_counter() - start
+    return _CliResult(completed, elapsed)
+
+
+def _mean(values):
+    values = list(values)
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def _split_csv_option(value):
+    if not value:
+        return None
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,109 @@
+"""Tests for Phase 6 benchmark suite helpers."""
+
+import csv
+from pathlib import Path
+
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+
+def test_rdkit_report_rows_include_pair_overlap_metrics():
+    from benchmarks.benchmark_suite import rdkit_report_rows
+
+    rows = rdkit_report_rows([DATA_DIR / "mmpa_smiles.smi"], repeats=1)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["benchmark"] == "rdkit_report"
+    assert row["dataset"] == "mmpa_smiles.smi"
+    assert row["molecule_count"] == 3
+    assert row["oemmpa_pair_count"] >= 1
+    assert "common_molecule_pairs" in row
+    assert "oemmpa_seconds" in row
+    assert "rdkit_seconds" in row
+
+
+def test_thread_scaling_rows_measure_independent_analyzer_jobs():
+    from benchmarks.benchmark_suite import thread_scaling_rows
+
+    rows = thread_scaling_rows(
+        DATA_DIR / "mmpa_smiles.smi",
+        workers=[1, 2],
+        repeats=1,
+    )
+
+    assert [row["workers"] for row in rows] == [1, 2]
+    assert all(row["benchmark"] == "thread_scaling" for row in rows)
+    assert all(row["jobs_completed"] >= 1 for row in rows)
+    assert all("jobs_per_second" in row for row in rows)
+
+
+def test_storage_benchmark_reports_duckdb_availability():
+    from benchmarks.benchmark_suite import storage_rows
+    from oemmpa import duckdb_available
+
+    rows = storage_rows(
+        DATA_DIR / "mmpa_smiles.smi",
+        DATA_DIR / "mmpa_properties.csv",
+        property_columns=["pIC50", "logD"],
+        repeats=1,
+    )
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["benchmark"] == "storage"
+    assert row["dataset"] == "mmpa_smiles.smi"
+    assert "duckdb_available" in row
+    assert "total_seconds" in row
+    if duckdb_available():
+        assert row["property_rows"] == 6
+        assert row["property_accepted_count"] == 3
+        assert row["property_rejected_count"] == 0
+
+
+def test_cli_workflow_benchmark_runs_phase5_commands():
+    from benchmarks.benchmark_suite import cli_workflow_rows
+
+    rows = cli_workflow_rows(
+        DATA_DIR / "mmpa_smiles.smi",
+        DATA_DIR / "mmpa_properties.csv",
+        property_name="pIC50",
+        source_smiles="Cc1ccccc1",
+        repeats=1,
+    )
+
+    assert [row["command"] for row in rows] == [
+        "refresh-stats",
+        "predict",
+        "generate",
+    ]
+    assert all(row["benchmark"] == "cli_workflow" for row in rows)
+    assert all(row["returncode"] == 0 for row in rows)
+    assert all(row["stdout_lines"] >= 1 for row in rows)
+
+
+def test_benchmark_cli_accepts_subcommand_options(tmp_path):
+    from benchmarks.benchmark_suite import main
+    from oemmpa import duckdb_available
+
+    output_path = tmp_path / "storage.csv"
+    result = main(
+        [
+            "storage",
+            str(DATA_DIR / "mmpa_smiles.smi"),
+            "--properties",
+            str(DATA_DIR / "mmpa_properties.csv"),
+            "--property-columns",
+            "pIC50,logD",
+            "--repeats",
+            "1",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert result == 0
+    rows = list(csv.DictReader(output_path.open(newline="", encoding="utf-8")))
+    assert len(rows) == 1
+    if duckdb_available():
+        assert rows[0]["property_rows"] == "6"

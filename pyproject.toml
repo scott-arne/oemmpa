@@ -29,6 +29,14 @@ oemmpa-cli = "oemmpa_cli.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "vrzn>=0.1.0"]
+docs = [
+    "breathe>=4.35",
+    "exhale>=0.3",
+    "invoke>=2.0",
+    "myst-parser>=2.0",
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

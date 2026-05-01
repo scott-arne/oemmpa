@@ -193,6 +193,12 @@ The Python suite uses the local worktree package and verifies the raw SWIG layer
 the Python facade, loading workflows, result wrappers, transform application,
 analytics helpers, CLI workflows, and the RDKit comparison harness.
 
+Documentation checks:
+
+```bash
+python -m invoke docs-check
+```
+
 ## CMake Options
 
 | Option | Default | Description |
@@ -295,6 +301,17 @@ The comparison harness runs OEMMPA and RDKit on the same whitespace-delimited
 See [docs/rdkit-comparison.md](docs/rdkit-comparison.md) for result categories
 and expected edge-case interpretation.
 
+The Phase 6 benchmark suite writes CSV rows for RDKit comparison reports,
+parallel analyzer throughput, DuckDB storage loading, and CLI workflows:
+
+```bash
+/Users/johnss51/Applications/miniforge3/envs/main/bin/python \
+  -m benchmarks.benchmark_suite rdkit-report benchmarks/data/rdkit_reference.smi
+```
+
+See [docs/benchmarks.md](docs/benchmarks.md) for the full benchmark command
+surface.
+
 ## Project Layout
 
 ```text
@@ -307,6 +324,7 @@ tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
 benchmarks/          RDKit comparison harness and reference data.
 docs/                Focused user and developer documentation.
+tasks.py             Invoke tasks for strict documentation builds.
 scripts/             Wheel build helper.
 ```
 
