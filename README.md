@@ -11,10 +11,12 @@ small, stable core:
 - A focused RDKit comparison harness for measuring pair-surface agreement and
   runtime on shared SMILES data.
 
-Later phases will add larger-scale storage and workflow layers. DuckDB-backed
-analytics, DMCSS, OEMedChem integrations, persistent transform-table generation,
+The analyzer method boundary is in place for later DMCSS and OEMedChem
+backends, but `fragmentation` is the only implemented method today. Later
+phases will add larger-scale storage and workflow layers. DuckDB-backed
+analytics, native method integrations, persistent transform-table generation,
 and production CLI analytics are intentionally deferred and are not required for
-the Phase 1 API.
+the current API.
 
 ## Quick Example
 

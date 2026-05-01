@@ -19,11 +19,19 @@ class Analyzer:
     """
 
     def __init__(self, method="fragmentation"):
-        if method != "fragmentation":
-            raise ValueError(f"unsupported analysis method: {method}")
-        self._raw_analyzer = _oemmpa.Analyzer()
+        try:
+            self._raw_analyzer = _oemmpa.Analyzer(str(method))
+        except RuntimeError as exc:
+            if "analysis method" in str(exc):
+                raise ValueError(str(exc)) from exc
+            raise
         self._used_external_ids = set()
         self._next_generated_id = 1
+
+    @property
+    def method(self):
+        """Selected analysis method name."""
+        return self._raw_analyzer.GetMethodName()
 
     @property
     def raw(self):

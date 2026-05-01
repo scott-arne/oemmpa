@@ -14,6 +14,7 @@ def test_facade_adds_smiles_and_returns_pairs():
     from oemmpa import Analyzer, PairCollection, PairResult
 
     analyzer = Analyzer()
+    assert analyzer.method == "fragmentation"
     assert analyzer.add_molecule("Cc1ccccc1", id="tol") == "tol"
     assert analyzer.add_molecule("Oc1ccccc1", id="phenol") == "phenol"
 
@@ -25,6 +26,24 @@ def test_facade_adds_smiles_and_returns_pairs():
     assert pairs
     assert all(isinstance(pair, PairResult) for pair in pairs)
     assert _pair_between(pairs, "tol", "phenol").transform
+
+
+def test_explicit_fragmentation_method_uses_common_result_model():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer(method="fragmentation")
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    pair = analyzer.analyze().pairs()[0]
+    row = pair.to_dict()
+
+    assert analyzer.method == "fragmentation"
+    assert "constant" in row
+    assert "source_variable" in row
+    assert "target_variable" in row
+    assert "method" not in row
+    assert "method_options" not in row
 
 
 def test_facade_property_delta_delegates_to_pair_wrapper():
@@ -83,6 +102,16 @@ def test_unsupported_method_raises_value_error():
 
     with pytest.raises(ValueError, match="unsupported analysis method"):
         Analyzer(method="memory")
+
+
+def test_future_methods_raise_unavailable_value_error():
+    from oemmpa import Analyzer
+
+    with pytest.raises(ValueError, match="analysis method is not available"):
+        Analyzer(method="dmcss")
+
+    with pytest.raises(ValueError, match="analysis method is not available"):
+        Analyzer(method="oemedchem")
 
 
 def test_top_level_analyzer_is_facade_and_raw_analyzer_remains_available():

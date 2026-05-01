@@ -81,6 +81,38 @@ TEST(AnalyzerTest, AnalyzeFindsPairsForToluenePhenol) {
     EXPECT_TRUE(std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol));
 }
 
+TEST(AnalyzerTest, DefaultMethodIsFragmentation) {
+    Analyzer analyzer;
+
+    EXPECT_EQ(analyzer.GetMethodName(), "fragmentation");
+}
+
+TEST(AnalyzerTest, ExplicitFragmentationMethodUsesCommonResultModel) {
+    Analyzer analyzer("fragmentation");
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+
+    ASSERT_FALSE(pairs.empty());
+    EXPECT_EQ(analyzer.GetMethodName(), "fragmentation");
+    EXPECT_TRUE(std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol));
+    EXPECT_FALSE(pairs[0].GetConstantSmiles().empty());
+    EXPECT_FALSE(pairs[0].GetSourceVariableSmiles().empty());
+    EXPECT_FALSE(pairs[0].GetTargetVariableSmiles().empty());
+}
+
+TEST(AnalyzerTest, FutureMethodsRaiseUnavailableMethodErrors) {
+    EXPECT_THROW(Analyzer("dmcss"), InvalidQueryError);
+    EXPECT_THROW(Analyzer("oemedchem"), InvalidQueryError);
+}
+
+TEST(AnalyzerTest, UnknownMethodsRaiseUnsupportedMethodErrors) {
+    EXPECT_THROW(Analyzer("memory"), InvalidQueryError);
+    EXPECT_THROW(Analyzer(""), InvalidQueryError);
+}
+
 TEST(AnalyzerTest, AnalyzeFindsSmallSingleCutConstantPairs) {
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "toluene");

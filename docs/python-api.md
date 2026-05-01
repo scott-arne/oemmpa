@@ -12,8 +12,11 @@ from oemmpa import Analyzer
 analyzer = Analyzer()
 ```
 
-Only `Analyzer(method="fragmentation")` is supported in Phase 1. Unsupported
-methods raise `ValueError`.
+The default method is `fragmentation`. `Analyzer(method="fragmentation")`
+selects it explicitly, and `analyzer.method` reports the selected method.
+`dmcss` and `oemedchem` are reserved method names, but currently raise
+`ValueError` with an unavailable-method message until those backends are
+implemented. Unknown method names also raise `ValueError`.
 
 ### add_molecule
 
@@ -179,7 +182,8 @@ lets direct single-row failures propagate.
 
 ## Deferred APIs
 
-Phase 1 intentionally does not expose DuckDB-backed persistence, DMCSS,
+OEMMPA does not yet expose DuckDB-backed persistence, DMCSS,
 OEMedChem-specific workflows, persistent transform-table generation, or
-production CLI analytics. The current API is designed so those layers can be
-added without changing the basic `Analyzer` loading and query workflow.
+production CLI analytics. The method-selection boundary is in place so DMCSS
+and OEMedChem can be added without changing the basic `Analyzer` loading and
+query workflow or the common result objects.

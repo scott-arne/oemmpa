@@ -9,6 +9,8 @@
 namespace OEMMPA {
 namespace {
 
+const char* kFragmentationMethodName = "fragmentation";
+
 std::vector<Transform> build_transforms(const std::vector<MatchedPair>& pairs) {
     std::map<std::string, Transform> transforms_by_smiles;
 
@@ -31,10 +33,32 @@ std::vector<Transform> build_transforms(const std::vector<MatchedPair>& pairs) {
     return transforms;
 }
 
+std::unique_ptr<AnalysisMethod> make_analysis_method(const std::string& method_name) {
+    if (method_name.empty()) {
+        throw InvalidQueryError("analysis method name must not be empty");
+    }
+    if (method_name == kFragmentationMethodName) {
+        return std::make_unique<FragmentationMethod>();
+    }
+    if (method_name == "dmcss" || method_name == "oemedchem") {
+        throw InvalidQueryError("analysis method is not available: " + method_name);
+    }
+
+    throw InvalidQueryError("unsupported analysis method: " + method_name);
+}
+
 }  // namespace
 
 Analyzer::Analyzer()
-    : method_(std::make_unique<FragmentationMethod>()) {}
+    : Analyzer(kFragmentationMethodName) {}
+
+Analyzer::Analyzer(const std::string& method_name)
+    : method_(make_analysis_method(method_name)),
+      method_name_(method_name) {}
+
+const std::string& Analyzer::GetMethodName() const {
+    return method_name_;
+}
 
 unsigned int Analyzer::AddMolecule(
     const std::string& smiles,

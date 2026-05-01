@@ -19,6 +19,10 @@ namespace OEMMPA {
 class Analyzer {
 public:
     Analyzer();
+    explicit Analyzer(const std::string& method_name);
+
+    /// \brief Return the selected analysis method name.
+    const std::string& GetMethodName() const;
 
     /// \brief Add a molecule from SMILES and return its assigned internal ID.
     ///
@@ -81,6 +85,7 @@ private:
     std::vector<MatchedPair> InjectProperties(std::vector<MatchedPair> pairs) const;
 
     std::unique_ptr<AnalysisMethod> method_;
+    std::string method_name_;
     std::unordered_map<std::string, unsigned int> external_ids_;
     PropertyMap properties_;
     unsigned int next_internal_id_ = 1;

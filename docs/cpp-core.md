@@ -11,7 +11,9 @@ All public types live in the `OEMMPA` namespace.
 
 ## Analyzer
 
-`Analyzer` is the main user-facing C++ entry point.
+`Analyzer` is the main user-facing C++ entry point. The default constructor
+uses the fragmentation method; `Analyzer("fragmentation")` selects it
+explicitly.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -26,6 +28,11 @@ std::vector<OEMMPA::MatchedPair> pairs = analyzer.GetPairs();
 
 Non-empty external IDs must be unique. Adding molecules or properties invalidates
 prior analysis results until `Analyze()` succeeds again.
+
+`Analyzer::GetMethodName()` returns the selected method name. `dmcss` and
+`oemedchem` are reserved Phase 2 method names, but currently raise
+`InvalidQueryError` until those backends are implemented. Unknown method names
+also raise `InvalidQueryError`.
 
 ## Data Objects
 
@@ -81,8 +88,11 @@ distinct tested behavior.
 - `GetPairs()`
 - `GetTransforms()`
 
-`FragmentationMethod` is the Phase 1 backend. It fragments staged molecules into
-a `MemoryIndex`, then answers pair and transform queries from that index.
+`FragmentationMethod` is the implemented backend. It fragments staged molecules
+into a `MemoryIndex`, then answers pair and transform queries from that index.
+The method-selection layer keeps this backend behind `AnalysisMethod` so DMCSS
+and OEMedChem can be added without changing the common pair and transform
+result model.
 
 `MemoryIndex` stores molecule records and fragmentations in constant buckets. It
 deduplicates fragmentations and builds matched pairs from molecules that share a
@@ -120,6 +130,7 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 
 ## Current Scope
 
-The C++ core is intentionally in-memory in Phase 1. DuckDB persistence, DMCSS,
-OEMedChem workflows, persistent transform-table generation, and production CLI
-analytics are later phases.
+The C++ core is intentionally in-memory at this stage. DMCSS and OEMedChem
+method names are reserved behind the analyzer method boundary, but their
+backends are not implemented yet. DuckDB persistence, persistent transform-table
+generation, and production CLI analytics are later phases.

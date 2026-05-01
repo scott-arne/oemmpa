@@ -121,6 +121,9 @@ polars_frame = pairs.to_dataframe(library="polars")
 
 ## Current Scope
 
-Phase 1 is an in-memory API and benchmarkable core. DuckDB persistence, DMCSS,
-OEMedChem workflows, persistent transform-table generation, and production CLI
-analytics are deferred follow-on phases.
+The current implementation is an in-memory API and benchmarkable core.
+`fragmentation` is the only implemented analyzer method. `dmcss` and
+`oemedchem` are reserved method names behind the analyzer boundary, but their
+backends are not implemented yet. DuckDB persistence, persistent
+transform-table generation, and production CLI analytics are deferred follow-on
+phases.

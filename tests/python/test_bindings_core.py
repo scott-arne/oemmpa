@@ -94,12 +94,35 @@ def test_cpp_analyzer_binding_accepts_smiles():
     _oemmpa = import_worktree_raw_bindings()
 
     analyzer = _oemmpa.Analyzer()
+    assert analyzer.GetMethodName() == "fragmentation"
     analyzer.AddMolecule("Cc1ccccc1", "tol")
     analyzer.AddMolecule("Oc1ccccc1", "phenol")
     analyzer.Analyze()
 
     pairs = analyzer.GetPairs()
     assert len(pairs) > 0
+
+
+def test_cpp_analyzer_binding_accepts_explicit_fragmentation_method():
+    _oemmpa = import_worktree_raw_bindings()
+
+    analyzer = _oemmpa.Analyzer("fragmentation")
+    assert analyzer.GetMethodName() == "fragmentation"
+    analyzer.AddMolecule("Cc1ccccc1", "tol")
+    analyzer.AddMolecule("Oc1ccccc1", "phenol")
+    analyzer.Analyze()
+
+    assert len(analyzer.GetPairs()) > 0
+
+
+def test_cpp_analyzer_binding_reports_unavailable_future_methods():
+    _oemmpa = import_worktree_raw_bindings()
+
+    with pytest.raises(RuntimeError, match="analysis method is not available"):
+        _oemmpa.Analyzer("dmcss")
+
+    with pytest.raises(RuntimeError, match="analysis method is not available"):
+        _oemmpa.Analyzer("oemedchem")
 
 
 def test_cpp_analyzer_binding_accepts_openeye_molecules():
