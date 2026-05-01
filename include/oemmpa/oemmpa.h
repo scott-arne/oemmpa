@@ -7,6 +7,8 @@
 #define OEMMPA_VERSION_PATCH 0
 
 #include "oemmpa/Error.h"
+#include "oemmpa/LoadReport.h"
+#include "oemmpa/MoleculeRecord.h"
 
 #include <oechem.h>
 

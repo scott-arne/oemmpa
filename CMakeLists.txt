@@ -52,6 +52,8 @@ find_package(OpenEye REQUIRED)
 # Library
 set(OEMMPA_SOURCES
     src/oemmpa.cpp
+    src/MoleculeRecord.cpp
+    src/LoadReport.cpp
 )
 
 add_library(oemmpa ${OEMMPA_SOURCES})
