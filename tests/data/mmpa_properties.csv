@@ -1,0 +1,4 @@
+id,smiles,pIC50,logD
+toluene,Cc1ccccc1,6.0,2.7
+phenol,Oc1ccccc1,7.0,1.5
+aniline,Nc1ccccc1,6.5,1.3

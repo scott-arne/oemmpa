@@ -373,6 +373,7 @@ from .oemmpa import (
     calculate_molecular_weight,
 )
 from ._facade import Analyzer
+from ._loading import LoadReport, RowError
 from ._results import (
     PairCollection,
     PairResult,
@@ -387,8 +388,10 @@ __all__ = [
     "__version_info__",
     "_oemmpa",
     "Analyzer",
+    "LoadReport",
     "PairCollection",
     "PairResult",
+    "RowError",
     "TransformCollection",
     "TransformResult",
     "calculate_molecular_weight",
