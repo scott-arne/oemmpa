@@ -55,6 +55,7 @@ set(OEMMPA_SOURCES
     src/MoleculeRecord.cpp
     src/LoadReport.cpp
     src/Fragmentation.cpp
+    src/FragmentationStrategy.cpp
     src/MatchedPair.cpp
     src/Transform.cpp
     src/QueryOptions.cpp
