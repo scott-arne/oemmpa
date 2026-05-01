@@ -8,7 +8,8 @@ small, stable core:
 - Python facade APIs for ergonomic molecule loading, property loading, pair
   queries, transform summaries, and dataframe export.
 - C++ APIs for fragmentation, pairwise DMCSS analysis, native OEMedChem-backed
-  analysis, in-memory indexing, query filtering, and scoring.
+  analysis, in-memory indexing, query filtering, scoring, and explicit SMIRKS
+  transform application.
 - Optional DuckDB storage schema initialization plus whitespace SMILES file
   loading, property CSV loading, molecule/property row persistence, analyzed
   pair round-tripping, stored-pair query filters, analyzer-to-store
@@ -18,10 +19,13 @@ small, stable core:
 
 The analyzer method boundary supports `fragmentation`, the initial `dmcss`
 backend, and an initial `oemedchem` backend that converts OpenEye's native
-matched pairs into OEMMPA's common constant/variable result model. Later phases
-will add larger workflow layers. Full DuckDB-backed analytics, persistent
-transform-table generation, and production CLI analytics are intentionally
-deferred and are not required for the current API.
+matched pairs into OEMMPA's common constant/variable result model. The first
+transform-generation slice applies chemically explicit unimolecular SMIRKS to a
+source molecule and returns deduplicated canonical products. Later phases will
+connect observed OEMMPA variable-to-variable transforms to that application
+engine. Full DuckDB-backed analytics, persistent transform-table generation,
+and production CLI analytics are intentionally deferred and are not required
+for the current API.
 
 ## Quick Example
 
@@ -39,6 +43,19 @@ analyzer.analyze()
 pairs = analyzer.pairs()
 print(pairs[0].to_dict())
 print(pairs[0].property_delta("pIC50"))
+```
+
+Explicit transform application is available when callers already have a valid
+unimolecular SMIRKS:
+
+```python
+from oemmpa import apply_transform_smirks
+
+products = apply_transform_smirks(
+    "Cc1ccccc1",
+    "[CH3:2][*:1]>>[OH:2][*:1]",
+)
+print(products)
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
@@ -106,8 +123,8 @@ pytest tests/python -q
 ```
 
 The Python suite uses the local worktree package and verifies the raw SWIG layer,
-the Python facade, loading workflows, result wrappers, and the RDKit comparison
-harness.
+the Python facade, loading workflows, result wrappers, transform application,
+and the RDKit comparison harness.
 
 ## CMake Options
 
@@ -231,6 +248,8 @@ The umbrella header is `include/oemmpa/oemmpa.h`. The main user-facing C++ class
 is `OEMMPA::Analyzer`, backed by `FragmentationMethod`, `Fragmenter`, and
 `MemoryIndex`. Query filtering is configured with `QueryOptions` and
 `ScoringOptions`; `PairScoring` performs the actual pair selection.
+`TransformApplicator` applies explicit unimolecular SMIRKS to source molecules
+and deduplicates canonical products.
 
 See [docs/cpp-core.md](docs/cpp-core.md) for the C++ surface.
 

@@ -57,6 +57,28 @@ a change site.
 facade uses it for ergonomic loading reports, and the DuckDB C++ loader methods
 use it for row-level file loading diagnostics.
 
+## Transform Application
+
+`TransformApplicator` applies chemically explicit unimolecular SMIRKS to source
+molecules and returns deduplicated `TransformProduct` records containing
+canonical product SMILES.
+
+```cpp
+std::vector<OEMMPA::TransformProduct> products =
+    OEMMPA::TransformApplicator::ApplySmirks(
+        "Cc1ccccc1",
+        "[CH3:2][*:1]>>[OH:2][*:1]"
+    );
+```
+
+`ApplySmirks()` is overloaded for SMILES strings and `OEChem::OEMolBase`
+objects. Invalid source molecules raise `InvalidMoleculeError`; invalid
+transform SMIRKS raise `InvalidQueryError`.
+
+The current API expects reaction-ready SMIRKS. Converting observed matched-pair
+transform strings such as `C[*:1]>>O[*:1]` into explicit reaction SMIRKS is a
+later transform-generation layer.
+
 ## Fragmentation
 
 `FragmentationStrategy` is the abstract bond-selection interface.
@@ -214,8 +236,10 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 ## Current Scope
 
 The fragmentation, DMCSS, and initial OEMedChem methods are implemented behind
-the analyzer method boundary. DuckDB persistence has an optional MMPDB-style
-schema, SMILES-file molecule loading, property CSV loading, molecule/property,
-pair, transform-query, query-option, analyzer-save, and Python storage-helper
-boundary, while a separate fragment-index store, materialized transform refresh,
+the analyzer method boundary. Explicit unimolecular SMIRKS transform
+application is available through `TransformApplicator`. DuckDB persistence has
+an optional MMPDB-style schema, SMILES-file molecule loading, property CSV
+loading, molecule/property, pair, transform-query, query-option, analyzer-save,
+and Python storage-helper boundary, while a separate fragment-index store,
+materialized transform refresh, observed-transform-to-SMIRKS conversion,
 rule-environment statistics, and production CLI analytics are later phases.

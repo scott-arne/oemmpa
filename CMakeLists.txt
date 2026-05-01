@@ -83,6 +83,7 @@ set(OEMMPA_SOURCES
     src/Analyzer.cpp
     src/MatchedPair.cpp
     src/Transform.cpp
+    src/TransformApplication.cpp
     src/QueryOptions.cpp
     src/PairScoring.cpp
     src/MemoryIndex.cpp

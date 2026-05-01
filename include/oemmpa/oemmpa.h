@@ -27,6 +27,7 @@
 #include "oemmpa/PairScoring.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/Transform.h"
+#include "oemmpa/TransformApplication.h"
 
 #include <oechem.h>
 

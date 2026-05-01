@@ -134,6 +134,29 @@ print(transform.support_count)
 print(transform.to_dict())
 ```
 
+## Transform Application
+
+`apply_transform_smirks()` applies a chemically explicit unimolecular SMIRKS to
+a source SMILES string or OpenEye molecule object and returns deduplicated
+canonical product SMILES.
+
+```python
+from oemmpa import apply_transform_smirks
+
+products = apply_transform_smirks(
+    "Cc1ccccc1",
+    "[CH3:2][*:1]>>[OH:2][*:1]",
+)
+```
+
+Invalid source molecules or invalid transform SMIRKS raise `ValueError` from
+the facade. The raw C++ binding also exposes `TransformApplicator`,
+`TransformProduct`, and `TransformProductVector` through `oemmpa._oemmpa`.
+
+The current helper expects reaction-ready SMIRKS. It does not yet convert
+observed matched-pair transform strings such as `C[*:1]>>O[*:1]` into explicit
+SMIRKS.
+
 ## Dataframe Export
 
 `PairCollection.to_dataframe()` imports pandas or polars lazily.
@@ -218,7 +241,9 @@ lets direct single-row failures propagate.
 ## Deferred APIs
 
 OEMMPA does not yet expose broader OEMedChem-specific workflows, a separate
-fragment-index store, materialized transform refresh, rule-environment
-statistics, or production CLI analytics. The method-selection and storage
-boundaries are in place so later capabilities can be added without changing the
-basic `Analyzer` loading/query workflow or the common result objects.
+fragment-index store, materialized transform refresh,
+observed-transform-to-SMIRKS conversion, rule-environment statistics, or
+production CLI analytics. The method-selection, storage, and explicit-transform
+application boundaries are in place so later capabilities can be added without
+changing the basic `Analyzer` loading/query workflow or the common result
+objects.

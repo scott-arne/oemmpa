@@ -119,6 +119,25 @@ pandas_frame = pairs.to_dataframe()
 polars_frame = pairs.to_dataframe(library="polars")
 ```
 
+## Applying Explicit Transforms
+
+Use `apply_transform_smirks()` when you already have a chemically explicit
+unimolecular SMIRKS. It accepts SMILES strings or OpenEye molecule objects and
+returns deduplicated canonical product SMILES.
+
+```python
+from oemmpa import apply_transform_smirks
+
+products = apply_transform_smirks(
+    "Cc1ccccc1",
+    "[CH3:2][*:1]>>[OH:2][*:1]",
+)
+```
+
+This helper intentionally does not yet convert OEMMPA's observed
+variable-to-variable transform strings such as `C[*:1]>>O[*:1]` into reaction
+SMIRKS. That conversion is the next transform-generation layer.
+
 ## Persistent Storage
 
 DuckDB-enabled builds expose persistent storage through `DuckDBStore`:
@@ -161,5 +180,5 @@ persistence covers optional schema initialization, molecule/property/pair row
 storage, whitespace SMILES file loading, property CSV loading,
 analyzer-to-store persistence, stored-pair query options, and Python storage
 helpers. A separate fragment-index store, materialized transform refresh,
-rule-environment statistics, and production CLI analytics are deferred
-follow-on phases.
+observed-transform-to-SMIRKS conversion, rule-environment statistics, and
+production CLI analytics are deferred follow-on phases.

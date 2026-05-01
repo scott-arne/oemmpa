@@ -392,6 +392,9 @@ _RAW_BINDING_EXPORTS = (
     "StorageError",
     "StringVector",
     "Transform",
+    "TransformApplicator",
+    "TransformProduct",
+    "TransformProductVector",
     "TransformVector",
 )
 
@@ -431,6 +434,7 @@ from ._results import (
     TransformResult,
 )
 from ._storage import DuckDBStore, duckdb_available
+from ._transform import apply_transform_smirks
 
 del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _name, _swig_proxy
 
@@ -446,6 +450,7 @@ __all__ = [
     "RowError",
     "TransformCollection",
     "TransformResult",
+    "apply_transform_smirks",
     "calculate_molecular_weight",
     "duckdb_available",
 ]
