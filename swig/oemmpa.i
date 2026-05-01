@@ -353,6 +353,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Include STL typemaps
 // ============================================================================
 %include "std_string.i"
+%include "std_vector.i"
 %include "stdint.i"
 %include "exception.i"
 
@@ -362,12 +363,24 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %exception {
     try {
         $action
+    } catch (const OEMMPA::OEMMPAError& e) {
+        SWIG_exception(SWIG_RuntimeError, e.what());
     } catch (const std::exception& e) {
         SWIG_exception(SWIG_RuntimeError, e.what());
     } catch (...) {
         SWIG_exception(SWIG_RuntimeError, "Unknown C++ exception");
     }
 }
+
+// ============================================================================
+// Template instantiations for container types
+// ============================================================================
+%template(StringVector) std::vector<std::string>;
+%template(LoadErrorVector) std::vector<OEMMPA::LoadError>;
+%template(CutBondVector) std::vector<OEMMPA::CutBond>;
+%template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
+%template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
+%template(TransformVector) std::vector<OEMMPA::Transform>;
 
 // ============================================================================
 // Version macros
@@ -377,13 +390,27 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 #define OEMMPA_VERSION_PATCH 0
 
 // ============================================================================
-// Wrapped API
+// Phase 1 public headers
 // ============================================================================
-namespace OEMMPA {
+%ignore OEMMPA::FragmentationStrategy::Clone;
+%ignore OEMMPA::SmartsFragmentationStrategy::Clone;
+%ignore OEMMPA::MoleculeRecord::GetMol;
 
-double calculate_molecular_weight(const OEChem::OEMolBase& mol);
-
-} // namespace OEMMPA
+%include "../include/oemmpa/Error.h"
+%include "../include/oemmpa/Fragmentation.h"
+%include "../include/oemmpa/MoleculeRecord.h"
+%include "../include/oemmpa/LoadReport.h"
+%include "../include/oemmpa/MatchedPair.h"
+%include "../include/oemmpa/Transform.h"
+%include "../include/oemmpa/QueryOptions.h"
+%include "../include/oemmpa/FragmentationStrategy.h"
+%include "../include/oemmpa/Fragmenter.h"
+%include "../include/oemmpa/MemoryIndex.h"
+%include "../include/oemmpa/PairScoring.h"
+%include "../include/oemmpa/AnalysisMethod.h"
+%include "../include/oemmpa/FragmentationMethod.h"
+%include "../include/oemmpa/Analyzer.h"
+%include "../include/oemmpa/oemmpa.h"
 
 // ============================================================================
 // Module-level Python convenience code

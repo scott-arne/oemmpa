@@ -217,12 +217,22 @@ _preload_shared_libs()
 _preload_bundled_libs()
 _check_openeye_version()
 
+from . import _oemmpa  # type: ignore
+from . import oemmpa as _swig_proxy
+
+for _name in dir(_swig_proxy):
+    if not _name.startswith("_") and not hasattr(_oemmpa, _name):
+        setattr(_oemmpa, _name, getattr(_swig_proxy, _name))
+
 from .oemmpa import (
     calculate_molecular_weight,
 )
 
+del _name, _swig_proxy
+
 __all__ = [
     "__version__",
     "__version_info__",
+    "_oemmpa",
     "calculate_molecular_weight",
 ]
