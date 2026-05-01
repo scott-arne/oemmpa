@@ -43,13 +43,13 @@ TEST(PairScoringTest, MinimalHeavyAtomChangeUsesAbsoluteDelta) {
     EXPECT_EQ(selected[0].GetHeavyAtomDelta(), 2);
 }
 
-TEST(PairScoringTest, FewerCutsThenMinimalHeavyBondChangePrioritizesCutCount) {
+TEST(PairScoringTest, FewerCutsThenHeavyBondChangePrioritizesCutCount) {
     std::vector<MatchedPair> pairs;
     pairs.emplace_back(1, 2, "a", "b", "CC", "CO", "C[*:1]", "C[*:1]", "O[*:1]", 2, 0, 0);
     pairs.emplace_back(1, 2, "a", "b", "CC", "CO", "C[*:1]", "CC[*:1]", "O[*:1]", 1, 3, 3);
 
     ScoringOptions options;
-    options.SetMode(ScoringMode::FewerCutsThenMinimalHeavyBondChange);
+    options.SetMode(ScoringMode::FewerCutsThenHeavyBondChange);
 
     std::vector<MatchedPair> selected = PairScoring::Select(pairs, options);
     ASSERT_EQ(selected.size(), 1);

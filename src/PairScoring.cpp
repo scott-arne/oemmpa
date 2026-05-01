@@ -40,9 +40,9 @@ PairComparator comparator_for_mode(ScoringMode mode) {
     switch (mode) {
         case ScoringMode::MinimalHeavyBondChange:
             return compare_heavy_bond_delta;
-        case ScoringMode::FewerCutsThenMinimalHeavyAtomChange:
+        case ScoringMode::FewerCutsThenHeavyAtomChange:
             return compare_cuts_then_heavy_atom_delta;
-        case ScoringMode::FewerCutsThenMinimalHeavyBondChange:
+        case ScoringMode::FewerCutsThenHeavyBondChange:
             return compare_cuts_then_heavy_bond_delta;
         case ScoringMode::KeepAll:
         case ScoringMode::MinimalHeavyAtomChange:

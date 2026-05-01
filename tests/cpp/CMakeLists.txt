@@ -15,6 +15,7 @@ add_executable(oemmpa_tests
     test_oemmpa.cpp
     test_data_objects.cpp
     test_pair_scoring.cpp
+    test_query_options.cpp
 )
 
 target_link_libraries(oemmpa_tests
