@@ -6,8 +6,8 @@ import os
 import re
 import warnings
 
-__version__ = "0.1.0"
-__version_info__ = (0, 1, 0)
+__version__ = "1.0.0b1"
+__version_info__ = (1, 0, 0)
 
 
 def _find_openeye_runtime_lib_dir(expected_libs=()):

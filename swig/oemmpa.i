@@ -387,8 +387,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 // Version macros
 // ============================================================================
-#define OEMMPA_VERSION_MAJOR 0
-#define OEMMPA_VERSION_MINOR 1
+#define OEMMPA_VERSION_MAJOR 1
+#define OEMMPA_VERSION_MINOR 0
 #define OEMMPA_VERSION_PATCH 0
 
 // ============================================================================
