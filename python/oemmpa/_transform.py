@@ -20,6 +20,14 @@ def _product_smiles(products):
     return [product.GetSmiles() for product in products]
 
 
+def _raw_transform_vector(transforms):
+    raw_transforms = _oemmpa.TransformVector()
+    for transform in transforms:
+        raw_transform = getattr(transform, "_raw_transform", transform)
+        raw_transforms.append(raw_transform)
+    return raw_transforms
+
+
 def apply_transform_smirks(source, smirks):
     """Apply an explicit unimolecular SMIRKS transform.
 
@@ -89,3 +97,48 @@ def apply_pair_transform(pair):
         _transform_error_to_value_error(exc)
 
     return _product_smiles(products)
+
+
+def generate_products(
+    source,
+    transforms,
+    min_support=1,
+    skip_unsupported=True,
+):
+    """Generate products from a collection of observed transforms.
+
+    :param source: Source molecule as a SMILES string or supported OpenEye
+        molecule object.
+    :param transforms: Iterable of :class:`TransformResult` or raw
+        ``_oemmpa.Transform`` objects.
+    :param min_support: Minimum transform support count. Use ``0`` to disable
+        support filtering.
+    :param skip_unsupported: Whether malformed or unsupported observed
+        transforms should be ignored. When ``False``, those errors raise
+        :class:`ValueError`.
+    :returns: :class:`GeneratedProductCollection` of generated product rows.
+    :raises ValueError: If the source molecule is invalid, ``min_support`` is
+        negative, or unsupported transforms are not skipped.
+    """
+    min_support = int(min_support)
+    if min_support < 0:
+        raise ValueError("min_support must be greater than or equal to zero")
+
+    options = _oemmpa.GenerationOptions()
+    options.SetMinSupport(min_support)
+    options.SetSkipUnsupportedTransforms(bool(skip_unsupported))
+
+    try:
+        products = _oemmpa.TransformApplicator.GenerateProducts(
+            source,
+            _raw_transform_vector(transforms),
+            options,
+        )
+    except RuntimeError as exc:
+        _transform_error_to_value_error(exc)
+
+    from ._results import GeneratedProductCollection, GeneratedProductResult
+
+    return GeneratedProductCollection(
+        GeneratedProductResult(product) for product in products
+    )

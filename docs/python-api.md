@@ -167,10 +167,31 @@ pair = analyzer.analyze().pairs()[0]
 products = pair.apply_transform()
 ```
 
+`generate_products()` applies a transform collection to a source molecule and
+returns `GeneratedProductCollection` rows with product SMILES, generating
+transform, and support count:
+
+```python
+from oemmpa import generate_products
+
+products = generate_products(
+    "Cc1ccccc1",
+    analyzer.transforms(),
+    min_support=2,
+)
+print(products.to_dicts())
+```
+
+`GeneratedProductCollection.to_dataframe()` imports pandas or polars lazily,
+matching the pair export helpers.
+
 Invalid source molecules, invalid transform SMIRKS, malformed observed
 transforms, and unsupported observed transforms raise `ValueError` from the
-facade. The raw C++ binding also exposes `TransformApplicator`,
-`TransformProduct`, and `TransformProductVector` through `oemmpa._oemmpa`.
+facade. During collection-level generation, unsupported observed transforms are
+skipped by default and can be made strict with `skip_unsupported=False`. The raw
+C++ binding also exposes `GenerationOptions`, `GeneratedProduct`,
+`GeneratedProductVector`, `TransformApplicator`, `TransformProduct`, and
+`TransformProductVector` through `oemmpa._oemmpa`.
 
 Observed-transform conversion currently supports single-cut, single-atom
 variables such as `C[*:1]>>O[*:1]`. Multi-atom and multi-cut transforms raise

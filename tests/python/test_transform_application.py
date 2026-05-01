@@ -109,3 +109,51 @@ def test_pair_result_applies_its_observed_transform():
     )
 
     assert pair.apply_transform() == ["c1ccc(cc1)O"]
+
+
+def test_generate_products_filters_transform_collection_by_support():
+    from oemmpa import Analyzer, generate_products
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_molecule("Cc1ccccn1", id="methyl_pyridine")
+    analyzer.add_molecule("Oc1ccccn1", id="hydroxy_pyridine")
+    analyzer.add_molecule("Nc1ccccc1", id="aniline")
+    transforms = analyzer.analyze().transforms()
+
+    products = generate_products(
+        "Cc1ccccc1",
+        transforms,
+        min_support=2,
+    )
+
+    assert products.__class__.__name__ == "GeneratedProductCollection"
+    assert len(products) == 1
+    assert products[0].smiles == "c1ccc(cc1)O"
+    assert products[0].transform == "[*:1]C>>[*:1]O"
+    assert products[0].support_count == 2
+    assert products.to_dicts() == [
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "support_count": 2,
+        }
+    ]
+
+
+def test_generate_products_can_reject_unsupported_transform_collection_entries():
+    from oemmpa import _oemmpa, generate_products
+
+    unsupported = _oemmpa.Transform("CC[*:1]>>O[*:1]")
+
+    with pytest.raises(
+        ValueError,
+        match="only single-cut single-atom variable transforms are supported: CC",
+    ):
+        generate_products(
+            "CCc1ccccc1",
+            [unsupported],
+            min_support=0,
+            skip_unsupported=False,
+        )

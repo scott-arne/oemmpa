@@ -124,6 +124,43 @@ const std::string& TransformProduct::GetSmiles() const {
     return smiles_;
 }
 
+unsigned int GenerationOptions::GetMinSupport() const {
+    return min_support_;
+}
+
+void GenerationOptions::SetMinSupport(unsigned int min_support) {
+    min_support_ = min_support;
+}
+
+bool GenerationOptions::GetSkipUnsupportedTransforms() const {
+    return skip_unsupported_transforms_;
+}
+
+void GenerationOptions::SetSkipUnsupportedTransforms(bool skip_unsupported_transforms) {
+    skip_unsupported_transforms_ = skip_unsupported_transforms;
+}
+
+GeneratedProduct::GeneratedProduct(
+    const std::string& smiles,
+    const std::string& transform_smiles,
+    unsigned int support_count
+)
+    : smiles_(smiles),
+      transform_smiles_(transform_smiles),
+      support_count_(support_count) {}
+
+const std::string& GeneratedProduct::GetSmiles() const {
+    return smiles_;
+}
+
+const std::string& GeneratedProduct::GetTransformSmiles() const {
+    return transform_smiles_;
+}
+
+unsigned int GeneratedProduct::GetSupportCount() const {
+    return support_count_;
+}
+
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
     const std::string& source_smiles,
     const std::string& transform_smirks
@@ -201,6 +238,62 @@ std::vector<TransformProduct> TransformApplicator::ApplyPairTransform(
     const MatchedPair& pair
 ) {
     return ApplyVariableTransform(pair.GetSourceSmiles(), pair.GetTransformSmiles());
+}
+
+std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
+    const std::string& source_smiles,
+    const std::vector<Transform>& transforms,
+    const GenerationOptions& options
+) {
+    const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles);
+    return GenerateProducts(source_record.GetMol(), transforms, options);
+}
+
+std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
+    const OEChem::OEMolBase& source_mol,
+    const std::vector<Transform>& transforms,
+    const GenerationOptions& options
+) {
+    if (source_mol.NumAtoms() == 0) {
+        throw InvalidMoleculeError("molecule has no atoms");
+    }
+
+    std::set<std::pair<std::string, std::string>> seen_products;
+    std::vector<GeneratedProduct> results;
+
+    for (const Transform& transform : transforms) {
+        const unsigned int support_count = transform.GetSupportCount();
+        if (support_count < options.GetMinSupport()) {
+            continue;
+        }
+
+        std::vector<TransformProduct> products;
+        try {
+            products = ApplyVariableTransform(source_mol, transform.GetTransformSmiles());
+        } catch (const InvalidQueryError&) {
+            if (options.GetSkipUnsupportedTransforms()) {
+                continue;
+            }
+            throw;
+        }
+
+        for (const TransformProduct& product : products) {
+            const std::pair<std::string, std::string> product_key = {
+                product.GetSmiles(),
+                transform.GetTransformSmiles()
+            };
+            if (!seen_products.insert(product_key).second) {
+                continue;
+            }
+            results.emplace_back(
+                product.GetSmiles(),
+                transform.GetTransformSmiles(),
+                support_count
+            );
+        }
+    }
+
+    return results;
 }
 
 }  // namespace OEMMPA

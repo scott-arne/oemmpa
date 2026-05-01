@@ -97,6 +97,24 @@ currently supports single-cut, single-atom variables. Multi-atom and multi-cut
 transforms raise `InvalidQueryError` until their reaction semantics are
 implemented.
 
+`GenerateProducts()` applies a transform collection to a source molecule and
+returns `GeneratedProduct` rows with canonical product SMILES, the generating
+transform, and that transform's support count. `GenerationOptions` controls
+minimum support filtering and whether unsupported observed transforms are
+skipped or reported as `InvalidQueryError`.
+
+```cpp
+OEMMPA::GenerationOptions options;
+options.SetMinSupport(2);
+
+std::vector<OEMMPA::GeneratedProduct> products =
+    OEMMPA::TransformApplicator::GenerateProducts(
+        "Cc1ccccc1",
+        analyzer.GetTransforms(),
+        options
+    );
+```
+
 ## Fragmentation
 
 `FragmentationStrategy` is the abstract bond-selection interface.

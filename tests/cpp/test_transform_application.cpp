@@ -1,12 +1,37 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/Error.h"
+#include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"
 
 #include <oechem.h>
 
 namespace OEMMPA {
 namespace test {
+
+MatchedPair MakeSingleCutPair(
+    const std::string& source_id,
+    const std::string& target_id,
+    const std::string& source_smiles,
+    const std::string& target_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+) {
+    return MatchedPair(
+        1,
+        2,
+        source_id,
+        target_id,
+        source_smiles,
+        target_smiles,
+        "[*:1]c1ccccc1",
+        source_variable_smiles,
+        target_variable_smiles,
+        1,
+        0,
+        0
+    );
+}
 
 TEST(TransformApplicationTest, AppliesExplicitSmirksToSmiles) {
     const std::vector<TransformProduct> products =
@@ -114,6 +139,174 @@ TEST(TransformApplicationTest, AppliesSingleAtomVariableTransformFromPair) {
 
     ASSERT_EQ(products.size(), 1U);
     EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+}
+
+TEST(TransformApplicationTest, AppliesMMPDBGenerateStyleVariableTransforms) {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"[*:1]O>>[*:1][H]", "c1ccncc1"},
+        {"[*:1]O>>[*:1]N", "c1ccnc(c1)N"},
+        {"[*:1]O>>[*:1]Cl", "c1ccnc(c1)Cl"},
+    };
+
+    for (const auto& test_case : cases) {
+        const std::vector<TransformProduct> products =
+            TransformApplicator::ApplyVariableTransform(
+                "Oc1ccccn1",
+                test_case.first
+            );
+
+        ASSERT_EQ(products.size(), 1U) << test_case.first;
+        EXPECT_EQ(products.front().GetSmiles(), test_case.second) << test_case.first;
+    }
+}
+
+TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithSupportFiltering) {
+    Transform methyl_to_hydroxy("C[*:1]>>O[*:1]");
+    methyl_to_hydroxy.AddPair(MakeSingleCutPair(
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "C[*:1]",
+        "O[*:1]"
+    ));
+    methyl_to_hydroxy.AddPair(MakeSingleCutPair(
+        "methyl_pyridine",
+        "hydroxy_pyridine",
+        "Cc1ccccn1",
+        "Oc1ccccn1",
+        "C[*:1]",
+        "O[*:1]"
+    ));
+
+    Transform methyl_to_amino("C[*:1]>>N[*:1]");
+    methyl_to_amino.AddPair(MakeSingleCutPair(
+        "tol",
+        "aniline",
+        "Cc1ccccc1",
+        "Nc1ccccc1",
+        "C[*:1]",
+        "N[*:1]"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(2);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Cc1ccccc1",
+            {methyl_to_hydroxy, methyl_to_amino},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+    EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
+    EXPECT_EQ(products.front().GetSupportCount(), 2U);
+}
+
+TEST(TransformApplicationTest, GeneratesMMPDBReferenceProductsWithMinPairsStyleFiltering) {
+    Transform hydroxy_to_hydrogen("[*:1]O>>[*:1][H]");
+    for (unsigned int pair_index = 0; pair_index < 4; ++pair_index) {
+        hydroxy_to_hydrogen.AddPair(MakeSingleCutPair(
+            "pyridinol",
+            "pyridine",
+            "Oc1ccccn1",
+            "c1ccncc1",
+            "[*:1]O",
+            "[*:1][H]"
+        ));
+    }
+
+    Transform hydroxy_to_amino("[*:1]O>>[*:1]N");
+    for (unsigned int pair_index = 0; pair_index < 3; ++pair_index) {
+        hydroxy_to_amino.AddPair(MakeSingleCutPair(
+            "pyridinol",
+            "aminopyridine",
+            "Oc1ccccn1",
+            "Nc1ccccn1",
+            "[*:1]O",
+            "[*:1]N"
+        ));
+    }
+
+    Transform hydroxy_to_chloro("[*:1]O>>[*:1]Cl");
+    hydroxy_to_chloro.AddPair(MakeSingleCutPair(
+        "pyridinol",
+        "chloropyridine",
+        "Oc1ccccn1",
+        "Clc1ccccn1",
+        "[*:1]O",
+        "[*:1]Cl"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(2);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Oc1ccccn1",
+            {hydroxy_to_hydrogen, hydroxy_to_amino, hydroxy_to_chloro},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 2U);
+    EXPECT_EQ(products[0].GetSmiles(), "c1ccncc1");
+    EXPECT_EQ(products[0].GetTransformSmiles(), "[*:1]O>>[*:1][H]");
+    EXPECT_EQ(products[0].GetSupportCount(), 4U);
+    EXPECT_EQ(products[1].GetSmiles(), "c1ccnc(c1)N");
+    EXPECT_EQ(products[1].GetTransformSmiles(), "[*:1]O>>[*:1]N");
+    EXPECT_EQ(products[1].GetSupportCount(), 3U);
+}
+
+TEST(TransformApplicationTest, SkipsUnsupportedTransformsByDefaultDuringGeneration) {
+    Transform unsupported("CC[*:1]>>O[*:1]");
+    unsupported.AddPair(MakeSingleCutPair(
+        "ethylbenzene",
+        "phenol",
+        "CCc1ccccc1",
+        "Oc1ccccc1",
+        "CC[*:1]",
+        "O[*:1]"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(1);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "CCc1ccccc1",
+            {unsupported},
+            options
+        );
+
+    EXPECT_TRUE(products.empty());
+}
+
+TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
+    Transform unsupported("CC[*:1]>>O[*:1]");
+    unsupported.AddPair(MakeSingleCutPair(
+        "ethylbenzene",
+        "phenol",
+        "CCc1ccccc1",
+        "Oc1ccccc1",
+        "CC[*:1]",
+        "O[*:1]"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(1);
+    options.SetSkipUnsupportedTransforms(false);
+
+    try {
+        TransformApplicator::GenerateProducts("CCc1ccccc1", {unsupported}, options);
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "only single-cut single-atom variable transforms are supported: CC[*:1]"
+        );
+    }
 }
 
 TEST(TransformApplicationTest, RejectsMalformedVariableTransform) {

@@ -65,6 +65,16 @@ for pair in analyzer.pairs():
     print(pair.transform, pair.apply_transform())
 ```
 
+Transform collections can also be applied to a source molecule with support
+filtering and product metadata:
+
+```python
+from oemmpa import generate_products
+
+products = generate_products("Cc1ccccc1", analyzer.transforms(), min_support=2)
+print(products.to_dicts())
+```
+
 See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
 [docs/python-api.md](docs/python-api.md) for the facade API and optional raw
 DuckDB binding notes.
@@ -256,8 +266,8 @@ is `OEMMPA::Analyzer`, backed by `FragmentationMethod`, `Fragmenter`, and
 `MemoryIndex`. Query filtering is configured with `QueryOptions` and
 `ScoringOptions`; `PairScoring` performs the actual pair selection.
 `TransformApplicator` applies explicit unimolecular SMIRKS to source molecules,
-converts supported observed variable transforms to SMIRKS, and deduplicates
-canonical products.
+converts supported observed variable transforms to SMIRKS, and generates
+transform-annotated product rows from transform collections.
 
 See [docs/cpp-core.md](docs/cpp-core.md) for the C++ surface.
 

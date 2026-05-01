@@ -158,3 +158,67 @@ class TransformCollection(list):
         :returns: List of result dictionaries.
         """
         return [transform.to_dict() for transform in self]
+
+
+class GeneratedProductResult:
+    """Generated product result wrapper.
+
+    :param raw_product: Raw ``_oemmpa.GeneratedProduct`` instance to wrap.
+    """
+
+    def __init__(self, raw_product):
+        self._raw_product = raw_product
+
+    @property
+    def smiles(self):
+        """Canonical product SMILES."""
+        return self._raw_product.GetSmiles()
+
+    @property
+    def transform(self):
+        """Observed transform SMILES that generated this product."""
+        return self._raw_product.GetTransformSmiles()
+
+    @property
+    def support_count(self):
+        """Number of matched pairs supporting the generating transform."""
+        return self._raw_product.GetSupportCount()
+
+    def to_dict(self):
+        """Return a serializable mapping for this generated product.
+
+        :returns: Dictionary containing product SMILES, transform, and support
+            count.
+        """
+        return {
+            "smiles": self.smiles,
+            "transform": self.transform,
+            "support_count": self.support_count,
+        }
+
+
+class GeneratedProductCollection(list):
+    """List of :class:`GeneratedProductResult` objects with export helpers."""
+
+    def to_dicts(self):
+        """Return all generated product results as dictionaries.
+
+        :returns: List of result dictionaries.
+        """
+        return [product.to_dict() for product in self]
+
+    def to_dataframe(self, library="pandas"):
+        """Return generated products as a pandas or polars dataframe.
+
+        Dependencies are imported only when this method is called.
+
+        :param library: Dataframe library to use, either ``"pandas"`` or
+            ``"polars"``.
+        :returns: Dataframe object created by the requested library.
+        :raises ValueError: If ``library`` is unsupported.
+        """
+        if library not in {"pandas", "polars"}:
+            raise ValueError(f"unsupported dataframe library: {library}")
+
+        module = importlib.import_module(library)
+        return module.DataFrame(self.to_dicts())

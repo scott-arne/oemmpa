@@ -369,6 +369,9 @@ _RAW_BINDING_EXPORTS = (
     "FragmentationStrategy",
     "FragmentationVector",
     "Fragmenter",
+    "GeneratedProduct",
+    "GeneratedProductVector",
+    "GenerationOptions",
     "InvalidMoleculeError",
     "InvalidQueryError",
     "LoadError",
@@ -428,6 +431,8 @@ from .oemmpa import ( # type: ignore
 from ._facade import Analyzer
 from ._loading import LoadReport, RowError
 from ._results import (
+    GeneratedProductCollection,
+    GeneratedProductResult,
     PairCollection,
     PairResult,
     TransformCollection,
@@ -439,6 +444,7 @@ from ._transform import (
     apply_transform_smirks,
     apply_variable_transform,
     build_variable_transform_smirks,
+    generate_products,
 )
 
 del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _name, _swig_proxy
@@ -449,6 +455,8 @@ __all__ = [
     "_oemmpa",
     "Analyzer",
     "DuckDBStore",
+    "GeneratedProductCollection",
+    "GeneratedProductResult",
     "LoadReport",
     "PairCollection",
     "PairResult",
@@ -461,4 +469,5 @@ __all__ = [
     "build_variable_transform_smirks",
     "calculate_molecular_weight",
     "duckdb_available",
+    "generate_products",
 ]

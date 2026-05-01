@@ -382,6 +382,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
 %template(TransformVector) std::vector<OEMMPA::Transform>;
 %template(TransformProductVector) std::vector<OEMMPA::TransformProduct>;
+%template(GeneratedProductVector) std::vector<OEMMPA::GeneratedProduct>;
 
 // ============================================================================
 // Version macros

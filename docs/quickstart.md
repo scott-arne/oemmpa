@@ -154,6 +154,24 @@ pair = analyzer.pairs()[0]
 products = pair.apply_transform()
 ```
 
+Use `generate_products()` to apply an analyzed transform collection to a source
+molecule and keep the generating transform metadata:
+
+```python
+from oemmpa import generate_products
+
+products = generate_products(
+    "Cc1ccccc1",
+    analyzer.transforms(),
+    min_support=2,
+)
+print(products.to_dicts())
+```
+
+Unsupported observed transforms are skipped by default during collection-level
+generation. Pass `skip_unsupported=False` when unsupported transform strings
+should fail fast instead.
+
 The observed-transform helper currently supports single-cut, single-atom
 variables. Multi-atom and multi-cut transforms raise `ValueError` until their
 reaction semantics are implemented.

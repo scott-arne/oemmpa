@@ -1,0 +1,4 @@
+start	constant	from_smiles	to_smiles	final	heavies_diff	#pairs	rule_id	swapped
+Oc1ccccn1	*c1ccccn1	[*:1]O	[*:1][H]	c1ccncc1	-1	4	42	0
+Oc1ccccn1	*c1ccccn1	[*:1]O	[*:1]N	Nc1ccccn1	0	3	43	1
+Oc1ccccn1	*c1ccccn1	[*:1]O	[*:1]Cl	Clc1ccccn1	0	1	45	1
