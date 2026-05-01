@@ -187,6 +187,9 @@ def _preload_extension_openeye_libs():
     names and load matching files from the OpenEye runtime directory.
     """
     import ctypes
+    import importlib.util
+    import sys
+    from pathlib import Path
 
     pkg_dir = os.path.dirname(os.path.abspath(__file__))
     extension_path = os.path.join(pkg_dir, "_oemmpa.so")
@@ -210,20 +213,49 @@ def _preload_extension_openeye_libs():
     if not lib_names:
         return
 
-    try:
-        from openeye import libs
-        oe_lib_dir = libs.FindOpenEyeDLLSDirectory()
-    except (ImportError, Exception):
+    search_locations = []
+    openeye_module = sys.modules.get("openeye")
+    openeye_path = getattr(openeye_module, "__path__", None)
+    if openeye_path is not None:
+        search_locations.extend(openeye_path)
+
+    if not search_locations:
+        try:
+            openeye_spec = importlib.util.find_spec("openeye")
+        except (ImportError, ValueError):
+            openeye_spec = None
+        if openeye_spec is not None and openeye_spec.submodule_search_locations is not None:
+            search_locations.extend(openeye_spec.submodule_search_locations)
+
+    if not search_locations:
         return
 
-    if not os.path.isdir(oe_lib_dir):
-        return
+    lib_paths = {}
+    for package_root in search_locations:
+        libs_root = Path(package_root) / "libs"
+        if not libs_root.is_dir():
+            continue
+
+        # Importing openeye.libs eagerly imports oechem in some environments.
+        # The runtime libraries are shipped below openeye/libs, so filesystem
+        # discovery preserves the fresh-import condition.
+        for root, _, files in os.walk(libs_root):
+            for lib_name in files:
+                if ".dylib" in lib_name or ".so" in lib_name:
+                    lib_paths.setdefault(lib_name, os.path.join(root, lib_name))
+
+    for lib_name in list(lib_names):
+        if lib_name.startswith("liboechem-"):
+            grid_name = lib_name.replace("liboechem-", "liboegrid-", 1)
+            if grid_name not in lib_names and grid_name in lib_paths:
+                lib_names.add(grid_name)
 
     def load_order(lib_name):
         order = (
             "libzstd",
             "liboeplatform",
             "liboesystem",
+            "liboegrid",
             "liboemath",
             "liboechem",
         )
@@ -233,8 +265,8 @@ def _preload_extension_openeye_libs():
         return len(order)
 
     for lib_name in sorted(lib_names, key=load_order):
-        path = os.path.join(oe_lib_dir, lib_name)
-        if os.path.exists(path):
+        path = lib_paths.get(lib_name)
+        if path and os.path.exists(path):
             try:
                 ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
             except OSError:

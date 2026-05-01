@@ -1,16 +1,73 @@
 """Tests for raw Phase 1 SWIG bindings."""
 
+import importlib
 import os
+from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
 
-def test_fresh_package_import_exposes_raw_module_without_prior_openeye_import():
-    package_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "python")
+WORKTREE_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "python"
+sys.path.insert(0, str(WORKTREE_PACKAGE_ROOT))
+
+
+def is_worktree_package_file(path):
+    if path is None:
+        return False
+    return os.path.commonpath([Path(path).resolve(), WORKTREE_PACKAGE_ROOT]) == str(
+        WORKTREE_PACKAGE_ROOT
     )
+
+
+def import_worktree_oemmpa():
+    """Import the worktree package instead of any installed editable copy."""
+    existing = sys.modules.get("oemmpa")
+    if existing is not None and is_worktree_package_file(
+        getattr(existing, "__file__", None)
+    ):
+        return existing
+
+    for module_name in list(sys.modules):
+        if module_name == "oemmpa" or module_name.startswith("oemmpa."):
+            del sys.modules[module_name]
+    importlib.invalidate_caches()
+
+    spec = importlib.machinery.PathFinder.find_spec(
+        "oemmpa", [str(WORKTREE_PACKAGE_ROOT)]
+    )
+    assert spec is not None
+    package = importlib.util.module_from_spec(spec)
+    sys.modules["oemmpa"] = package
+    assert spec.loader is not None
+    original_meta_path = sys.meta_path[:]
+    sys.meta_path[:] = [
+        finder
+        for finder in original_meta_path
+        if type(finder).__module__ != "_oemmpa_editable"
+    ]
+    try:
+        spec.loader.exec_module(package)
+    except Exception:
+        for module_name in list(sys.modules):
+            if module_name == "oemmpa" or module_name.startswith("oemmpa."):
+                del sys.modules[module_name]
+        raise
+    finally:
+        sys.meta_path[:] = original_meta_path
+
+    assert is_worktree_package_file(package.__file__)
+    return package
+
+
+def import_worktree_raw_bindings():
+    package = import_worktree_oemmpa()
+    return package._oemmpa
+
+
+def test_fresh_package_import_exposes_raw_module_without_prior_openeye_import():
+    package_root = str(WORKTREE_PACKAGE_ROOT)
     site_packages = next(path for path in sys.path if path.endswith("site-packages"))
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([package_root, site_packages])
@@ -28,12 +85,13 @@ import oemmpa._oemmpa as low
 assert _oemmpa is low
 assert hasattr(_oemmpa, "Analyzer")
 assert hasattr(_oemmpa, "ScoringOptions")
+assert "openeye.oechem" not in sys.modules
 """
     subprocess.run([sys.executable, "-S", "-c", code], check=True, env=env)
 
 
 def test_cpp_analyzer_binding_accepts_smiles():
-    from oemmpa import _oemmpa
+    _oemmpa = import_worktree_raw_bindings()
 
     analyzer = _oemmpa.Analyzer()
     analyzer.AddMolecule("Cc1ccccc1", "tol")
@@ -46,7 +104,8 @@ def test_cpp_analyzer_binding_accepts_smiles():
 
 def test_cpp_analyzer_binding_accepts_openeye_molecules():
     from openeye import oechem
-    from oemmpa import _oemmpa
+
+    _oemmpa = import_worktree_raw_bindings()
 
     toluene = oechem.OEGraphMol()
     phenol = oechem.OEGraphMol()
@@ -63,7 +122,7 @@ def test_cpp_analyzer_binding_accepts_openeye_molecules():
 
 
 def test_query_options_and_scoring_options_binding():
-    from oemmpa import _oemmpa
+    _oemmpa = import_worktree_raw_bindings()
 
     scoring = _oemmpa.ScoringOptions()
     scoring.SetMode(_oemmpa.ScoringMode_KeepAll)
@@ -73,7 +132,7 @@ def test_query_options_and_scoring_options_binding():
 
 
 def test_cpp_exceptions_surface_as_runtime_error():
-    from oemmpa import _oemmpa
+    _oemmpa = import_worktree_raw_bindings()
 
     analyzer = _oemmpa.Analyzer()
     analyzer.AddMolecule("Cc1ccccc1", "tol")
@@ -83,7 +142,7 @@ def test_cpp_exceptions_surface_as_runtime_error():
 
 
 def test_returned_pair_vector_elements_expose_getters():
-    from oemmpa import _oemmpa
+    _oemmpa = import_worktree_raw_bindings()
 
     analyzer = _oemmpa.Analyzer()
     analyzer.AddMolecule("Cc1ccccc1", "tol")
