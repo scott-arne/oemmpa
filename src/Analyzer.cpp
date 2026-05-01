@@ -78,12 +78,16 @@ void Analyzer::AddProperty(
     double value
 ) {
     RequireKnownExternalId(external_id);
+    if (name.empty()) {
+        throw InvalidQueryError("property name must not be empty");
+    }
 
     properties_[external_id][name] = value;
     analyzed_ = false;
 }
 
 void Analyzer::Analyze() {
+    analyzed_ = false;
     method_->Analyze();
     analyzed_ = true;
 }

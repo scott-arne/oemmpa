@@ -31,6 +31,24 @@ const MatchedPair& FindTolueneToPhenolPair(const std::vector<MatchedPair>& pairs
     return *iter;
 }
 
+bool TransformContainsTolueneToPhenolPair(const Transform& transform) {
+    const std::vector<MatchedPair>& pairs = transform.GetPairs();
+    return std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol);
+}
+
+const MatchedPair& FindTolueneToPhenolPair(const std::vector<Transform>& transforms) {
+    const auto transform_iter = std::find_if(
+        transforms.begin(),
+        transforms.end(),
+        TransformContainsTolueneToPhenolPair
+    );
+    if (transform_iter == transforms.end()) {
+        throw MissingPropertyError("tol->phenol transform pair not found");
+    }
+
+    return FindTolueneToPhenolPair(transform_iter->GetPairs());
+}
+
 }  // namespace
 
 TEST(AnalyzerTest, AnalyzeFindsPairsForToluenePhenol) {
@@ -51,6 +69,21 @@ TEST(AnalyzerTest, PropertyDeltaInjectionUsesMatchingSourceAndTargetProperties) 
     analyzer.Analyze();
     const std::vector<MatchedPair> pairs = analyzer.GetPairs();
     const MatchedPair& pair = FindTolueneToPhenolPair(pairs);
+
+    EXPECT_TRUE(pair.HasProperty("pIC50"));
+    EXPECT_DOUBLE_EQ(pair.GetSourceProperty("pIC50"), 6.0);
+    EXPECT_DOUBLE_EQ(pair.GetTargetProperty("pIC50"), 7.0);
+    EXPECT_DOUBLE_EQ(pair.GetPropertyDelta("pIC50"), 1.0);
+}
+
+TEST(AnalyzerTest, TransformPairsIncludeInjectedPropertyDeltas) {
+    Analyzer analyzer = MakeToluenePhenolAnalyzer();
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.0);
+
+    analyzer.Analyze();
+    const std::vector<Transform> transforms = analyzer.GetTransforms();
+    const MatchedPair& pair = FindTolueneToPhenolPair(transforms);
 
     EXPECT_TRUE(pair.HasProperty("pIC50"));
     EXPECT_DOUBLE_EQ(pair.GetSourceProperty("pIC50"), 6.0);
@@ -113,6 +146,12 @@ TEST(AnalyzerTest, AddPropertyRequiresKnownNonEmptyExternalId) {
     EXPECT_THROW(analyzer.AddProperty("missing", "pIC50", 6.0), InvalidQueryError);
 }
 
+TEST(AnalyzerTest, AddPropertyRejectsEmptyPropertyName) {
+    Analyzer analyzer = MakeToluenePhenolAnalyzer();
+
+    EXPECT_THROW(analyzer.AddProperty("tol", "", 6.0), InvalidQueryError);
+}
+
 TEST(AnalyzerTest, OneSidedPropertyIsNotInjectedIntoPairs) {
     Analyzer analyzer = MakeToluenePhenolAnalyzer();
     analyzer.AddProperty("tol", "pIC50", 6.0);
@@ -146,6 +185,25 @@ TEST(AnalyzerTest, GetTransformsRequiresAnalyzeAndWorksAfterAnalyze) {
 
     EXPECT_FALSE(analyzer.GetTransforms().empty());
     EXPECT_FALSE(analyzer.GetTransforms(QueryOptions()).empty());
+}
+
+TEST(AnalyzerTest, GetTransformsHonorsAsymmetricQueryOptions) {
+    Analyzer analyzer = MakeToluenePhenolAnalyzer();
+    QueryOptions options;
+    options.SetSymmetric(false);
+
+    analyzer.Analyze();
+    const std::vector<Transform> transforms = analyzer.GetTransforms(options);
+
+    ASSERT_FALSE(transforms.empty());
+    for (const Transform& transform : transforms) {
+        for (const MatchedPair& pair : transform.GetPairs()) {
+            EXPECT_FALSE(
+                pair.GetSourceExternalId() == "phenol" &&
+                pair.GetTargetExternalId() == "tol"
+            );
+        }
+    }
 }
 
 }  // namespace test

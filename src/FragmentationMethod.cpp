@@ -2,6 +2,8 @@
 
 #include "oemmpa/Error.h"
 
+#include <utility>
+
 namespace OEMMPA {
 
 void FragmentationMethod::Clear() {
@@ -16,16 +18,18 @@ void FragmentationMethod::AddMolecule(const MoleculeRecord& record) {
 }
 
 void FragmentationMethod::Analyze() {
-    index_.Clear();
+    analyzed_ = false;
+    MemoryIndex next_index;
 
     for (const MoleculeRecord& molecule : molecules_) {
-        index_.AddMolecule(molecule);
+        next_index.AddMolecule(molecule);
         for (const Fragmentation& fragmentation :
              fragmenter_.Fragment(molecule.GetInternalId(), molecule.GetMol())) {
-            index_.AddFragmentation(fragmentation);
+            next_index.AddFragmentation(fragmentation);
         }
     }
 
+    index_ = std::move(next_index);
     analyzed_ = true;
 }
 
