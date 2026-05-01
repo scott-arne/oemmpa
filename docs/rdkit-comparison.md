@@ -70,5 +70,6 @@ installed.
 ## Current Scope
 
 This is a focused comparison script, not a production CLI analytics layer.
-Larger benchmark suites, DuckDB-backed result storage, DMCSS, OEMedChem-specific
-analyses, and persistent transform-table generation are deferred.
+Larger benchmark suites, DuckDB-backed result storage, DMCSS-specific benchmark
+coverage, OEMedChem-specific analyses, and persistent transform-table generation
+are deferred.

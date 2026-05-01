@@ -8,6 +8,7 @@
 
 #include "oemmpa/AnalysisMethod.h"
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/DMCSSMethod.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/FragmentationMethod.h"

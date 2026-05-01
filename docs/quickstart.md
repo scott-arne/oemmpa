@@ -122,8 +122,13 @@ polars_frame = pairs.to_dataframe(library="polars")
 ## Current Scope
 
 The current implementation is an in-memory API and benchmarkable core.
-`fragmentation` is the only implemented analyzer method. `dmcss` and
-`oemedchem` are reserved method names behind the analyzer boundary, but their
-backends are not implemented yet. DuckDB persistence, persistent
-transform-table generation, and production CLI analytics are deferred follow-on
-phases.
+`fragmentation` is the default analyzer method. `dmcss` is available as an
+initial pairwise maximum common substructure backend:
+
+```python
+analyzer = Analyzer(method="dmcss")
+```
+
+`oemedchem` is a reserved method name behind the analyzer boundary, but its
+backend is not implemented yet. DuckDB persistence, persistent transform-table
+generation, and production CLI analytics are deferred follow-on phases.

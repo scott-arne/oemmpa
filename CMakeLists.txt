@@ -58,6 +58,7 @@ set(OEMMPA_SOURCES
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
     src/FragmentationMethod.cpp
+    src/DMCSSMethod.cpp
     src/Analyzer.cpp
     src/MatchedPair.cpp
     src/Transform.cpp

@@ -5,6 +5,7 @@
 #include "oemmpa/oemmpa.h"
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,29 @@ bool HasUnorderedPair(
     );
 }
 
+unsigned int CountHeavyAtoms(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, smiles)) {
+        throw InvalidQueryError("invalid test SMILES: " + smiles);
+    }
+    return OEChem::OECount(mol, OEChem::OEIsHeavy());
+}
+
+std::set<unsigned int> CollectAttachmentLabels(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, smiles)) {
+        throw InvalidQueryError("invalid test SMILES: " + smiles);
+    }
+
+    std::set<unsigned int> labels;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
+            labels.insert(atom->GetMapIdx());
+        }
+    }
+    return labels;
+}
+
 const MatchedPair& FindTolueneToPhenolPair(const std::vector<Transform>& transforms) {
     const auto transform_iter = std::find_if(
         transforms.begin(),
@@ -103,8 +127,67 @@ TEST(AnalyzerTest, ExplicitFragmentationMethodUsesCommonResultModel) {
     EXPECT_FALSE(pairs[0].GetTargetVariableSmiles().empty());
 }
 
+TEST(AnalyzerTest, DMCSSMethodUsesCommonResultModel) {
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+
+    ASSERT_FALSE(pairs.empty());
+    EXPECT_EQ(analyzer.GetMethodName(), "dmcss");
+    EXPECT_TRUE(std::any_of(pairs.begin(), pairs.end(), IsTolueneToPhenol));
+    const MatchedPair& pair = FindTolueneToPhenolPair(pairs);
+    EXPECT_EQ(pair.GetConstantSmiles(), "[*:1]c1ccccc1");
+    EXPECT_EQ(pair.GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(pair.GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(AnalyzerTest, DMCSSHonorsAsymmetricQueryOptions) {
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+
+    analyzer.Analyze();
+    QueryOptions options;
+    options.SetSymmetric(false);
+
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs(options);
+
+    ASSERT_EQ(pairs.size(), 1);
+    EXPECT_EQ(pairs[0].GetSourceExternalId(), "tol");
+    EXPECT_EQ(pairs[0].GetTargetExternalId(), "phenol");
+}
+
+TEST(AnalyzerTest, DMCSSBuildsDisconnectedConstantsForChangedLinkers) {
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("c1ccccc1CCc2ccccc2", "diphenylethane");
+    analyzer.AddMolecule("c1ccccc1Oc2ccccc2", "diphenyl_ether");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+    const auto pair_iter = std::find_if(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceExternalId() == "diphenylethane" &&
+                pair.GetTargetExternalId() == "diphenyl_ether" &&
+                pair.GetCutCount() == 2;
+        }
+    );
+
+    ASSERT_NE(pair_iter, pairs.end());
+    EXPECT_NE(pair_iter->GetConstantSmiles().find("."), std::string::npos);
+    EXPECT_EQ(CountHeavyAtoms(pair_iter->GetConstantSmiles()), 12U);
+    EXPECT_EQ(CountHeavyAtoms(pair_iter->GetSourceVariableSmiles()), 2U);
+    EXPECT_EQ(CountHeavyAtoms(pair_iter->GetTargetVariableSmiles()), 1U);
+    const std::set<unsigned int> expected_labels({1, 2});
+    EXPECT_EQ(CollectAttachmentLabels(pair_iter->GetSourceVariableSmiles()), expected_labels);
+    EXPECT_EQ(CollectAttachmentLabels(pair_iter->GetTargetVariableSmiles()), expected_labels);
+}
+
 TEST(AnalyzerTest, FutureMethodsRaiseUnavailableMethodErrors) {
-    EXPECT_THROW(Analyzer("dmcss"), InvalidQueryError);
     EXPECT_THROW(Analyzer("oemedchem"), InvalidQueryError);
 }
 

@@ -1,19 +1,20 @@
 # OEMMPA
 
 OEMMPA is a C++ matched molecular pair analysis library with Python bindings
-built on the OpenEye Toolkits and SWIG. The Phase 1 implementation focuses on a
+built on the OpenEye Toolkits and SWIG. The current implementation focuses on a
 small, stable core:
 
 - In-memory matched-pair analysis from SMILES or OpenEye molecule objects.
 - Python facade APIs for ergonomic molecule loading, property loading, pair
   queries, transform summaries, and dataframe export.
-- C++ APIs for fragmentation, in-memory indexing, query filtering, and scoring.
+- C++ APIs for fragmentation, pairwise DMCSS analysis, in-memory indexing,
+  query filtering, and scoring.
 - A focused RDKit comparison harness for measuring pair-surface agreement and
   runtime on shared SMILES data.
 
-The analyzer method boundary is in place for later DMCSS and OEMedChem
-backends, but `fragmentation` is the only implemented method today. Later
-phases will add larger-scale storage and workflow layers. DuckDB-backed
+The analyzer method boundary supports `fragmentation` and the initial `dmcss`
+backend. `oemedchem` is still reserved for a later native toolkit integration.
+Later phases will add larger-scale storage and workflow layers. DuckDB-backed
 analytics, native method integrations, persistent transform-table generation,
 and production CLI analytics are intentionally deferred and are not required for
 the current API.

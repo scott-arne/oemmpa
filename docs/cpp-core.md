@@ -1,6 +1,6 @@
 # C++ Core
 
-The Phase 1 C++ surface is an in-memory matched-pair core. Include the umbrella
+The C++ surface is an in-memory matched-pair core. Include the umbrella
 header for user-facing code:
 
 ```cpp
@@ -13,7 +13,8 @@ All public types live in the `OEMMPA` namespace.
 
 `Analyzer` is the main user-facing C++ entry point. The default constructor
 uses the fragmentation method; `Analyzer("fragmentation")` selects it
-explicitly.
+explicitly. `Analyzer("dmcss")` selects the initial pairwise maximum common
+substructure backend.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -29,10 +30,10 @@ std::vector<OEMMPA::MatchedPair> pairs = analyzer.GetPairs();
 Non-empty external IDs must be unique. Adding molecules or properties invalidates
 prior analysis results until `Analyze()` succeeds again.
 
-`Analyzer::GetMethodName()` returns the selected method name. `dmcss` and
-`oemedchem` are reserved Phase 2 method names, but currently raise
-`InvalidQueryError` until those backends are implemented. Unknown method names
-also raise `InvalidQueryError`.
+`Analyzer::GetMethodName()` returns the selected method name. `oemedchem` is a
+reserved Phase 2 method name and currently raises `InvalidQueryError` until the
+native toolkit backend is implemented. Unknown method names also raise
+`InvalidQueryError`.
 
 ## Data Objects
 
@@ -88,11 +89,19 @@ distinct tested behavior.
 - `GetPairs()`
 - `GetTransforms()`
 
-`FragmentationMethod` is the implemented backend. It fragments staged molecules
-into a `MemoryIndex`, then answers pair and transform queries from that index.
-The method-selection layer keeps this backend behind `AnalysisMethod` so DMCSS
-and OEMedChem can be added without changing the common pair and transform
-result model.
+`FragmentationMethod` fragments staged molecules into a `MemoryIndex`, then
+answers pair and transform queries from that index.
+
+`DMCSSMethod` is an initial pairwise disconnected MCS backend built on OEChem's
+maximum common substructure search. It recursively finds common components over
+the unmatched atoms, emits the same `MatchedPair` and `Transform` objects as the
+fragmentation backend, labels constant/variable attachment points with the same
+`[*:n]` convention, and honors the common symmetric and heavy-atom query
+filters. The first slice is intentionally conservative: it emits heavy-atom
+substitutions where both variables have matching attachment counts.
+
+The method-selection layer keeps both backends behind `AnalysisMethod` so later
+OEMedChem integration can use the same pair and transform result model.
 
 `MemoryIndex` stores molecule records and fragmentations in constant buckets. It
 deduplicates fragmentations and builds matched pairs from molecules that share a
@@ -130,7 +139,7 @@ IDs, loading reports, result wrappers, and dataframe helpers.
 
 ## Current Scope
 
-The C++ core is intentionally in-memory at this stage. DMCSS and OEMedChem
-method names are reserved behind the analyzer method boundary, but their
-backends are not implemented yet. DuckDB persistence, persistent transform-table
-generation, and production CLI analytics are later phases.
+The C++ core is intentionally in-memory at this stage. The fragmentation and
+DMCSS methods are implemented behind the analyzer method boundary. OEMedChem,
+DuckDB persistence, persistent transform-table generation, and production CLI
+analytics are later phases.

@@ -13,8 +13,8 @@ from ._results import (
 class Analyzer:
     """Pythonic matched-pair analyzer facade.
 
-    :param method: Analysis method to use. Currently only ``"fragmentation"``
-        is supported.
+    :param method: Analysis method to use. Supported values are
+        ``"fragmentation"`` and ``"dmcss"``.
     :raises ValueError: If ``method`` is unsupported.
     """
 

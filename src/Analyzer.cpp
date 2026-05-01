@@ -1,5 +1,6 @@
 #include "oemmpa/Analyzer.h"
 
+#include "oemmpa/DMCSSMethod.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/MoleculeRecord.h"
@@ -40,7 +41,10 @@ std::unique_ptr<AnalysisMethod> make_analysis_method(const std::string& method_n
     if (method_name == kFragmentationMethodName) {
         return std::make_unique<FragmentationMethod>();
     }
-    if (method_name == "dmcss" || method_name == "oemedchem") {
+    if (method_name == "dmcss") {
+        return std::make_unique<DMCSSMethod>();
+    }
+    if (method_name == "oemedchem") {
         throw InvalidQueryError("analysis method is not available: " + method_name);
     }
 

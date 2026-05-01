@@ -13,10 +13,13 @@ analyzer = Analyzer()
 ```
 
 The default method is `fragmentation`. `Analyzer(method="fragmentation")`
-selects it explicitly, and `analyzer.method` reports the selected method.
-`dmcss` and `oemedchem` are reserved method names, but currently raise
-`ValueError` with an unavailable-method message until those backends are
-implemented. Unknown method names also raise `ValueError`.
+selects it explicitly. `Analyzer(method="dmcss")` selects the initial pairwise
+maximum common substructure backend. `analyzer.method` reports the selected
+method.
+
+`oemedchem` is a reserved method name and currently raises `ValueError` with an
+unavailable-method message until that native toolkit backend is implemented.
+Unknown method names also raise `ValueError`.
 
 ### add_molecule
 
@@ -182,8 +185,8 @@ lets direct single-row failures propagate.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose DuckDB-backed persistence, DMCSS,
-OEMedChem-specific workflows, persistent transform-table generation, or
-production CLI analytics. The method-selection boundary is in place so DMCSS
-and OEMedChem can be added without changing the basic `Analyzer` loading and
-query workflow or the common result objects.
+OEMMPA does not yet expose DuckDB-backed persistence, OEMedChem-specific
+workflows, persistent transform-table generation, or production CLI analytics.
+The method-selection boundary is in place so later methods can be added without
+changing the basic `Analyzer` loading and query workflow or the common result
+objects.

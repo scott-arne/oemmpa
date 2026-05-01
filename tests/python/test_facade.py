@@ -46,6 +46,48 @@ def test_explicit_fragmentation_method_uses_common_result_model():
     assert "method_options" not in row
 
 
+def test_dmcss_method_uses_common_result_model():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer(method="dmcss")
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    pair = analyzer.analyze().pairs()[0]
+    row = pair.to_dict()
+
+    assert analyzer.method == "dmcss"
+    assert row["source_id"] in {"tol", "phenol"}
+    assert row["target_id"] in {"tol", "phenol"}
+    assert row["constant"]
+    assert row["source_variable"]
+    assert row["target_variable"]
+    assert "method" not in row
+    assert "method_options" not in row
+
+
+def test_dmcss_method_builds_disconnected_constants_for_changed_linkers():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer(method="dmcss")
+    analyzer.add_molecule("c1ccccc1CCc2ccccc2", id="diphenylethane")
+    analyzer.add_molecule("c1ccccc1Oc2ccccc2", id="diphenyl_ether")
+
+    rows = analyzer.analyze().pairs().to_dicts()
+    row = next(
+        row
+        for row in rows
+        if row["source_id"] == "diphenylethane"
+        and row["target_id"] == "diphenyl_ether"
+    )
+
+    assert row["cut_count"] == 2
+    assert "." in row["constant"]
+    assert row["heavy_atom_delta"] == -1
+    assert row["source_variable"].count("[*:") == 2
+    assert row["target_variable"].count("[*:") == 2
+
+
 def test_facade_property_delta_delegates_to_pair_wrapper():
     from oemmpa import Analyzer
 
@@ -106,9 +148,6 @@ def test_unsupported_method_raises_value_error():
 
 def test_future_methods_raise_unavailable_value_error():
     from oemmpa import Analyzer
-
-    with pytest.raises(ValueError, match="analysis method is not available"):
-        Analyzer(method="dmcss")
 
     with pytest.raises(ValueError, match="analysis method is not available"):
         Analyzer(method="oemedchem")
