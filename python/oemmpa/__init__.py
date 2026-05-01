@@ -177,6 +177,70 @@ def _preload_bundled_libs():
             remaining = failed
 
 
+def _preload_extension_openeye_libs():
+    """Preload OpenEye libraries named by the build-tree extension.
+
+    Development builds can produce a shared extension even when generated
+    ``_build_info`` reports ``STATIC``. In that case, importing OpenEye first
+    masks missing runtime resolution, while a fresh package import fails before
+    the extension can load. Read only this extension's linked OpenEye library
+    names and load matching files from the OpenEye runtime directory.
+    """
+    import ctypes
+
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    extension_path = os.path.join(pkg_dir, "_oemmpa.so")
+    if not os.path.exists(extension_path):
+        return
+
+    try:
+        with open(extension_path, "rb") as extension:
+            linked = extension.read()
+    except OSError:
+        return
+
+    pattern = (
+        rb"lib(?:oechem|oemath|oesystem|oeplatform|oezstd|zstd)"
+        rb"[A-Za-z0-9._+-]*(?:\.dylib|\.so(?:\.\d+)*)"
+    )
+    lib_names = {
+        match.decode("utf-8", errors="ignore")
+        for match in re.findall(pattern, linked)
+    }
+    if not lib_names:
+        return
+
+    try:
+        from openeye import libs
+        oe_lib_dir = libs.FindOpenEyeDLLSDirectory()
+    except (ImportError, Exception):
+        return
+
+    if not os.path.isdir(oe_lib_dir):
+        return
+
+    def load_order(lib_name):
+        order = (
+            "libzstd",
+            "liboeplatform",
+            "liboesystem",
+            "liboemath",
+            "liboechem",
+        )
+        for index, prefix in enumerate(order):
+            if lib_name.startswith(prefix):
+                return index
+        return len(order)
+
+    for lib_name in sorted(lib_names, key=load_order):
+        path = os.path.join(oe_lib_dir, lib_name)
+        if os.path.exists(path):
+            try:
+                ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                pass
+
+
 def _check_openeye_version():
     """Check that the OpenEye version matches what was used at build time."""
     try:
@@ -215,20 +279,69 @@ def _check_openeye_version():
 _ensure_library_compat()
 _preload_shared_libs()
 _preload_bundled_libs()
+_preload_extension_openeye_libs()
 _check_openeye_version()
 
 from . import _oemmpa  # type: ignore
 from . import oemmpa as _swig_proxy
 
-for _name in dir(_swig_proxy):
-    if not _name.startswith("_") and not hasattr(_oemmpa, _name):
-        setattr(_oemmpa, _name, getattr(_swig_proxy, _name))
+_RAW_BINDING_EXPORTS = (
+    "AnalysisMethod",
+    "AnalysisStateError",
+    "Analyzer",
+    "CutBond",
+    "CutBondVector",
+    "DuplicateIdError",
+    "Fragmentation",
+    "FragmentationError",
+    "FragmentationMethod",
+    "FragmentationStrategy",
+    "FragmentationVector",
+    "Fragmenter",
+    "InvalidMoleculeError",
+    "InvalidQueryError",
+    "LoadError",
+    "LoadErrorVector",
+    "LoadReport",
+    "MatchedPair",
+    "MatchedPairVector",
+    "MemoryIndex",
+    "MissingPropertyError",
+    "MoleculeRecord",
+    "OEMMPAError",
+    "PairScoring",
+    "QueryOptions",
+    "ScoringMode_FewerCutsThenHeavyAtomChange",
+    "ScoringMode_FewerCutsThenHeavyBondChange",
+    "ScoringMode_KeepAll",
+    "ScoringMode_MinimalHeavyAtomChange",
+    "ScoringMode_MinimalHeavyBondChange",
+    "ScoringOptions",
+    "SmartsFragmentationStrategy",
+    "StringVector",
+    "Transform",
+    "TransformVector",
+)
+
+_missing_raw_exports = []
+for _name in _RAW_BINDING_EXPORTS:
+    if hasattr(_swig_proxy, _name):
+        if not hasattr(_oemmpa, _name):
+            setattr(_oemmpa, _name, getattr(_swig_proxy, _name))
+    else:
+        _missing_raw_exports.append(_name)
+
+if _missing_raw_exports:
+    raise ImportError(
+        "generated oemmpa wrapper is missing raw exports: "
+        + ", ".join(_missing_raw_exports)
+    )
 
 from .oemmpa import (
     calculate_molecular_weight,
 )
 
-del _name, _swig_proxy
+del _missing_raw_exports, _name, _swig_proxy
 
 __all__ = [
     "__version__",
