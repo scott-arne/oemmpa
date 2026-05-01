@@ -372,6 +372,13 @@ if _missing_raw_exports:
 from .oemmpa import (
     calculate_molecular_weight,
 )
+from ._facade import Analyzer
+from ._results import (
+    PairCollection,
+    PairResult,
+    TransformCollection,
+    TransformResult,
+)
 
 del _missing_raw_exports, _name, _swig_proxy
 
@@ -379,5 +386,10 @@ __all__ = [
     "__version__",
     "__version_info__",
     "_oemmpa",
+    "Analyzer",
+    "PairCollection",
+    "PairResult",
+    "TransformCollection",
+    "TransformResult",
     "calculate_molecular_weight",
 ]
