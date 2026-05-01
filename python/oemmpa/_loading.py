@@ -22,20 +22,20 @@ class LoadReport:
 
     :param accepted_ids: Facade molecule identifiers accepted by the analyzer.
     :param errors: Per-row loading errors.
-    :param accepted_count: Number of accepted molecules.
-    :param rejected_count: Number of rejected rows or row-level failures.
     """
 
     accepted_ids: list[str] = field(default_factory=list)
     errors: list[RowError] = field(default_factory=list)
-    accepted_count: int = 0
-    rejected_count: int = 0
 
-    def __post_init__(self):
-        if self.accepted_ids and self.accepted_count == 0:
-            self.accepted_count = len(self.accepted_ids)
-        if self.errors and self.rejected_count == 0:
-            self.rejected_count = len(self.errors)
+    @property
+    def accepted_count(self):
+        """Number of accepted molecules."""
+        return len(self.accepted_ids)
+
+    @property
+    def rejected_count(self):
+        """Number of rejected rows or row-level failures."""
+        return len(self.errors)
 
     def record_accepted(self, molecule_id):
         """Record an accepted facade molecule identifier.
@@ -45,7 +45,6 @@ class LoadReport:
         :returns: ``None``.
         """
         self.accepted_ids.append(str(molecule_id))
-        self.accepted_count += 1
 
     def record_rejected(self, row, message):
         """Record a rejected source row.
@@ -55,7 +54,6 @@ class LoadReport:
         :returns: ``None``.
         """
         self.errors.append(RowError(row=int(row), message=str(message)))
-        self.rejected_count += 1
 
 
 def iter_dataframe_records(frame):
@@ -152,6 +150,8 @@ def _sequence_to_mapping(row, columns):
 def _column_values(values):
     if isinstance(values, (str, bytes, bytearray)):
         raise TypeError("mapping columns must be non-string sequences")
+    if isinstance(values, Sequence):
+        return values
     try:
         return list(values)
     except TypeError as exc:

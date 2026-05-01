@@ -117,27 +117,33 @@ class Analyzer:
         report = LoadReport()
         property_columns = list(property_columns or ())
 
-        try:
-            rows = list(iter_dataframe_records(frame))
-        except Exception as exc:
-            report.record_rejected(1, exc)
-            return report
-
-        for row_number, row in rows:
+        rows = iter(iter_dataframe_records(frame))
+        next_error_row = 1
+        while True:
             try:
-                molecule = row[smiles_column]
-                molecule_id = row.get(id_column) if id_column is not None else None
+                row_number, row = next(rows)
+            except StopIteration:
+                break
+            except Exception as exc:
+                report.record_rejected(next_error_row, exc)
+                break
+
+            next_error_row = row_number + 1
+            try:
+                molecule, molecule_id, properties = self._coerce_dataframe_row(
+                    row,
+                    smiles_column,
+                    id_column,
+                    property_columns,
+                )
                 accepted_id = self.add_molecule(molecule, id=molecule_id)
+                for property_name, value in properties:
+                    self.add_property(accepted_id, property_name, value)
             except Exception as exc:
                 report.record_rejected(row_number, exc)
                 continue
 
             report.record_accepted(accepted_id)
-            for property_name in property_columns:
-                try:
-                    self.add_property(accepted_id, property_name, row[property_name])
-                except Exception as exc:
-                    report.record_rejected(row_number, f"{property_name}: {exc}")
         return report
 
     def add_property(self, molecule_id, name, value):
@@ -219,3 +225,35 @@ class Analyzer:
         except IndexError:
             molecule_id = None
         return molecule, molecule_id
+
+    @staticmethod
+    def _coerce_dataframe_row(row, smiles_column, id_column, property_columns):
+        try:
+            molecule = row[smiles_column]
+        except KeyError as exc:
+            raise KeyError(f"missing smiles column: {smiles_column}") from exc
+
+        molecule_id = None
+        if id_column is not None:
+            try:
+                molecule_id = row[id_column]
+            except KeyError as exc:
+                raise KeyError(f"missing id column: {id_column}") from exc
+            if molecule_id is None or str(molecule_id) == "":
+                raise ValueError(f"id column {id_column!r} must not be blank")
+
+        properties = []
+        for property_name in property_columns:
+            property_key = str(property_name)
+            if not property_key:
+                raise ValueError("property column name must not be blank")
+            try:
+                property_value = row[property_name]
+            except KeyError as exc:
+                raise KeyError(f"missing property column: {property_name}") from exc
+            try:
+                properties.append((property_key, float(property_value)))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{property_name}: {exc}") from exc
+
+        return molecule, molecule_id, properties

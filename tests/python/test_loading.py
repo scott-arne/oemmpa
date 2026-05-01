@@ -138,30 +138,34 @@ def test_add_molecules_from_dataframe_supports_polars_like_iter_rows():
     from oemmpa import Analyzer
 
     class PolarsLikeFrame:
-        columns = ["smiles", "id", "pIC50"]
+        columns = ["smiles", "pIC50"]
 
         def iter_rows(self):
-            yield ("Cc1ccccc1", None, 6.0)
-            yield ("Oc1ccccc1", "phenol", 7.0)
+            yield ("Cc1ccccc1", 6.0)
+            yield ("Oc1ccccc1", 7.0)
 
     analyzer = Analyzer()
 
     report = analyzer.add_molecules_from_dataframe(
         PolarsLikeFrame(),
         smiles_column="smiles",
-        id_column="id",
         property_columns=["pIC50"],
     )
 
     assert report.accepted_count == 2
     assert report.accepted_ids[0].startswith("molecule_")
-    assert report.accepted_ids[1] == "phenol"
+    assert report.accepted_ids[1].startswith("molecule_")
+    assert report.accepted_ids[0] != report.accepted_ids[1]
 
-    pair = _pair_between(analyzer.analyze().pairs(), report.accepted_ids[0], "phenol")
+    pair = _pair_between(
+        analyzer.analyze().pairs(),
+        report.accepted_ids[0],
+        report.accepted_ids[1],
+    )
     assert pair.property_delta("pIC50") == pytest.approx(1.0)
 
 
-def test_dataframe_property_failures_are_reported_after_accepting_molecule():
+def test_dataframe_property_failures_are_reported_without_accepting_molecule():
     from oemmpa import Analyzer
 
     frame = [
@@ -177,8 +181,131 @@ def test_dataframe_property_failures_are_reported_after_accepting_molecule():
         property_columns=["pIC50"],
     )
 
-    assert report.accepted_ids == ["toluene", "phenol"]
-    assert report.accepted_count == 2
+    assert report.accepted_ids == ["toluene"]
+    assert report.accepted_count == 1
     assert report.rejected_count == 1
     assert report.errors[0].row == 2
     assert "pIC50" in report.errors[0].message
+
+
+def test_dataframe_iterator_errors_preserve_already_accepted_rows():
+    from oemmpa import Analyzer
+
+    class FailingFrame:
+        def iterrows(self):
+            yield 10, {"smiles": "Cc1ccccc1", "id": "toluene"}
+            raise RuntimeError("late iterator failure")
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_dataframe(
+        FailingFrame(),
+        smiles_column="smiles",
+        id_column="id",
+    )
+
+    assert report.accepted_ids == ["toluene"]
+    assert report.accepted_count == 1
+    assert report.rejected_count == 1
+    assert report.errors[0].row == 2
+    assert "late iterator failure" in report.errors[0].message
+
+
+def test_dataframe_missing_explicit_id_column_rejects_rows():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_dataframe(
+        {"smiles": ["Cc1ccccc1"]},
+        smiles_column="smiles",
+        id_column="missing_id",
+    )
+
+    assert report.accepted_count == 0
+    assert report.rejected_count == 1
+    assert "missing_id" in report.errors[0].message
+
+
+def test_dataframe_blank_explicit_id_value_rejects_row():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_dataframe(
+        {
+            "smiles": ["Cc1ccccc1"],
+            "id": [""],
+        },
+        smiles_column="smiles",
+        id_column="id",
+    )
+
+    assert report.accepted_count == 0
+    assert report.rejected_count == 1
+    assert "id" in report.errors[0].message
+
+
+def test_dataframe_missing_property_column_rejects_without_mutating_analyzer():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_dataframe(
+        {
+            "smiles": ["Cc1ccccc1"],
+            "id": ["toluene"],
+        },
+        smiles_column="smiles",
+        id_column="id",
+        property_columns=["pIC50"],
+    )
+
+    assert report.accepted_count == 0
+    assert report.rejected_count == 1
+    assert "pIC50" in report.errors[0].message
+
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    assert len(analyzer.analyze().pairs()) == 0
+
+
+def test_dataframe_invalid_property_value_rejects_without_mutating_analyzer():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_dataframe(
+        {
+            "smiles": ["Cc1ccccc1"],
+            "id": ["toluene"],
+            "pIC50": ["6.0"],
+            "logD": ["not-numeric"],
+        },
+        smiles_column="smiles",
+        id_column="id",
+        property_columns=["pIC50", "logD"],
+    )
+
+    assert report.accepted_count == 0
+    assert report.rejected_count == 1
+    assert "logD" in report.errors[0].message
+
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    assert len(analyzer.analyze().pairs()) == 0
+
+
+def test_load_report_counts_are_derived_from_rows():
+    from oemmpa import LoadReport
+
+    report = LoadReport(accepted_ids=["toluene"])
+    assert report.accepted_count == 1
+    assert report.rejected_count == 0
+
+    report.accepted_ids.append("phenol")
+    report.record_rejected(3, "bad row")
+
+    assert report.accepted_count == 2
+    assert report.rejected_count == 1
+
+    with pytest.raises(TypeError):
+        LoadReport(accepted_count=99)
