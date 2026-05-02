@@ -1,0 +1,43 @@
+phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	status	notes
+7	mmpdb	test_fragment.py	TestSmilesParser.test_space_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_space_gz_as_default	-	-	deferred	Phase 8 will add gzip input parity.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_tab_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_two_tabs_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_comma_as_default	-	-	deferred	Phase 8 will decide comma delimiter behavior.
+7	mmpdb	test_fragment.py	TestOptions.test_max_heavies	-	-	deferred	Phase 8 will add heavy-atom filtering.
+7	mmpdb	test_fragment.py	TestOptions.test_max_rotatable_bonds	-	-	deferred	Phase 8 will add rotatable-bond filtering.
+7	mmpdb	test_fragment.py	TestOptions.test_rotatable_smarts	-	-	deferred	Phase 8 will add rotatable SMARTS validation.
+7	mmpdb	test_fragment.py	TestOptions.test_cut_smarts	-	-	deferred	Phase 8 will align cut SMARTS validation.
+7	mmpdb	test_fragment.py	TestOptions.test_num_cuts	tests/cpp/test_fragmenter.cpp	DefaultsToOneThroughThreeCuts	matched	OEMMPA already supports one through three cuts by default.
+7	mmpdb	test_fragment.py	TestFragmentCutRGroups.test_one_cut_rgroup	-	-	deferred	Phase 8 will decide whether cut R-group conversion belongs in OEMMPA.
+7	mmpdb	test_fragment.py	TestSmiFrag.test_num_cuts	tests/cpp/test_fragmenter.cpp	TwoCutFragmentationUsesSequentialAttachmentLabels	matched	Current C++ tests cover two-cut label behavior.
+7	mmpdb	test_index.py	TestIndexCommandline.test_default_filters	-	-	deferred	Phase 9 will add MMPDB-style index option parity.
+7	mmpdb	test_index.py	TestIndexCommandline.test_set_filters	-	-	deferred	Phase 9 will add variable-size and symmetry filters.
+7	mmpdb	test_index.py	TestIndexCommandline.test_max_variable_heavies_none	-	-	deferred	Phase 9 will add index filter option parity.
+7	mmpdb	test_index.py	TestIndexCommandline.test_with_properties	tests/python/test_mmpdb_parity.py	test_mmpdb_reference_properties_can_be_loaded_with_molecules	matched	OEMMPA can load properties with molecule records, but database refresh parity remains Phase 9.
+7	mmpdb	test_loadprops.py	TestLoadpropsCommandline.test_loadprops	-	-	deferred	Phase 9 will add database-backed property refresh and rule-environment statistics.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_basic	-	-	deferred	Phase 10 will add rule-environment-aware transform queries.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_MP_property	tests/python/test_mmpdb_parity.py	test_mmpdb_reference_mp_statistics_preserve_directional_moments	accepted divergence	OEMMPA currently computes directional transform-level moments; Phase 10 will add rule-environment grouping.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_no_properties	-	-	deferred	Phase 10 will add transform query output controls.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_radius	-	-	deferred	Phase 10 will add radius filters after Phase 9 environments.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_substructure	-	-	deferred	Phase 10 will add substructure filters.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_min_pairs	tests/python/test_mmpdb_parity.py	test_mmpdb_generate_min_pairs_matches_collection_generation_support_filter	matched	Current generation support filtering mirrors the simple minimum-pair case for observed transforms.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_where	-	-	deferred	Phase 10 will decide where-expression support.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_score	-	-	deferred	Phase 10 will decide score-expression support.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_output	-	-	deferred	CLI output design is deferred to a separate follow-up.
+7	mmpdb	test_analysis.py	TestTransformCommand.test_output_gz	-	-	deferred	CLI output design is deferred to a separate follow-up.
+7	mmpdb	test_analysis.py	TestPredictCommand.test_MW_basic	tests/python/test_mmpdb_parity.py	test_cli_predict_matches_mmpdb_predict_basic_examples	matched	Current CLI covers a simple transform-level prediction example; rule-environment prediction remains Phase 10.
+7	mmpdb	test_analysis.py	TestPredictCommand.test_save_details	-	-	deferred	Phase 10 will add detailed prediction outputs in the API first.
+7	mmpdb	test_analysis.py	generate_hydrogen_deletion	tests/python/test_mmpdb_parity.py	test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope	unsupported	MMPDB emits hydrogen deletion transforms that OEMMPA does not yet support.
+7	mmpdb	test_list.py	TestList.test_recount	-	-	deferred	Phase 9 will add database count and recount parity.
+7	mmpdb	test_list.py	TestList.test_all	-	-	deferred	Phase 9 will add dataset option and count reporting internals.
+7	mmpdb	test_rgroup2smarts.py	TestSmilesOnCommandline.test_one_smiles	-	-	deferred	Cut R-group conversion is an open decision for Phase 8 or the CLI follow-up.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Phase 8 will add RDKit default FragmentMol parity tests.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	Phase 8 will compare string fragmentation output.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test3	-	-	deferred	Phase 8 will decide pattern argument parity.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	-	-	deferred	Phase 8 will add multi-cut fragmentation comparison.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test5	-	-	deferred	Phase 8 will add cut-bond limit behavior.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test6	-	-	deferred	Phase 8 will compare minCuts and maxCuts union behavior.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	-	-	deferred	Phase 8 will compare larger multi-cut examples.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test8	-	-	deferred	Phase 8 will decide explicit bond-list parity.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test9	tests/cpp/test_fragmenter.cpp	InvalidCutBoundsThrowFragmentationError	matched	OEMMPA already rejects invalid cut bounds.
