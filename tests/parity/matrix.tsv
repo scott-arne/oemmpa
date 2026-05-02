@@ -29,8 +29,8 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	mmpdb	test_analysis.py	TestPredictCommand.test_MW_basic	tests/python/test_mmpdb_parity.py	test_cli_predict_matches_mmpdb_predict_basic_examples	matched	Current CLI covers a simple transform-level prediction example; rule-environment prediction remains Phase 10.
 7	mmpdb	test_analysis.py	TestPredictCommand.test_save_details	-	-	deferred	Phase 10 will add detailed prediction outputs in the API first.
 7	mmpdb	test_analysis.py	generate_hydrogen_deletion	tests/python/test_mmpdb_parity.py	test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope	unsupported	MMPDB emits hydrogen deletion transforms that OEMMPA does not yet support.
-7	mmpdb	test_list.py	TestList.test_recount	-	-	deferred	Phase 9 will add database count and recount parity.
-7	mmpdb	test_list.py	TestList.test_all	-	-	deferred	Phase 9 will add dataset option and count reporting internals.
+7	mmpdb	test_list.py	TestList.test_recount	-	-	deferred	Phase 9 will add database count and recount parity before CLI list output design.
+7	mmpdb	test_list.py	TestList.test_all	-	-	deferred	Phase 9 will add dataset option and count reporting internals before CLI list output design.
 7	mmpdb	test_rgroup2smarts.py	TestSmilesOnCommandline.test_one_smiles	-	-	deferred	Cut R-group conversion is an open decision for Phase 8 or the CLI follow-up.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Phase 8 will add RDKit default FragmentMol parity tests.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	Phase 8 will compare string fragmentation output.
