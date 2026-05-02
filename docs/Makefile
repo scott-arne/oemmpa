@@ -19,10 +19,12 @@ clean:
 
 # Build HTML documentation.
 html:
+	@mkdir -p _doxygen
 	@$(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) $(O)
 
 # Build with warnings as errors for CI and release checks.
 check:
+	@mkdir -p _doxygen
 	@$(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" -W --keep-going $(SPHINXOPTS) $(O)
 
 # Catch-all target: route all unknown targets to Sphinx.

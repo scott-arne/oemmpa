@@ -1,8 +1,12 @@
 # Python API
 
-The top-level Python API exposes a facade designed for regular analysis use.
-The raw SWIG module remains available under `oemmpa._oemmpa` for lower-level
-control.
+The top-level Python API is the recommended way to use OEMMPA from notebooks,
+scripts, and data-processing pipelines. It accepts SMILES strings and OpenEye
+molecule objects, records row-level loading errors, and returns Python objects
+that can be converted to dictionaries or dataframes.
+
+Advanced users can still access the lower-level SWIG module at
+`oemmpa._oemmpa` when they need direct control over the C++ classes.
 
 ## Analyzer
 
@@ -12,11 +16,11 @@ from oemmpa import Analyzer
 analyzer = Analyzer()
 ```
 
-The default method is `fragmentation`. `Analyzer(method="fragmentation")`
-selects it explicitly. `Analyzer(method="dmcss")` selects the initial pairwise
-maximum common substructure backend. `Analyzer(method="oemedchem")` selects the
-initial native OpenEye OEMedChem backend. `analyzer.method` reports the
-selected method. Unknown method names raise `ValueError`.
+The default method is `fragmentation`. You can request it explicitly with
+`Analyzer(method="fragmentation")`. `Analyzer(method="dmcss")` uses pairwise
+disconnected maximum common substructure analysis, and
+`Analyzer(method="oemedchem")` uses OpenEye OEMedChem. `analyzer.method`
+reports the selected method. Unknown method names raise `ValueError`.
 
 ### add_molecule
 
@@ -25,8 +29,8 @@ molecule_id = analyzer.add_molecule("Cc1ccccc1", id="tol")
 ```
 
 `molecule` may be a SMILES string or a supported OpenEye molecule object. The
-returned value is the facade ID used by Python result wrappers and property
-loading. If `id` is omitted, the facade generates and returns a unique ID.
+returned value is the molecule ID used later for property loading and results.
+If `id` is omitted, OEMMPA generates and returns a unique ID.
 
 ### add_molecules
 
@@ -48,9 +52,9 @@ as `RowError(row, message)` objects in `report.errors`.
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
-The file format is whitespace-delimited `SMILES [id]`. This function keeps a
-lightweight loader in the Python facade; DuckDB-enabled builds also provide
-C++-layer file loading for persistent workflows.
+The file format is whitespace-delimited `SMILES [id]`. For large file-based
+projects, DuckDB-enabled builds can also load the same kind of file directly
+into a database-backed store.
 
 ### add_molecules_from_dataframe
 
@@ -63,7 +67,7 @@ report = analyzer.add_molecules_from_dataframe(
 )
 ```
 
-Supported dataframe-like inputs:
+Supported dataframe-like inputs include:
 
 - Mapping of columns, such as `{"smiles": [...], "id": [...]}`.
 - pandas-like frames exposing `iterrows()`.
@@ -79,8 +83,8 @@ loading unless the supplied object already comes from that package.
 analyzer.add_property("tol", "pIC50", 6.0)
 ```
 
-Properties are numeric and keyed by facade molecule ID. Property deltas on pairs
-are directional: target value minus source value.
+Properties are numeric and keyed by molecule ID. Property deltas on pairs are
+directional: target value minus source value.
 
 ### analyze
 
@@ -88,8 +92,8 @@ are directional: target value minus source value.
 analyzer.analyze()
 ```
 
-`analyze()` returns `self` for chaining. Querying pairs or transforms before a
-successful analysis raises from the raw layer.
+`analyze()` returns `self` so it can be chained. Asking for pairs or
+transformations before a successful analysis raises an error.
 
 ### pairs
 
@@ -114,9 +118,10 @@ print(pair.to_dict())
 `PairResult.to_dict()` returns identifiers, fragment strings, transform SMILES,
 cut count, and heavy-atom/heavy-bond deltas.
 
-The Python facade uses MMPDB naming: `constant` is the shared pairing region,
-and `source_variable`/`target_variable` are the changing regions. `context` is
-reserved for future atom-environment metadata around a change site.
+OEMMPA follows MMPDB naming. `constant` is the part of the molecule shared by a
+matched pair. `source_variable` and `target_variable` are the parts that
+change. The word `context` is reserved for future descriptions of the atom
+environment around a change site.
 
 ### transforms
 
@@ -182,11 +187,10 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
-`GeneratedProductCollection.to_dataframe()` imports pandas or polars lazily,
-matching the pair export helpers.
+`GeneratedProductCollection.to_dataframe()` imports pandas or polars only when
+you request a dataframe.
 
-Pass `statistics=` to attach transform-level prediction metadata to generated
-products:
+Pass `statistics=` to attach predicted property changes to generated products:
 
 ```python
 from oemmpa import compute_transform_statistics, generate_products
@@ -202,21 +206,23 @@ print(products[0].to_dict())
 ```
 
 Invalid source molecules, invalid transform SMIRKS, malformed observed
-transforms, and unsupported observed transforms raise `ValueError` from the
-facade. During collection-level generation, unsupported observed transforms are
-skipped by default and can be made strict with `skip_unsupported=False`. The raw
-C++ binding also exposes `GenerationOptions`, `GeneratedProduct`,
-`GeneratedProductVector`, `TransformApplicator`, `TransformProduct`, and
-`TransformProductVector` through `oemmpa._oemmpa`.
+transformations, and unsupported observed transformations raise `ValueError`.
+During collection-level generation, unsupported observed transformations are
+skipped by default. Use `skip_unsupported=False` if you want the first
+unsupported transformation to stop the job. The lower-level C++ binding also
+exposes `GenerationOptions`, `GeneratedProduct`, `GeneratedProductVector`,
+`TransformApplicator`, `TransformProduct`, and `TransformProductVector` through
+`oemmpa._oemmpa`.
 
-Observed-transform conversion currently supports single-cut, single-atom
-variables such as `C[*:1]>>O[*:1]`. Multi-atom and multi-cut transforms raise
-explicit errors until their reaction semantics are implemented.
+Observed-transform conversion currently supports single-cut transformations
+where the changing group is a single atom, such as `C[*:1]>>O[*:1]`. Multi-atom
+and multi-cut transformations raise explicit errors for now.
 
 ## Transform Statistics And Prediction
 
-`compute_transform_statistics()` consumes a transform collection and a property
-name, then aggregates all property-bearing pairs behind each transform.
+`compute_transform_statistics()` takes a set of observed transformations and a
+property name, then summarizes the property changes seen for each
+transformation.
 
 ```python
 from oemmpa import compute_transform_statistics, predict_transform_delta
@@ -239,14 +245,14 @@ prediction = predict_transform_delta(
 print(prediction.to_dict())
 ```
 
-The statistics result names follow MMPDB's aggregate surface: `count`, `avg`,
-`std`, `kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`,
-`paired_t`, and `p_value`. Standard deviation uses sample variance. Quartiles
-use the same method-3 convention used by MMPDB. SciPy is imported lazily and is
-only needed for `p_value`; unsupported p-values are returned as `None`.
+The statistics result names follow MMPDB conventions: `count`, `avg`, `std`,
+`kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`, `paired_t`, and
+`p_value`. Standard deviation uses sample variance, and quartiles use the same
+method-3 convention used by MMPDB. SciPy is imported only when needed for
+`p_value`; unsupported p-values are returned as `None`.
 
-`TransformStatisticsCollection.to_dataframe()` mirrors the other export helpers
-and imports pandas or polars only when requested.
+`TransformStatisticsCollection.to_dataframe()` can export to pandas or polars
+when those packages are available.
 
 ## CLI
 
@@ -272,8 +278,8 @@ python -m oemmpa_cli generate \
   --source Cc1ccccc1
 ```
 
-The current CLI commands use the in-memory analyzer. DuckDB-backed materialized
-statistics can be added later without changing the file formats.
+The current CLI commands read files and run the analysis in memory. Stored
+database statistics can be added later without changing the file formats.
 
 ## Dataframe Export
 
@@ -298,13 +304,13 @@ if duckdb_available():
     store = DuckDBStore("analysis.duckdb")
 ```
 
-`DuckDBStore` is a Python wrapper around the raw C++ store. It keeps file and
-property loading in C++ while returning Python `LoadReport` and result wrapper
-objects. The physical schema follows MMPDB's normalized model with
+`DuckDBStore` saves molecules, properties, and analyzed pairs in a DuckDB
+database. It keeps large file loading close to the database while still
+returning familiar Python `LoadReport`, pair, and transformation objects. The
+table layout follows the main MMPDB matched-pair database, including
 `compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
-`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`
-tables. Raw fragmentations are intentionally not exposed as a stable queryable
-table yet.
+`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
+Raw fragmentations are not exposed as a stable database table yet.
 
 ```python
 store.load_molecules_from_file("molecules.smi")
@@ -316,14 +322,16 @@ print(store.row_count("compound"))
 print(store.row_count("pair"))
 ```
 
-`load_properties_from_csv()` follows the same long-form property model as the
-C++ layer: one row per molecule ID, one column per numeric property, `*` or
-blank for missing values, and row-level errors for unknown IDs or non-numeric
-values. When `property_columns` is omitted, all non-ID columns are loaded.
+`load_properties_from_csv()` expects one row per molecule ID and one column per
+numeric property. Values of `*` or blank strings are treated as missing. Rows
+with unknown molecule IDs or non-numeric property values are reported as
+row-level errors. When `property_columns` is omitted, all non-ID columns are
+loaded.
 
-## Raw Binding Access
+## Advanced C++ Binding Access
 
-The raw SWIG layer is available as `oemmpa._oemmpa`.
+Most users do not need this section. The lower-level C++ binding is available
+as `oemmpa._oemmpa` for users who need direct access to options and C++ classes.
 
 ```python
 from oemmpa import Analyzer, _oemmpa
@@ -340,27 +348,24 @@ analyzer = Analyzer()
 pairs = analyzer.analyze().pairs(options)
 ```
 
-`ScoringOptions` is configuration. `PairScoring` in the C++ layer performs the
-actual pair selection.
+`ScoringOptions` stores pair-selection settings. `PairScoring` in the C++
+library performs the actual selection.
 
 ## Exceptions
 
-The raw layer exposes C++ exception classes such as `OEMMPAError`,
+The lower-level binding exposes C++ exception classes such as `OEMMPAError`,
 `InvalidMoleculeError`, `DuplicateIdError`, `MissingPropertyError`,
-`InvalidQueryError`, `FragmentationError`, and `AnalysisStateError` as binding
-types, but thrown C++ domain errors currently surface in Python as
-`RuntimeError` with the C++ error message. Catch `RuntimeError` at the Python
-boundary unless the SWIG exception mapping is later changed to preserve typed
-Python exceptions.
+`InvalidQueryError`, `FragmentationError`, and `AnalysisStateError`. Errors
+raised from C++ currently appear in Python as `RuntimeError` with the original
+message. Catch `RuntimeError` in Python code unless typed Python exceptions are
+added later.
 
-The facade records row-level loading failures in `LoadReport` for bulk APIs and
-lets direct single-row failures propagate.
+Bulk loading records row-level failures in `LoadReport`. Direct single-molecule
+calls raise errors immediately.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose broader OEMedChem-specific workflows, a separate
-fragment-index store, DuckDB-backed materialized transform refresh, multi-atom
-transform generation, or rule-environment statistics. The method-selection,
-storage, analytics, CLI, and transform-application boundaries are in place so
-later capabilities can be added without changing the basic `Analyzer`
-loading/query workflow or the common result objects.
+OEMMPA does not yet expose broader OEMedChem-specific analyses, a separate
+fragment database, database-backed transformation refresh, multi-atom product
+generation, or rule-environment statistics. These can be added later without
+changing the basic `Analyzer` workflow or the result objects shown above.

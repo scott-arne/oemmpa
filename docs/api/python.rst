@@ -1,8 +1,8 @@
 Python API Reference
 ====================
 
-The high-level Python API is documented in :doc:`../python-api`. This page
-adds generated reference material for the importable Python facade modules.
+The main Python guide is :doc:`../python-api`. This page adds generated
+reference material for the importable Python modules.
 
 Top-Level Package
 -----------------
@@ -17,8 +17,8 @@ Analytics
    :members:
    :undoc-members:
 
-Facade
-------
+Analyzer And Loading
+--------------------
 
 .. automodule:: oemmpa._facade
    :members:

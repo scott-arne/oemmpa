@@ -4,11 +4,8 @@
 
 The documentation build uses Sphinx, MyST, autodoc, Doxygen, Breathe, and
 Exhale. It follows the same Makefile-backed Invoke workflow as `oeselect`.
-Generated files are ignored:
-
-- `docs/_build/`
-- `docs/_doxygen/`
-- `docs/cpp-api/`
+Generated files under `docs/_build/`, `docs/_doxygen/`, and `docs/cpp-api/`
+are ignored by git.
 
 Build strictly with:
 

@@ -1,7 +1,8 @@
 # C++ Core
 
-The C++ surface is an in-memory matched-pair core. Include the umbrella
-header for user-facing code:
+This page summarizes the C++ API for users who want to embed OEMMPA directly
+in a C++ application or extend the library. Include the umbrella header in
+user-facing code:
 
 ```cpp
 #include <oemmpa/oemmpa.h>
@@ -11,11 +12,10 @@ All public types live in the `OEMMPA` namespace.
 
 ## Analyzer
 
-`Analyzer` is the main user-facing C++ entry point. The default constructor
-uses the fragmentation method; `Analyzer("fragmentation")` selects it
-explicitly. `Analyzer("dmcss")` selects the initial pairwise maximum common
-substructure backend. `Analyzer("oemedchem")` selects the initial native
-OpenEye OEMedChem backend.
+`Analyzer` is the main C++ entry point. The default constructor uses the
+fragmentation method. `Analyzer("fragmentation")` selects the same method
+explicitly. `Analyzer("dmcss")` uses pairwise disconnected maximum common
+substructure analysis, and `Analyzer("oemedchem")` uses OpenEye OEMedChem.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -36,26 +36,25 @@ names raise `InvalidQueryError`.
 
 ## Data Objects
 
-`MoleculeRecord` stores the internal ID, optional external ID, canonical SMILES,
-and molecule object used by the analysis method.
+`MoleculeRecord` stores the internal ID, optional user-provided ID, canonical
+SMILES, and molecule object used during analysis.
 
-`Fragmentation` stores one normalized constant/variable record for a molecule
-and cut count.
+`Fragmentation` stores one constant/variable record for a molecule and cut
+count.
 
 `MatchedPair` stores source/target molecule identifiers, source/target SMILES,
 constant SMILES, variable SMILES, transform SMILES, cut count, heavy-atom delta,
 heavy-bond delta, and optional numeric property values.
 
-The public API follows MMPDB terminology. A constant is the shared pairing
-region, while variables are the source and target regions that change.
-`Context` is intentionally reserved for future atom-environment metadata around
-a change site.
+The public API follows MMPDB terminology. A constant is the shared part of a
+matched pair, while variables are the source and target parts that change. The
+word `context` is reserved for future atom-environment information around a
+change site.
 
 `Transform` groups matched pairs by transform SMILES and tracks support count.
 
-`LoadReport` stores accepted IDs and row-level `LoadError` records. The Python
-facade uses it for ergonomic loading reports, and the DuckDB C++ loader methods
-use it for row-level file loading diagnostics.
+`LoadReport` stores accepted IDs and row-level `LoadError` records. It lets
+file-loading code report bad rows without stopping the entire load.
 
 ## Transform Application
 
@@ -75,8 +74,8 @@ std::vector<OEMMPA::TransformProduct> products =
 objects. Invalid source molecules raise `InvalidMoleculeError`; invalid
 transform SMIRKS raise `InvalidQueryError`.
 
-`BuildVariableTransformSmirks()` converts supported observed variable
-transforms to explicit SMIRKS, and `ApplyVariableTransform()` applies them:
+`BuildVariableTransformSmirks()` converts supported observed transformations to
+explicit SMIRKS, and `ApplyVariableTransform()` applies them:
 
 ```cpp
 std::string smirks =
@@ -91,16 +90,16 @@ std::vector<OEMMPA::TransformProduct> products =
     );
 ```
 
-`ApplyPairTransform()` applies the observed transform represented by a
+`ApplyPairTransform()` applies the observed transformation represented by a
 `MatchedPair` to that pair's source molecule. Observed-transform conversion
-currently supports single-cut, single-atom variables. Multi-atom and multi-cut
-transforms raise `InvalidQueryError` until their reaction semantics are
-implemented.
+currently supports single-cut transformations where the changing group is a
+single atom. Multi-atom and multi-cut transformations raise `InvalidQueryError`
+for now.
 
-`GenerateProducts()` applies a transform collection to a source molecule and
-returns `GeneratedProduct` rows with canonical product SMILES, the generating
-transform, and that transform's support count. `GenerationOptions` controls
-minimum support filtering and whether unsupported observed transforms are
+`GenerateProducts()` applies a collection of transformations to a source
+molecule and returns `GeneratedProduct` rows with canonical product SMILES, the
+generating transformation, and its support count. `GenerationOptions` controls
+minimum support filtering and whether unsupported observed transformations are
 skipped or reported as `InvalidQueryError`.
 
 ```cpp
@@ -117,12 +116,12 @@ std::vector<OEMMPA::GeneratedProduct> products =
 
 ## Fragmentation
 
-`FragmentationStrategy` is the abstract bond-selection interface.
-`SmartsFragmentationStrategy` implements SMARTS-backed selection and provides an
+`FragmentationStrategy` defines how cuttable bonds are selected.
+`SmartsFragmentationStrategy` implements SMARTS-based selection and provides an
 `RDKitCompatible()` preset.
 
-`Fragmenter` owns a strategy and generates normalized fragmentation records for
-cut counts from `min_cuts` through `max_cuts`.
+`Fragmenter` uses a strategy to generate fragmentation records for cut counts
+from `min_cuts` through `max_cuts`.
 
 ```cpp
 OEMMPA::Fragmenter fragmenter(
@@ -133,12 +132,13 @@ fragmenter.SetMaxCuts(3);
 ```
 
 Additional named chemistry strategies such as Hussain-Rea, Wirth, MATSY, and
-retrosynthetic rule sets are deferred until they can be represented with
-distinct tested behavior.
+retrosynthetic rule sets can be added once their behavior is represented by
+clear tests.
 
-## Analysis Backend
+## Analysis Methods
 
-`AnalysisMethod` defines the backend interface:
+`AnalysisMethod` defines the common interface used by the available analysis
+methods:
 
 - `Clear()`
 - `AddMolecule()`
@@ -146,51 +146,50 @@ distinct tested behavior.
 - `GetPairs()`
 - `GetTransforms()`
 
-`FragmentationMethod` fragments staged molecules into a `MemoryIndex`, then
-answers pair and transform queries from that index.
+`FragmentationMethod` fragments the loaded molecules, groups compatible
+constant and variable regions, and returns pairs and transformations from that
+analysis.
 
-`DMCSSMethod` is an initial pairwise disconnected MCS backend built on OEChem's
-maximum common substructure search. It recursively finds common components over
-the unmatched atoms, emits the same `MatchedPair` and `Transform` objects as the
-fragmentation backend, labels constant/variable attachment points with the same
-`[*:n]` convention, and honors the common symmetric and heavy-atom query
-filters. The first slice is intentionally conservative: it emits heavy-atom
-substitutions where both variables have matching attachment counts.
+`DMCSSMethod` uses OEChem's maximum common substructure search to find
+disconnected common regions between molecule pairs. It returns the same
+`MatchedPair` and `Transform` objects as the fragmentation method, labels
+constant/variable attachment points with the same `[*:n]` convention, and
+honors the common symmetric and heavy-atom filters. The current implementation
+is intentionally conservative: it emits heavy-atom substitutions where both
+variables have matching attachment counts.
 
 `OEMedChemMethod` wraps OpenEye's native matched-pair analyzer and converts
 native mapped pair SMILES into the same `MatchedPair` and `Transform` objects.
-This first slice indexes single-cut changes with the native Hussain-Rea
-processor, uses Bond0 transform extraction, and keeps OEMedChem-specific
-context out of the common result model. Later slices can add method-specific
-configuration without changing normal `Analyzer` workflows.
+It currently indexes single-cut changes with the native Hussain-Rea processor
+and uses Bond0 transform extraction. Method-specific options can be added later
+without changing normal `Analyzer` use.
 
-`MemoryIndex` stores molecule records and fragmentations in constant buckets. It
-deduplicates fragmentations and builds matched pairs from molecules that share a
-constant but have different variables.
+`MemoryIndex` stores molecule records and fragmentations grouped by constant
+region. It deduplicates fragmentations and builds matched pairs from molecules
+that share a constant but have different variables.
 
 ## DuckDB Storage
 
-`DuckDBStore` is the optional persistent-storage boundary. It is built only
-when `OEMMPA_BUILD_DUCKDB=ON` and CMake finds DuckDB headers and `libduckdb`.
+`DuckDBStore` provides optional DuckDB storage. It is built only when
+`OEMMPA_BUILD_DUCKDB=ON` and CMake finds DuckDB headers and `libduckdb`.
 
 ```cpp
 OEMMPA::DuckDBStore store("analysis.duckdb");
 store.InitializeSchema();
 ```
 
-`InitializeSchema()` creates an MMPDB-style normalized schema: `dataset`,
+`InitializeSchema()` creates MMPDB-style tables: `dataset`,
 `compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
 `environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
 `AddMolecule()` persists molecule rows by internal ID and rejects duplicate
 external IDs. `AddMoleculesFromSmilesFile()` loads whitespace SMILES files
-directly into DuckDB with row-level `LoadReport` errors so large file loads do
-not need to cross the Python/SWIG boundary one molecule at a time.
+directly into DuckDB and reports row-level errors through `LoadReport`.
 `AddMoleculeProperty()` stores or replaces numeric property values for stored
 molecules. `AddPropertiesFromCsvFile()` loads property tables by external ID;
 the default ID-column convention follows MMPDB's `id`/`ID`/`Name`/`name`
 pattern, non-ID columns are inferred when not supplied, and `*` or blank values
 are treated as missing. `AddPair()` and `AddPairs()` persist analyzed pairs into
-normalized rule, rule-environment, constant, and pair tables; `GetPairs()` and
+rule, rule-environment, constant, and pair tables; `GetPairs()` and
 `GetTransforms()` rebuild the common result objects from DuckDB rows. The
 overloads accepting `QueryOptions` support symmetric/asymmetric selection,
 heavy-atom filters, relative heavy-atom filters, and pair scoring over stored
@@ -229,15 +228,15 @@ analyzer.Analyze();
 analyzer.SaveTo(store);
 ```
 
-MMPDB keeps a separate fragment database for raw fragmentations, then stores
-the final matched-pair database in normalized `compound`, `rule_smiles`,
+MMPDB keeps a separate fragment database, then stores the final matched-pair
+database in `compound`, `rule_smiles`,
 `rule`, `environment_fingerprint`, `rule_environment`, `constant_smiles`, and
 `pair` tables. OEMMPA is following that cue: fragmentations remain an
-intermediate analysis artifact and are not exposed as a stable DuckDB table in
-this storage slice. The stored pair model already has the rule-environment
-boundary needed for future atom-context fingerprints. Materialized transform
-refresh, rule-environment statistics, a separate fragment-index store, and
-production analytics remain later work.
+intermediate analysis result and are not exposed as a stable DuckDB table yet.
+The stored pair model already includes rule-environment tables for future
+atom-context fingerprints. Database-backed transformation refresh,
+rule-environment statistics, a separate fragment database, and production
+analytics remain later work.
 
 ## Querying And Scoring
 
@@ -259,26 +258,23 @@ production analytics remain later work.
 `ScoringOptions` is only configuration. `PairScoring::Select()` performs the
 actual selection over matched-pair candidates.
 
-## Python Boundary
+## Python Use
 
-The SWIG layer exposes the C++ surface through `oemmpa._oemmpa`. OpenEye
-`OEMolBase` objects cross the Python/C++ boundary natively through the project
-typemaps, so Python callers can pass OpenEye molecule objects without manual
-serialization.
+Python users usually work through the top-level `oemmpa` package. OpenEye
+`OEMolBase` objects can be passed directly from Python to OEMMPA without
+manual SMILES conversion.
 
-The higher-level Python `Analyzer` facade wraps the raw analyzer for ergonomic
-IDs, loading reports, result wrappers, and dataframe helpers.
+The Python `Analyzer` adds convenient IDs, loading reports, result wrappers,
+and dataframe helpers around the C++ analyzer.
 
 ## Current Scope
 
-The fragmentation, DMCSS, and initial OEMedChem methods are implemented behind
-the analyzer method boundary. Explicit unimolecular SMIRKS transform
-application and single-cut, single-atom observed-transform application are
-available through `TransformApplicator`. DuckDB persistence has an optional
-MMPDB-style schema, SMILES-file molecule loading, property CSV loading,
-molecule/property, pair, transform-query, query-option, analyzer-save, and
-Python storage-helper boundary. Python-level transform statistics, prediction
-helpers, and file-backed CLI analytics are available on top of the common
-result objects, while a separate fragment-index store, materialized DuckDB
-transform refresh, multi-atom transform generation, rule-environment
-statistics, and C++ analytics APIs are later phases.
+The fragmentation, DMCSS, and initial OEMedChem methods are available now.
+Explicit unimolecular SMIRKS application and single-cut, single-atom observed
+transform application are available through `TransformApplicator`. DuckDB
+storage can save molecules, properties, and pairs; load SMILES and property
+files; and query stored pairs and transformations. Python transformation
+statistics, prediction helpers, and file-based CLI commands are available on
+top of the common result objects. A separate fragment database, database-backed
+transformation refresh, multi-atom product generation, rule-environment
+statistics, and C++ analytics APIs remain later work.

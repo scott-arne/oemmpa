@@ -1,7 +1,8 @@
 # CLI
 
-The `oemmpa-cli` command package provides file-backed analytics workflows on top
-of the Python facade.
+The `oemmpa-cli` command lets you run common file-based analyses without
+writing a Python script. It uses the same SMILES and property file formats as
+the Python examples.
 
 ## Statistics
 
@@ -12,8 +13,9 @@ oemmpa-cli refresh-stats \
   --property pIC50
 ```
 
-The property file may be comma- or tab-delimited. The default molecule ID
-column follows MMPDB conventions: `id`, `ID`, `Name`, then `name`.
+The property file may be comma- or tab-delimited. By default, OEMMPA looks for
+the molecule ID column using the common MMPDB order: `id`, `ID`, `Name`, then
+`name`.
 
 ## Prediction
 
@@ -35,5 +37,6 @@ oemmpa-cli generate \
   --source Cc1ccccc1
 ```
 
-Current commands build an in-memory analyzer from files. DuckDB-backed
-materialized transform statistics remain a later storage extension.
+Current commands read the files and run analysis in memory. Stored
+database-backed transformation statistics can be added later without changing
+these file formats.

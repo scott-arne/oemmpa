@@ -1,10 +1,10 @@
 # Quickstart
 
-This guide covers the current workflow: load molecules, add optional
-properties, run analysis, query matched pairs or transforms, compute transform
-statistics, and generate products.
+This guide shows the usual OEMMPA workflow: add molecules, attach optional
+property data, run matched molecular pair analysis, review pairs and
+transformations, calculate transformation statistics, and generate products.
 
-## Single Molecules
+## Adding Molecules
 
 ```python
 from oemmpa import Analyzer
@@ -19,9 +19,9 @@ for pair in analyzer.pairs():
     print(pair.source_id, pair.target_id, pair.transform)
 ```
 
-IDs are strings at the Python facade boundary. If an ID is omitted, the facade
-generates a stable ID such as `molecule_1` and returns it from `add_molecule()`.
-Use that returned ID when adding properties.
+Molecule IDs are strings. If an ID is omitted, OEMMPA creates one such as
+`molecule_1` and returns it from `add_molecule()`. Use that returned ID when
+adding properties.
 
 ```python
 source_id = analyzer.add_molecule("Cc1ccccc1")
@@ -33,8 +33,9 @@ analyzer.add_property(target_id, "pIC50", 7.0)
 
 ## Bulk Loading
 
-`add_molecules()` accepts an iterable of SMILES strings, `(smiles, id)` tuples,
-or mappings with `smiles` and optional `id` keys.
+Use `add_molecules()` when you already have a list of structures in Python. It
+accepts SMILES strings, `(smiles, id)` tuples, or dictionaries with `smiles`
+and optional `id` values.
 
 ```python
 report = analyzer.add_molecules(
@@ -49,13 +50,13 @@ print(report.accepted_ids)
 print(report.accepted_count, report.rejected_count)
 ```
 
-Invalid rows are recorded in `report.errors` and do not stop later rows.
+Invalid rows are recorded in `report.errors`. OEMMPA continues loading the
+remaining rows so a single bad structure does not stop the whole job.
 
 ## Loading From Files
 
-`add_molecules_from_file()` reads whitespace-delimited SMILES files. The first
-token is the SMILES string and the optional second token is the molecule ID.
-Blank lines are skipped.
+`add_molecules_from_file()` reads simple SMILES files. Each line contains a
+SMILES string followed by an optional molecule ID. Blank lines are skipped.
 
 ```text
 Cc1ccccc1 tol
@@ -67,15 +68,14 @@ Nc1ccccc1 aniline
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
-The facade file loader is intentionally narrow. DuckDB-enabled builds also
-support C++-layer SMILES file loading for persistent workflows.
+For larger file-based work, DuckDB-enabled builds can also load molecules
+directly into a database-backed store.
 
 ## Loading From Dataframes
 
-`add_molecules_from_dataframe()` uses structural checks instead of importing
-pandas or polars. It works with mapping-of-columns objects, pandas-like
-`iterrows()` objects, polars-like `iter_rows()` objects, and iterables of row
-mappings.
+`add_molecules_from_dataframe()` works with pandas and polars dataframes when
+they are already available, but OEMMPA does not require either package. It also
+accepts simple column dictionaries and iterables of row dictionaries.
 
 ```python
 frame = {
@@ -93,15 +93,15 @@ report = analyzer.add_molecules_from_dataframe(
 )
 ```
 
-When `id_column` is provided, missing or blank IDs reject that row. Property
-columns are converted to floats before molecule insertion so property failures
-do not leave partially loaded rows in the analyzer.
+When `id_column` is provided, rows with missing or blank IDs are rejected.
+Property columns are converted to numeric values before insertion, so property
+formatting errors are reported cleanly and do not leave partial rows behind.
 
 ## Results
 
-Run `analyze()` before querying results. Mutating the analyzer by adding
-molecules or properties invalidates previous analysis results until `analyze()`
-runs again.
+Run `analyze()` before asking for pairs or transformations. If you add more
+molecules or properties later, run `analyze()` again so the results reflect the
+updated data.
 
 ```python
 analyzer.analyze()
@@ -113,7 +113,8 @@ print(pairs.to_dicts())
 print(transforms.to_dicts())
 ```
 
-`PairCollection.to_dataframe()` imports pandas or polars lazily only when called.
+`PairCollection.to_dataframe()` imports pandas or polars only when you ask for
+that output format.
 
 ```python
 pandas_frame = pairs.to_dataframe()
@@ -123,8 +124,8 @@ polars_frame = pairs.to_dataframe(library="polars")
 ## Applying Explicit Transforms
 
 Use `apply_transform_smirks()` when you already have a chemically explicit
-unimolecular SMIRKS. It accepts SMILES strings or OpenEye molecule objects and
-returns deduplicated canonical product SMILES.
+unimolecular SMIRKS. It accepts a SMILES string or an OpenEye molecule and
+returns unique canonical product SMILES.
 
 ```python
 from oemmpa import apply_transform_smirks
@@ -135,8 +136,8 @@ products = apply_transform_smirks(
 )
 ```
 
-Use `apply_variable_transform()` when you have an observed OEMMPA transform in
-`source_variable>>target_variable` form:
+Use `apply_variable_transform()` when you have an observed OEMMPA
+transformation in `source_variable>>target_variable` form:
 
 ```python
 from oemmpa import apply_variable_transform
@@ -147,16 +148,17 @@ products = apply_variable_transform(
 )
 ```
 
-Matched-pair wrappers expose the same behavior for the source molecule in that
-pair:
+Each matched pair can also apply its own observed transformation to its source
+molecule:
 
 ```python
 pair = analyzer.pairs()[0]
 products = pair.apply_transform()
 ```
 
-Use `generate_products()` to apply an analyzed transform collection to a source
-molecule and keep the generating transform metadata:
+Use `generate_products()` to apply a collection of observed transformations to
+a source molecule. The result keeps track of which transformation generated
+each product:
 
 ```python
 from oemmpa import generate_products
@@ -169,21 +171,22 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
-Unsupported observed transforms are skipped by default during collection-level
-generation. Pass `skip_unsupported=False` when unsupported transform strings
-should fail fast instead.
+Unsupported observed transformations are skipped by default during collection
+generation. Pass `skip_unsupported=False` if you would rather stop immediately
+when an unsupported transformation is encountered.
 
-The observed-transform helper currently supports single-cut, single-atom
-variables. Multi-atom and multi-cut transforms raise `ValueError` until their
-reaction semantics are implemented.
+Observed-transform application currently supports single-cut transformations
+where the changing group is a single atom. Multi-atom and multi-cut
+transformations raise `ValueError` for now.
 
 ## Transform Statistics And Prediction
 
-`compute_transform_statistics()` aggregates directional property deltas by
-transform. The field names follow MMPDB's statistics surface: `count`, `avg`,
-`std`, `kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`,
-`paired_t`, and `p_value`. SciPy is optional; when it is unavailable or the
-sample does not support a t-test, `p_value` is `None`.
+`compute_transform_statistics()` summarizes property changes for each observed
+transformation. For example, if matched pairs include pIC50 values, OEMMPA can
+report the average and median pIC50 change associated with each transformation.
+The statistic names follow MMPDB conventions, including `count`, `avg`, `std`,
+`median`, quartiles, and `p_value`. SciPy is optional; when it is unavailable
+or the sample does not support a t-test, `p_value` is `None`.
 
 ```python
 from oemmpa import compute_transform_statistics, predict_transform_delta
@@ -202,8 +205,8 @@ prediction = predict_transform_delta(
 print(prediction.to_dict())
 ```
 
-Pass statistics into `generate_products()` to add prediction metadata to
-generated product rows:
+Pass these statistics into `generate_products()` to attach predicted property
+changes to generated products:
 
 ```python
 products = generate_products(
@@ -214,10 +217,11 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
-## CLI Workflows
+## Command-Line Use
 
-The `oemmpa-cli` package provides the first file-backed analytics surface. It
-uses the same whitespace SMILES format and CSV property format described above.
+The `oemmpa-cli` command works with the same SMILES and property files shown
+above. It is useful for quick file-based analyses without writing a Python
+script.
 
 ```bash
 oemmpa-cli refresh-stats \
@@ -243,12 +247,14 @@ oemmpa-cli generate \
   --min-support 1
 ```
 
-These commands currently build an in-memory analyzer from the input files.
-Persistent DuckDB-backed statistics refresh remains a later storage slice.
+These commands currently read the input files, run the analysis in memory, and
+write results to the terminal. Database-backed refresh of stored statistics can
+be added later without changing the file formats.
 
 ## Persistent Storage
 
-DuckDB-enabled builds expose persistent storage through `DuckDBStore`:
+When OEMMPA is built with DuckDB support, `DuckDBStore` can save molecules,
+properties, and analyzed pairs in a local DuckDB database:
 
 ```python
 from oemmpa import DuckDBStore
@@ -258,36 +264,33 @@ store.load_molecules_from_file("molecules.smi")
 store.load_properties_from_csv("properties.csv", id_column="id")
 ```
 
-The property CSV format uses one ID column and numeric property columns. Values
-of `*` or blank strings are treated as missing. Row-level failures are returned
-in `LoadReport`, matching the molecule-loading APIs. The backing schema uses
-MMPDB-style normalized tables such as `compound`, `property_name`,
-`compound_property`, `rule_smiles`, `rule`, `rule_environment`,
-`constant_smiles`, and `pair`.
+The property CSV format uses one ID column and one or more numeric property
+columns. Values of `*` or blank strings are treated as missing. Row-level
+failures are returned in `LoadReport`, just as they are for molecule loading.
+The database layout follows the main MMPDB matched-pair tables, including
+compounds, properties, rules, constants, and pairs.
 
-## Current Scope
+## Current Capabilities
 
-The current implementation is an in-memory API plus an optional persistent
-DuckDB storage boundary.
-`fragmentation` is the default analyzer method. `dmcss` is available as an
-initial pairwise maximum common substructure backend:
+OEMMPA currently provides in-memory analysis and optional DuckDB storage.
+`fragmentation` is the default analysis method. `dmcss` is also available for
+pairwise disconnected maximum common substructure analysis:
 
 ```python
 analyzer = Analyzer(method="dmcss")
 ```
 
-`oemedchem` is available as an initial native OpenEye OEMedChem backend:
+`oemedchem` is available for analysis through OpenEye OEMedChem:
 
 ```python
 analyzer = Analyzer(method="oemedchem")
 ```
 
-The first OEMedChem slice converts native single-cut matched pairs into the
-same constant/variable result model used by the other methods. DuckDB
-persistence covers optional schema initialization, molecule/property/pair row
-storage, whitespace SMILES file loading, property CSV loading,
-analyzer-to-store persistence, stored-pair query options, and Python storage
-helpers. Python transform statistics, prediction helpers, and the first CLI
-analytics workflows are available. A separate fragment-index store,
-materialized transform refresh, multi-atom transform generation, and
-rule-environment statistics are deferred follow-on phases.
+The OEMedChem method currently handles native single-cut matched pairs and
+returns the same constant and variable fields as the other methods. DuckDB
+storage can save molecules, properties, and matched pairs; load SMILES and
+property files; and read stored pairs back into the usual result objects.
+Transformation statistics, property-change predictions, product generation,
+and the command-line tools are available now. Separate fragment databases,
+database-backed transformation refresh, multi-atom product generation, and
+rule-environment statistics are planned for later work.

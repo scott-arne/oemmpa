@@ -1,37 +1,25 @@
 # OEMMPA
 
-OEMMPA is a C++ matched molecular pair analysis library with Python bindings
-built on the OpenEye Toolkits and SWIG. The current implementation focuses on a
-small, stable core:
+OEMMPA is an OpenEye-based toolkit for matched molecular pair analysis. It is
+designed for medicinal chemistry workflows where you want to load molecules,
+find matched pairs, summarize observed transformations, attach assay or
+property data, and use those transformations for simple predictions or product
+generation.
 
-- In-memory matched-pair analysis from SMILES or OpenEye molecule objects.
-- Python facade APIs for ergonomic molecule loading, property loading, pair
-  queries, transform summaries, transform statistics, prediction helpers, and
-  dataframe export.
-- C++ APIs for fragmentation, pairwise DMCSS analysis, native OEMedChem-backed
-  analysis, in-memory indexing, query filtering, scoring, and explicit SMIRKS
-  transform application.
-- Optional DuckDB storage schema initialization plus whitespace SMILES file
-  loading, property CSV loading, molecule/property row persistence, analyzed
-  pair round-tripping, stored-pair query filters, analyzer-to-store
-  persistence, and Python storage helpers.
-- A small `oemmpa-cli` command surface for statistics refresh, transform
-  prediction, and statistics-annotated product generation from SMILES and
-  property files.
-- A focused RDKit comparison harness for measuring pair-surface agreement and
-  runtime on shared SMILES data.
+The project includes a Python API for everyday analysis, a C++ API for users
+embedding OEMMPA in larger applications, optional DuckDB storage for file-based
+work, command-line tools for common SMILES/property-file analyses, and
+benchmark tools for tracking performance on representative datasets.
 
-The analyzer method boundary supports `fragmentation`, the initial `dmcss`
-backend, and an initial `oemedchem` backend that converts OpenEye's native
-matched pairs into OEMMPA's common constant/variable result model. Transform
-generation applies chemically explicit unimolecular SMIRKS and can also convert
-single-cut, single-atom observed OEMMPA transforms such as `C[*:1]>>O[*:1]`
-into reaction-ready SMIRKS. Python analytics can aggregate directional property
-deltas with MMPDB-style statistic names, use those statistics for simple
-transform predictions, and attach prediction metadata to generated products.
-Persistent transform-table refresh, rule-environment statistics, and broader
-multi-atom generation are intentionally deferred and are not required for the
-current API.
+OEMMPA currently supports fragmentation-based analysis, pairwise disconnected
+maximum common substructure analysis through `dmcss`, and OpenEye OEMedChem
+analysis through `oemedchem`. Transform generation can apply chemically
+explicit unimolecular SMIRKS and can also apply observed single-cut,
+single-atom transformations such as `C[*:1]>>O[*:1]`. Python helpers can
+summarize property changes using MMPDB-style statistic names, use those
+statistics for simple transform predictions, and attach predicted changes to
+generated products. Stored transformation refresh, rule-environment statistics,
+and broader multi-atom generation are planned for later work.
 
 ## Quick Example
 
@@ -73,7 +61,7 @@ for pair in analyzer.pairs():
 ```
 
 Transform collections can also be applied to a source molecule with support
-filtering and product metadata:
+filtering and product details:
 
 ```python
 from oemmpa import generate_products
@@ -104,7 +92,7 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
-The first CLI surface uses file-backed workflows:
+The command-line tool runs common file-based analyses:
 
 ```bash
 oemmpa-cli refresh-stats \
@@ -125,9 +113,9 @@ oemmpa-cli generate \
   --source Cc1ccccc1
 ```
 
-See [docs/quickstart.md](docs/quickstart.md) for loading workflows and
-[docs/python-api.md](docs/python-api.md) for the facade API and optional raw
-DuckDB binding notes.
+See [docs/quickstart.md](docs/quickstart.md) for loading examples and
+[docs/python-api.md](docs/python-api.md) for the Python API and optional DuckDB
+storage notes.
 
 ## Prerequisites
 
@@ -156,9 +144,9 @@ cmake --build build-debug
 ```
 
 The debug preset builds the C++ library, C++ tests, and SWIG Python extension.
-It also enables the optional DuckDB storage backend when DuckDB is installed in
-a standard Homebrew or `DUCKDB_ROOT` location. Generic CMake/scikit-build
-builds leave DuckDB disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided.
+It also enables optional DuckDB storage when DuckDB is installed in a standard
+Homebrew or `DUCKDB_ROOT` location. Generic CMake/scikit-build builds leave
+DuckDB disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided.
 Release builds use the matching preset:
 
 ```bash
@@ -189,9 +177,8 @@ Python tests:
 pytest tests/python -q
 ```
 
-The Python suite uses the local worktree package and verifies the raw SWIG layer,
-the Python facade, loading workflows, result wrappers, transform application,
-analytics helpers, CLI workflows, and the RDKit comparison harness.
+The Python suite checks molecule loading, result objects, transform
+application, statistics, command-line tools, and DuckDB storage helpers.
 
 Documentation checks:
 
@@ -236,7 +223,8 @@ Useful options:
 
 ## Loading Molecules
 
-The facade supports single-row, bulk, file, and dataframe-like loading:
+The Python API supports single-molecule, bulk, file, and dataframe-style
+loading:
 
 ```python
 from oemmpa import Analyzer
@@ -274,14 +262,13 @@ frame_report = frame_analyzer.add_molecules_from_dataframe(
 )
 ```
 
-`LoadReport` records accepted facade IDs and row-level errors without stopping
-later rows.
+`LoadReport` records accepted molecule IDs and row-level errors without
+stopping later rows.
 
-DuckDB-enabled builds also expose a Python storage helper for persistent
-workflows. The storage schema follows MMPDB's final database model with
-normalized compound, property, rule, rule-environment, constant, and pair
-tables; raw fragmentations remain an analysis-stage artifact until a dedicated
-fragment-index store is added.
+DuckDB-enabled builds can save molecules, properties, and analyzed pairs in a
+local DuckDB database. The table layout follows the main MMPDB matched-pair
+database model with compounds, properties, rules, environments, constants, and
+pairs. Raw fragmentations are not stored as stable database tables yet.
 
 ```python
 from oemmpa import DuckDBStore
@@ -294,29 +281,17 @@ pairs = store.pairs()
 print(store.row_count("compound"), store.row_count("pair"))
 ```
 
-## RDKit Comparison
+## Benchmarks
 
-The comparison harness runs OEMMPA and RDKit on the same whitespace-delimited
-`SMILES id` file and reports runtime plus pair-surface overlap:
-
-```bash
-/Users/johnss51/Applications/miniforge3/envs/main/bin/python \
-  benchmarks/rdkit_compare.py benchmarks/data/rdkit_reference.smi
-```
-
-See [docs/rdkit-comparison.md](docs/rdkit-comparison.md) for result categories
-and expected edge-case interpretation.
-
-The Phase 6 benchmark suite writes CSV rows for RDKit comparison reports,
-parallel analyzer throughput, DuckDB storage loading, and CLI workflows:
+The benchmark suite writes CSV rows for repeated analysis throughput, DuckDB
+storage loading, and command-line runs:
 
 ```bash
 /Users/johnss51/Applications/miniforge3/envs/main/bin/python \
-  -m benchmarks.benchmark_suite rdkit-report benchmarks/data/rdkit_reference.smi
+  -m benchmarks.benchmark_suite thread-scaling tests/data/mmpa_smiles.smi
 ```
 
-See [docs/benchmarks.md](docs/benchmarks.md) for the full benchmark command
-surface.
+See [docs/benchmarks.md](docs/benchmarks.md) for the benchmark commands.
 
 ## Project Layout
 
@@ -324,11 +299,11 @@ surface.
 include/oemmpa/      Public C++ headers.
 src/                 C++ implementation.
 swig/                SWIG interface and CMake build rules.
-python/oemmpa/       Python package, facade, loading helpers, and result wrappers.
-python/oemmpa_cli/   CLI package for file-backed analytics workflows.
+python/oemmpa/       Python package, loading helpers, and result objects.
+python/oemmpa_cli/   Command-line tools for file-based analyses.
 tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
-benchmarks/          RDKit comparison harness and reference data.
+benchmarks/          Benchmark tools and reference data.
 docs/                Sphinx user, API, benchmark, and developer documentation.
 tasks.py             Invoke tasks for documentation builds and serving.
 scripts/             Wheel build helper.
@@ -344,23 +319,23 @@ is `OEMMPA::Analyzer`, backed by `FragmentationMethod`, `Fragmenter`, and
 converts supported observed variable transforms to SMIRKS, and generates
 transform-annotated product rows from transform collections.
 
-See [docs/cpp-core.md](docs/cpp-core.md) for the C++ surface.
+See [docs/cpp-core.md](docs/cpp-core.md) for the C++ API.
 
 ## Build Tools
 
 | Tool | Purpose |
 |------|---------|
 | CMake | Builds the C++ library, tests, and SWIG extension. |
-| SWIG | Generates the Python binding layer. |
-| scikit-build-core | Python build backend that delegates to CMake. |
+| SWIG | Generates the Python bindings. |
+| scikit-build-core | Builds Python wheels through CMake. |
 | cmake-openeye | OpenEye SDK discovery and SWIG helper modules. |
 | vrzn | Version synchronization across package and C++ files. |
 | pytest | Python test runner. |
 
 ## Version Management
 
-This project uses `vrzn` to keep version numbers synchronized across package
-metadata, CMake, headers, and SWIG:
+This project uses `vrzn` to keep version numbers synchronized across the Python
+package settings, CMake, headers, and SWIG:
 
 ```bash
 vrzn get

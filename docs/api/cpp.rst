@@ -1,8 +1,8 @@
 C++ API Reference
 =================
 
-The generated C++ API tree is produced from the headers in ``include/oemmpa``
-through Doxygen, Breathe, and Exhale during a Sphinx build.
+This reference is generated from the public C++ headers in ``include/oemmpa``
+when the documentation is built.
 
 .. toctree::
    :maxdepth: 2
