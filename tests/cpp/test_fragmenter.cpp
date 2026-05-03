@@ -303,7 +303,16 @@ TEST(FragmenterTest, CutOrderDoesNotChangeFragmentationRecords) {
 TEST(FragmenterTest, CopyClonesStrategyAndKeepsIndependentBounds) {
     OEChem::OEGraphMol mol = MolFromSmiles("CCO");
     Fragmenter original = MakeCarbonOxygenFragmenter();
+    original.SetMaxHeavyAtoms(10);
+    original.SetMaxRotatableBonds(10);
+    original.SetRotatableSmarts("[#7]-[#8]");
     Fragmenter copy(original);
+
+    EXPECT_TRUE(copy.HasMaxHeavyAtoms());
+    EXPECT_EQ(copy.GetMaxHeavyAtoms(), 10);
+    EXPECT_TRUE(copy.HasMaxRotatableBonds());
+    EXPECT_EQ(copy.GetMaxRotatableBonds(), 10);
+    EXPECT_EQ(copy.GetRotatableSmarts(), "[#7]-[#8]");
 
     original.SetMinCuts(2);
     copy.SetMaxCuts(1);
@@ -319,6 +328,17 @@ TEST(FragmenterTest, CopyClonesStrategyAndKeepsIndependentBounds) {
 
     Fragmenter assigned;
     assigned = copy;
+    copy.ClearMaxHeavyAtoms();
+    copy.SetRotatableSmarts("[#6]-[#6]");
+    copy.SetMaxRotatableBonds(0);
+    assigned.SetMaxRotatableBonds(0);
+    EXPECT_TRUE(assigned.HasMaxHeavyAtoms());
+    EXPECT_TRUE(assigned.HasMaxRotatableBonds());
+    EXPECT_EQ(assigned.GetRotatableSmarts(), "[#7]-[#8]");
+    EXPECT_FALSE(assigned.Fragment(31, mol).empty());
+    EXPECT_TRUE(copy.Fragment(31, mol).empty());
+
+    copy.ClearMaxRotatableBonds();
     copy.SetMaxCuts(2);
     copy.SetMinCuts(2);
     EXPECT_FALSE(assigned.Fragment(31, mol).empty());
@@ -365,6 +385,115 @@ TEST(FragmenterTest, MaxCutBondsZeroMeansUnlimited) {
 
     EXPECT_FALSE(fragmenter.Fragment(43, mol).empty());
     EXPECT_EQ(fragmenter.GetMaxCutBonds(), 0);
+}
+
+TEST(FragmenterTest, MaxHeavyAtomsSuppressesLargeMolecules) {
+    OEChem::OEGraphMol large = MolFromSmiles("CCCCCCCC");
+    OEChem::OEGraphMol small = MolFromSmiles("c1ccccc1O");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxHeavyAtoms(7);
+
+    EXPECT_TRUE(fragmenter.Fragment(47, large).empty());
+    EXPECT_FALSE(fragmenter.Fragment(49, small).empty());
+    EXPECT_TRUE(fragmenter.HasMaxHeavyAtoms());
+    EXPECT_EQ(fragmenter.GetMaxHeavyAtoms(), 7);
+
+    fragmenter.ClearMaxHeavyAtoms();
+    EXPECT_FALSE(fragmenter.HasMaxHeavyAtoms());
+    EXPECT_FALSE(fragmenter.Fragment(47, large).empty());
+}
+
+TEST(FragmenterTest, MaxRotatableBondsSuppressesFlexibleMolecules) {
+    OEChem::OEGraphMol flexible = MolFromSmiles("CCCCCCCCCCCCCCCCCCCC");
+    OEChem::OEGraphMol rigid = MolFromSmiles("c1ccccc1O");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxRotatableBonds(6);
+
+    EXPECT_TRUE(fragmenter.Fragment(53, flexible).empty());
+    EXPECT_FALSE(fragmenter.Fragment(55, rigid).empty());
+    EXPECT_TRUE(fragmenter.HasMaxRotatableBonds());
+    EXPECT_EQ(fragmenter.GetMaxRotatableBonds(), 6);
+
+    fragmenter.ClearMaxRotatableBonds();
+    EXPECT_FALSE(fragmenter.HasMaxRotatableBonds());
+    EXPECT_FALSE(fragmenter.Fragment(53, flexible).empty());
+}
+
+TEST(FragmenterTest, CustomRotatableSmartsCanRelaxRotatableBondFilter) {
+    OEChem::OEGraphMol flexible = MolFromSmiles("CCCCCCCCCCCCCCCCCCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxRotatableBonds(3);
+    EXPECT_TRUE(fragmenter.Fragment(59, flexible).empty());
+
+    fragmenter.SetRotatableSmarts("[x1]-*");
+    EXPECT_FALSE(fragmenter.Fragment(59, flexible).empty());
+    EXPECT_EQ(fragmenter.GetRotatableSmarts(), "[x1]-*");
+}
+
+TEST(FragmenterTest, InvalidRotatableSmartsThrowsAtSetterTime) {
+    Fragmenter fragmenter;
+
+    EXPECT_THROW(fragmenter.SetRotatableSmarts("["), InvalidQueryError);
+}
+
+TEST(FragmenterTest, OneAtomRotatableSmartsThrowsAtSetterTime) {
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+
+    EXPECT_THROW(fragmenter.SetRotatableSmarts("[#6]"), InvalidQueryError);
+}
+
+TEST(FragmenterTest, DisconnectedTwoAtomRotatableSmartsThrowsAtSetterTime) {
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+
+    EXPECT_THROW(fragmenter.SetRotatableSmarts("[#6].[#6]"), InvalidQueryError);
+}
+
+TEST(FragmenterTest, ThreeAtomRotatableSmartsThrowsAtSetterTime) {
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+
+    EXPECT_THROW(fragmenter.SetRotatableSmarts("[#6]-[#6]-[#6]"), InvalidQueryError);
+}
+
+TEST(FragmenterTest, InvalidShapeRotatableSmartsThrowsWithoutMoleculeMatch) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxRotatableBonds(10);
+
+    EXPECT_THROW(fragmenter.SetRotatableSmarts("[#7]"), InvalidQueryError);
+    EXPECT_FALSE(fragmenter.Fragment(65, mol).empty());
+}
+
+TEST(FragmenterTest, MappedTwoAtomRotatableSmartsCountsAlkaneBonds) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetRotatableSmarts("[#6:1]-[#6:2]");
+    fragmenter.SetMaxRotatableBonds(2);
+
+    EXPECT_TRUE(fragmenter.Fragment(67, mol).empty());
+
+    fragmenter.SetMaxRotatableBonds(3);
+    EXPECT_FALSE(fragmenter.Fragment(67, mol).empty());
+}
+
+TEST(FragmenterTest, UnmappedTwoAtomRotatableSmartsCountsAlkaneBonds) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetRotatableSmarts("[#6]-[#6]");
+    fragmenter.SetMaxRotatableBonds(2);
+
+    EXPECT_TRUE(fragmenter.Fragment(69, mol).empty());
+
+    fragmenter.SetMaxRotatableBonds(3);
+    EXPECT_FALSE(fragmenter.Fragment(69, mol).empty());
+}
+
+TEST(FragmenterTest, SymmetricRotatableSmartsDeduplicatesUniqueBondEndpoints) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetRotatableSmarts("[#6]-[#6]");
+    fragmenter.SetMaxRotatableBonds(3);
+
+    EXPECT_FALSE(fragmenter.Fragment(71, mol).empty());
 }
 
 }  // namespace test

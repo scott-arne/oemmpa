@@ -111,6 +111,74 @@ unsigned int CountHeavyAtoms(const OEChem::OEMolBase& mol) {
     return count;
 }
 
+OEChem::OEQMol ParseBondSmartsQuery(
+    const std::string& smarts,
+    const std::string& description
+) {
+    OEChem::OEQMol query;
+    if (!OEChem::OEParseSmarts(query, smarts.c_str())) {
+        throw InvalidQueryError("invalid " + description + " SMARTS query: " + smarts);
+    }
+
+    std::vector<OEChem::OEAtomBase*> query_atoms;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = query.GetAtoms(); atom; ++atom) {
+        query_atoms.push_back(atom);
+    }
+    if (query_atoms.size() != 2 || query_atoms[0] == query_atoms[1]) {
+        throw InvalidQueryError(description + " SMARTS must match exactly two atoms");
+    }
+    if (query.GetBond(query_atoms[0], query_atoms[1]) == nullptr) {
+        throw InvalidQueryError(description + " SMARTS must connect both atoms");
+    }
+
+    return query;
+}
+
+OEChem::OESubSearch CompileBondSmarts(
+    const std::string& smarts,
+    const std::string& description
+) {
+    OEChem::OEQMol query = ParseBondSmartsQuery(smarts, description);
+    OEChem::OESubSearch subsearch;
+    if (!subsearch.Init(query)) {
+        throw InvalidQueryError("invalid " + description + " SMARTS query: " + smarts);
+    }
+    return subsearch;
+}
+
+unsigned int CountUniqueBondMatches(
+    const OEChem::OEMolBase& mol,
+    const OEChem::OESubSearch& subsearch,
+    const std::string& description
+) {
+    std::set<std::pair<unsigned int, unsigned int>> seen_bonds;
+    for (OESystem::OEIter<OEChem::OEMatchBase> match = subsearch.Match(mol); match; ++match) {
+        std::vector<OEChem::OEAtomBase*> target_atoms;
+        for (
+            OESystem::OEIter<OEChem::OEMatchPair<OEChem::OEAtomBase>> atom_pair =
+                match->GetAtoms();
+            atom_pair;
+            ++atom_pair
+        ) {
+            if (atom_pair->target != nullptr) {
+                target_atoms.push_back(atom_pair->target);
+            }
+        }
+        if (target_atoms.size() != 2 || target_atoms[0] == target_atoms[1]) {
+            throw InvalidQueryError(description + " SMARTS must match exactly two atoms");
+        }
+        OEChem::OEBondBase* bond = mol.GetBond(target_atoms[0], target_atoms[1]);
+        if (bond == nullptr) {
+            throw InvalidQueryError(description + " SMARTS must connect both atoms");
+        }
+        const unsigned int first_atom_idx = target_atoms[0]->GetIdx();
+        const unsigned int second_atom_idx = target_atoms[1]->GetIdx();
+        const auto endpoints = std::minmax(first_atom_idx, second_atom_idx);
+        seen_bonds.insert({endpoints.first, endpoints.second});
+    }
+    return static_cast<unsigned int>(seen_bonds.size());
+}
+
 std::set<unsigned int> CollectAttachmentLabels(const OEChem::OEMolBase& mol) {
     std::set<unsigned int> labels;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
@@ -392,13 +460,20 @@ Fragmenter::Fragmenter()
     : Fragmenter(SmartsFragmentationStrategy::RDKitCompatible()) {}
 
 Fragmenter::Fragmenter(const FragmentationStrategy& strategy)
-    : strategy_(strategy.Clone()) {}
+    : strategy_(strategy.Clone()),
+      rotatable_subsearch_(CompileBondSmarts(rotatable_smarts_, "rotatable")) {}
 
 Fragmenter::Fragmenter(const Fragmenter& other)
     : strategy_(other.strategy_ ? other.strategy_->Clone() : nullptr),
       min_cuts_(other.min_cuts_),
       max_cuts_(other.max_cuts_),
-      max_cut_bonds_(other.max_cut_bonds_) {}
+      max_cut_bonds_(other.max_cut_bonds_),
+      has_max_heavy_atoms_(other.has_max_heavy_atoms_),
+      max_heavy_atoms_(other.max_heavy_atoms_),
+      has_max_rotatable_bonds_(other.has_max_rotatable_bonds_),
+      max_rotatable_bonds_(other.max_rotatable_bonds_),
+      rotatable_smarts_(other.rotatable_smarts_),
+      rotatable_subsearch_(other.rotatable_subsearch_) {}
 
 Fragmenter& Fragmenter::operator=(const Fragmenter& other) {
     if (this != &other) {
@@ -406,6 +481,12 @@ Fragmenter& Fragmenter::operator=(const Fragmenter& other) {
         min_cuts_ = other.min_cuts_;
         max_cuts_ = other.max_cuts_;
         max_cut_bonds_ = other.max_cut_bonds_;
+        has_max_heavy_atoms_ = other.has_max_heavy_atoms_;
+        max_heavy_atoms_ = other.max_heavy_atoms_;
+        has_max_rotatable_bonds_ = other.has_max_rotatable_bonds_;
+        max_rotatable_bonds_ = other.max_rotatable_bonds_;
+        rotatable_smarts_ = other.rotatable_smarts_;
+        rotatable_subsearch_ = other.rotatable_subsearch_;
     }
     return *this;
 }
@@ -440,6 +521,52 @@ void Fragmenter::SetMaxCutBonds(unsigned int max_cut_bonds) {
     max_cut_bonds_ = max_cut_bonds;
 }
 
+void Fragmenter::SetMaxHeavyAtoms(unsigned int max_heavy_atoms) {
+    has_max_heavy_atoms_ = true;
+    max_heavy_atoms_ = max_heavy_atoms;
+}
+
+void Fragmenter::ClearMaxHeavyAtoms() {
+    has_max_heavy_atoms_ = false;
+    max_heavy_atoms_ = 0;
+}
+
+bool Fragmenter::HasMaxHeavyAtoms() const {
+    return has_max_heavy_atoms_;
+}
+
+unsigned int Fragmenter::GetMaxHeavyAtoms() const {
+    return max_heavy_atoms_;
+}
+
+void Fragmenter::SetMaxRotatableBonds(unsigned int max_rotatable_bonds) {
+    has_max_rotatable_bonds_ = true;
+    max_rotatable_bonds_ = max_rotatable_bonds;
+}
+
+void Fragmenter::ClearMaxRotatableBonds() {
+    has_max_rotatable_bonds_ = false;
+    max_rotatable_bonds_ = 0;
+}
+
+bool Fragmenter::HasMaxRotatableBonds() const {
+    return has_max_rotatable_bonds_;
+}
+
+unsigned int Fragmenter::GetMaxRotatableBonds() const {
+    return max_rotatable_bonds_;
+}
+
+void Fragmenter::SetRotatableSmarts(const std::string& rotatable_smarts) {
+    OEChem::OESubSearch subsearch = CompileBondSmarts(rotatable_smarts, "rotatable");
+    rotatable_smarts_ = rotatable_smarts;
+    rotatable_subsearch_ = subsearch;
+}
+
+const std::string& Fragmenter::GetRotatableSmarts() const {
+    return rotatable_smarts_;
+}
+
 unsigned int Fragmenter::GetMinCuts() const {
     return min_cuts_;
 }
@@ -458,6 +585,16 @@ std::vector<Fragmentation> Fragmenter::Fragment(
 ) const {
     if (!strategy_) {
         throw FragmentationError("fragmentation strategy is not set");
+    }
+
+    if (has_max_heavy_atoms_ && CountHeavyAtoms(mol) > max_heavy_atoms_) {
+        return {};
+    }
+    if (
+        has_max_rotatable_bonds_ &&
+        CountUniqueBondMatches(mol, rotatable_subsearch_, "rotatable") > max_rotatable_bonds_
+    ) {
+        return {};
     }
 
     std::vector<Fragmentation> fragmentations;
