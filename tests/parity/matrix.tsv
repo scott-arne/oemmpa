@@ -9,7 +9,7 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	mmpdb	test_fragment.py	TestOptions.test_rotatable_smarts	tests/cpp/test_fragmenter.cpp	CustomRotatableSmartsCanRelaxRotatableBondFilter	matched	OEMMPA supports custom rotatable SMARTS for the rotatable-bond filter.
 7	mmpdb	test_fragment.py	TestOptions.test_cut_smarts	tests/cpp/test_fragmentation_strategy.cpp	CutSmartsMustIdentifyConnectedAtomPair	matched	OEMMPA validates cut SMARTS shape for connected two-atom cut definitions.
 7	mmpdb	test_fragment.py	TestOptions.test_num_cuts	tests/cpp/test_fragmenter.cpp	DefaultsToOneThroughThreeCuts	matched	OEMMPA already supports one through three cuts by default.
-7	mmpdb	test_fragment.py	TestFragmentCutRGroups.test_one_cut_rgroup	-	-	deferred	Phase 8 will decide whether cut R-group conversion belongs in OEMMPA.
+7	mmpdb	test_fragment.py	TestFragmentCutRGroups.test_one_cut_rgroup	-	-	deferred	Cut R-group conversion remains deferred to a focused R-group follow-up.
 7	mmpdb	test_fragment.py	TestSmiFrag.test_num_cuts	tests/cpp/test_fragmenter.cpp	TwoCutFragmentationUsesSequentialAttachmentLabels	matched	Current C++ tests cover two-cut label behavior.
 7	mmpdb	test_index.py	TestIndexCommandline.test_default_filters	-	-	deferred	Phase 9 will add MMPDB-style index option parity.
 7	mmpdb	test_index.py	TestIndexCommandline.test_set_filters	-	-	deferred	Phase 9 will add variable-size and symmetry filters.
@@ -31,13 +31,13 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	mmpdb	test_analysis.py	generate_hydrogen_deletion	tests/python/test_mmpdb_parity.py	test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope	unsupported	MMPDB emits hydrogen deletion transforms that OEMMPA does not yet support.
 7	mmpdb	test_list.py	TestList.test_recount	-	-	deferred	Phase 9 will add database count and recount parity before CLI list output design.
 7	mmpdb	test_list.py	TestList.test_all	-	-	deferred	Phase 9 will add dataset option and count reporting internals before CLI list output design.
-7	mmpdb	test_rgroup2smarts.py	TestSmilesOnCommandline.test_one_smiles	-	-	deferred	Cut R-group conversion is an open decision for Phase 8 or the CLI follow-up.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Phase 8 will add RDKit default FragmentMol parity tests.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	Phase 8 will compare string fragmentation output.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test3	-	-	deferred	Phase 8 will decide pattern argument parity.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	-	-	deferred	Phase 8 will add multi-cut fragmentation comparison.
+7	mmpdb	test_rgroup2smarts.py	TestSmilesOnCommandline.test_one_smiles	-	-	deferred	Cut R-group conversion remains deferred to a focused R-group or CLI follow-up.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Broader default FragmentMol output parity remains deferred after Phase 8 control coverage.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	String fragmentation output parity remains deferred after Phase 8 control coverage.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test3	-	-	deferred	Pattern-argument parity remains deferred pending a focused API decision.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	-	-	deferred	Broader multi-cut output parity remains deferred after Phase 8 control coverage.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test5	tests/cpp/test_fragmenter.cpp	MaxCutBondsSuppressesDenseCutSurfaces	matched	OEMMPA now supports an RDKit-style cut-bond surface guard.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test6	tests/cpp/test_fragmenter.cpp	OneAndTwoCutUnionMatchesMaxCutsTwo	matched	OEMMPA one-cut and two-cut records union to the max-cuts-two result.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	-	-	deferred	Phase 8 will compare larger multi-cut examples.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test8	-	-	deferred	Phase 8 will decide explicit bond-list parity.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	-	-	deferred	Larger multi-cut examples remain deferred after Phase 8 control coverage.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test8	-	-	deferred	Explicit bond-list parity remains deferred pending a focused API decision.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test9	tests/cpp/test_fragmenter.cpp	InvalidCutBoundsThrowFragmentationError	matched	OEMMPA already rejects invalid cut bounds.

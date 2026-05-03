@@ -131,6 +131,11 @@ fragmenter.SetMinCuts(1);
 fragmenter.SetMaxCuts(3);
 ```
 
+`SetMaxCutBonds()` caps very dense cut surfaces before multi-cut fragmentation
+is attempted. `SetMaxHeavyAtoms()` and `SetMaxRotatableBonds()` skip molecules
+above those thresholds, which helps keep large jobs predictable and makes
+validation protocols easier to reproduce.
+
 Additional named chemistry strategies such as Hussain-Rea, Wirth, MATSY, and
 retrosynthetic rule sets can be added once their behavior is represented by
 clear tests.

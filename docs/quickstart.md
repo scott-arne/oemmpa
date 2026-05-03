@@ -68,6 +68,14 @@ Nc1ccccc1 aniline
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
+```python
+report = analyzer.add_molecules_from_file(
+    "molecules.smi.gz",
+    delimiter="tab",
+    has_header=True,
+)
+```
+
 For larger file-based work, DuckDB-enabled builds can also load molecules
 directly into a database-backed store.
 

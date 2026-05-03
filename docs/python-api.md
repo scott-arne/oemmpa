@@ -52,9 +52,16 @@ as `RowError(row, message)` objects in `report.errors`.
 report = analyzer.add_molecules_from_file("molecules.smi")
 ```
 
-The file format is whitespace-delimited `SMILES [id]`. For large file-based
-projects, DuckDB-enabled builds can also load the same kind of file directly
-into a database-backed store.
+Plain text and `.gz` SMILES files are supported. The default delimiter treats
+whitespace as the separator and uses the second field as the molecule ID. Use
+`delimiter="tab"`, `delimiter="comma"`, `delimiter="space"`, or
+`delimiter="to-eol"` when files use a specific layout. Set `has_header=True`
+to skip the first row.
+
+Molecule IDs are optional. When a row omits the ID, OEMMPA generates one for
+that molecule. Blank lines are skipped. For large file-based projects,
+DuckDB-enabled builds can also load the same kind of file directly into a
+database-backed store.
 
 ### add_molecules_from_dataframe
 
@@ -76,6 +83,23 @@ Supported dataframe-like inputs include:
 
 Pandas and polars are optional. OEMMPA does not import either package while
 loading unless the supplied object already comes from that package.
+
+### configure_fragmentation
+
+```python
+analyzer = Analyzer()
+analyzer.configure_fragmentation(max_cuts=2, max_heavy_atoms=100)
+```
+
+Fragmentation controls are available for the default fragmentation method.
+They let you limit the number of cuts, cap very dense cut surfaces, and skip
+molecules above a heavy-atom or rotatable-bond threshold. These controls are
+useful for keeping large jobs predictable and for reproducing a validation
+protocol.
+
+Use `clear_max_heavy_atoms=True` or `clear_max_rotatable_bonds=True` to remove
+those optional molecule-size guards. Invalid settings raise `ValueError` and
+leave the previous fragmentation settings in place.
 
 ### add_property
 
