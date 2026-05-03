@@ -397,6 +397,10 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::FragmentationStrategy::Clone;
 %ignore OEMMPA::SmartsFragmentationStrategy::Clone;
 %ignore OEMMPA::MoleculeRecord::GetMol;
+%ignore OEMMPA::AnalysisMethod::GetFragmenter;
+%ignore OEMMPA::AnalysisMethod::SetFragmenter;
+%ignore OEMMPA::FragmentationMethod::GetFragmenter;
+%ignore OEMMPA::FragmentationMethod::SetFragmenter;
 
 %include "../include/oemmpa/Error.h"
 %include "../include/oemmpa/Fragmentation.h"

@@ -21,6 +21,8 @@ public:
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
 
 private:
+    Fragmenter* GetFragmenter() override;
+    void SetFragmenter(const Fragmenter& fragmenter) override;
     void RequireAnalyzed() const;
 
     std::vector<MoleculeRecord> molecules_;

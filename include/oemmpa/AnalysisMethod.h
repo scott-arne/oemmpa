@@ -1,6 +1,7 @@
 #ifndef OEMMPA_ANALYSIS_METHOD_H
 #define OEMMPA_ANALYSIS_METHOD_H
 
+#include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
@@ -19,6 +20,8 @@ public:
     virtual void Analyze() = 0;
     virtual std::vector<MatchedPair> GetPairs(const QueryOptions& options) const = 0;
     virtual std::vector<Transform> GetTransforms(const QueryOptions& options) const = 0;
+    virtual Fragmenter* GetFragmenter() { return nullptr; }
+    virtual void SetFragmenter(const Fragmenter&) {}
 };
 
 }  // namespace OEMMPA

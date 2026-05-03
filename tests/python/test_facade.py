@@ -161,6 +161,161 @@ def test_facade_transforms_returns_wrapped_collection():
     assert transforms[0].support_count > 0
 
 
+def test_fragmentation_controls_can_be_configured_from_python_facade():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    assert analyzer.analyze().pairs()
+
+    analyzer.configure_fragmentation(max_heavy_atoms=6)
+    pairs = analyzer.analyze().pairs()
+
+    assert len(pairs) == 0
+
+
+def test_fragmentation_controls_invalidate_existing_analysis():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    assert analyzer.analyze().pairs()
+
+    analyzer.configure_fragmentation(max_heavy_atoms=6)
+
+    with pytest.raises(RuntimeError, match="analysis has not been run"):
+        analyzer.pairs()
+
+    assert len(analyzer.analyze().pairs()) == 0
+
+
+@pytest.mark.parametrize(
+    ("option", "message"),
+    [
+        ({"max_cuts": 0}, "max_cuts"),
+        ({"rotatable_smarts": "["}, "invalid rotatable SMARTS"),
+    ],
+)
+def test_failed_fragmentation_controls_keep_existing_analysis_queryable(
+    option,
+    message,
+):
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    baseline = analyzer.analyze().pairs().to_dicts()
+
+    with pytest.raises(ValueError, match=message):
+        analyzer.configure_fragmentation(**option)
+
+    assert analyzer.pairs().to_dicts() == baseline
+
+
+def test_failed_grouped_fragmentation_controls_do_not_partially_apply():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    baseline = analyzer.analyze().pairs().to_dicts()
+
+    with pytest.raises(ValueError, match="invalid rotatable SMARTS"):
+        analyzer.configure_fragmentation(max_heavy_atoms=6, rotatable_smarts="[")
+
+    assert analyzer.pairs().to_dicts() == baseline
+    assert analyzer.analyze().pairs().to_dicts() == baseline
+
+
+def test_fragmentation_controls_can_clear_max_heavy_atom_guard():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+
+    assert analyzer.analyze().pairs()
+
+    analyzer.configure_fragmentation(max_heavy_atoms=6)
+    assert len(analyzer.analyze().pairs()) == 0
+
+    analyzer.configure_fragmentation(clear_max_heavy_atoms=True)
+    assert analyzer.analyze().pairs()
+
+
+def test_fragmentation_controls_can_clear_max_rotatable_bond_guard():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("c1ccccc1CCCCCCCC", id="phenyl_octane")
+    analyzer.add_molecule("c1ccccc1CCCCCCCO", id="phenyl_heptanol")
+
+    assert analyzer.analyze().pairs()
+
+    analyzer.configure_fragmentation(max_rotatable_bonds=6)
+    assert len(analyzer.analyze().pairs()) == 0
+
+    analyzer.configure_fragmentation(clear_max_rotatable_bonds=True)
+    assert analyzer.analyze().pairs()
+
+
+def test_fragmentation_controls_reject_non_fragmentation_methods():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer(method="dmcss")
+
+    with pytest.raises(ValueError, match="fragmentation controls"):
+        analyzer.configure_fragmentation(max_cuts=2)
+
+
+@pytest.mark.parametrize(
+    ("option", "message"),
+    [
+        ({"max_cuts": 0}, "max_cuts"),
+        ({"max_cuts": -1}, "max_cuts"),
+        ({"min_cuts": -1}, "min_cuts"),
+        ({"max_heavy_atoms": -1}, "max_heavy_atoms"),
+        ({"max_cuts": True}, "max_cuts"),
+        ({"max_cuts": 1.5}, "max_cuts"),
+        ({"max_cuts": object()}, "max_cuts"),
+        ({"max_cuts": 2**40}, "max_cuts"),
+        ({"rotatable_smarts": "["}, "invalid rotatable SMARTS"),
+    ],
+)
+def test_fragmentation_controls_convert_invalid_options_to_value_error(
+    option,
+    message,
+):
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    with pytest.raises(ValueError, match=message):
+        analyzer.configure_fragmentation(**option)
+
+
+def test_fragmentation_controls_allow_equal_min_and_max_cuts():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    assert analyzer.configure_fragmentation(min_cuts=4, max_cuts=4) is analyzer
+
+
+def test_fragmentation_controls_allow_min_and_max_cut_window_transition():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    assert analyzer.configure_fragmentation(min_cuts=4, max_cuts=4) is analyzer
+    assert analyzer.configure_fragmentation(min_cuts=1, max_cuts=3) is analyzer
+
+
 def test_unsupported_method_raises_value_error():
     from oemmpa import Analyzer
 
@@ -177,3 +332,10 @@ def test_top_level_analyzer_is_facade_and_raw_analyzer_remains_available():
     assert oemmpa.Analyzer is FacadeAnalyzer
     assert oemmpa._oemmpa.Analyzer is not FacadeAnalyzer
     assert hasattr(oemmpa._oemmpa.Analyzer(), "AddMolecule")
+
+
+def test_raw_analyzer_does_not_expose_mutable_fragmenter_pointer():
+    import oemmpa
+
+    assert not hasattr(oemmpa._oemmpa.Analyzer(), "GetFragmenter")
+    assert not hasattr(oemmpa._oemmpa.FragmentationMethod(), "GetFragmenter")

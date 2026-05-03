@@ -2,6 +2,7 @@
 #define OEMMPA_ANALYZER_H
 
 #include "oemmpa/AnalysisMethod.h"
+#include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/Transform.h"
@@ -25,6 +26,48 @@ public:
 
     /// \brief Return the selected analysis method name.
     const std::string& GetMethodName() const;
+
+    /// \brief Transactionally configure fragmentation-method controls.
+    void ConfigureFragmentation(
+        bool set_min_cuts,
+        unsigned int min_cuts,
+        bool set_max_cuts,
+        unsigned int max_cuts,
+        bool set_max_cut_bonds,
+        unsigned int max_cut_bonds,
+        bool set_max_heavy_atoms,
+        unsigned int max_heavy_atoms,
+        bool clear_max_heavy_atoms,
+        bool set_max_rotatable_bonds,
+        unsigned int max_rotatable_bonds,
+        bool clear_max_rotatable_bonds,
+        bool set_rotatable_smarts,
+        const std::string& rotatable_smarts
+    );
+
+    /// \brief Configure fragmentation-method minimum cut count.
+    void SetFragmentationMinCuts(unsigned int min_cuts);
+
+    /// \brief Configure fragmentation-method maximum cut count.
+    void SetFragmentationMaxCuts(unsigned int max_cuts);
+
+    /// \brief Configure fragmentation-method candidate cut-bond guard.
+    void SetFragmentationMaxCutBonds(unsigned int max_cut_bonds);
+
+    /// \brief Configure fragmentation-method maximum molecule heavy atom count.
+    void SetFragmentationMaxHeavyAtoms(unsigned int max_heavy_atoms);
+
+    /// \brief Configure fragmentation-method maximum rotatable bond count.
+    void SetFragmentationMaxRotatableBonds(unsigned int max_rotatable_bonds);
+
+    /// \brief Clear fragmentation-method maximum molecule heavy atom count.
+    void ClearFragmentationMaxHeavyAtoms();
+
+    /// \brief Clear fragmentation-method maximum rotatable bond count.
+    void ClearFragmentationMaxRotatableBonds();
+
+    /// \brief Configure fragmentation-method SMARTS used to count rotatable bonds.
+    void SetFragmentationRotatableSmarts(const std::string& rotatable_smarts);
 
     /// \brief Add a molecule from SMILES and return its assigned internal ID.
     ///
@@ -91,6 +134,8 @@ private:
     void RejectDuplicateExternalId(const std::string& external_id) const;
     void RequireKnownExternalId(const std::string& external_id) const;
     void RequireAnalyzed() const;
+    const Fragmenter& RequireFragmenter();
+    void CommitFragmenter(const Fragmenter& fragmenter);
     std::vector<MatchedPair> InjectProperties(std::vector<MatchedPair> pairs) const;
 
     std::unique_ptr<AnalysisMethod> method_;

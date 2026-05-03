@@ -40,6 +40,45 @@ std::vector<Transform> build_transforms(const std::vector<MatchedPair>& pairs) {
     return transforms;
 }
 
+void validate_cut_bounds(unsigned int min_cuts, unsigned int max_cuts) {
+    if (min_cuts == 0) {
+        throw FragmentationError("min_cuts must be at least 1");
+    }
+    if (max_cuts == 0) {
+        throw FragmentationError("max_cuts must be at least 1");
+    }
+    if (min_cuts > max_cuts) {
+        throw FragmentationError("min_cuts cannot exceed max_cuts");
+    }
+}
+
+void configure_cut_bounds(
+    Fragmenter& fragmenter,
+    bool set_min_cuts,
+    unsigned int min_cuts,
+    bool set_max_cuts,
+    unsigned int max_cuts
+) {
+    if (!set_min_cuts && !set_max_cuts) {
+        return;
+    }
+
+    const unsigned int final_min_cuts =
+        set_min_cuts ? min_cuts : fragmenter.GetMinCuts();
+    const unsigned int final_max_cuts =
+        set_max_cuts ? max_cuts : fragmenter.GetMaxCuts();
+
+    validate_cut_bounds(final_min_cuts, final_max_cuts);
+
+    if (final_min_cuts < fragmenter.GetMinCuts()) {
+        fragmenter.SetMinCuts(final_min_cuts);
+        fragmenter.SetMaxCuts(final_max_cuts);
+    } else {
+        fragmenter.SetMaxCuts(final_max_cuts);
+        fragmenter.SetMinCuts(final_min_cuts);
+    }
+}
+
 std::unique_ptr<AnalysisMethod> make_analysis_method(const std::string& method_name) {
     if (method_name.empty()) {
         throw InvalidQueryError("analysis method name must not be empty");
@@ -72,6 +111,102 @@ Analyzer::Analyzer(const std::string& method_name)
 
 const std::string& Analyzer::GetMethodName() const {
     return method_name_;
+}
+
+void Analyzer::ConfigureFragmentation(
+    bool set_min_cuts,
+    unsigned int min_cuts,
+    bool set_max_cuts,
+    unsigned int max_cuts,
+    bool set_max_cut_bonds,
+    unsigned int max_cut_bonds,
+    bool set_max_heavy_atoms,
+    unsigned int max_heavy_atoms,
+    bool clear_max_heavy_atoms,
+    bool set_max_rotatable_bonds,
+    unsigned int max_rotatable_bonds,
+    bool clear_max_rotatable_bonds,
+    bool set_rotatable_smarts,
+    const std::string& rotatable_smarts
+) {
+    if (set_max_heavy_atoms && clear_max_heavy_atoms) {
+        throw InvalidQueryError("max_heavy_atoms cannot be set and cleared");
+    }
+    if (set_max_rotatable_bonds && clear_max_rotatable_bonds) {
+        throw InvalidQueryError("max_rotatable_bonds cannot be set and cleared");
+    }
+
+    Fragmenter fragmenter = RequireFragmenter();
+
+    configure_cut_bounds(fragmenter, set_min_cuts, min_cuts, set_max_cuts, max_cuts);
+    if (set_max_cut_bonds) {
+        fragmenter.SetMaxCutBonds(max_cut_bonds);
+    }
+    if (clear_max_heavy_atoms) {
+        fragmenter.ClearMaxHeavyAtoms();
+    }
+    if (set_max_heavy_atoms) {
+        fragmenter.SetMaxHeavyAtoms(max_heavy_atoms);
+    }
+    if (clear_max_rotatable_bonds) {
+        fragmenter.ClearMaxRotatableBonds();
+    }
+    if (set_max_rotatable_bonds) {
+        fragmenter.SetMaxRotatableBonds(max_rotatable_bonds);
+    }
+    if (set_rotatable_smarts) {
+        fragmenter.SetRotatableSmarts(rotatable_smarts);
+    }
+
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationMinCuts(unsigned int min_cuts) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMinCuts(min_cuts);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationMaxCuts(unsigned int max_cuts) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMaxCuts(max_cuts);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationMaxCutBonds(unsigned int max_cut_bonds) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMaxCutBonds(max_cut_bonds);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationMaxHeavyAtoms(unsigned int max_heavy_atoms) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMaxHeavyAtoms(max_heavy_atoms);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationMaxRotatableBonds(unsigned int max_rotatable_bonds) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMaxRotatableBonds(max_rotatable_bonds);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::ClearFragmentationMaxHeavyAtoms() {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.ClearMaxHeavyAtoms();
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::ClearFragmentationMaxRotatableBonds() {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.ClearMaxRotatableBonds();
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationRotatableSmarts(const std::string& rotatable_smarts) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetRotatableSmarts(rotatable_smarts);
+    CommitFragmenter(fragmenter);
 }
 
 unsigned int Analyzer::AddMolecule(
@@ -214,6 +349,19 @@ void Analyzer::RequireAnalyzed() const {
     if (!analyzed_) {
         throw AnalysisStateError("analysis has not been run");
     }
+}
+
+const Fragmenter& Analyzer::RequireFragmenter() {
+    Fragmenter* fragmenter = method_->GetFragmenter();
+    if (fragmenter == nullptr) {
+        throw InvalidQueryError("fragmentation controls require the fragmentation method");
+    }
+    return *fragmenter;
+}
+
+void Analyzer::CommitFragmenter(const Fragmenter& fragmenter) {
+    method_->SetFragmenter(fragmenter);
+    analyzed_ = false;
 }
 
 std::vector<MatchedPair> Analyzer::InjectProperties(std::vector<MatchedPair> pairs) const {

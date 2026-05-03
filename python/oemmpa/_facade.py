@@ -1,5 +1,7 @@
 """Pythonic facade for OEMMPA analysis."""
 
+import operator
+
 from . import _oemmpa
 from ._loading import LoadReport, iter_dataframe_records
 from ._results import (
@@ -9,6 +11,9 @@ from ._results import (
     TransformResult,
 )
 from ._smiles_file import iter_smiles_file
+
+
+_UINT_MAX = 2**32 - 1
 
 
 class Analyzer:
@@ -169,6 +174,122 @@ class Analyzer:
             str(name),
             float(value),
         )
+
+    def configure_fragmentation(
+        self,
+        *,
+        min_cuts=None,
+        max_cuts=None,
+        max_cut_bonds=None,
+        max_heavy_atoms=None,
+        max_rotatable_bonds=None,
+        rotatable_smarts=None,
+        clear_max_heavy_atoms=False,
+        clear_max_rotatable_bonds=False,
+    ):
+        """Configure fragmentation-method controls.
+
+        :param min_cuts: Optional minimum number of cuts.
+        :param max_cuts: Optional maximum number of cuts.
+        :param max_cut_bonds: Optional maximum number of candidate cut bonds;
+            ``0`` or ``None`` disables the guard.
+        :param max_heavy_atoms: Optional maximum molecule heavy atom count.
+        :param max_rotatable_bonds: Optional maximum rotatable bond count.
+        :param rotatable_smarts: Optional SMARTS used to count rotatable bonds.
+        :param clear_max_heavy_atoms: Clear the maximum-heavy-atom guard when
+            true.
+        :param clear_max_rotatable_bonds: Clear the maximum-rotatable-bond
+            guard when true.
+        :returns: ``self`` for chaining.
+        :raises ValueError: If the analyzer is not using the fragmentation
+            method or a supplied option is invalid.
+        """
+        min_cuts = self._coerce_fragmentation_uint("min_cuts", min_cuts)
+        max_cuts = self._coerce_fragmentation_uint("max_cuts", max_cuts)
+        max_cut_bonds = self._coerce_fragmentation_uint(
+            "max_cut_bonds",
+            max_cut_bonds,
+        )
+        max_heavy_atoms = self._coerce_fragmentation_uint(
+            "max_heavy_atoms",
+            max_heavy_atoms,
+        )
+        max_rotatable_bonds = self._coerce_fragmentation_uint(
+            "max_rotatable_bonds",
+            max_rotatable_bonds,
+        )
+        clear_max_heavy_atoms = self._coerce_fragmentation_bool(
+            "clear_max_heavy_atoms",
+            clear_max_heavy_atoms,
+        )
+        clear_max_rotatable_bonds = self._coerce_fragmentation_bool(
+            "clear_max_rotatable_bonds",
+            clear_max_rotatable_bonds,
+        )
+        if max_heavy_atoms is not None and clear_max_heavy_atoms:
+            raise ValueError("max_heavy_atoms cannot be set and cleared")
+        if max_rotatable_bonds is not None and clear_max_rotatable_bonds:
+            raise ValueError("max_rotatable_bonds cannot be set and cleared")
+        rotatable_smarts_value = (
+            "" if rotatable_smarts is None else str(rotatable_smarts)
+        )
+        has_change = any(
+            (
+                min_cuts is not None,
+                max_cuts is not None,
+                max_cut_bonds is not None,
+                max_heavy_atoms is not None,
+                clear_max_heavy_atoms,
+                max_rotatable_bonds is not None,
+                clear_max_rotatable_bonds,
+                rotatable_smarts is not None,
+            )
+        )
+        if not has_change:
+            return self
+
+        try:
+            self._raw_analyzer.ConfigureFragmentation(
+                min_cuts is not None,
+                min_cuts or 0,
+                max_cuts is not None,
+                max_cuts or 0,
+                max_cut_bonds is not None,
+                max_cut_bonds or 0,
+                max_heavy_atoms is not None,
+                max_heavy_atoms or 0,
+                clear_max_heavy_atoms,
+                max_rotatable_bonds is not None,
+                max_rotatable_bonds or 0,
+                clear_max_rotatable_bonds,
+                rotatable_smarts is not None,
+                rotatable_smarts_value,
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    @staticmethod
+    def _coerce_fragmentation_uint(name, value):
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer")
+        try:
+            coerced = operator.index(value)
+        except TypeError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+        if coerced < 0:
+            raise ValueError(f"{name} must be non-negative")
+        if coerced > _UINT_MAX:
+            raise ValueError(f"{name} is too large")
+        return coerced
+
+    @staticmethod
+    def _coerce_fragmentation_bool(name, value):
+        if isinstance(value, bool):
+            return value
+        raise ValueError(f"{name} must be a bool")
 
     def analyze(self):
         """Run analysis and return this analyzer.

@@ -43,6 +43,15 @@ std::vector<Transform> FragmentationMethod::GetTransforms(const QueryOptions& op
     return index_.GetTransforms(options);
 }
 
+Fragmenter* FragmentationMethod::GetFragmenter() {
+    return &fragmenter_;
+}
+
+void FragmentationMethod::SetFragmenter(const Fragmenter& fragmenter) {
+    fragmenter_ = fragmenter;
+    analyzed_ = false;
+}
+
 void FragmentationMethod::RequireAnalyzed() const {
     if (!analyzed_) {
         throw AnalysisStateError("analysis has not been run");
