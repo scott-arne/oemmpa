@@ -1,9 +1,9 @@
 phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	status	notes
-7	mmpdb	test_fragment.py	TestSmilesParser.test_space_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
-7	mmpdb	test_fragment.py	TestSmilesParser.test_space_gz_as_default	-	-	deferred	Phase 8 will add gzip input parity.
-7	mmpdb	test_fragment.py	TestSmilesParser.test_tab_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
-7	mmpdb	test_fragment.py	TestSmilesParser.test_two_tabs_as_default	-	-	deferred	Phase 8 will add delimiter-aware file loading parity.
-7	mmpdb	test_fragment.py	TestSmilesParser.test_comma_as_default	-	-	deferred	Phase 8 will decide comma delimiter behavior.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_space_as_default	tests/python/test_loading.py	test_add_molecules_from_file_matches_mmpdb_whitespace_delimiter	matched	Default whitespace parsing now matches the MMPDB fixture ID behavior.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_space_gz_as_default	tests/python/test_loading.py	test_add_molecules_from_file_reads_gzip_smiles_files	matched	Gzip SMILES input now matches the MMPDB fixture ID behavior.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_tab_as_default	tests/python/test_loading.py	test_add_molecules_from_file_supports_tab_delimiter	accepted divergence	Explicit tab parsing is covered in the Python API; MMPDB default CLI tab-file behavior remains accepted divergence.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_two_tabs_as_default	tests/python/test_loading.py	test_add_molecules_from_file_supports_to_eol_delimiter	accepted divergence	OEMMPA exposes explicit delimiter modes in the Python API rather than reproducing every MMPDB default parser branch.
+7	mmpdb	test_fragment.py	TestSmilesParser.test_comma_as_default	tests/python/test_loading.py	test_add_molecules_from_file_supports_comma_delimiter	accepted divergence	Comma parsing is explicit through delimiter="comma"; MMPDB default comma failure text remains CLI follow-up work.
 7	mmpdb	test_fragment.py	TestOptions.test_max_heavies	-	-	deferred	Phase 8 will add heavy-atom filtering.
 7	mmpdb	test_fragment.py	TestOptions.test_max_rotatable_bonds	-	-	deferred	Phase 8 will add rotatable-bond filtering.
 7	mmpdb	test_fragment.py	TestOptions.test_rotatable_smarts	-	-	deferred	Phase 8 will add rotatable SMARTS validation.

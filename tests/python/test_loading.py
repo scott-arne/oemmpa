@@ -7,6 +7,7 @@ import pytest
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+MMPDB_FRAGMENT_DIR = DATA_DIR / "mmpdb" / "fragment"
 
 
 def _pair_between(pairs, source_id, target_id):
@@ -309,3 +310,165 @@ def test_load_report_counts_are_derived_from_rows():
 
     with pytest.raises(TypeError):
         LoadReport(accepted_count=99)
+
+
+def test_add_molecules_from_file_matches_mmpdb_whitespace_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(MMPDB_FRAGMENT_DIR / "space.smi")
+
+    assert report.accepted_ids == ["record", "entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_default_whitespace_generates_ids_for_missing_ids(
+    tmp_path,
+):
+    from oemmpa import Analyzer
+
+    smiles_path = tmp_path / "single_column.smi"
+    smiles_path.write_text("Cc1ccccc1\nOc1ccccc1\n", encoding="utf-8")
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(smiles_path)
+
+    assert report.accepted_ids == ["molecule_1", "molecule_2"]
+    assert report.rejected_count == 0
+
+
+@pytest.mark.parametrize(
+    ("delimiter", "molecule_row"),
+    [
+        ("whitespace", "Cc1ccccc1 toluene"),
+        ("space", "Cc1ccccc1 toluene"),
+        ("tab", "Cc1ccccc1\ttoluene"),
+        ("comma", "Cc1ccccc1,toluene"),
+        ("to-eol", "Cc1ccccc1 toluene"),
+    ],
+)
+def test_add_molecules_from_file_skips_whitespace_only_rows_for_all_delimiters(
+    tmp_path,
+    delimiter,
+    molecule_row,
+):
+    from oemmpa import Analyzer
+
+    smiles_path = tmp_path / f"{delimiter}.smi"
+    smiles_path.write_text(f"\n   \n\t  \t\n{molecule_row}\n", encoding="utf-8")
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(smiles_path, delimiter=delimiter)
+
+    assert report.accepted_ids == ["toluene"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_reads_gzip_smiles_files():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(MMPDB_FRAGMENT_DIR / "space.smi.gz")
+
+    assert report.accepted_ids == ["record", "entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_supports_space_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "space.smi",
+        delimiter="space",
+    )
+
+    assert report.accepted_ids == ["record", "entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_supports_tab_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "tab.smi",
+        delimiter="tab",
+    )
+
+    assert report.accepted_ids == ["record 1", "entry 2"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_supports_to_eol_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "two_tabs.smi",
+        delimiter="to-eol",
+    )
+
+    assert report.accepted_ids == ["record\t1", "vinyl\t2"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_supports_comma_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "comma.smi",
+        delimiter="comma",
+    )
+
+    assert report.accepted_ids == ["record 1", "entry", "item 3"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_can_skip_header_row():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "space.smi",
+        has_header=True,
+    )
+
+    assert report.accepted_ids == ["entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_reports_delimiter_errors_and_continues():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "space.smi",
+        delimiter="tab",
+    )
+
+    assert report.accepted_count == 0
+    assert report.rejected_count == 3
+    assert report.errors[0].row == 1
+    assert "tab-delimited" in report.errors[0].message
+
+
+def test_add_molecules_from_file_rejects_unknown_delimiter():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    with pytest.raises(ValueError, match="unsupported SMILES file delimiter"):
+        analyzer.add_molecules_from_file(
+            MMPDB_FRAGMENT_DIR / "space.smi",
+            delimiter="pipe",
+        )

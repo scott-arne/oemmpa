@@ -8,6 +8,7 @@ from ._results import (
     TransformCollection,
     TransformResult,
 )
+from ._smiles_file import iter_smiles_file
 
 
 class Analyzer:
@@ -74,31 +75,32 @@ class Analyzer:
                 report.record_accepted(accepted_id)
         return report
 
-    def add_molecules_from_file(self, path):
-        """Add molecules from a whitespace SMILES file.
+    def add_molecules_from_file(
+        self,
+        path,
+        delimiter="whitespace",
+        has_header=False,
+    ):
+        """Add molecules from a SMILES file.
 
-        Blank lines are skipped. The first token is interpreted as the SMILES
-        string, and the optional second token is used as the external molecule
-        identifier.
-
-        :param path: File path to read.
+        :param path: Plain text or ``.gz`` SMILES file.
+        :param delimiter: One of ``"whitespace"``, ``"space"``, ``"tab"``,
+            ``"comma"``, or ``"to-eol"``.
+        :param has_header: Skip the first physical row when true.
         :returns: :class:`oemmpa.LoadReport` describing accepted and rejected
             rows.
         """
         report = LoadReport()
-        with open(path, encoding="utf-8") as handle:
-            for row_number, line in enumerate(handle, start=1):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                parts = stripped.split()
-                molecule_id = parts[1] if len(parts) > 1 else None
-                try:
-                    accepted_id = self.add_molecule(parts[0], id=molecule_id)
-                except Exception as exc:
-                    report.record_rejected(row_number, exc)
-                else:
-                    report.record_accepted(accepted_id)
+        for row in iter_smiles_file(path, delimiter=delimiter, has_header=has_header):
+            if row.error is not None:
+                report.record_rejected(row.row_number, row.error)
+                continue
+            try:
+                accepted_id = self.add_molecule(row.smiles, id=row.molecule_id)
+            except Exception as exc:
+                report.record_rejected(row.row_number, exc)
+            else:
+                report.record_accepted(accepted_id)
         return report
 
     def add_molecules_from_dataframe(
