@@ -74,6 +74,7 @@ endif()
 set(OEMMPA_SOURCES
     src/oemmpa.cpp
     src/DatabaseSummary.cpp
+    src/RuleEnvironmentStatistics.cpp
     src/MoleculeRecord.cpp
     src/LoadReport.cpp
     src/Fragmentation.cpp

@@ -284,6 +284,26 @@ environment rows allow property changes to be summarized at different distances
 from the transformation site, following the same rule-environment idea used by
 MMPDB.
 
+```python
+from oemmpa import predict_rule_environment_delta
+
+store.save_analyzer(analyzer)
+
+rows = store.rule_environment_statistics("pIC50")
+rows = rows.filter(transform="[*:1]C>>[*:1]O", min_radius=1, min_pairs=1)
+
+prediction = predict_rule_environment_delta(
+    rows,
+    "[*:1]C>>[*:1]O",
+    value=6.0,
+)
+print(prediction.to_dict())
+```
+
+The prediction records which local environment was selected. Use
+`pairs_for_rule_environment()` when you want to inspect the matched pairs that
+contributed to that environment's statistics.
+
 ## Current Capabilities
 
 OEMMPA currently provides in-memory analysis and optional DuckDB storage.
@@ -304,8 +324,8 @@ The OEMedChem method currently handles native single-cut matched pairs and
 returns the same constant and variable fields as the other methods. DuckDB
 storage can save molecules, properties, and matched pairs; load SMILES and
 property files; refresh rule-environment property statistics; and read stored
-pairs back into the usual result objects.
+pairs and rule-environment statistics back into the usual result objects.
 Transformation statistics, property-change predictions, product generation,
 and the command-line tools are available now. Separate fragment databases,
-database-backed transformation queries, and multi-atom product generation are
+input-SMILES environment matching, and multi-atom product generation are
 planned for later work.

@@ -1,0 +1,353 @@
+"""Rule-environment statistics helpers."""
+
+from dataclasses import dataclass
+import importlib
+import re
+
+
+AGGREGATE_FIELDS = (
+    "count",
+    "avg",
+    "std",
+    "kurtosis",
+    "skewness",
+    "min",
+    "q1",
+    "median",
+    "q3",
+    "max",
+    "paired_t",
+    "p_value",
+)
+
+_WHERE_PATTERN = re.compile(
+    r"^\s*(?P<variable>[A-Za-z_][A-Za-z0-9_]*)\s*"
+    r"(?P<operator>>=|<=|==|>|<)\s*"
+    r"(?P<value>[0-9]+)\s*$"
+)
+
+
+def _optional(raw_row, has_name, getter_name):
+    if not getattr(raw_row, has_name)():
+        return None
+    return getattr(raw_row, getter_name)()
+
+
+@dataclass(frozen=True)
+class RuleEnvironmentStatisticsResult:
+    """Statistics for one transform in one local chemical environment.
+
+    :param raw_row: Raw ``_oemmpa.RuleEnvironmentStatistics`` instance.
+    """
+
+    rule_environment_id: int
+    property_name: str
+    from_smiles: str
+    to_smiles: str
+    transform: str
+    radius: int
+    smarts: str
+    pseudosmiles: str
+    parent_smarts: str
+    count: int
+    avg: float
+    std: float | None
+    kurtosis: float | None
+    skewness: float | None
+    min: float
+    q1: float
+    median: float
+    q3: float
+    max: float
+    paired_t: float | None
+    p_value: float | None
+
+    @classmethod
+    def from_raw(cls, raw_row):
+        """Build a Python result from a raw C++ row."""
+        return cls(
+            rule_environment_id=int(raw_row.GetRuleEnvironmentId()),
+            property_name=raw_row.GetPropertyName(),
+            from_smiles=raw_row.GetFromSmiles(),
+            to_smiles=raw_row.GetToSmiles(),
+            transform=raw_row.GetTransformSmiles(),
+            radius=int(raw_row.GetRadius()),
+            smarts=raw_row.GetSmarts(),
+            pseudosmiles=raw_row.GetPseudoSmiles(),
+            parent_smarts=raw_row.GetParentSmarts(),
+            count=int(raw_row.GetCount()),
+            avg=float(raw_row.GetAvg()),
+            std=_optional(raw_row, "HasStd", "GetStd"),
+            kurtosis=_optional(raw_row, "HasKurtosis", "GetKurtosis"),
+            skewness=_optional(raw_row, "HasSkewness", "GetSkewness"),
+            min=float(raw_row.GetMin()),
+            q1=float(raw_row.GetQ1()),
+            median=float(raw_row.GetMedian()),
+            q3=float(raw_row.GetQ3()),
+            max=float(raw_row.GetMax()),
+            paired_t=_optional(raw_row, "HasPairedT", "GetPairedT"),
+            p_value=_optional(raw_row, "HasPValue", "GetPValue"),
+        )
+
+    def predicted_delta(self, aggregation="avg"):
+        """Return a predicted delta using the selected aggregate.
+
+        :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
+        :returns: Predicted property delta.
+        :raises ValueError: If ``aggregation`` is unsupported.
+        """
+        aggregation = str(aggregation)
+        if aggregation in {"avg", "mean"}:
+            return self.avg
+        if aggregation == "median":
+            return self.median
+        raise ValueError(f"unsupported aggregation: {aggregation}")
+
+    def to_dict(self):
+        """Return a serializable statistics mapping."""
+        return {
+            "rule_environment_id": self.rule_environment_id,
+            "property": self.property_name,
+            "from_smiles": self.from_smiles,
+            "to_smiles": self.to_smiles,
+            "transform": self.transform,
+            "radius": self.radius,
+            "smarts": self.smarts,
+            "pseudosmiles": self.pseudosmiles,
+            "parent_smarts": self.parent_smarts,
+            **{field: getattr(self, field) for field in AGGREGATE_FIELDS},
+        }
+
+
+class RuleEnvironmentStatisticsCollection(list):
+    """List of rule-environment statistics with filtering helpers."""
+
+    def filter(
+        self,
+        *,
+        property_name=None,
+        transform=None,
+        min_radius=None,
+        max_radius=None,
+        min_pairs=None,
+        substructure=None,
+        where=None,
+    ):
+        """Return rows matching the requested structured filters."""
+        rows = self
+        if property_name is not None:
+            property_name = str(property_name)
+            rows = [row for row in rows if row.property_name == property_name]
+        if transform is not None:
+            transform = str(transform)
+            rows = [row for row in rows if row.transform == transform]
+        if min_radius is not None:
+            min_radius = int(min_radius)
+            rows = [row for row in rows if row.radius >= min_radius]
+        if max_radius is not None:
+            max_radius = int(max_radius)
+            rows = [row for row in rows if row.radius <= max_radius]
+        if min_pairs is not None:
+            min_pairs = int(min_pairs)
+            if min_pairs < 1:
+                raise ValueError("min_pairs must be greater than or equal to one")
+            rows = [row for row in rows if row.count >= min_pairs]
+        if substructure is not None:
+            substructure = str(substructure)
+            rows = [
+                row
+                for row in rows
+                if substructure in row.from_smiles or substructure in row.to_smiles
+            ]
+        if where is not None:
+            rows = _filter_where(rows, where)
+        return RuleEnvironmentStatisticsCollection(rows)
+
+    def to_dicts(self):
+        """Return all statistics rows as dictionaries."""
+        return [row.to_dict() for row in self]
+
+    def to_dataframe(self, library="pandas"):
+        """Return statistics as a pandas or polars dataframe."""
+        if library not in {"pandas", "polars"}:
+            raise ValueError(f"unsupported dataframe library: {library}")
+
+        module = importlib.import_module(library)
+        return module.DataFrame(self.to_dicts())
+
+
+def wrap_rule_environment_statistics(raw_rows):
+    """Wrap raw C++ rule-environment statistics rows."""
+    return RuleEnvironmentStatisticsCollection(
+        RuleEnvironmentStatisticsResult.from_raw(row)
+        for row in raw_rows
+    )
+
+
+def _compare_where(lhs, operator, rhs):
+    if operator == ">":
+        return lhs > rhs
+    if operator == ">=":
+        return lhs >= rhs
+    if operator == "==":
+        return lhs == rhs
+    if operator == "<=":
+        return lhs <= rhs
+    if operator == "<":
+        return lhs < rhs
+    raise ValueError(f"unsupported where operator: {operator}")
+
+
+def _filter_where(rows, where):
+    expression = str(where)
+    match = _WHERE_PATTERN.match(expression)
+    if match is None:
+        variable = expression.strip().split(maxsplit=1)[0] if expression.strip() else ""
+        if variable.isidentifier() and variable not in {"count", "radius"}:
+            raise ValueError(f"unsupported where variable: {variable}")
+        raise ValueError(f"unsupported where expression: {expression}")
+
+    variable = match.group("variable")
+    if variable not in {"count", "radius"}:
+        raise ValueError(f"unsupported where variable: {variable}")
+
+    operator = match.group("operator")
+    value = int(match.group("value"))
+    return [
+        row
+        for row in rows
+        if _compare_where(getattr(row, variable), operator, value)
+    ]
+
+
+@dataclass(frozen=True)
+class RuleEnvironmentPredictionResult:
+    """Predicted property change from a selected rule environment."""
+
+    rule_environment_id: int
+    transform: str
+    property_name: str
+    aggregation: str
+    predicted_delta: float
+    predicted_value: float | None
+    count: int
+    radius: int
+    smarts: str
+    pseudosmiles: str
+    std: float | None
+    p_value: float | None
+
+    @classmethod
+    def from_statistics(cls, row, aggregation, value=None):
+        """Build a prediction from a selected statistics row."""
+        normalized_aggregation = "avg" if aggregation == "mean" else str(aggregation)
+        predicted_delta = row.predicted_delta(normalized_aggregation)
+        predicted_value = None
+        if value is not None:
+            predicted_value = float(value) + predicted_delta
+        return cls(
+            rule_environment_id=row.rule_environment_id,
+            transform=row.transform,
+            property_name=row.property_name,
+            aggregation=normalized_aggregation,
+            predicted_delta=predicted_delta,
+            predicted_value=predicted_value,
+            count=row.count,
+            radius=row.radius,
+            smarts=row.smarts,
+            pseudosmiles=row.pseudosmiles,
+            std=row.std,
+            p_value=row.p_value,
+        )
+
+    def to_dict(self):
+        """Return a serializable prediction mapping."""
+        return {
+            "rule_environment_id": self.rule_environment_id,
+            "transform": self.transform,
+            "property": self.property_name,
+            "aggregation": self.aggregation,
+            "predicted_delta": self.predicted_delta,
+            "predicted_value": self.predicted_value,
+            "count": self.count,
+            "radius": self.radius,
+            "smarts": self.smarts,
+            "pseudosmiles": self.pseudosmiles,
+            "std": self.std,
+            "p_value": self.p_value,
+        }
+
+
+def _score_key(row, score):
+    if score == "largest-radius":
+        return (row.radius, row.count, -row.rule_environment_id)
+    if score == "smallest-radius":
+        return (-row.radius, row.count, -row.rule_environment_id)
+    if score == "largest-count":
+        return (row.count, row.radius, -row.rule_environment_id)
+    if score == "smallest-count":
+        return (-row.count, row.radius, -row.rule_environment_id)
+    raise ValueError(f"unsupported score: {score}")
+
+
+def predict_rule_environment_delta(
+    statistics,
+    transform,
+    *,
+    property_name=None,
+    aggregation="avg",
+    value=None,
+    min_radius=0,
+    max_radius=5,
+    min_pairs=1,
+    substructure=None,
+    where=None,
+    score="largest-radius",
+):
+    """Predict a property delta from stored rule-environment statistics.
+
+    :param statistics: Rule-environment statistics rows.
+    :param transform: Transform SMILES to select.
+    :param property_name: Optional property name filter.
+    :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
+    :param value: Optional starting property value.
+    :param min_radius: Minimum environment radius to consider.
+    :param max_radius: Maximum environment radius to consider.
+    :param min_pairs: Minimum supporting pair count.
+    :param substructure: Optional source/target variable text filter.
+    :param where: Optional safe where expression.
+    :param score: Row selection mode.
+    :returns: :class:`RuleEnvironmentPredictionResult`.
+    :raises KeyError: If no rule environment matches.
+    """
+    transform = str(transform)
+    if not isinstance(statistics, RuleEnvironmentStatisticsCollection):
+        statistics = RuleEnvironmentStatisticsCollection(statistics)
+
+    rows = statistics.filter(
+        property_name=property_name,
+        transform=transform,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        min_pairs=min_pairs,
+        substructure=substructure,
+        where=where,
+    )
+    if not rows:
+        raise KeyError(transform)
+
+    selected = max(rows, key=lambda row: _score_key(row, str(score)))
+    return RuleEnvironmentPredictionResult.from_statistics(
+        selected,
+        aggregation,
+        value=value,
+    )
+
+
+__all__ = [
+    "RuleEnvironmentPredictionResult",
+    "RuleEnvironmentStatisticsCollection",
+    "RuleEnvironmentStatisticsResult",
+    "predict_rule_environment_delta",
+    "wrap_rule_environment_statistics",
+]

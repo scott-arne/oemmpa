@@ -10,6 +10,7 @@
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
+#include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Transform.h"
 
 namespace duckdb {
@@ -112,6 +113,14 @@ public:
         const std::string& property_name
     ) const;
 
+    /// \brief Return stored rule-environment statistics for all properties.
+    std::vector<RuleEnvironmentStatistics> GetRuleEnvironmentStatistics() const;
+
+    /// \brief Return stored rule-environment statistics for one property.
+    std::vector<RuleEnvironmentStatistics> GetRuleEnvironmentStatistics(
+        const std::string& property_name
+    ) const;
+
     /// \brief Return cached or freshly counted database summary totals.
     DatabaseSummary GetSummary(bool recount = false) const;
 
@@ -126,6 +135,11 @@ public:
 
     /// \brief Rebuild stored matched pairs filtered by query options.
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const;
+
+    /// \brief Rebuild stored matched pairs for one rule environment.
+    std::vector<MatchedPair> GetPairsForRuleEnvironment(
+        std::uint64_t rule_environment_id
+    ) const;
 
     /// \brief Group stored matched pairs by transform SMILES.
     std::vector<Transform> GetTransforms() const;

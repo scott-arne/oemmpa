@@ -115,6 +115,35 @@ def test_environment_fingerprint_helper_is_exposed_to_python():
     assert ":1]" in fingerprints[0].GetSmarts()
 
 
+def test_rule_environment_statistics_binding_is_exposed_to_python():
+    package = import_worktree_oemmpa()
+    if not package.duckdb_available():
+        pytest.skip("DuckDBStore binding is only available in DuckDB-enabled builds")
+
+    _oemmpa = package._oemmpa
+    assert hasattr(_oemmpa, "RuleEnvironmentStatisticsVector")
+
+    analyzer = package.Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.5)
+    analyzer.analyze()
+
+    store = package.DuckDBStore()
+    store.save_analyzer(analyzer)
+
+    rows = store.raw.GetRuleEnvironmentStatistics("pIC50")
+
+    assert len(rows) == 12
+    assert rows[0].GetPropertyName() == "pIC50"
+    assert rows[0].GetTransformSmiles()
+    assert rows[0].GetSmarts()
+    assert rows[0].GetPseudoSmiles()
+    assert rows[0].GetCount() == 1
+    assert rows[0].GetAvg() in {1.5, -1.5}
+
+
 def test_cpp_analyzer_binding_accepts_explicit_fragmentation_method():
     _oemmpa = import_worktree_raw_bindings()
 

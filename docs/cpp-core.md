@@ -241,6 +241,10 @@ chemical pairs for ordinary analysis workflows.
 `RefreshRuleEnvironmentStatistics()` recomputes property-change summaries from
 the stored pair rows and molecule properties. `GetSummary(true)` recounts the
 main database tables directly.
+`GetRuleEnvironmentStatistics()` returns the stored statistics rows with their
+property name, variable transformation, environment radius, SMARTS,
+pseudosmiles, and aggregate values. `GetPairsForRuleEnvironment()` returns the
+matched pairs that contributed to a selected rule environment.
 
 MMPDB keeps a separate fragment database, then stores the final matched-pair
 database in `compound`, `rule_smiles`,
@@ -285,8 +289,9 @@ The fragmentation, DMCSS, and initial OEMedChem methods are available now.
 Explicit unimolecular SMIRKS application and single-cut, single-atom observed
 transform application are available through `TransformApplicator`. DuckDB
 storage can save molecules, properties, and pairs; load SMILES and property
-files; refresh rule-environment property statistics; and query stored pairs and
-transformations. Python transformation statistics, prediction helpers, and
+files; refresh rule-environment property statistics; and query stored pairs,
+transformations, and rule-environment statistics. Python transformation
+statistics, rule-environment prediction helpers, product generation, and
 file-based CLI commands are available on top of the common result objects. A
-separate fragment database, database-backed transformation queries, multi-atom
+separate fragment database, input-SMILES environment matching, multi-atom
 product generation, and C++ analytics APIs remain later work.

@@ -381,6 +381,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
 %template(EnvironmentFingerprintVector) std::vector<OEMMPA::EnvironmentFingerprint>;
 %template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
+%template(RuleEnvironmentStatisticsVector) std::vector<OEMMPA::RuleEnvironmentStatistics>;
 %template(TransformVector) std::vector<OEMMPA::Transform>;
 %template(TransformProductVector) std::vector<OEMMPA::TransformProduct>;
 %template(GeneratedProductVector) std::vector<OEMMPA::GeneratedProduct>;
@@ -411,6 +412,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/LoadReport.h"
 %include "../include/oemmpa/MatchedPair.h"
 %include "../include/oemmpa/Transform.h"
+%include "../include/oemmpa/RuleEnvironmentStatistics.h"
 %include "../include/oemmpa/TransformApplication.h"
 %include "../include/oemmpa/QueryOptions.h"
 %include "../include/oemmpa/FragmentationStrategy.h"

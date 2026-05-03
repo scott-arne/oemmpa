@@ -182,6 +182,15 @@ def _mmpdb_reference_transform(row, support_count=None):
     return transform
 
 
+def _mmpdb_reference_store(property_names=("MW", "MP")):
+    from oemmpa import DuckDBStore
+
+    analyzer = _mmpdb_reference_analyzer(property_names=property_names)
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    return store
+
+
 def _rdkit_canonical_smiles(smiles):
     rdkit = pytest.importorskip("rdkit")
     from rdkit import Chem
@@ -400,6 +409,89 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     assert observed_counts["rule_environment"] >= observed_counts["rule"]
     assert len(store.pairs()) == len(analyzer.pairs())
     assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS
+
+
+def test_mmpdb_phase10_rule_environment_statistics_expose_transform_metadata():
+    from oemmpa import predict_rule_environment_delta
+
+    store = _mmpdb_reference_store(property_names=("MW", "MP"))
+
+    mw_rows = store.rule_environment_statistics("MW")
+    chlorine_to_oxygen = mw_rows.filter(transform="[*:1]Cl>>[*:1]O")
+
+    assert len(chlorine_to_oxygen) == 6
+    assert {row.radius for row in chlorine_to_oxygen} == set(range(6))
+    assert {row.from_smiles for row in chlorine_to_oxygen} == {"[*:1]Cl"}
+    assert {row.to_smiles for row in chlorine_to_oxygen} == {"[*:1]O"}
+    assert {row.count for row in chlorine_to_oxygen} == {1}
+    assert {row.avg for row in chlorine_to_oxygen} == {-18.5}
+    assert all(row.smarts and row.pseudosmiles for row in chlorine_to_oxygen)
+
+    mp_prediction = predict_rule_environment_delta(
+        store.rule_environment_statistics("MP"),
+        "[*:1]Cl>>[*:1]O",
+        value=1.23,
+    )
+    assert mp_prediction.predicted_delta == pytest.approx(97.0)
+    assert mp_prediction.predicted_value == pytest.approx(98.23)
+
+
+def test_mmpdb_phase10_rule_environment_filters_cover_min_pairs_where_and_score():
+    from oemmpa import predict_rule_environment_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+    rows = store.rule_environment_statistics("MW")
+    oxygen_to_nitrogen = rows.filter(transform="[*:1]O>>[*:1]N")
+
+    assert {row.count for row in oxygen_to_nitrogen.filter(min_pairs=3)} == {3}
+    assert {row.count for row in oxygen_to_nitrogen.filter(where="count > 2")} == {3}
+    assert oxygen_to_nitrogen.filter(where="count > 3") == []
+    assert {
+        row.radius
+        for row in oxygen_to_nitrogen.filter(min_radius=0, max_radius=1)
+    } == {0, 1}
+
+    smallest_radius = predict_rule_environment_delta(
+        rows,
+        "[*:1]O>>[*:1]N",
+        score="smallest-radius",
+    )
+    largest_count = predict_rule_environment_delta(
+        rows,
+        "[*:1]O>>[*:1]N",
+        score="largest-count",
+    )
+
+    assert smallest_radius.radius == 0
+    assert smallest_radius.count == 3
+    assert largest_count.count == 3
+    assert largest_count.predicted_delta == pytest.approx(-1.0)
+
+    with pytest.raises(KeyError, match=r"\[\*:1\]O>>\[\*:1\]N"):
+        predict_rule_environment_delta(
+            rows,
+            "[*:1]O>>[*:1]N",
+            where="count > 10",
+        )
+
+
+def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
+    from oemmpa import predict_rule_environment_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+    prediction = predict_rule_environment_delta(
+        store.rule_environment_statistics("MW"),
+        "[*:1]Cl>>[*:1]O",
+    )
+    pairs = store.pairs_for_rule_environment(prediction.rule_environment_id)
+
+    assert prediction.predicted_delta == pytest.approx(-18.5)
+    assert prediction.radius == 5
+    assert len(pairs) == 1
+    assert pairs[0].source_id == "2-chlorophenol"
+    assert pairs[0].target_id == "catechol"
+    assert pairs[0].transform == "[*:1]Cl>>[*:1]O"
+    assert pairs[0].property_delta("MW") == pytest.approx(-18.5)
 
 
 def test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope():

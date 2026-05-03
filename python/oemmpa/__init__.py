@@ -385,6 +385,8 @@ _RAW_BINDING_EXPORTS = (
     "OEMMPAError",
     "PairScoring",
     "QueryOptions",
+    "RuleEnvironmentStatistics",
+    "RuleEnvironmentStatisticsVector",
     "ScoringMode_FewerCutsThenHeavyAtomChange",
     "ScoringMode_FewerCutsThenHeavyBondChange",
     "ScoringMode_KeepAll",
@@ -445,6 +447,12 @@ from ._analytics import (
     compute_transform_statistics,
     predict_transform_delta,
 )
+from ._rule_environment import (
+    RuleEnvironmentPredictionResult,
+    RuleEnvironmentStatisticsCollection,
+    RuleEnvironmentStatisticsResult,
+    predict_rule_environment_delta,
+)
 from ._storage import DuckDBStore, duckdb_available
 from ._transform import (
     apply_pair_transform,
@@ -469,6 +477,9 @@ __all__ = [
     "PairResult",
     "PredictionResult",
     "RowError",
+    "RuleEnvironmentPredictionResult",
+    "RuleEnvironmentStatisticsCollection",
+    "RuleEnvironmentStatisticsResult",
     "TransformCollection",
     "TransformResult",
     "TransformStatisticsCollection",
@@ -481,5 +492,6 @@ __all__ = [
     "compute_transform_statistics",
     "duckdb_available",
     "generate_products",
+    "predict_rule_environment_delta",
     "predict_transform_delta",
 ]

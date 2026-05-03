@@ -842,7 +842,10 @@ std::vector<MatchedPair> apply_pair_scoring(
     return selected_pairs;
 }
 
-std::string build_pair_query(const QueryOptions& options) {
+std::string build_pair_query(
+    const QueryOptions& options,
+    std::uint64_t rule_environment_id = 0
+) {
     std::ostringstream sql;
     sql
         << "select "
@@ -877,6 +880,9 @@ std::string build_pair_query(const QueryOptions& options) {
     if (!options.GetSymmetric()) {
         sql << "and p.compound1_id < p.compound2_id ";
     }
+    if (rule_environment_id > 0) {
+        sql << "and p.rule_environment_id = " << rule_environment_id << " ";
+    }
     if (options.GetMaxHeavyAtomChange() >= 0) {
         sql << "and abs(p.heavy_atom_delta) <= " << options.GetMaxHeavyAtomChange() << " ";
     }
@@ -903,6 +909,85 @@ std::string build_pair_query(const QueryOptions& options) {
         << ") distinct_pairs "
         << "order by sort_id";
     return sql.str();
+}
+
+std::string build_rule_environment_statistics_query(bool filter_property) {
+    std::ostringstream sql;
+    sql
+        << "select "
+        << "stats.rule_environment_id, "
+        << "property_name.name, "
+        << "from_smiles.smiles, "
+        << "to_smiles.smiles, "
+        << "rule_env.radius, "
+        << "coalesce(environment_fingerprint.smarts, ''), "
+        << "coalesce(environment_fingerprint.pseudosmiles, ''), "
+        << "coalesce(environment_fingerprint.parent_smarts, ''), "
+        << "stats.count, "
+        << "stats.avg, "
+        << "stats.std is not null, coalesce(stats.std, 0.0), "
+        << "stats.kurtosis is not null, coalesce(stats.kurtosis, 0.0), "
+        << "stats.skewness is not null, coalesce(stats.skewness, 0.0), "
+        << "stats.min, stats.q1, stats.median, stats.q3, stats.max, "
+        << "stats.paired_t is not null, coalesce(stats.paired_t, 0.0), "
+        << "stats.p_value is not null, coalesce(stats.p_value, 0.0) "
+        << "from rule_environment_statistics stats "
+        << "join property_name on property_name.id = stats.property_name_id "
+        << "join rule_environment rule_env on rule_env.id = stats.rule_environment_id "
+        << "join environment_fingerprint "
+        << "on environment_fingerprint.id = rule_env.environment_fingerprint_id "
+        << "join rule on rule.id = rule_env.rule_id "
+        << "join rule_smiles from_smiles on from_smiles.id = rule.from_smiles_id "
+        << "join rule_smiles to_smiles on to_smiles.id = rule.to_smiles_id ";
+    if (filter_property) {
+        sql << "where property_name.name = ? ";
+    }
+    sql
+        << "order by "
+        << "property_name.name, from_smiles.smiles, to_smiles.smiles, "
+        << "rule_env.radius, stats.rule_environment_id";
+    return sql.str();
+}
+
+template <typename Row>
+RuleEnvironmentStatistics read_rule_environment_statistics_row(const Row& row) {
+    return RuleEnvironmentStatistics(
+        row.template GetValue<std::uint64_t>(0),
+        row.template GetValue<std::string>(1),
+        row.template GetValue<std::string>(2),
+        row.template GetValue<std::string>(3),
+        static_cast<unsigned int>(row.template GetValue<int>(4)),
+        row.template GetValue<std::string>(5),
+        row.template GetValue<std::string>(6),
+        row.template GetValue<std::string>(7),
+        row.template GetValue<std::uint32_t>(8),
+        row.template GetValue<double>(9),
+        row.template GetValue<bool>(10),
+        row.template GetValue<double>(11),
+        row.template GetValue<bool>(12),
+        row.template GetValue<double>(13),
+        row.template GetValue<bool>(14),
+        row.template GetValue<double>(15),
+        row.template GetValue<double>(16),
+        row.template GetValue<double>(17),
+        row.template GetValue<double>(18),
+        row.template GetValue<double>(19),
+        row.template GetValue<double>(20),
+        row.template GetValue<bool>(21),
+        row.template GetValue<double>(22),
+        row.template GetValue<bool>(23),
+        row.template GetValue<double>(24)
+    );
+}
+
+std::vector<RuleEnvironmentStatistics> collect_rule_environment_statistics(
+    duckdb::QueryResult& result
+) {
+    std::vector<RuleEnvironmentStatistics> rows;
+    for (const auto& row : result) {
+        rows.push_back(read_rule_environment_statistics_row(row));
+    }
+    return rows;
 }
 
 }  // namespace
@@ -1447,6 +1532,37 @@ std::uint64_t DuckDBStore::GetRuleEnvironmentStatisticsCount(
     return 0;
 }
 
+std::vector<RuleEnvironmentStatistics> DuckDBStore::GetRuleEnvironmentStatistics() const {
+    const std::string sql = build_rule_environment_statistics_query(false);
+    std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+    return collect_rule_environment_statistics(*result);
+}
+
+std::vector<RuleEnvironmentStatistics> DuckDBStore::GetRuleEnvironmentStatistics(
+    const std::string& property_name
+) const {
+    const std::string sql = build_rule_environment_statistics_query(true);
+    std::unique_ptr<duckdb::PreparedStatement> statement = connection_->Prepare(sql);
+    if (!statement) {
+        throw StorageError("DuckDB prepare returned no statement: " + sql);
+    }
+    if (statement->HasError()) {
+        throw StorageError("DuckDB prepare failed: " + statement->GetError());
+    }
+
+    std::unique_ptr<duckdb::QueryResult> result =
+        statement->Execute(duckdb::Value(property_name));
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+    return collect_rule_environment_statistics(*result);
+}
+
 DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
     if (recount) {
         return DatabaseSummary(
@@ -1569,6 +1685,65 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
         pairs.push_back(pair);
     }
     return apply_pair_scoring(pairs, options.GetScoringOptions());
+}
+
+std::vector<MatchedPair> DuckDBStore::GetPairsForRuleEnvironment(
+    std::uint64_t rule_environment_id
+) const {
+    if (rule_environment_id == 0) {
+        throw StorageError("rule environment id must be greater than zero");
+    }
+
+    const QueryOptions options;
+    const std::string sql = build_pair_query(options, rule_environment_id);
+    std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+
+    std::vector<MatchedPair> pairs;
+    for (const auto& row : *result) {
+        MatchedPair pair(
+            static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
+            static_cast<unsigned int>(row.GetValue<std::uint64_t>(1)),
+            row.GetValue<std::string>(2),
+            row.GetValue<std::string>(3),
+            row.GetValue<std::string>(4),
+            row.GetValue<std::string>(5),
+            row.GetValue<std::string>(6),
+            row.GetValue<std::string>(7),
+            row.GetValue<std::string>(8),
+            static_cast<unsigned int>(row.GetValue<std::uint32_t>(9)),
+            row.GetValue<std::int32_t>(10),
+            row.GetValue<std::int32_t>(11)
+        );
+
+        const std::string property_sql =
+            "select property_name.name, source_property.value, target_property.value "
+            "from compound_property source_property "
+            "join compound_property target_property "
+            "on target_property.property_name_id = source_property.property_name_id "
+            "join property_name on property_name.id = source_property.property_name_id "
+            "where source_property.compound_id = ? and target_property.compound_id = ? "
+            "order by property_name.name";
+        duckdb::vector<duckdb::Value> property_values = {
+            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
+            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
+        };
+        std::unique_ptr<duckdb::QueryResult> property_result =
+            execute_prepared(connection_, property_sql, std::move(property_values));
+        for (const auto& property_row : *property_result) {
+            pair.SetProperty(
+                property_row.GetValue<std::string>(0),
+                property_row.GetValue<double>(1),
+                property_row.GetValue<double>(2)
+            );
+        }
+
+        pairs.push_back(pair);
+    }
+    return pairs;
 }
 
 std::vector<Transform> DuckDBStore::GetTransforms() const {

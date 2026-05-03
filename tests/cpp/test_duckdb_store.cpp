@@ -643,6 +643,51 @@ TEST(DuckDBStoreTest, RefreshRuleEnvironmentStatisticsComputesPropertyRows) {
     std::filesystem::remove(database_path);
 }
 
+TEST(DuckDBStoreTest, ReturnsRuleEnvironmentStatisticsRowsWithRuleMetadata) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    store.AddMoleculeProperty(1, "pIC50", 6.0);
+    store.AddMoleculeProperty(2, "pIC50", 7.5);
+
+    const MatchedPair input_pair = AnalyzeToluenePhenolPairs().front();
+    store.AddPair(input_pair);
+    store.RefreshRuleEnvironmentStatistics();
+
+    const std::vector<RuleEnvironmentStatistics> rows =
+        store.GetRuleEnvironmentStatistics("pIC50");
+
+    ASSERT_EQ(rows.size(), 6U);
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        const RuleEnvironmentStatistics& row = rows[index];
+        EXPECT_EQ(row.GetPropertyName(), "pIC50");
+        EXPECT_EQ(row.GetFromSmiles(), input_pair.GetSourceVariableSmiles());
+        EXPECT_EQ(row.GetToSmiles(), input_pair.GetTargetVariableSmiles());
+        EXPECT_EQ(row.GetTransformSmiles(), input_pair.GetTransformSmiles());
+        EXPECT_EQ(row.GetRadius(), index);
+        EXPECT_GT(row.GetRuleEnvironmentId(), 0U);
+        EXPECT_FALSE(row.GetSmarts().empty());
+        EXPECT_FALSE(row.GetPseudoSmiles().empty());
+        EXPECT_EQ(row.GetCount(), 1U);
+        EXPECT_DOUBLE_EQ(row.GetAvg(), 1.5);
+        EXPECT_DOUBLE_EQ(row.GetMin(), 1.5);
+        EXPECT_DOUBLE_EQ(row.GetMedian(), 1.5);
+        EXPECT_DOUBLE_EQ(row.GetMax(), 1.5);
+        EXPECT_FALSE(row.HasStd());
+        EXPECT_FALSE(row.HasPValue());
+    }
+
+    const std::vector<RuleEnvironmentStatistics> all_rows =
+        store.GetRuleEnvironmentStatistics();
+    EXPECT_EQ(all_rows.size(), rows.size());
+
+    const std::vector<MatchedPair> supporting_pairs =
+        store.GetPairsForRuleEnvironment(rows.front().GetRuleEnvironmentId());
+    ASSERT_EQ(supporting_pairs.size(), 1U);
+    EXPECT_EQ(supporting_pairs.front().GetTransformSmiles(), rows.front().GetTransformSmiles());
+    EXPECT_TRUE(supporting_pairs.front().HasProperty("pIC50"));
+}
+
 TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {
     DuckDBStore store;
     store.InitializeSchema();

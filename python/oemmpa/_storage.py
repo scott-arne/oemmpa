@@ -2,6 +2,7 @@
 
 from . import _oemmpa
 from ._loading import load_report_from_raw
+from ._rule_environment import wrap_rule_environment_statistics
 from ._results import PairCollection, PairResult, TransformCollection, TransformResult
 
 
@@ -123,6 +124,17 @@ class DuckDBStore:
             raw_pairs = self._raw_store.GetPairs(options)
         return PairCollection(PairResult(pair) for pair in raw_pairs)
 
+    def pairs_for_rule_environment(self, rule_environment_id):
+        """Return stored pairs that contributed to one rule environment.
+
+        :param rule_environment_id: Stored rule environment identifier.
+        :returns: Wrapped pair collection.
+        """
+        raw_pairs = self._raw_store.GetPairsForRuleEnvironment(
+            int(rule_environment_id)
+        )
+        return PairCollection(PairResult(pair) for pair in raw_pairs)
+
     def transforms(self, options=None):
         """Return stored transforms as a :class:`TransformCollection`.
 
@@ -189,3 +201,15 @@ class DuckDBStore:
         :returns: Number of rule-environment statistics rows for the property.
         """
         return int(self._raw_store.GetRuleEnvironmentStatisticsCount(str(property_name)))
+
+    def rule_environment_statistics(self, property_name=None):
+        """Return stored rule-environment statistics rows.
+
+        :param property_name: Optional property name to select.
+        :returns: Wrapped rule-environment statistics collection.
+        """
+        if property_name is None:
+            raw_rows = self._raw_store.GetRuleEnvironmentStatistics()
+        else:
+            raw_rows = self._raw_store.GetRuleEnvironmentStatistics(str(property_name))
+        return wrap_rule_environment_statistics(raw_rows)
