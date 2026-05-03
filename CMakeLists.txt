@@ -73,11 +73,13 @@ endif()
 # Library
 set(OEMMPA_SOURCES
     src/oemmpa.cpp
+    src/DatabaseSummary.cpp
     src/MoleculeRecord.cpp
     src/LoadReport.cpp
     src/Fragmentation.cpp
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
+    src/EnvironmentFingerprint.cpp
     src/FragmentationMethod.cpp
     src/DMCSSMethod.cpp
     src/Analyzer.cpp

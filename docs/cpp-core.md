@@ -193,12 +193,13 @@ directly into DuckDB and reports row-level errors through `LoadReport`.
 molecules. `AddPropertiesFromCsvFile()` loads property tables by external ID;
 the default ID-column convention follows MMPDB's `id`/`ID`/`Name`/`name`
 pattern, non-ID columns are inferred when not supplied, and `*` or blank values
-are treated as missing. `AddPair()` and `AddPairs()` persist analyzed pairs into
-rule, rule-environment, constant, and pair tables; `GetPairs()` and
-`GetTransforms()` rebuild the common result objects from DuckDB rows. The
-overloads accepting `QueryOptions` support symmetric/asymmetric selection,
-heavy-atom filters, relative heavy-atom filters, and pair scoring over stored
-rows.
+are treated as missing. Loading property files also refreshes stored
+rule-environment property statistics when pairs are already present.
+`AddPair()` and `AddPairs()` persist analyzed pairs into rule,
+rule-environment, constant, and pair tables; `GetPairs()` and `GetTransforms()`
+rebuild the common result objects from DuckDB rows. The overloads accepting
+`QueryOptions` support symmetric/asymmetric selection, heavy-atom filters,
+relative heavy-atom filters, and pair scoring over stored rows.
 
 ```cpp
 store.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
@@ -233,15 +234,21 @@ analyzer.Analyze();
 analyzer.SaveTo(store);
 ```
 
+`DuckDBStore` keeps both molecule-level records and rule-environment records.
+The `pair` table follows MMPDB's convention: a chemical pair can appear once for
+each environment radius, while the C++ and Python pair APIs return distinct
+chemical pairs for ordinary analysis workflows.
+`RefreshRuleEnvironmentStatistics()` recomputes property-change summaries from
+the stored pair rows and molecule properties. `GetSummary(true)` recounts the
+main database tables directly.
+
 MMPDB keeps a separate fragment database, then stores the final matched-pair
 database in `compound`, `rule_smiles`,
 `rule`, `environment_fingerprint`, `rule_environment`, `constant_smiles`, and
 `pair` tables. OEMMPA is following that cue: fragmentations remain an
 intermediate analysis result and are not exposed as a stable DuckDB table yet.
-The stored pair model already includes rule-environment tables for future
-atom-context fingerprints. Database-backed transformation refresh,
-rule-environment statistics, a separate fragment database, and production
-analytics remain later work.
+Database-backed transformation queries, a separate fragment database, and
+production analytics remain later work.
 
 ## Querying And Scoring
 
@@ -278,8 +285,8 @@ The fragmentation, DMCSS, and initial OEMedChem methods are available now.
 Explicit unimolecular SMIRKS application and single-cut, single-atom observed
 transform application are available through `TransformApplicator`. DuckDB
 storage can save molecules, properties, and pairs; load SMILES and property
-files; and query stored pairs and transformations. Python transformation
-statistics, prediction helpers, and file-based CLI commands are available on
-top of the common result objects. A separate fragment database, database-backed
-transformation refresh, multi-atom product generation, rule-environment
-statistics, and C++ analytics APIs remain later work.
+files; refresh rule-environment property statistics; and query stored pairs and
+transformations. Python transformation statistics, prediction helpers, and
+file-based CLI commands are available on top of the common result objects. A
+separate fragment database, database-backed transformation queries, multi-atom
+product generation, and C++ analytics APIs remain later work.

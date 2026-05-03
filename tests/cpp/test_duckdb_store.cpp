@@ -5,10 +5,14 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 
+#include <duckdb.hpp>
+
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -37,6 +41,124 @@ bool ContainsTable(const std::vector<std::string>& tables, const std::string& ta
     return std::find(tables.begin(), tables.end(), table_name) != tables.end();
 }
 
+bool ContainsAttachmentLabel(const std::string& value, unsigned int label) {
+    const std::string atom_map_label = ":" + std::to_string(label) + "]";
+    return value.find(atom_map_label) != std::string::npos;
+}
+
+struct RuleEnvironmentRow {
+    int radius = 0;
+    std::uint32_t num_pairs = 0;
+    std::string smarts;
+    std::string pseudosmiles;
+    std::string parent_smarts;
+};
+
+struct RuleEnvironmentStatisticsSummary {
+    std::uint64_t row_count = 0;
+    std::uint32_t min_count = 0;
+    std::uint32_t max_count = 0;
+    double min_avg = 0.0;
+    double max_avg = 0.0;
+};
+
+std::vector<RuleEnvironmentRow> ReadRuleEnvironmentRows(
+    const std::filesystem::path& database_path
+) {
+    duckdb::DuckDB database(database_path.string());
+    duckdb::Connection connection(database);
+
+    const std::string sql =
+        "select "
+        "rule_environment.radius, "
+        "rule_environment.num_pairs, "
+        "coalesce(environment_fingerprint.smarts, ''), "
+        "coalesce(environment_fingerprint.pseudosmiles, ''), "
+        "coalesce(environment_fingerprint.parent_smarts, '') "
+        "from rule_environment "
+        "join environment_fingerprint "
+        "on environment_fingerprint.id = rule_environment.environment_fingerprint_id "
+        "order by rule_environment.radius, rule_environment.id";
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(sql);
+    if (!result) {
+        throw std::runtime_error("DuckDB query returned no result");
+    }
+    if (result->HasError()) {
+        throw std::runtime_error("DuckDB query failed: " + result->GetError());
+    }
+
+    std::vector<RuleEnvironmentRow> rows;
+    for (const auto& row : *result) {
+        rows.push_back(
+            {
+                row.GetValue<int>(0),
+                row.GetValue<std::uint32_t>(1),
+                row.GetValue<std::string>(2),
+                row.GetValue<std::string>(3),
+                row.GetValue<std::string>(4),
+            }
+        );
+    }
+    return rows;
+}
+
+RuleEnvironmentStatisticsSummary ReadRuleEnvironmentStatisticsSummary(
+    const std::filesystem::path& database_path,
+    const std::string& property_name
+) {
+    duckdb::DuckDB database(database_path.string());
+    duckdb::Connection connection(database);
+
+    const std::string sql =
+        "select "
+        "count(*), min(stats.count), max(stats.count), min(stats.avg), max(stats.avg) "
+        "from rule_environment_statistics stats "
+        "join property_name on property_name.id = stats.property_name_id "
+        "where property_name.name = ?";
+    std::unique_ptr<duckdb::PreparedStatement> statement = connection.Prepare(sql);
+    if (!statement) {
+        throw std::runtime_error("DuckDB prepare returned no statement");
+    }
+    if (statement->HasError()) {
+        throw std::runtime_error("DuckDB prepare failed: " + statement->GetError());
+    }
+    std::unique_ptr<duckdb::QueryResult> result =
+        statement->Execute(duckdb::Value(property_name));
+    if (!result) {
+        throw std::runtime_error("DuckDB query returned no result");
+    }
+    if (result->HasError()) {
+        throw std::runtime_error("DuckDB query failed: " + result->GetError());
+    }
+
+    for (const auto& row : *result) {
+        return {
+            row.GetValue<std::uint64_t>(0),
+            row.GetValue<std::uint32_t>(1),
+            row.GetValue<std::uint32_t>(2),
+            row.GetValue<double>(3),
+            row.GetValue<double>(4),
+        };
+    }
+
+    return {};
+}
+
+void ExpectSinglePairRadiusRows(const std::vector<RuleEnvironmentRow>& rows) {
+    ASSERT_EQ(rows.size(), 6U);
+
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        const RuleEnvironmentRow& row = rows[index];
+        EXPECT_EQ(row.radius, static_cast<int>(index));
+        EXPECT_EQ(row.num_pairs, 1U);
+        EXPECT_FALSE(row.smarts.empty());
+        EXPECT_FALSE(row.pseudosmiles.empty());
+        if (row.radius > 0) {
+            EXPECT_FALSE(row.parent_smarts.empty());
+        }
+    }
+}
+
 void ExpectBaseSchema(const DuckDBStore& store) {
     const std::vector<std::string> tables = store.GetTableNames();
 
@@ -49,6 +171,7 @@ void ExpectBaseSchema(const DuckDBStore& store) {
     EXPECT_TRUE(ContainsTable(tables, "property_name"));
     EXPECT_TRUE(ContainsTable(tables, "rule"));
     EXPECT_TRUE(ContainsTable(tables, "rule_environment"));
+    EXPECT_TRUE(ContainsTable(tables, "rule_environment_statistics"));
     EXPECT_TRUE(ContainsTable(tables, "rule_smiles"));
     EXPECT_FALSE(ContainsTable(tables, "fragmentations"));
     EXPECT_FALSE(ContainsTable(tables, "transforms"));
@@ -100,6 +223,23 @@ void AddMethaneButaneMolecules(DuckDBStore& store) {
     store.AddMolecule(MoleculeRecord::FromSmiles(2, "CCCC", "butane"));
 }
 
+MatchedPair MakeMultiCutArylPair() {
+    return MatchedPair(
+        1,
+        2,
+        "toluene",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "[*:1]c1ccccc1[*:2]",
+        "[*:1]C[*:2]",
+        "[*:1]O[*:2]",
+        2,
+        0,
+        0
+    );
+}
+
 }  // namespace
 
 TEST(DuckDBStoreTest, InitializesBaseSchemaInMemory) {
@@ -108,6 +248,20 @@ TEST(DuckDBStoreTest, InitializesBaseSchemaInMemory) {
     store.InitializeSchema();
 
     ExpectBaseSchema(store);
+}
+
+TEST(DuckDBStoreTest, SchemaIncludesRuleEnvironmentStatisticsAndSummaryCounts) {
+    DuckDBStore store;
+    store.InitializeSchema();
+
+    EXPECT_TRUE(store.HasTable("rule_environment_statistics"));
+
+    DatabaseSummary summary = store.GetSummary(true);
+    EXPECT_EQ(summary.GetNumCompounds(), 0U);
+    EXPECT_EQ(summary.GetNumRules(), 0U);
+    EXPECT_EQ(summary.GetNumPairs(), 0U);
+    EXPECT_EQ(summary.GetNumRuleEnvironments(), 0U);
+    EXPECT_EQ(summary.GetNumRuleEnvironmentStatistics(), 0U);
 }
 
 TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithSchema) {
@@ -363,9 +517,10 @@ TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
 
     ASSERT_EQ(stored_pairs.size(), input_pairs.size());
     EXPECT_EQ(store.GetRowCount("constant_smiles"), 1U);
-    EXPECT_EQ(store.GetRowCount("pair"), input_pairs.size());
+    EXPECT_EQ(store.GetRowCount("environment_fingerprint"), 6U);
+    EXPECT_EQ(store.GetRowCount("pair"), input_pairs.size() * 6U);
     EXPECT_EQ(store.GetRowCount("rule"), input_pairs.size());
-    EXPECT_EQ(store.GetRowCount("rule_environment"), input_pairs.size());
+    EXPECT_EQ(store.GetRowCount("rule_environment"), input_pairs.size() * 6U);
     EXPECT_EQ(store.GetRowCount("rule_smiles"), 2U);
     EXPECT_EQ(stored_pairs.front().GetSourceExternalId(), input_pairs.front().GetSourceExternalId());
     EXPECT_EQ(stored_pairs.front().GetTargetExternalId(), input_pairs.front().GetTargetExternalId());
@@ -373,6 +528,63 @@ TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     EXPECT_EQ(stored_pairs.front().GetSourceVariableSmiles(), input_pairs.front().GetSourceVariableSmiles());
     EXPECT_EQ(stored_pairs.front().GetTargetVariableSmiles(), input_pairs.front().GetTargetVariableSmiles());
     EXPECT_EQ(stored_pairs.front().GetTransformSmiles(), input_pairs.front().GetTransformSmiles());
+}
+
+TEST(DuckDBStoreTest, StoresRuleEnvironmentRowsForDefaultRadii) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    std::vector<MatchedPair> input_pairs;
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+
+        input_pairs = AnalyzeToluenePhenolPairs();
+        ASSERT_FALSE(input_pairs.empty());
+        store.AddPair(input_pairs.front());
+
+        EXPECT_EQ(store.GetRowCount("rule_environment"), 6U);
+        EXPECT_EQ(store.GetRowCount("pair"), 6U);
+        EXPECT_GE(store.GetRowCount("environment_fingerprint"), 1U);
+
+        const std::vector<MatchedPair> stored_pairs = store.GetPairs();
+        ASSERT_EQ(stored_pairs.size(), 1U);
+        EXPECT_EQ(stored_pairs.front().GetSourceExternalId(), input_pairs.front().GetSourceExternalId());
+        EXPECT_EQ(stored_pairs.front().GetTargetExternalId(), input_pairs.front().GetTargetExternalId());
+    }
+
+    const std::vector<RuleEnvironmentRow> rows = ReadRuleEnvironmentRows(database_path);
+    ExpectSinglePairRadiusRows(rows);
+
+    std::filesystem::remove(database_path);
+}
+
+TEST(DuckDBStoreTest, MultiCutPairsCreateMultiAttachmentRuleEnvironments) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+
+        store.AddPair(MakeMultiCutArylPair());
+
+        EXPECT_EQ(store.GetRowCount("rule_environment"), 6U);
+        EXPECT_EQ(store.GetRowCount("pair"), 6U);
+        EXPECT_EQ(store.GetPairs().size(), 1U);
+    }
+
+    const std::vector<RuleEnvironmentRow> rows = ReadRuleEnvironmentRows(database_path);
+    ExpectSinglePairRadiusRows(rows);
+    for (const RuleEnvironmentRow& row : rows) {
+        EXPECT_TRUE(ContainsAttachmentLabel(row.smarts, 1));
+        EXPECT_TRUE(ContainsAttachmentLabel(row.smarts, 2));
+    }
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, RebuiltPairsIncludeStoredPropertyDeltas) {
@@ -397,6 +609,38 @@ TEST(DuckDBStoreTest, RebuiltPairsIncludeStoredPropertyDeltas) {
     ASSERT_NE(pair_iter, stored_pairs.end());
     ASSERT_TRUE(pair_iter->HasProperty("pIC50"));
     EXPECT_DOUBLE_EQ(pair_iter->GetPropertyDelta("pIC50"), 1.5);
+}
+
+TEST(DuckDBStoreTest, RefreshRuleEnvironmentStatisticsComputesPropertyRows) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        store.AddMoleculeProperty(1, "pIC50", 6.0);
+        store.AddMoleculeProperty(2, "pIC50", 7.5);
+        store.AddPair(AnalyzeToluenePhenolPairs().front());
+
+        EXPECT_EQ(store.GetRowCount("rule_environment_statistics"), 0U);
+
+        store.RefreshRuleEnvironmentStatistics();
+
+        EXPECT_EQ(store.GetRowCount("rule_environment_statistics"), 6U);
+        EXPECT_EQ(store.GetRuleEnvironmentStatisticsCount("pIC50"), 6U);
+        EXPECT_EQ(store.GetSummary(true).GetNumRuleEnvironmentStatistics(), 6U);
+    }
+
+    const RuleEnvironmentStatisticsSummary summary =
+        ReadRuleEnvironmentStatisticsSummary(database_path, "pIC50");
+    EXPECT_EQ(summary.row_count, 6U);
+    EXPECT_EQ(summary.min_count, 1U);
+    EXPECT_EQ(summary.max_count, 1U);
+    EXPECT_DOUBLE_EQ(summary.min_avg, 1.5);
+    EXPECT_DOUBLE_EQ(summary.max_avg, 1.5);
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {
@@ -495,9 +739,9 @@ TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithStoredPairs) {
     }
 
     DuckDBStore reopened(database_path.string());
-    EXPECT_EQ(reopened.GetRowCount("pair"), 2U);
+    EXPECT_EQ(reopened.GetRowCount("pair"), 12U);
     EXPECT_EQ(reopened.GetRowCount("rule"), 2U);
-    EXPECT_EQ(reopened.GetRowCount("rule_environment"), 2U);
+    EXPECT_EQ(reopened.GetRowCount("rule_environment"), 12U);
     EXPECT_EQ(reopened.GetPairs().size(), 2U);
     EXPECT_EQ(reopened.GetTransforms().size(), 2U);
 
@@ -517,7 +761,7 @@ TEST(DuckDBStoreTest, AnalyzerSavesMoleculesPropertiesAndPairsToStore) {
 
     EXPECT_EQ(store.GetRowCount("compound"), 2U);
     EXPECT_EQ(store.GetRowCount("compound_property"), 2U);
-    EXPECT_EQ(store.GetRowCount("pair"), analyzer.GetPairs().size());
+    EXPECT_EQ(store.GetRowCount("pair"), analyzer.GetPairs().size() * 6U);
     EXPECT_EQ(store.GetRowCount("rule"), analyzer.GetPairs().size());
     const std::vector<MatchedPair> stored_pairs = store.GetPairs();
     const auto pair_iter = std::find_if(
@@ -530,6 +774,26 @@ TEST(DuckDBStoreTest, AnalyzerSavesMoleculesPropertiesAndPairsToStore) {
     );
     ASSERT_NE(pair_iter, stored_pairs.end());
     EXPECT_DOUBLE_EQ(pair_iter->GetPropertyDelta("pIC50"), 1.5);
+}
+
+TEST(DuckDBStoreTest, AnalyzerSaveRefreshesRuleEnvironmentStatistics) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.5);
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::uint64_t statistics_count =
+        store.GetRowCount("rule_environment_statistics");
+    EXPECT_GT(statistics_count, 0U);
+    EXPECT_EQ(
+        store.GetSummary(true).GetNumRuleEnvironmentStatistics(),
+        statistics_count
+    );
 }
 
 TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {

@@ -11,11 +11,11 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	mmpdb	test_fragment.py	TestOptions.test_num_cuts	tests/cpp/test_fragmenter.cpp	DefaultsToOneThroughThreeCuts	matched	OEMMPA already supports one through three cuts by default.
 7	mmpdb	test_fragment.py	TestFragmentCutRGroups.test_one_cut_rgroup	-	-	deferred	Cut R-group conversion remains deferred to a focused R-group follow-up.
 7	mmpdb	test_fragment.py	TestSmiFrag.test_num_cuts	tests/cpp/test_fragmenter.cpp	TwoCutFragmentationUsesSequentialAttachmentLabels	matched	Current C++ tests cover two-cut label behavior.
-7	mmpdb	test_index.py	TestIndexCommandline.test_default_filters	-	-	deferred	Phase 9 will add MMPDB-style index option parity.
+7	mmpdb	test_index.py	TestIndexCommandline.test_default_filters	tests/python/test_mmpdb_parity.py	test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture	accepted divergence	OEMMPA now stores rule-environment pair rows and summaries, but current OpenEye fragmentation produces 86 rules and 588 pair rows versus MMPDB's 47 and 342.
 7	mmpdb	test_index.py	TestIndexCommandline.test_set_filters	-	-	deferred	Phase 9 will add variable-size and symmetry filters.
 7	mmpdb	test_index.py	TestIndexCommandline.test_max_variable_heavies_none	-	-	deferred	Phase 9 will add index filter option parity.
 7	mmpdb	test_index.py	TestIndexCommandline.test_with_properties	tests/python/test_mmpdb_parity.py	test_mmpdb_reference_properties_can_be_loaded_with_molecules	matched	OEMMPA can load properties with molecule records, but database refresh parity remains Phase 9.
-7	mmpdb	test_loadprops.py	TestLoadpropsCommandline.test_loadprops	-	-	deferred	Phase 9 will add database-backed property refresh and rule-environment statistics.
+7	mmpdb	test_loadprops.py	TestLoadpropsCommandline.test_loadprops	tests/python/test_mmpdb_parity.py	test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture	accepted divergence	OEMMPA refreshes rule-environment statistics after property loading and save, but current counts are 938 statistics rows versus MMPDB's 533.
 7	mmpdb	test_analysis.py	TestTransformCommand.test_basic	-	-	deferred	Phase 10 will add rule-environment-aware transform queries.
 7	mmpdb	test_analysis.py	TestTransformCommand.test_MP_property	tests/python/test_mmpdb_parity.py	test_mmpdb_reference_mp_statistics_preserve_directional_moments	accepted divergence	OEMMPA currently computes directional transform-level moments; Phase 10 will add rule-environment grouping.
 7	mmpdb	test_analysis.py	TestTransformCommand.test_no_properties	-	-	deferred	Phase 10 will add transform query output controls.
@@ -29,7 +29,7 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	mmpdb	test_analysis.py	TestPredictCommand.test_MW_basic	tests/python/test_mmpdb_parity.py	test_cli_predict_matches_mmpdb_predict_basic_examples	matched	Current CLI covers a simple transform-level prediction example; rule-environment prediction remains Phase 10.
 7	mmpdb	test_analysis.py	TestPredictCommand.test_save_details	-	-	deferred	Phase 10 will add detailed prediction outputs in the API first.
 7	mmpdb	test_analysis.py	generate_hydrogen_deletion	tests/python/test_mmpdb_parity.py	test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope	unsupported	MMPDB emits hydrogen deletion transforms that OEMMPA does not yet support.
-7	mmpdb	test_list.py	TestList.test_recount	-	-	deferred	Phase 9 will add database count and recount parity before CLI list output design.
+7	mmpdb	test_list.py	TestList.test_recount	tests/python/test_mmpdb_parity.py	test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture	matched	OEMMPA summary recounts direct table rows and returns the same internal count categories needed for list recount behavior.
 7	mmpdb	test_list.py	TestList.test_all	-	-	deferred	Phase 9 will add dataset option and count reporting internals before CLI list output design.
 7	mmpdb	test_rgroup2smarts.py	TestSmilesOnCommandline.test_one_smiles	-	-	deferred	Cut R-group conversion remains deferred to a focused R-group or CLI follow-up.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Broader default FragmentMol output parity remains deferred after Phase 8 control coverage.

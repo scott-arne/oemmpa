@@ -18,6 +18,7 @@ add_executable(oemmpa_tests
     test_query_options.cpp
     test_fragmentation_strategy.cpp
     test_fragmenter.cpp
+    test_environment_fingerprint.cpp
     test_memory_index.cpp
     test_analyzer.cpp
     test_transform_application.cpp

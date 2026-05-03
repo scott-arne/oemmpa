@@ -81,9 +81,11 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
 
     assert "fragmentations" not in store.table_names()
     assert "rule_environment" in store.table_names()
+    assert "rule_environment_statistics" in store.table_names()
     assert store.row_count("compound") == 2
     assert store.row_count("rule") == len(analyzer.pairs())
-    assert store.row_count("rule_environment") == len(analyzer.pairs())
+    assert store.row_count("pair") == len(analyzer.pairs()) * 6
+    assert store.row_count("rule_environment") == len(analyzer.pairs()) * 6
     assert len(pairs) == len(analyzer.pairs())
     assert any(
         pair.source_id == "tol"
@@ -91,3 +93,30 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
         and pair.property_delta("pIC50") == pytest.approx(1.0)
         for pair in pairs
     )
+
+
+def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.5)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+
+    summary = store.summary(recount=True)
+    assert summary["compounds"] == 2
+    assert summary["pairs"] == store.row_count("pair")
+    assert summary["rule_environments"] == store.row_count("rule_environment")
+    assert summary["rule_environment_statistics"] == store.row_count(
+        "rule_environment_statistics"
+    )
+    assert store.rule_environment_statistics_count("pIC50") == summary[
+        "rule_environment_statistics"
+    ]
+    assert len(store.pairs()) == len(analyzer.pairs())
+    assert store.row_count("pair") > len(store.pairs())

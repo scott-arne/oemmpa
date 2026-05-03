@@ -103,6 +103,18 @@ def test_cpp_analyzer_binding_accepts_smiles():
     assert len(pairs) > 0
 
 
+def test_environment_fingerprint_helper_is_exposed_to_python():
+    _oemmpa = import_worktree_raw_bindings()
+
+    fingerprints = _oemmpa.ComputeConstantEnvironmentFingerprints("[*:1]CCO", 0, 2)
+
+    assert len(fingerprints) == 3
+    assert fingerprints[0].GetRadius() == 0
+    assert fingerprints[0].GetSmarts()
+    assert fingerprints[0].GetPseudoSmiles()
+    assert ":1]" in fingerprints[0].GetSmarts()
+
+
 def test_cpp_analyzer_binding_accepts_explicit_fragmentation_method():
     _oemmpa = import_worktree_raw_bindings()
 

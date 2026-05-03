@@ -24,7 +24,7 @@ def test_phase7_harness_records_current_matches_and_future_work():
     assert counts["deferred"] >= 20
 
 
-def test_phase7_harness_keeps_cli_as_deferred_followup():
+def test_phase7_harness_keeps_cli_output_as_deferred_followup():
     rows = _read_matrix()
     cli_rows = [
         row for row in rows
@@ -34,7 +34,10 @@ def test_phase7_harness_keeps_cli_as_deferred_followup():
                 row["upstream_file"] == "test_analysis.py"
                 and "output" in row["upstream_test"].lower()
             )
-            or row["upstream_file"] == "test_list.py"
+            or (
+                row["upstream_file"] == "test_list.py"
+                and row["upstream_test"] != "TestList.test_recount"
+            )
         )
     ]
 

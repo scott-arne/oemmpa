@@ -256,8 +256,8 @@ oemmpa-cli generate \
 ```
 
 These commands currently read the input files, run the analysis in memory, and
-write results to the terminal. Database-backed refresh of stored statistics can
-be added later without changing the file formats.
+write results to the terminal. The same file formats can also be loaded into
+DuckDB for persistent storage.
 
 ## Persistent Storage
 
@@ -278,6 +278,12 @@ failures are returned in `LoadReport`, just as they are for molecule loading.
 The database layout follows the main MMPDB matched-pair tables, including
 compounds, properties, rules, constants, and pairs.
 
+When an analyzed dataset is saved to DuckDB, OEMMPA stores each transformation
+together with the local chemical environment around the attachment point. These
+environment rows allow property changes to be summarized at different distances
+from the transformation site, following the same rule-environment idea used by
+MMPDB.
+
 ## Current Capabilities
 
 OEMMPA currently provides in-memory analysis and optional DuckDB storage.
@@ -297,8 +303,9 @@ analyzer = Analyzer(method="oemedchem")
 The OEMedChem method currently handles native single-cut matched pairs and
 returns the same constant and variable fields as the other methods. DuckDB
 storage can save molecules, properties, and matched pairs; load SMILES and
-property files; and read stored pairs back into the usual result objects.
+property files; refresh rule-environment property statistics; and read stored
+pairs back into the usual result objects.
 Transformation statistics, property-change predictions, product generation,
 and the command-line tools are available now. Separate fragment databases,
-database-backed transformation refresh, multi-atom product generation, and
-rule-environment statistics are planned for later work.
+database-backed transformation queries, and multi-atom product generation are
+planned for later work.

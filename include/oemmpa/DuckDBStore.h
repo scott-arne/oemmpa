@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "oemmpa/DatabaseSummary.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
@@ -99,6 +100,20 @@ public:
 
     /// \brief Return the number of rows in a known base table.
     std::uint64_t GetRowCount(const std::string& table_name) const;
+
+    /// \brief Recompute cached dataset summary counts.
+    void RefreshDatasetCounts();
+
+    /// \brief Recompute per-rule-environment property delta statistics.
+    void RefreshRuleEnvironmentStatistics();
+
+    /// \brief Return the number of rule-environment statistics for a property.
+    std::uint64_t GetRuleEnvironmentStatisticsCount(
+        const std::string& property_name
+    ) const;
+
+    /// \brief Return cached or freshly counted database summary totals.
+    DatabaseSummary GetSummary(bool recount = false) const;
 
     /// \brief Return a stored molecule property value.
     double GetMoleculeProperty(

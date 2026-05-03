@@ -1,5 +1,6 @@
 #include "oemmpa/DuckDBStore.h"
 
+#include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/PairScoring.h"
@@ -7,6 +8,7 @@
 #include <duckdb.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -37,6 +39,7 @@ const std::vector<std::string>& base_table_names() {
         "property_name",
         "rule",
         "rule_environment",
+        "rule_environment_statistics",
         "rule_smiles",
     };
     return tables;
@@ -502,6 +505,293 @@ void increment_rule_environment_pair_count(
     execute_prepared(connection, sql, std::move(values));
 }
 
+struct AggregateStatistics {
+    std::uint32_t count = 0;
+    double avg = 0.0;
+    duckdb::Value std = duckdb::Value(nullptr);
+    duckdb::Value kurtosis = duckdb::Value(nullptr);
+    duckdb::Value skewness = duckdb::Value(nullptr);
+    double min = 0.0;
+    double q1 = 0.0;
+    double median = 0.0;
+    double q3 = 0.0;
+    double max = 0.0;
+    duckdb::Value paired_t = duckdb::Value(nullptr);
+};
+
+double median(const std::vector<double>& values) {
+    const std::size_t count = values.size();
+    if (count == 0) {
+        throw StorageError("cannot compute median for an empty value set");
+    }
+
+    const std::size_t half = count / 2;
+    if (count % 2 == 1) {
+        return values[half];
+    }
+    return (values[half - 1] + values[half]) / 2.0;
+}
+
+double median_range(
+    const std::vector<double>& values,
+    std::size_t begin,
+    std::size_t end
+) {
+    std::vector<double> subset(values.begin() + begin, values.begin() + end);
+    return median(subset);
+}
+
+std::tuple<double, double, double> quartiles(const std::vector<double>& values) {
+    const std::size_t count = values.size();
+    if (count == 1) {
+        return {values[0], values[0], values[0]};
+    }
+
+    const double median_value = median(values);
+    const std::size_t half = count / 2;
+    if (count % 2 == 0) {
+        return {
+            median_range(values, 0, half),
+            median_value,
+            median_range(values, half, count),
+        };
+    }
+
+    if (count % 4 == 1) {
+        const std::size_t middle = (count - 1) / 4;
+        const double q1 = 0.25 * values[middle - 1] + 0.75 * values[middle];
+        const double q3 =
+            0.75 * values[3 * middle] + 0.25 * values[3 * middle + 1];
+        return {q1, median_value, q3};
+    }
+
+    const std::size_t middle = (count - 3) / 4;
+    const double q1 = 0.75 * values[middle] + 0.25 * values[middle + 1];
+    const double q3 =
+        0.25 * values[3 * middle + 1] + 0.75 * values[3 * middle + 2];
+    return {q1, median_value, q3};
+}
+
+duckdb::Value sample_standard_deviation(const std::vector<double>& values) {
+    std::uint32_t count = 0;
+    double mean = 0.0;
+    double m2 = 0.0;
+    for (const double value : values) {
+        ++count;
+        const double delta = value - mean;
+        mean += delta / static_cast<double>(count);
+        m2 += delta * (value - mean);
+    }
+    if (count < 2) {
+        return duckdb::Value(nullptr);
+    }
+    return duckdb::Value::DOUBLE(std::sqrt(m2 / static_cast<double>(count - 1)));
+}
+
+duckdb::Value kurtosis(const std::vector<double>& values) {
+    std::uint32_t count = 0;
+    double mean = 0.0;
+    double m2 = 0.0;
+    double m3 = 0.0;
+    double m4 = 0.0;
+    for (const double value : values) {
+        const std::uint32_t previous_count = count;
+        ++count;
+        const double delta = value - mean;
+        const double delta_n = delta / static_cast<double>(count);
+        const double delta_n2 = delta_n * delta_n;
+        const double term1 = delta * delta_n * static_cast<double>(previous_count);
+        mean += delta_n;
+        m4 +=
+            term1 * delta_n2 *
+                static_cast<double>(count * count - 3 * count + 3) +
+            6.0 * delta_n2 * m2 -
+            4.0 * delta_n * m3;
+        m3 +=
+            term1 * delta_n * static_cast<double>(count - 2) -
+            3.0 * delta_n * m2;
+        m2 += term1;
+    }
+    if (m2 == 0.0) {
+        return duckdb::Value(nullptr);
+    }
+    return duckdb::Value::DOUBLE(
+        (static_cast<double>(count) * m4) / (m2 * m2) - 3.0
+    );
+}
+
+duckdb::Value skewness(const std::vector<double>& values, double avg) {
+    const std::size_t count = values.size();
+    double skew_top = 0.0;
+    double squared_delta_sum = 0.0;
+    for (const double value : values) {
+        const double delta = value - avg;
+        skew_top += delta * delta * delta;
+        squared_delta_sum += delta * delta;
+    }
+
+    skew_top /= static_cast<double>(count);
+    if (skew_top == 0.0) {
+        return duckdb::Value::DOUBLE(0.0);
+    }
+
+    const double skew_bot = std::pow(
+        squared_delta_sum / static_cast<double>(count - 1),
+        1.5
+    );
+    if (skew_bot == 0.0) {
+        return duckdb::Value(nullptr);
+    }
+    return duckdb::Value::DOUBLE(skew_top / skew_bot);
+}
+
+AggregateStatistics aggregate_values(std::vector<double> values) {
+    if (values.empty()) {
+        throw StorageError("cannot compute statistics for an empty value set");
+    }
+
+    std::sort(values.begin(), values.end());
+
+    AggregateStatistics statistics;
+    statistics.count = static_cast<std::uint32_t>(values.size());
+    double sum = 0.0;
+    for (const double value : values) {
+        sum += value;
+    }
+    statistics.avg = sum / static_cast<double>(statistics.count);
+    statistics.std = sample_standard_deviation(values);
+    if (statistics.count > 2) {
+        statistics.kurtosis = kurtosis(values);
+        statistics.skewness = skewness(values, statistics.avg);
+    }
+    std::tie(statistics.q1, statistics.median, statistics.q3) = quartiles(values);
+    statistics.min = values.front();
+    statistics.max = values.back();
+
+    if (statistics.count > 1) {
+        const double std_value = statistics.std.GetValue<double>();
+        if (std_value == 0.0) {
+            statistics.paired_t = duckdb::Value::DOUBLE(100000000.0);
+        } else {
+            statistics.paired_t = duckdb::Value::DOUBLE(
+                std::min(
+                    (statistics.avg / std_value) *
+                        std::sqrt(static_cast<double>(statistics.count)),
+                    100000000.0
+                )
+            );
+        }
+    }
+
+    return statistics;
+}
+
+using RuleEnvironmentPropertyKey = std::pair<std::uint64_t, std::uint64_t>;
+
+std::map<RuleEnvironmentPropertyKey, std::vector<double>>
+collect_rule_environment_property_deltas(
+    const std::unique_ptr<duckdb::Connection>& connection
+) {
+    const std::string sql =
+        "select "
+        "pair.rule_environment_id, "
+        "source_property.property_name_id, "
+        "target_property.value - source_property.value "
+        "from pair "
+        "join compound_property source_property "
+        "on source_property.compound_id = pair.compound1_id "
+        "join compound_property target_property "
+        "on target_property.compound_id = pair.compound2_id "
+        "and target_property.property_name_id = source_property.property_name_id "
+        "order by pair.rule_environment_id, source_property.property_name_id, pair.id";
+    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+
+    std::map<RuleEnvironmentPropertyKey, std::vector<double>> deltas_by_key;
+    for (const auto& row : *result) {
+        deltas_by_key[{
+            row.GetValue<std::uint64_t>(0),
+            row.GetValue<std::uint64_t>(1),
+        }].push_back(row.GetValue<double>(2));
+    }
+    return deltas_by_key;
+}
+
+void refresh_dataset_counts(
+    const std::unique_ptr<duckdb::Connection>& connection
+) {
+    const std::string insert_sql =
+        "insert into dataset ("
+        "id, oemmpa_schema_version, title, fragment_options, index_options, is_symmetric"
+        ") values (1, 1, '', '', '', true) "
+        "on conflict (id) do nothing";
+    std::unique_ptr<duckdb::QueryResult> insert_result = connection->Query(insert_sql);
+    if (!insert_result) {
+        throw StorageError("DuckDB query returned no result: " + insert_sql);
+    }
+    require_success(*insert_result, insert_sql);
+
+    const std::string update_sql =
+        "update dataset set "
+        "num_compounds = (select count(*) from compound),"
+        "num_rules = (select count(*) from rule),"
+        "num_pairs = (select count(*) from pair),"
+        "num_rule_environments = (select count(*) from rule_environment),"
+        "num_rule_environment_stats = (select count(*) from rule_environment_statistics) "
+        "where id = 1";
+    std::unique_ptr<duckdb::QueryResult> update_result = connection->Query(update_sql);
+    if (!update_result) {
+        throw StorageError("DuckDB query returned no result: " + update_sql);
+    }
+    require_success(*update_result, update_sql);
+}
+
+void refresh_rule_environment_statistics(
+    const std::unique_ptr<duckdb::Connection>& connection
+) {
+    const std::map<RuleEnvironmentPropertyKey, std::vector<double>> deltas_by_key =
+        collect_rule_environment_property_deltas(connection);
+
+    const std::string delete_sql = "delete from rule_environment_statistics";
+    std::unique_ptr<duckdb::QueryResult> delete_result = connection->Query(delete_sql);
+    if (!delete_result) {
+        throw StorageError("DuckDB query returned no result: " + delete_sql);
+    }
+    require_success(*delete_result, delete_sql);
+
+    const std::string insert_sql =
+        "insert into rule_environment_statistics ("
+        "id, rule_environment_id, property_name_id, count, avg, std, kurtosis, skewness, "
+        "min, q1, median, q3, max, paired_t, p_value"
+        ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    std::uint64_t next_id = 1;
+    for (const auto& entry : deltas_by_key) {
+        const AggregateStatistics statistics = aggregate_values(entry.second);
+        duckdb::vector<duckdb::Value> values = {
+            duckdb::Value::UBIGINT(next_id),
+            duckdb::Value::UBIGINT(entry.first.first),
+            duckdb::Value::UBIGINT(entry.first.second),
+            duckdb::Value::UINTEGER(statistics.count),
+            duckdb::Value::DOUBLE(statistics.avg),
+            statistics.std,
+            statistics.kurtosis,
+            statistics.skewness,
+            duckdb::Value::DOUBLE(statistics.min),
+            duckdb::Value::DOUBLE(statistics.q1),
+            duckdb::Value::DOUBLE(statistics.median),
+            duckdb::Value::DOUBLE(statistics.q3),
+            duckdb::Value::DOUBLE(statistics.max),
+            statistics.paired_t,
+            duckdb::Value(nullptr),
+        };
+        execute_prepared(connection, insert_sql, std::move(values));
+        ++next_id;
+    }
+}
+
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
     return std::make_tuple(
         lhs.GetConstantSmiles(),
@@ -556,12 +846,23 @@ std::string build_pair_query(const QueryOptions& options) {
     std::ostringstream sql;
     sql
         << "select "
+        << "compound1_id, compound2_id, "
+        << "source_public_id, target_public_id, "
+        << "source_smiles, target_smiles, "
+        << "constant_smiles, "
+        << "source_variable_smiles, target_variable_smiles, "
+        << "cut_count, heavy_atom_delta, heavy_bond_delta "
+        << "from ("
+        << "select "
+        << "min(p.id) as sort_id, "
         << "p.compound1_id, p.compound2_id, "
-        << "coalesce(source_molecule.public_id, ''), "
-        << "coalesce(target_molecule.public_id, ''), "
-        << "source_molecule.clean_smiles, target_molecule.clean_smiles, "
-        << "c.smiles, "
-        << "source_variable.smiles, target_variable.smiles, "
+        << "coalesce(source_molecule.public_id, '') as source_public_id, "
+        << "coalesce(target_molecule.public_id, '') as target_public_id, "
+        << "source_molecule.clean_smiles as source_smiles, "
+        << "target_molecule.clean_smiles as target_smiles, "
+        << "c.smiles as constant_smiles, "
+        << "source_variable.smiles as source_variable_smiles, "
+        << "target_variable.smiles as target_variable_smiles, "
         << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta "
         << "from pair p "
         << "join compound source_molecule on source_molecule.id = p.compound1_id "
@@ -590,7 +891,17 @@ std::string build_pair_query(const QueryOptions& options) {
             << "end ";
     }
 
-    sql << "order by p.id";
+    sql
+        << "group by "
+        << "p.compound1_id, p.compound2_id, "
+        << "coalesce(source_molecule.public_id, ''), "
+        << "coalesce(target_molecule.public_id, ''), "
+        << "source_molecule.clean_smiles, target_molecule.clean_smiles, "
+        << "c.smiles, "
+        << "source_variable.smiles, target_variable.smiles, "
+        << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta"
+        << ") distinct_pairs "
+        << "order by sort_id";
     return sql.str();
 }
 
@@ -626,7 +937,8 @@ void DuckDBStore::InitializeSchema() {
             "num_compounds ubigint,"
             "num_rules ubigint,"
             "num_pairs ubigint,"
-            "num_rule_environments ubigint"
+            "num_rule_environments ubigint,"
+            "num_rule_environment_stats ubigint"
             ")"
         );
         Execute(
@@ -685,6 +997,26 @@ void DuckDBStore::InitializeSchema() {
             "radius integer not null,"
             "num_pairs uinteger not null,"
             "unique (rule_id, environment_fingerprint_id, radius)"
+            ")"
+        );
+        Execute(
+            "create table if not exists rule_environment_statistics ("
+            "id ubigint primary key,"
+            "rule_environment_id ubigint not null references rule_environment(id),"
+            "property_name_id ubigint not null references property_name(id),"
+            "count uinteger not null,"
+            "avg double not null,"
+            "std double,"
+            "kurtosis double,"
+            "skewness double,"
+            "min double not null,"
+            "q1 double not null,"
+            "median double not null,"
+            "q3 double not null,"
+            "max double not null,"
+            "paired_t double,"
+            "p_value double,"
+            "unique (rule_environment_id, property_name_id)"
             ")"
         );
         Execute(
@@ -886,6 +1218,8 @@ LoadReport DuckDBStore::AddPropertiesFromCsvFile(
         }
     }
 
+    RefreshRuleEnvironmentStatistics();
+
     return report;
 }
 
@@ -942,6 +1276,9 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         throw StorageError("cannot add pair with unknown target molecule");
     }
 
+    const std::vector<EnvironmentFingerprint> environment_fingerprints =
+        ComputeConstantEnvironmentFingerprints(pair.GetConstantSmiles(), 0, 5);
+
     const std::uint64_t constant_id = get_or_create_named_row_id(
         connection_,
         "constant_smiles",
@@ -968,31 +1305,42 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         from_smiles_id,
         to_smiles_id
     );
-    // Radius-zero empty environments preserve the MMPDB rule-environment
-    // boundary until atom-context fingerprinting is implemented.
-    const std::uint64_t environment_fingerprint_id =
-        get_or_create_environment_fingerprint_id(connection_, "", "", "");
-    const std::uint64_t rule_environment_id =
-        get_or_create_rule_environment_id(connection_, rule_id, environment_fingerprint_id, 0);
-    const std::uint64_t pair_id = get_next_id(connection_, "pair", "id");
 
-    const std::string sql =
+    const std::string pair_sql =
         "insert into pair ("
         "id, rule_environment_id, compound1_id, compound2_id, constant_id, "
         "cut_count, heavy_atom_delta, heavy_bond_delta"
         ") values (?, ?, ?, ?, ?, ?, ?, ?)";
-    duckdb::vector<duckdb::Value> values = {
-        duckdb::Value::UBIGINT(pair_id),
-        duckdb::Value::UBIGINT(rule_environment_id),
-        duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-        duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-        duckdb::Value::UBIGINT(constant_id),
-        duckdb::Value::UINTEGER(pair.GetCutCount()),
-        duckdb::Value::INTEGER(pair.GetHeavyAtomDelta()),
-        duckdb::Value::INTEGER(pair.GetHeavyBondDelta()),
-    };
-    execute_prepared(connection_, sql, std::move(values));
-    increment_rule_environment_pair_count(connection_, rule_environment_id);
+
+    for (const EnvironmentFingerprint& fingerprint : environment_fingerprints) {
+        const std::uint64_t environment_fingerprint_id =
+            get_or_create_environment_fingerprint_id(
+                connection_,
+                fingerprint.GetSmarts(),
+                fingerprint.GetPseudoSmiles(),
+                fingerprint.GetParentSmarts()
+            );
+        const std::uint64_t rule_environment_id =
+            get_or_create_rule_environment_id(
+                connection_,
+                rule_id,
+                environment_fingerprint_id,
+                static_cast<int>(fingerprint.GetRadius())
+            );
+        const std::uint64_t pair_id = get_next_id(connection_, "pair", "id");
+        duckdb::vector<duckdb::Value> values = {
+            duckdb::Value::UBIGINT(pair_id),
+            duckdb::Value::UBIGINT(rule_environment_id),
+            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
+            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
+            duckdb::Value::UBIGINT(constant_id),
+            duckdb::Value::UINTEGER(pair.GetCutCount()),
+            duckdb::Value::INTEGER(pair.GetHeavyAtomDelta()),
+            duckdb::Value::INTEGER(pair.GetHeavyBondDelta()),
+        };
+        execute_prepared(connection_, pair_sql, std::move(values));
+        increment_rule_environment_pair_count(connection_, rule_environment_id);
+    }
 }
 
 void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
@@ -1044,6 +1392,100 @@ std::uint64_t DuckDBStore::GetRowCount(const std::string& table_name) const {
         return static_cast<std::uint64_t>(row.GetValue<std::int64_t>(0));
     }
     return 0;
+}
+
+void DuckDBStore::RefreshDatasetCounts() {
+    Execute("begin transaction");
+    try {
+        refresh_dataset_counts(connection_);
+        Execute("commit");
+    } catch (...) {
+        try {
+            Execute("rollback");
+        } catch (const StorageError&) {
+        }
+        throw;
+    }
+}
+
+void DuckDBStore::RefreshRuleEnvironmentStatistics() {
+    Execute("begin transaction");
+    try {
+        refresh_rule_environment_statistics(connection_);
+        refresh_dataset_counts(connection_);
+        Execute("commit");
+    } catch (...) {
+        try {
+            Execute("rollback");
+        } catch (const StorageError&) {
+        }
+        throw;
+    }
+}
+
+std::uint64_t DuckDBStore::GetRuleEnvironmentStatisticsCount(
+    const std::string& property_name
+) const {
+    if (property_name.empty()) {
+        throw StorageError("rule environment statistics property name must not be empty");
+    }
+
+    const std::string sql =
+        "select count(*) "
+        "from rule_environment_statistics stats "
+        "join property_name on property_name.id = stats.property_name_id "
+        "where property_name.name = ?";
+    duckdb::vector<duckdb::Value> values = {
+        duckdb::Value(property_name),
+    };
+    std::unique_ptr<duckdb::QueryResult> result =
+        execute_prepared(connection_, sql, std::move(values));
+
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    return 0;
+}
+
+DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
+    if (recount) {
+        return DatabaseSummary(
+            GetRowCount("compound"),
+            GetRowCount("rule"),
+            GetRowCount("pair"),
+            GetRowCount("rule_environment"),
+            GetRowCount("rule_environment_statistics")
+        );
+    }
+
+    const std::string sql =
+        "select "
+        "num_compounds, num_rules, num_pairs, num_rule_environments, "
+        "num_rule_environment_stats "
+        "from dataset "
+        "where id = 1 "
+        "and num_compounds is not null "
+        "and num_rules is not null "
+        "and num_pairs is not null "
+        "and num_rule_environments is not null "
+        "and num_rule_environment_stats is not null";
+    std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+
+    for (const auto& row : *result) {
+        return DatabaseSummary(
+            row.GetValue<std::uint64_t>(0),
+            row.GetValue<std::uint64_t>(1),
+            row.GetValue<std::uint64_t>(2),
+            row.GetValue<std::uint64_t>(3),
+            row.GetValue<std::uint64_t>(4)
+        );
+    }
+
+    return GetSummary(true);
 }
 
 double DuckDBStore::GetMoleculeProperty(

@@ -379,6 +379,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(LoadErrorVector) std::vector<OEMMPA::LoadError>;
 %template(CutBondVector) std::vector<OEMMPA::CutBond>;
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
+%template(EnvironmentFingerprintVector) std::vector<OEMMPA::EnvironmentFingerprint>;
 %template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
 %template(TransformVector) std::vector<OEMMPA::Transform>;
 %template(TransformProductVector) std::vector<OEMMPA::TransformProduct>;
@@ -403,6 +404,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::FragmentationMethod::SetFragmenter;
 
 %include "../include/oemmpa/Error.h"
+%include "../include/oemmpa/DatabaseSummary.h"
+%include "../include/oemmpa/EnvironmentFingerprint.h"
 %include "../include/oemmpa/Fragmentation.h"
 %include "../include/oemmpa/MoleculeRecord.h"
 %include "../include/oemmpa/LoadReport.h"

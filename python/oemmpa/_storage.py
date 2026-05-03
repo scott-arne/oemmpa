@@ -155,3 +155,37 @@ class DuckDBStore:
             int(molecule_id),
             str(property_name),
         )
+
+    def refresh_rule_environment_statistics(self):
+        """Recompute property statistics for stored rule environments.
+
+        :returns: ``self`` for chaining.
+        """
+        self._raw_store.RefreshRuleEnvironmentStatistics()
+        return self
+
+    def summary(self, recount=False):
+        """Return database row counts.
+
+        :param recount: When true, count rows directly from the tables.
+        :returns: Mapping with compound, rule, pair, rule environment, and
+            statistics counts.
+        """
+        raw_summary = self._raw_store.GetSummary(bool(recount))
+        return {
+            "compounds": int(raw_summary.GetNumCompounds()),
+            "rules": int(raw_summary.GetNumRules()),
+            "pairs": int(raw_summary.GetNumPairs()),
+            "rule_environments": int(raw_summary.GetNumRuleEnvironments()),
+            "rule_environment_statistics": int(
+                raw_summary.GetNumRuleEnvironmentStatistics()
+            ),
+        }
+
+    def rule_environment_statistics_count(self, property_name):
+        """Return statistics row count for a property.
+
+        :param property_name: Name of the stored molecular property.
+        :returns: Number of rule-environment statistics rows for the property.
+        """
+        return int(self._raw_store.GetRuleEnvironmentStatisticsCount(str(property_name)))

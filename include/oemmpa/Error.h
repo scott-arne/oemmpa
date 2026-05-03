@@ -36,6 +36,12 @@ public:
         : OEMMPAError(message) {}
 };
 
+class EnvironmentFingerprintError : public OEMMPAError {
+public:
+    explicit EnvironmentFingerprintError(const std::string& message)
+        : OEMMPAError(message) {}
+};
+
 class InvalidQueryError : public OEMMPAError {
 public:
     explicit InvalidQueryError(const std::string& message)

@@ -52,6 +52,49 @@ EXPECTED_UNORDERED_MMPDB_PAIRS = {
     ("phenol", "phenylamine"),
 }
 
+MMPDB_PHASE9_REFERENCE_COUNTS = {
+    "compound": 9,
+    "rule": 47,
+    "pair": 342,
+    "environment_fingerprint": 21,
+    "rule_environment": 321,
+    "rule_environment_statistics": 533,
+    "constant_smiles": 10,
+    "property_name": 2,
+    "compound_property": 17,
+}
+
+MMPDB_PHASE9_REFERENCE_RADIUS_COUNTS = {
+    0: 47,
+    1: 51,
+    2: 53,
+    3: 56,
+    4: 57,
+    5: 57,
+}
+
+MMPDB_PHASE9_REFERENCE_STATS_BY_PROPERTY = {
+    "MP": 212,
+    "MW": 321,
+}
+
+OEMMPA_PHASE9_OBSERVED_COUNTS = {
+    "compound": 9,
+    "rule": 86,
+    "pair": 588,
+    "environment_fingerprint": 24,
+    "rule_environment": 570,
+    "rule_environment_statistics": 938,
+    "constant_smiles": 8,
+    "property_name": 2,
+    "compound_property": 17,
+}
+
+OEMMPA_PHASE9_OBSERVED_STATS_BY_PROPERTY = {
+    "MP": 368,
+    "MW": 570,
+}
+
 
 def _unordered_pair_ids(pairs):
     return {tuple(sorted((pair.source_id, pair.target_id))) for pair in pairs}
@@ -306,6 +349,57 @@ def test_mmpdb_reference_mp_statistics_preserve_directional_moments():
     assert amine.max == pytest.approx(69.0)
     assert amine.paired_t == pytest.approx(-0.383696973265)
     assert amine.p_value == pytest.approx(0.738151698615)
+
+
+def test_mmpdb_phase9_reference_counts_are_known():
+    assert MMPDB_PHASE9_REFERENCE_COUNTS["rule_environment"] == 321
+    assert sum(MMPDB_PHASE9_REFERENCE_RADIUS_COUNTS.values()) == 321
+    assert sum(MMPDB_PHASE9_REFERENCE_STATS_BY_PROPERTY.values()) == 533
+
+
+def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
+    from oemmpa import DuckDBStore
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MW", "MP"))
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+
+    tables = [
+        "compound",
+        "rule",
+        "pair",
+        "environment_fingerprint",
+        "rule_environment",
+        "rule_environment_statistics",
+        "constant_smiles",
+        "property_name",
+        "compound_property",
+    ]
+    observed_counts = {table: store.row_count(table) for table in tables}
+    summary = store.summary(recount=True)
+
+    assert observed_counts == OEMMPA_PHASE9_OBSERVED_COUNTS
+    assert summary == {
+        "compounds": observed_counts["compound"],
+        "rules": observed_counts["rule"],
+        "pairs": observed_counts["pair"],
+        "rule_environments": observed_counts["rule_environment"],
+        "rule_environment_statistics": observed_counts[
+            "rule_environment_statistics"
+        ],
+    }
+    assert {
+        "MW": store.rule_environment_statistics_count("MW"),
+        "MP": store.rule_environment_statistics_count("MP"),
+    } == OEMMPA_PHASE9_OBSERVED_STATS_BY_PROPERTY
+    assert observed_counts["compound"] == MMPDB_PHASE9_REFERENCE_COUNTS["compound"]
+    assert observed_counts["compound_property"] == MMPDB_PHASE9_REFERENCE_COUNTS[
+        "compound_property"
+    ]
+    assert observed_counts["pair"] > len(analyzer.pairs())
+    assert observed_counts["rule_environment"] >= observed_counts["rule"]
+    assert len(store.pairs()) == len(analyzer.pairs())
+    assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS
 
 
 def test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope():

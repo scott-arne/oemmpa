@@ -318,6 +318,9 @@ void Analyzer::SaveTo(DuckDBStore& store) const {
         }
         throw;
     }
+
+    store.RefreshRuleEnvironmentStatistics();
+    store.RefreshDatasetCounts();
 }
 #endif
 

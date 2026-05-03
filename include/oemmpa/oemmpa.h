@@ -8,10 +8,12 @@
 
 #include "oemmpa/AnalysisMethod.h"
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/DatabaseSummary.h"
 #include "oemmpa/DMCSSMethod.h"
 #if OEMMPA_HAS_DUCKDB
 #include "oemmpa/DuckDBStore.h"
 #endif
+#include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/FragmentationMethod.h"
