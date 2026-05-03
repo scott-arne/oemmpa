@@ -48,8 +48,8 @@ TEST(FragmentationStrategyTest, CutBondDefaultsToZero) {
 }
 
 TEST(FragmentationStrategyTest, CustomSmartsFindsAmideBond) {
-    OEChem::OEGraphMol mol = MolFromSmiles("CC(=O)NC");
-    SmartsFragmentationStrategy strategy("[C:1](=O)[N:2]");
+    OEChem::OEGraphMol mol = MolFromSmiles("CC(=O)N");
+    SmartsFragmentationStrategy strategy("[C:1]-[N:2]");
 
     std::vector<CutBond> cuts = strategy.FindCutBonds(mol);
 
@@ -86,6 +86,15 @@ TEST(FragmentationStrategyTest, InvalidSmartsThrowsInvalidQueryError) {
         SmartsFragmentationStrategy("[invalid"),
         InvalidQueryError
     );
+}
+
+TEST(FragmentationStrategyTest, CutSmartsMustIdentifyConnectedAtomPair) {
+    EXPECT_THROW(SmartsFragmentationStrategy("C"), InvalidQueryError);
+    EXPECT_THROW(SmartsFragmentationStrategy("C.C"), InvalidQueryError);
+    EXPECT_THROW(SmartsFragmentationStrategy("***"), InvalidQueryError);
+
+    EXPECT_NO_THROW(SmartsFragmentationStrategy("C-C"));
+    EXPECT_NO_THROW(SmartsFragmentationStrategy("[C:1]-[O:2]"));
 }
 
 TEST(FragmentationStrategyTest, DefaultPresetSkipsRingBonds) {

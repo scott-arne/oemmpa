@@ -55,6 +55,26 @@ std::vector<OEChem::OEAtomBase*> GetMatchedCutAtoms(const OEChem::OEMatchBase& m
     return {target_atoms[0], target_atoms[1]};
 }
 
+void ValidateCutSmartsShape(const std::string& query) {
+    OEChem::OEQMol query_mol;
+    if (!OEChem::OEParseSmarts(query_mol, query.c_str())) {
+        throw InvalidQueryError("invalid SMARTS query: " + query);
+    }
+
+    std::vector<OEChem::OEAtomBase*> query_atoms;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = query_mol.GetAtoms(); atom; ++atom) {
+        query_atoms.push_back(atom);
+    }
+
+    if (query_atoms.size() != 2 || query_atoms[0] == query_atoms[1]) {
+        throw InvalidQueryError("cut SMARTS must match exactly two atoms");
+    }
+
+    if (query_mol.GetBond(query_atoms[0], query_atoms[1]) == nullptr) {
+        throw InvalidQueryError("cut SMARTS must connect both atoms");
+    }
+}
+
 SmartsFragmentationStrategy DefaultPreset() {
     return SmartsFragmentationStrategy(kMMPDBDefaultCutSmarts);
 }
@@ -69,6 +89,8 @@ SmartsFragmentationStrategy::SmartsFragmentationStrategy(const std::vector<std::
     subsearches_.reserve(smarts_.size());
 
     for (const std::string& query : smarts_) {
+        ValidateCutSmartsShape(query);
+
         OEChem::OESubSearch subsearch;
         if (!subsearch.Init(query.c_str())) {
             throw InvalidQueryError("invalid SMARTS query: " + query);
