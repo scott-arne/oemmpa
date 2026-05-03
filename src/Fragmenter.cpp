@@ -397,13 +397,15 @@ Fragmenter::Fragmenter(const FragmentationStrategy& strategy)
 Fragmenter::Fragmenter(const Fragmenter& other)
     : strategy_(other.strategy_ ? other.strategy_->Clone() : nullptr),
       min_cuts_(other.min_cuts_),
-      max_cuts_(other.max_cuts_) {}
+      max_cuts_(other.max_cuts_),
+      max_cut_bonds_(other.max_cut_bonds_) {}
 
 Fragmenter& Fragmenter::operator=(const Fragmenter& other) {
     if (this != &other) {
         strategy_ = other.strategy_ ? other.strategy_->Clone() : nullptr;
         min_cuts_ = other.min_cuts_;
         max_cuts_ = other.max_cuts_;
+        max_cut_bonds_ = other.max_cut_bonds_;
     }
     return *this;
 }
@@ -434,12 +436,20 @@ void Fragmenter::SetMaxCuts(unsigned int max_cuts) {
     max_cuts_ = max_cuts;
 }
 
+void Fragmenter::SetMaxCutBonds(unsigned int max_cut_bonds) {
+    max_cut_bonds_ = max_cut_bonds;
+}
+
 unsigned int Fragmenter::GetMinCuts() const {
     return min_cuts_;
 }
 
 unsigned int Fragmenter::GetMaxCuts() const {
     return max_cuts_;
+}
+
+unsigned int Fragmenter::GetMaxCutBonds() const {
+    return max_cut_bonds_;
 }
 
 std::vector<Fragmentation> Fragmenter::Fragment(
@@ -454,6 +464,10 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     std::set<FragmentationKey> seen;
 
     const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(mol));
+    if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
+        return fragmentations;
+    }
+
     EnumerateCutCombinations(
         cut_bonds,
         min_cuts_,

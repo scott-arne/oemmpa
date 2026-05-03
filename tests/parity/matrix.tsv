@@ -36,8 +36,8 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	Phase 8 will compare string fragmentation output.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test3	-	-	deferred	Phase 8 will decide pattern argument parity.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	-	-	deferred	Phase 8 will add multi-cut fragmentation comparison.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test5	-	-	deferred	Phase 8 will add cut-bond limit behavior.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test6	-	-	deferred	Phase 8 will compare minCuts and maxCuts union behavior.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test5	tests/cpp/test_fragmenter.cpp	MaxCutBondsSuppressesDenseCutSurfaces	matched	OEMMPA now supports an RDKit-style cut-bond surface guard.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test6	tests/cpp/test_fragmenter.cpp	OneAndTwoCutUnionMatchesMaxCutsTwo	matched	OEMMPA one-cut and two-cut records union to the max-cuts-two result.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	-	-	deferred	Phase 8 will compare larger multi-cut examples.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test8	-	-	deferred	Phase 8 will decide explicit bond-list parity.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test9	tests/cpp/test_fragmenter.cpp	InvalidCutBoundsThrowFragmentationError	matched	OEMMPA already rejects invalid cut bounds.

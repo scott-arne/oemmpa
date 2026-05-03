@@ -325,5 +325,47 @@ TEST(FragmenterTest, CopyClonesStrategyAndKeepsIndependentBounds) {
     EXPECT_TRUE(copy.Fragment(31, mol).empty());
 }
 
+TEST(FragmenterTest, OneAndTwoCutUnionMatchesMaxCutsTwo) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCCCCC");
+    Fragmenter one_cut = MakeAcyclicHeavyAtomFragmenter();
+    one_cut.SetMinCuts(1);
+    one_cut.SetMaxCuts(1);
+
+    Fragmenter two_cut = MakeAcyclicHeavyAtomFragmenter();
+    two_cut.SetMinCuts(2);
+    two_cut.SetMaxCuts(2);
+
+    Fragmenter combined = MakeAcyclicHeavyAtomFragmenter();
+    combined.SetMinCuts(1);
+    combined.SetMaxCuts(2);
+
+    std::set<FragmentationRecord> expected = NormalizeFragmentations(one_cut.Fragment(37, mol));
+    const std::set<FragmentationRecord> two_cut_records =
+        NormalizeFragmentations(two_cut.Fragment(37, mol));
+    expected.insert(two_cut_records.begin(), two_cut_records.end());
+
+    EXPECT_EQ(NormalizeFragmentations(combined.Fragment(37, mol)), expected);
+}
+
+TEST(FragmenterTest, MaxCutBondsSuppressesDenseCutSurfaces) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCCCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxCutBonds(5);
+
+    EXPECT_TRUE(fragmenter.Fragment(41, mol).empty());
+
+    fragmenter.SetMaxCutBonds(6);
+    EXPECT_FALSE(fragmenter.Fragment(41, mol).empty());
+}
+
+TEST(FragmenterTest, MaxCutBondsZeroMeansUnlimited) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCCCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMaxCutBonds(0);
+
+    EXPECT_FALSE(fragmenter.Fragment(43, mol).empty());
+    EXPECT_EQ(fragmenter.GetMaxCutBonds(), 0);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

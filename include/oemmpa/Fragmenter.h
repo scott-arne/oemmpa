@@ -24,8 +24,10 @@ public:
     void SetStrategy(const FragmentationStrategy& strategy);
     void SetMinCuts(unsigned int min_cuts);
     void SetMaxCuts(unsigned int max_cuts);
+    void SetMaxCutBonds(unsigned int max_cut_bonds);
     unsigned int GetMinCuts() const;
     unsigned int GetMaxCuts() const;
+    unsigned int GetMaxCutBonds() const;
 
     std::vector<Fragmentation> Fragment(
         unsigned int molecule_id,
@@ -36,6 +38,7 @@ private:
     std::unique_ptr<FragmentationStrategy> strategy_;
     unsigned int min_cuts_ = 1;
     unsigned int max_cuts_ = 3;
+    unsigned int max_cut_bonds_ = 0;
 };
 
 }  // namespace OEMMPA
