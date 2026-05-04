@@ -80,19 +80,19 @@ MMPDB_PHASE9_REFERENCE_STATS_BY_PROPERTY = {
 
 OEMMPA_PHASE9_OBSERVED_COUNTS = {
     "compound": 9,
-    "rule": 86,
-    "pair": 588,
-    "environment_fingerprint": 24,
-    "rule_environment": 570,
-    "rule_environment_statistics": 938,
-    "constant_smiles": 8,
+    "rule": 46,
+    "pair": 336,
+    "environment_fingerprint": 29,
+    "rule_environment": 315,
+    "rule_environment_statistics": 527,
+    "constant_smiles": 10,
     "property_name": 2,
     "compound_property": 17,
 }
 
 OEMMPA_PHASE9_OBSERVED_STATS_BY_PROPERTY = {
-    "MP": 368,
-    "MW": 570,
+    "MP": 212,
+    "MW": 315,
 }
 
 
@@ -192,7 +192,7 @@ def _mmpdb_reference_store(property_names=("MW", "MP")):
 
 
 def _rdkit_canonical_smiles(smiles):
-    rdkit = pytest.importorskip("rdkit")
+    pytest.importorskip("rdkit")
     from rdkit import Chem
 
     mol = Chem.MolFromSmiles(smiles)
@@ -407,7 +407,7 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     ]
     assert observed_counts["pair"] > len(analyzer.pairs())
     assert observed_counts["rule_environment"] >= observed_counts["rule"]
-    assert len(store.pairs()) == len(analyzer.pairs())
+    assert len(store.pairs()) * 2 == len(analyzer.pairs())
     assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS
 
 
@@ -441,36 +441,36 @@ def test_mmpdb_phase10_rule_environment_filters_cover_min_pairs_where_and_score(
 
     store = _mmpdb_reference_store(property_names=("MW",))
     rows = store.rule_environment_statistics("MW")
-    oxygen_to_nitrogen = rows.filter(transform="[*:1]O>>[*:1]N")
+    nitrogen_to_oxygen = rows.filter(transform="[*:1]N>>[*:1]O")
 
-    assert {row.count for row in oxygen_to_nitrogen.filter(min_pairs=3)} == {3}
-    assert {row.count for row in oxygen_to_nitrogen.filter(where="count > 2")} == {3}
-    assert oxygen_to_nitrogen.filter(where="count > 3") == []
+    assert {row.count for row in nitrogen_to_oxygen.filter(min_pairs=3)} == {3}
+    assert {row.count for row in nitrogen_to_oxygen.filter(where="count > 2")} == {3}
+    assert nitrogen_to_oxygen.filter(where="count > 3") == []
     assert {
         row.radius
-        for row in oxygen_to_nitrogen.filter(min_radius=0, max_radius=1)
+        for row in nitrogen_to_oxygen.filter(min_radius=0, max_radius=1)
     } == {0, 1}
 
     smallest_radius = predict_rule_environment_delta(
         rows,
-        "[*:1]O>>[*:1]N",
+        "[*:1]N>>[*:1]O",
         score="smallest-radius",
     )
     largest_count = predict_rule_environment_delta(
         rows,
-        "[*:1]O>>[*:1]N",
+        "[*:1]N>>[*:1]O",
         score="largest-count",
     )
 
     assert smallest_radius.radius == 0
     assert smallest_radius.count == 3
     assert largest_count.count == 3
-    assert largest_count.predicted_delta == pytest.approx(-1.0)
+    assert largest_count.predicted_delta == pytest.approx(1.0)
 
-    with pytest.raises(KeyError, match=r"\[\*:1\]O>>\[\*:1\]N"):
+    with pytest.raises(KeyError, match=r"\[\*:1\]N>>\[\*:1\]O"):
         predict_rule_environment_delta(
             rows,
-            "[*:1]O>>[*:1]N",
+            "[*:1]N>>[*:1]O",
             where="count > 10",
         )
 
@@ -494,17 +494,17 @@ def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     assert pairs[0].property_delta("MW") == pytest.approx(-18.5)
 
 
-def test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope():
+def test_mmpdb_hydrogen_deletion_transform_is_supported():
     from oemmpa import compute_transform_statistics
 
     analyzer = _mmpdb_reference_analyzer(property_names=("MW",))
 
     statistics = compute_transform_statistics(analyzer.transforms(), "MW")
 
-    # MMPDB emits an O>>H deletion transform for this fixture. OEMMPA's current
-    # observed-transform support is restricted to explicit non-hydrogen
-    # single-atom substitutions.
-    assert statistics.get("[*:1]O>>[*:1][H]") is None
+    hydrogen_deletion = statistics["[*:1]O>>[*:1][H]"]
+    assert hydrogen_deletion.count == 4
+    assert hydrogen_deletion.avg == pytest.approx(-16.0)
+    assert hydrogen_deletion.std == pytest.approx(0.0)
 
 
 def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():

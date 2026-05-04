@@ -101,15 +101,26 @@ class DuckDBStore:
             )
         return load_report_from_raw(raw_report)
 
-    def save_analyzer(self, analyzer):
+    def save_analyzer(self, analyzer, index_mode="mmpdb"):
         """Persist an analyzed Python facade or raw analyzer into this store.
 
         :param analyzer: :class:`oemmpa.Analyzer` facade or raw
             ``_oemmpa.Analyzer``.
+        :param index_mode: ``"mmpdb"`` stores one deterministic orientation,
+            matching MMPDB's default non-symmetric index. ``"openeye-native"``
+            stores the raw analyzer's default symmetric pair set.
         :returns: ``self`` for chaining.
         """
         raw_analyzer = getattr(analyzer, "raw", analyzer)
-        raw_analyzer.SaveTo(self._raw_store)
+        index_mode = str(index_mode)
+        if index_mode == "mmpdb":
+            options = _oemmpa.QueryOptions()
+            options.SetSymmetric(False)
+            raw_analyzer.SaveTo(self._raw_store, options)
+        elif index_mode == "openeye-native":
+            raw_analyzer.SaveTo(self._raw_store)
+        else:
+            raise ValueError(f"unsupported index_mode: {index_mode}")
         return self
 
     def pairs(self, options=None):

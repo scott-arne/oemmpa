@@ -287,6 +287,10 @@ std::vector<Transform> Analyzer::GetTransforms(const QueryOptions& options) cons
 
 #if OEMMPA_HAS_DUCKDB
 void Analyzer::SaveTo(DuckDBStore& store) const {
+    SaveTo(store, QueryOptions());
+}
+
+void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
     RequireAnalyzed();
 
     store.InitializeSchema();
@@ -306,7 +310,7 @@ void Analyzer::SaveTo(DuckDBStore& store) const {
             }
         }
 
-        for (const MatchedPair& pair : GetPairs()) {
+        for (const MatchedPair& pair : GetPairs(options)) {
             store.AddPair(pair);
         }
 

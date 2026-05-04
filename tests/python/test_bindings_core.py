@@ -1,6 +1,8 @@
 """Tests for raw Phase 1 SWIG bindings."""
 
 import importlib
+import importlib.machinery
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -135,13 +137,13 @@ def test_rule_environment_statistics_binding_is_exposed_to_python():
 
     rows = store.raw.GetRuleEnvironmentStatistics("pIC50")
 
-    assert len(rows) == 12
+    assert len(rows) == 6
     assert rows[0].GetPropertyName() == "pIC50"
     assert rows[0].GetTransformSmiles()
     assert rows[0].GetSmarts()
     assert rows[0].GetPseudoSmiles()
     assert rows[0].GetCount() == 1
-    assert rows[0].GetAvg() in {1.5, -1.5}
+    assert rows[0].GetAvg() == pytest.approx(1.5)
 
 
 def test_cpp_analyzer_binding_accepts_explicit_fragmentation_method():
@@ -181,7 +183,7 @@ def test_cpp_analyzer_binding_accepts_oemedchem_method():
 
 
 def test_cpp_analyzer_binding_accepts_openeye_molecules():
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
 
     _oemmpa = import_worktree_raw_bindings()
 

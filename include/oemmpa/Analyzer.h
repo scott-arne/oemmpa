@@ -121,6 +121,11 @@ public:
     ///
     /// Throws if Analyze() has not succeeded since the last mutation.
     void SaveTo(DuckDBStore& store) const;
+
+    /// \brief Save staged molecules, properties, and analyzed pairs selected by query options.
+    ///
+    /// Throws if Analyze() has not succeeded since the last mutation.
+    void SaveTo(DuckDBStore& store, const QueryOptions& options) const;
 #endif
 
     /// \brief Reset molecules, properties, external IDs, internal ID sequence,

@@ -30,7 +30,7 @@ def test_store_returns_wrapped_rule_environment_statistics():
     rows = store.rule_environment_statistics("pIC50")
 
     assert len(rows) == store.rule_environment_statistics_count("pIC50")
-    assert len(rows) == 12
+    assert len(rows) == 6
     first = rows[0]
     assert first.property_name == "pIC50"
     assert first.transform == f"{first.from_smiles}>>{first.to_smiles}"
@@ -39,7 +39,7 @@ def test_store_returns_wrapped_rule_environment_statistics():
     assert first.smarts
     assert first.pseudosmiles
     assert first.count == 1
-    assert first.avg in {-1.5, 1.5}
+    assert first.avg == pytest.approx(1.5)
     assert first.std is None
     assert first.p_value is None
 
@@ -55,7 +55,7 @@ def test_rule_environment_statistics_collection_filters_rows():
     rows = store.rule_environment_statistics("pIC50")
 
     radius_zero = rows.filter(min_radius=0, max_radius=0)
-    assert len(radius_zero) == 2
+    assert len(radius_zero) == 1
     assert {row.radius for row in radius_zero} == {0}
 
     one_transform = rows.filter(transform=rows[0].transform)

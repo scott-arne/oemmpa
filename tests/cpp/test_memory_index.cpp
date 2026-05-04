@@ -133,6 +133,57 @@ TEST(MemoryIndexTest, AsymmetricQueryReturnsOneDeterministicOrientation) {
     EXPECT_EQ(pairs[0].GetTargetMoleculeId(), 2);
 }
 
+TEST(MemoryIndexTest, AsymmetricQueryOrdersNonHydrogenVariablesLikeMmpdbRules) {
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "Oc1ccccc1O", "catechol"));
+    index.AddMolecule(MakeMolecule(2, "Oc1ccccc1Cl", "2-chlorophenol"));
+    index.AddFragmentation(MakeFragmentation(1, "Oc1ccccc1[*:1]", "O[*:1]"));
+    index.AddFragmentation(MakeFragmentation(2, "Oc1ccccc1[*:1]", "Cl[*:1]"));
+
+    QueryOptions options;
+    options.SetSymmetric(false);
+    const std::vector<MatchedPair> pairs = index.GetPairs(options);
+
+    ASSERT_EQ(pairs.size(), 1);
+    EXPECT_EQ(pairs[0].GetSourceExternalId(), "2-chlorophenol");
+    EXPECT_EQ(pairs[0].GetTargetExternalId(), "catechol");
+    EXPECT_EQ(pairs[0].GetTransformSmiles(), "Cl[*:1]>>O[*:1]");
+}
+
+TEST(MemoryIndexTest, HydrogenSubstitutionUsesMmpdbConstantWithHydrogenModel) {
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "Oc1ccccc1", "phenol"));
+    index.AddMolecule(MakeMolecule(2, "c1ccccc1", "benzene"));
+    index.AddFragmentation(MakeFragmentation(1, "c1ccccc1[*:1]", "O[*:1]"));
+
+    QueryOptions options;
+    options.SetSymmetric(false);
+    const std::vector<MatchedPair> pairs = index.GetPairs(options);
+
+    ASSERT_EQ(pairs.size(), 1);
+    EXPECT_EQ(pairs[0].GetSourceExternalId(), "phenol");
+    EXPECT_EQ(pairs[0].GetTargetExternalId(), "benzene");
+    EXPECT_EQ(pairs[0].GetTransformSmiles(), "O[*:1]>>[*:1][H]");
+    EXPECT_EQ(pairs[0].GetHeavyAtomDelta(), -1);
+}
+
+TEST(MemoryIndexTest, AsymmetricHydrogenSubstitutionUsesDeletionDirection) {
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "c1ccccc1", "benzene"));
+    index.AddMolecule(MakeMolecule(2, "Oc1ccccc1", "phenol"));
+    index.AddFragmentation(MakeFragmentation(2, "c1ccccc1[*:1]", "O[*:1]"));
+
+    QueryOptions options;
+    options.SetSymmetric(false);
+    const std::vector<MatchedPair> pairs = index.GetPairs(options);
+
+    ASSERT_EQ(pairs.size(), 1);
+    EXPECT_EQ(pairs[0].GetSourceExternalId(), "phenol");
+    EXPECT_EQ(pairs[0].GetTargetExternalId(), "benzene");
+    EXPECT_EQ(pairs[0].GetTransformSmiles(), "O[*:1]>>[*:1][H]");
+    EXPECT_EQ(pairs[0].GetHeavyAtomDelta(), -1);
+}
+
 TEST(MemoryIndexTest, MaxHeavyAtomChangeFilterExcludesLargeVariableDeltas) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "C", "methane"));

@@ -83,16 +83,38 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
     assert "rule_environment" in store.table_names()
     assert "rule_environment_statistics" in store.table_names()
     assert store.row_count("compound") == 2
-    assert store.row_count("rule") == len(analyzer.pairs())
-    assert store.row_count("pair") == len(analyzer.pairs()) * 6
-    assert store.row_count("rule_environment") == len(analyzer.pairs()) * 6
-    assert len(pairs) == len(analyzer.pairs())
+    assert store.row_count("rule") == 1
+    assert store.row_count("pair") == 6
+    assert store.row_count("rule_environment") == 6
+    assert len(pairs) == 1
     assert any(
         pair.source_id == "tol"
         and pair.target_id == "phenol"
         and pair.property_delta("pIC50") == pytest.approx(1.0)
         for pair in pairs
     )
+
+
+def test_duckdb_store_defaults_to_mmpdb_compatible_orientation():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.0)
+    analyzer.analyze()
+
+    mmpdb_store = DuckDBStore()
+    mmpdb_store.save_analyzer(analyzer)
+    native_store = DuckDBStore()
+    native_store.save_analyzer(analyzer, index_mode="openeye-native")
+
+    assert len(analyzer.pairs()) == 2
+    assert mmpdb_store.row_count("rule") == 1
+    assert mmpdb_store.row_count("pair") == 6
+    assert native_store.row_count("rule") == 2
+    assert native_store.row_count("pair") == 12
 
 
 def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
@@ -118,5 +140,5 @@ def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
     assert store.rule_environment_statistics_count("pIC50") == summary[
         "rule_environment_statistics"
     ]
-    assert len(store.pairs()) == len(analyzer.pairs())
+    assert len(store.pairs()) == 1
     assert store.row_count("pair") > len(store.pairs())

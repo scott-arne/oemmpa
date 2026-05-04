@@ -21,6 +21,7 @@ struct SmilesMetrics {
 };
 
 using VariableMetricsCache = std::map<std::string, SmilesMetrics>;
+using VariableOrderKeyCache = std::map<std::string, std::string>;
 
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
     return atom != nullptr && atom->GetAtomicNum() > 1;
@@ -74,6 +75,21 @@ const SmilesMetrics& get_variable_metrics(
     return cache.emplace(
         variable_smiles,
         parse_smiles_metrics(variable_smiles, "variable")
+    ).first->second;
+}
+
+const std::string& get_variable_order_key(
+    const std::string& variable_smiles,
+    VariableOrderKeyCache& cache
+) {
+    const auto cached = cache.find(variable_smiles);
+    if (cached != cache.end()) {
+        return cached->second;
+    }
+
+    return cache.emplace(
+        variable_smiles,
+        MoleculeRecord::FromSmiles(0, variable_smiles).GetCanonicalSmiles()
     ).first->second;
 }
 
@@ -177,6 +193,86 @@ std::vector<Fragmentation> sorted_fragmentations(const std::vector<Fragmentation
         }
     );
     return sorted;
+}
+
+std::string constant_with_hydrogen_smiles(const std::string& constant_smiles) {
+    const std::string attachment = "[*:1]";
+    const std::string::size_type attachment_pos = constant_smiles.find(attachment);
+    if (attachment_pos == std::string::npos) {
+        return "";
+    }
+    if (constant_smiles.find(attachment, attachment_pos + attachment.size()) != std::string::npos) {
+        return "";
+    }
+
+    std::string smiles = constant_smiles;
+    smiles.replace(attachment_pos, attachment.size(), "[H]");
+    try {
+        return MoleculeRecord::FromSmiles(0, smiles).GetCanonicalSmiles();
+    } catch (const InvalidMoleculeError&) {
+        return "";
+    }
+}
+
+std::map<std::string, std::vector<unsigned int>> molecule_ids_by_canonical_smiles(
+    const std::unordered_map<unsigned int, MoleculeRecord>& molecules
+) {
+    std::map<std::string, std::vector<unsigned int>> ids_by_smiles;
+    for (const auto& entry : molecules) {
+        ids_by_smiles[entry.second.GetCanonicalSmiles()].push_back(entry.first);
+    }
+    for (auto& entry : ids_by_smiles) {
+        std::sort(entry.second.begin(), entry.second.end());
+    }
+    return ids_by_smiles;
+}
+
+std::vector<Fragmentation> with_hydrogen_fragmentations(
+    const std::vector<Fragmentation>& fragmentations,
+    const std::string& constant_smiles,
+    const std::map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles
+) {
+    std::vector<Fragmentation> expanded = fragmentations;
+    const std::string hydrogen_smiles = constant_with_hydrogen_smiles(constant_smiles);
+    if (hydrogen_smiles.empty()) {
+        return expanded;
+    }
+
+    const auto id_iter = molecule_ids_by_smiles.find(hydrogen_smiles);
+    if (id_iter == molecule_ids_by_smiles.end()) {
+        return expanded;
+    }
+
+    for (const unsigned int molecule_id : id_iter->second) {
+        expanded.emplace_back(molecule_id, constant_smiles, "[*:1][H]", 1);
+    }
+    return sorted_fragmentations(expanded);
+}
+
+bool is_hydrogen_variable(const Fragmentation& fragmentation) {
+    return fragmentation.GetVariableSmiles() == "[*:1][H]";
+}
+
+bool lhs_is_asymmetric_source(
+    const Fragmentation& lhs,
+    const Fragmentation& rhs,
+    VariableOrderKeyCache& order_key_cache
+) {
+    const bool lhs_is_hydrogen = is_hydrogen_variable(lhs);
+    const bool rhs_is_hydrogen = is_hydrogen_variable(rhs);
+    if (lhs_is_hydrogen != rhs_is_hydrogen) {
+        return !lhs_is_hydrogen;
+    }
+
+    return std::make_tuple(
+        get_variable_order_key(lhs.GetVariableSmiles(), order_key_cache),
+        lhs.GetVariableSmiles(),
+        lhs.GetMoleculeId()
+    ) < std::make_tuple(
+        get_variable_order_key(rhs.GetVariableSmiles(), order_key_cache),
+        rhs.GetVariableSmiles(),
+        rhs.GetMoleculeId()
+    );
 }
 
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
@@ -382,10 +478,17 @@ const MoleculeRecord& MemoryIndex::GetMolecule(unsigned int internal_id) const {
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
     std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
     VariableMetricsCache metrics_cache;
+    VariableOrderKeyCache order_key_cache;
+    const std::map<std::string, std::vector<unsigned int>> molecule_ids_by_smiles =
+        molecule_ids_by_canonical_smiles(molecules_);
 
     for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
         const std::vector<Fragmentation> fragmentations =
-            sorted_fragmentations(constant_buckets_.at(constant_smiles));
+            with_hydrogen_fragmentations(
+                sorted_fragmentations(constant_buckets_.at(constant_smiles)),
+                constant_smiles,
+                molecule_ids_by_smiles
+            );
 
         for (size_t source_index = 0; source_index < fragmentations.size(); ++source_index) {
             for (
@@ -405,6 +508,31 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
 
                 const MoleculeRecord& lhs_record = GetMolecule(lhs.GetMoleculeId());
                 const MoleculeRecord& rhs_record = GetMolecule(rhs.GetMoleculeId());
+
+                if (!options.GetSymmetric()) {
+                    const bool use_lhs_as_source =
+                        lhs_is_asymmetric_source(lhs, rhs, order_key_cache);
+                    const Fragmentation& source_fragmentation =
+                        use_lhs_as_source ? lhs : rhs;
+                    const Fragmentation& target_fragmentation =
+                        use_lhs_as_source ? rhs : lhs;
+                    const MoleculeRecord& source_record =
+                        use_lhs_as_source ? lhs_record : rhs_record;
+                    const MoleculeRecord& target_record =
+                        use_lhs_as_source ? rhs_record : lhs_record;
+                    add_candidate_if_allowed(
+                        candidates_by_group,
+                        source_fragmentation,
+                        target_fragmentation,
+                        source_record,
+                        target_record,
+                        constant_smiles,
+                        options,
+                        metrics_cache
+                    );
+                    continue;
+                }
+
                 add_candidate_if_allowed(
                     candidates_by_group,
                     lhs,
