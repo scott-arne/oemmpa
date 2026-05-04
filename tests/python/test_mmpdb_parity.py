@@ -554,6 +554,61 @@ def test_mmpdb_phase10_rule_environment_filters_cover_min_pairs_where_and_score(
         )
 
 
+def test_mmpdb_phase10_query_environment_matching_uses_source_smiles_context():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    radius_one_matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in radius_one_matches
+    }
+
+    assert set(by_transform) == {
+        "[*:1]O>>[*:1]Cl",
+        "[*:1]O>>[*:1]N",
+    }
+    assert by_transform["[*:1]O>>[*:1]Cl"].avg == pytest.approx(18.5)
+    assert by_transform["[*:1]O>>[*:1]N"].avg == pytest.approx(-1.0)
+
+    assert find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(property_name="MW", min_radius=2),
+    ) == []
+
+
+def test_mmpdb_phase10_query_environment_matching_applies_selection_options():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_pairs=3,
+            where="count > 2",
+            score=" -min-radius",
+        ),
+    )
+
+    assert len(matches) == 1
+    assert matches[0].statistics.transform == "[*:1]O>>[*:1]N"
+    assert matches[0].statistics.radius == 0
+    assert matches[0].statistics.count == 3
+
+
 def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     from oemmpa import predict_rule_environment_delta
 

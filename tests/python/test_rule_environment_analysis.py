@@ -133,6 +133,44 @@ def test_rule_selection_options_reject_invalid_values():
         RuleSelectionOptions(score="BAD_VARIABLE")
 
 
+def test_compute_query_environments_wraps_raw_rows():
+    from oemmpa import compute_query_environments
+
+    environments = compute_query_environments("c1cccnc1O", min_radius=0, max_radius=2)
+
+    assert len(environments) > 0
+    assert {environment.radius for environment in environments} >= {0, 1, 2}
+    assert "[*:1]O" in {
+        environment.variable_smiles
+        for environment in environments
+    }
+    assert all(environment.smarts for environment in environments)
+    assert all(environment.pseudosmiles for environment in environments)
+
+
+def test_find_transform_environments_matches_query_environment_rows():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _store_with_toluene_phenol_statistics()
+
+    matches = find_transform_environments(
+        store,
+        "Cc1ccccc1",
+        selection=RuleSelectionOptions(
+            property_name="pIC50",
+            min_radius=0,
+            max_radius=1,
+            score=" -min-radius",
+        ),
+    )
+
+    assert len(matches) == 1
+    assert matches[0].query_environment.variable_smiles == "[*:1]C"
+    assert matches[0].statistics.transform == "[*:1]C>>[*:1]O"
+    assert matches[0].statistics.radius == 0
+    assert matches[0].statistics.avg == pytest.approx(1.5)
+
+
 def test_predict_rule_environment_delta_selects_environment_row():
     from oemmpa import RuleSelectionOptions, predict_rule_environment_delta
 

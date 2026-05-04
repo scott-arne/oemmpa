@@ -344,6 +344,167 @@ def wrap_rule_environment_statistics(raw_rows):
     )
 
 
+@dataclass(frozen=True)
+class QueryEnvironmentResult:
+    """Query molecule environment derived from one fragmentation."""
+
+    constant_smiles: str
+    variable_smiles: str
+    cut_count: int
+    radius: int
+    smarts: str
+    pseudosmiles: str
+    parent_smarts: str
+
+    @classmethod
+    def from_raw(cls, raw_row):
+        """Build a Python result from a raw C++ query environment."""
+        return cls(
+            constant_smiles=raw_row.GetConstantSmiles(),
+            variable_smiles=raw_row.GetVariableSmiles(),
+            cut_count=int(raw_row.GetCutCount()),
+            radius=int(raw_row.GetRadius()),
+            smarts=raw_row.GetSmarts(),
+            pseudosmiles=raw_row.GetPseudoSmiles(),
+            parent_smarts=raw_row.GetParentSmarts(),
+        )
+
+    def to_dict(self):
+        """Return a serializable query-environment mapping."""
+        return {
+            "constant_smiles": self.constant_smiles,
+            "variable_smiles": self.variable_smiles,
+            "cut_count": self.cut_count,
+            "radius": self.radius,
+            "smarts": self.smarts,
+            "pseudosmiles": self.pseudosmiles,
+            "parent_smarts": self.parent_smarts,
+        }
+
+
+class QueryEnvironmentCollection(list):
+    """List of query molecule environments."""
+
+    def to_dicts(self):
+        """Return all query environments as dictionaries."""
+        return [row.to_dict() for row in self]
+
+
+@dataclass(frozen=True)
+class RuleEnvironmentMatch:
+    """Stored rule-environment statistics matched to a query environment."""
+
+    query_environment: QueryEnvironmentResult
+    statistics: RuleEnvironmentStatisticsResult
+
+    def to_dict(self):
+        """Return a serializable match mapping."""
+        return {
+            "query_environment": self.query_environment.to_dict(),
+            "statistics": self.statistics.to_dict(),
+        }
+
+
+class RuleEnvironmentMatchCollection(list):
+    """List of rule-environment matches."""
+
+    def to_dicts(self):
+        """Return all matches as dictionaries."""
+        return [match.to_dict() for match in self]
+
+
+def compute_query_environments(smiles, min_radius=0, max_radius=5):
+    """Compute query environments for an input molecule SMILES."""
+    from . import _oemmpa
+
+    raw_rows = _oemmpa.ComputeQueryEnvironments(
+        str(smiles),
+        _coerce_radius("min_radius", min_radius),
+        _coerce_radius("max_radius", max_radius),
+    )
+    return QueryEnvironmentCollection(
+        QueryEnvironmentResult.from_raw(row)
+        for row in raw_rows
+    )
+
+
+def _environment_key(row):
+    return (
+        row.radius,
+        row.smarts,
+        row.pseudosmiles,
+        row.parent_smarts,
+    )
+
+
+def find_transform_environments(
+    store,
+    smiles,
+    *,
+    selection=None,
+    property_name=None,
+    min_radius=None,
+    max_radius=None,
+    min_pairs=None,
+    substructure=None,
+    where=None,
+    score=None,
+):
+    """Find stored transform statistics compatible with a query molecule."""
+    values = _selection_filter_values(
+        selection=selection,
+        property_name=property_name,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        min_pairs=min_pairs,
+        substructure=substructure,
+        where=where,
+        apply_defaults=True,
+    )
+    selected_score = (
+        selection.score
+        if selection is not None
+        else RuleSelectionOptions().score
+    )
+    if score is not None:
+        selected_score = _normalize_score(score)
+
+    query_environments = compute_query_environments(
+        smiles,
+        values["min_radius"],
+        values["max_radius"],
+    )
+    statistics = store.rule_environment_statistics(values["property_name"]).filter(
+        min_radius=values["min_radius"],
+        max_radius=values["max_radius"],
+        min_pairs=values["min_pairs"],
+        substructure=values["substructure"],
+        where=values["where"],
+    )
+
+    best_matches = {}
+    for query_environment in query_environments:
+        query_key = _environment_key(query_environment)
+        for row in statistics:
+            if row.from_smiles != query_environment.variable_smiles:
+                continue
+            if _environment_key(row) != query_key:
+                continue
+            match_key = (row.property_name, row.transform)
+            candidate = RuleEnvironmentMatch(query_environment, row)
+            current = best_matches.get(match_key)
+            if current is None or _score_key(row, selected_score) > _score_key(
+                current.statistics,
+                selected_score,
+            ):
+                best_matches[match_key] = candidate
+
+    return RuleEnvironmentMatchCollection(
+        best_matches[key]
+        for key in sorted(best_matches)
+    )
+
+
 def _compare_where(lhs, operator, rhs):
     if operator == ">":
         return lhs > rhs
@@ -527,10 +688,16 @@ def predict_rule_environment_delta(
 
 
 __all__ = [
+    "QueryEnvironmentCollection",
+    "QueryEnvironmentResult",
+    "RuleEnvironmentMatch",
+    "RuleEnvironmentMatchCollection",
     "RuleSelectionOptions",
     "RuleEnvironmentPredictionResult",
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",
+    "compute_query_environments",
+    "find_transform_environments",
     "predict_rule_environment_delta",
     "wrap_rule_environment_statistics",
 ]
