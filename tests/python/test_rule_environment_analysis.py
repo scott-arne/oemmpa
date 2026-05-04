@@ -218,6 +218,33 @@ def test_find_transform_environments_matches_hydrogen_deletion_rows():
     assert hydrogen.avg == pytest.approx(-16.0)
 
 
+def test_discovered_hydrogen_transform_applies_to_query_source():
+    import oemmpa
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+    source_smiles = "c1cccnc1O"
+
+    matches = find_transform_environments(
+        store,
+        source_smiles,
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    products = oemmpa.apply_variable_transform(source_smiles, hydrogen.transform)
+
+    assert "c1ccncc1" in products
+
+
 def test_predict_property_delta_matches_query_and_reference_environments():
     from oemmpa import RuleSelectionOptions, predict_property_delta
 
