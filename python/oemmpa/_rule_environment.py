@@ -477,6 +477,27 @@ def _implicit_hydrogen_environment(row):
     )
 
 
+def _canonical_smiles(smiles):
+    from . import _oemmpa
+
+    return _oemmpa.MoleculeRecord.FromSmiles(1, str(smiles)).GetCanonicalSmiles()
+
+
+def _transform_maps_reference_to_query(reference, query, transform):
+    from ._transform import apply_variable_transform
+
+    query_canonical = _canonical_smiles(query)
+    try:
+        products = apply_variable_transform(reference, transform)
+    except ValueError:
+        return False
+
+    return any(
+        _canonical_smiles(product) == query_canonical
+        for product in products
+    )
+
+
 def find_transform_environments(
     store,
     smiles,
@@ -840,6 +861,8 @@ def predict_property_delta(
             if row.to_smiles != query_environment.variable_smiles:
                 continue
             if _environment_key(row) != query_key:
+                continue
+            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
                 continue
             transform = row.transform
             possible_transforms.append(transform)

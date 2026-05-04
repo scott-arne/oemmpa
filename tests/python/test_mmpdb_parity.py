@@ -791,6 +791,26 @@ def test_mmpdb_hydrogen_reference_prediction_matches_deletion_delta():
     assert prediction.predicted_value == pytest.approx(36.1)
 
 
+def test_mmpdb_hydrogen_reference_prediction_rejects_unrelated_reference():
+    from oemmpa import RuleSelectionOptions, predict_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    with pytest.raises(KeyError):
+        predict_property_delta(
+            store,
+            smiles="c1cccnc1O",
+            reference="c1ccccc1",
+            property_name="MW",
+            selection=RuleSelectionOptions(
+                property_name="MW",
+                min_radius=1,
+                max_radius=1,
+                min_pairs=1,
+            ),
+        )
+
+
 def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():
     result = _run_oemmpa_cli(
         "refresh-stats",
