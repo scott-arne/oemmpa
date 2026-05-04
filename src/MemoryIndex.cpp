@@ -271,6 +271,8 @@ MatchedPair make_pair(
 
 using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
 
+const std::string kHydrogenVariableSmiles = "[*:1][H]";
+
 void add_candidate_if_allowed(
     std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
     const Fragmentation& source_fragmentation,
@@ -324,10 +326,77 @@ void add_candidate_if_allowed(
     ].push_back(pair);
 }
 
+void add_hydrogen_candidates_for_fragmentation(
+    std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
+    const Fragmentation& source_fragmentation,
+    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
+    const MemoryIndex& index,
+    const QueryOptions& options,
+    VariableMetricsCache& metrics_cache
+) {
+    if (source_fragmentation.GetCutCount() != 1) {
+        return;
+    }
+    if (source_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles) {
+        return;
+    }
+
+    const std::string& hydrogen_parent_smiles =
+        source_fragmentation.GetConstantWithHydrogenSmiles();
+    if (hydrogen_parent_smiles.empty()) {
+        return;
+    }
+
+    const auto hydrogen_parent_ids = molecule_ids_by_smiles.find(hydrogen_parent_smiles);
+    if (hydrogen_parent_ids == molecule_ids_by_smiles.end()) {
+        return;
+    }
+
+    const MoleculeRecord& source_record = index.GetMolecule(source_fragmentation.GetMoleculeId());
+    for (const unsigned int hydrogen_parent_id : hydrogen_parent_ids->second) {
+        if (hydrogen_parent_id == source_fragmentation.GetMoleculeId()) {
+            continue;
+        }
+
+        const Fragmentation hydrogen_fragmentation(
+            hydrogen_parent_id,
+            source_fragmentation.GetConstantSmiles(),
+            kHydrogenVariableSmiles,
+            1
+        );
+        const MoleculeRecord& hydrogen_record = index.GetMolecule(hydrogen_parent_id);
+
+        add_candidate_if_allowed(
+            candidates_by_group,
+            source_fragmentation,
+            hydrogen_fragmentation,
+            source_record,
+            hydrogen_record,
+            source_fragmentation.GetConstantSmiles(),
+            options,
+            metrics_cache
+        );
+
+        if (options.GetSymmetric()) {
+            add_candidate_if_allowed(
+                candidates_by_group,
+                hydrogen_fragmentation,
+                source_fragmentation,
+                hydrogen_record,
+                source_record,
+                source_fragmentation.GetConstantSmiles(),
+                options,
+                metrics_cache
+            );
+        }
+    }
+}
+
 }  // namespace
 
 void MemoryIndex::Clear() {
     molecules_.clear();
+    molecule_ids_by_canonical_smiles_.clear();
     constant_buckets_.clear();
     fragmentation_keys_.clear();
 }
@@ -341,6 +410,7 @@ void MemoryIndex::AddMolecule(const MoleculeRecord& record) {
     }
 
     molecules_.emplace(internal_id, record);
+    molecule_ids_by_canonical_smiles_[record.GetCanonicalSmiles()].push_back(internal_id);
 }
 
 void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
@@ -429,6 +499,22 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                     );
                 }
             }
+        }
+    }
+
+    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
+        const std::vector<Fragmentation> fragmentations =
+            sorted_fragmentations(constant_buckets_.at(constant_smiles));
+
+        for (const Fragmentation& fragmentation : fragmentations) {
+            add_hydrogen_candidates_for_fragmentation(
+                candidates_by_group,
+                fragmentation,
+                molecule_ids_by_canonical_smiles_,
+                *this,
+                options,
+                metrics_cache
+            );
         }
     }
 
