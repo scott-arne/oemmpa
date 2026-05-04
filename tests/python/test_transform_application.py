@@ -85,14 +85,15 @@ def test_apply_variable_transform_converts_and_applies_observed_transform():
     assert products == ["c1ccc(cc1)O"]
 
 
-def test_apply_variable_transform_rejects_unsupported_multi_atom_transform():
+def test_apply_variable_transform_converts_and_applies_multi_atom_transform():
     from oemmpa import apply_variable_transform
 
-    with pytest.raises(
-        ValueError,
-        match="only single-cut single-atom variable transforms are supported: CC",
-    ):
-        apply_variable_transform("CCc1ccccc1", "CC[*:1]>>O[*:1]")
+    assert apply_variable_transform("CCc1ccccc1", "CC[*:1]>>O[*:1]") == [
+        "c1ccc(cc1)O",
+    ]
+    assert apply_variable_transform("Oc1ccccc1", "O[*:1]>>CC[*:1]") == [
+        "CCc1ccccc1",
+    ]
 
 
 def test_apply_variable_transform_rejects_multi_cut_hydrogen_transform():
@@ -145,16 +146,24 @@ def test_generate_products_filters_transform_collection_by_support():
     )
 
     assert products.__class__.__name__ == "GeneratedProductCollection"
-    assert len(products) == 1
+    assert len(products) == 2
     assert products[0].smiles == "c1ccc(cc1)O"
     assert products[0].transform == "[*:1]C>>[*:1]O"
     assert products[0].support_count == 2
+    assert products[1].smiles == "Cc1ccccn1"
+    assert products[1].transform == "[*:1]c1ccccc1>>[*:1]c1ccccn1"
+    assert products[1].support_count == 2
     assert products.to_dicts() == [
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "[*:1]C>>[*:1]O",
             "support_count": 2,
-        }
+        },
+        {
+            "smiles": "Cc1ccccn1",
+            "transform": "[*:1]c1ccccc1>>[*:1]c1ccccn1",
+            "support_count": 2,
+        },
     ]
 
 
@@ -222,14 +231,15 @@ def test_generate_products_can_use_selected_rule_environments():
 def test_generate_products_can_reject_unsupported_transform_collection_entries():
     from oemmpa import _oemmpa, generate_products
 
-    unsupported = _oemmpa.Transform("CC[*:1]>>O[*:1]")
+    unsupported = _oemmpa.Transform("C([*:1])[*:2]>>O[*:1]")
 
     with pytest.raises(
         ValueError,
-        match="only single-cut single-atom variable transforms are supported: CC",
+        match=r"only single-cut single-atom variable transforms are supported: "
+        r"C\(\[\*:1\]\)\[\*:2\]",
     ):
         generate_products(
-            "CCc1ccccc1",
+            "CCO",
             [unsupported],
             min_support=0,
             skip_unsupported=False,

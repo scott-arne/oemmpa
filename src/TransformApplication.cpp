@@ -57,37 +57,21 @@ std::pair<std::string, std::string> split_variable_transform(
     return {source_variable, target_variable};
 }
 
-bool has_single_attachment_to_changing_atom(
-    const OEChem::OEMolBase& mol,
-    const OEChem::OEAtomBase* attachment_atom,
-    const OEChem::OEAtomBase* changing_atom
+OEChem::OEAtomBase* find_single_attachment_atom(
+    OEChem::OEMolBase& mol,
+    const std::string& variable_smiles
 ) {
-    if (attachment_atom == nullptr || changing_atom == nullptr) {
-        return false;
-    }
-
-    return mol.GetBond(attachment_atom, changing_atom) != nullptr;
-}
-
-std::string variable_component_to_smirks(const std::string& variable_smiles) {
-    OEChem::OEGraphMol mol;
-    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
-        throw InvalidQueryError("invalid variable SMILES: " + variable_smiles);
-    }
-
     OEChem::OEAtomBase* attachment_atom = nullptr;
-    OEChem::OEAtomBase* changing_atom = nullptr;
     unsigned int attachment_count = 0;
-    unsigned int changing_atom_count = 0;
 
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
         if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() == 1) {
             attachment_atom = &*atom;
             ++attachment_count;
-        } else if (atom->GetAtomicNum() > 0) {
-            changing_atom = &*atom;
-            ++changing_atom_count;
-        } else {
+            continue;
+        }
+
+        if (atom->GetAtomicNum() == 0) {
             throw InvalidQueryError(
                 "only single-cut single-atom variable transforms are supported: " +
                 variable_smiles
@@ -95,24 +79,114 @@ std::string variable_component_to_smirks(const std::string& variable_smiles) {
         }
     }
 
-    if (
-        attachment_count != 1 ||
-        changing_atom_count != 1 ||
-        !has_single_attachment_to_changing_atom(mol, attachment_atom, changing_atom)
-    ) {
+    if (attachment_count != 1) {
         throw InvalidQueryError(
             "only single-cut single-atom variable transforms are supported: " +
             variable_smiles
         );
     }
+    return attachment_atom;
+}
 
-    changing_atom->SetMapIdx(2);
+OEChem::OEAtomBase* find_single_anchor_atom(
+    OEChem::OEMolBase& mol,
+    const OEChem::OEAtomBase* attachment_atom,
+    const std::string& variable_smiles
+) {
+    OEChem::OEAtomBase* anchor_atom = nullptr;
+    unsigned int anchor_count = 0;
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() == 0) {
+            continue;
+        }
+        if (mol.GetBond(attachment_atom, &*atom) != nullptr) {
+            anchor_atom = &*atom;
+            ++anchor_count;
+        }
+    }
+
+    if (anchor_count != 1) {
+        throw InvalidQueryError(
+            "only single-cut single-atom variable transforms are supported: " +
+            variable_smiles
+        );
+    }
+    return anchor_atom;
+}
+
+OEChem::OEGraphMol parse_single_cut_variable(const std::string& variable_smiles) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
+        throw InvalidQueryError("invalid variable SMILES: " + variable_smiles);
+    }
+    return mol;
+}
+
+std::string variable_component_to_smirks(
+    const std::string& variable_smiles,
+    bool map_deleted_atoms
+) {
+    OEChem::OEGraphMol mol = parse_single_cut_variable(variable_smiles);
+    OEChem::OEAtomBase* attachment_atom =
+        find_single_attachment_atom(mol, variable_smiles);
+    OEChem::OEAtomBase* anchor_atom =
+        find_single_anchor_atom(mol, attachment_atom, variable_smiles);
+
+    unsigned int next_deleted_map_idx = 3;
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        atom->SetMapIdx(0);
+    }
+    attachment_atom->SetMapIdx(1);
+    anchor_atom->SetMapIdx(2);
+
+    if (map_deleted_atoms) {
+        for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+            if (atom->GetAtomicNum() == 0 || &*atom == anchor_atom) {
+                continue;
+            }
+            atom->SetMapIdx(next_deleted_map_idx);
+            ++next_deleted_map_idx;
+        }
+    }
 
     std::string smirks;
     const unsigned int smiles_flags =
         OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
     OEChem::OECreateSmiString(smirks, mol, smiles_flags);
     return smirks;
+}
+
+std::string variable_transform_to_smirks(
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+) {
+    return variable_component_to_smirks(source_variable_smiles, true) + ">>" +
+        variable_component_to_smirks(target_variable_smiles, false);
+}
+
+void validate_single_cut_variable(const std::string& variable_smiles) {
+    OEChem::OEGraphMol mol = parse_single_cut_variable(variable_smiles);
+    OEChem::OEAtomBase* attachment_atom =
+        find_single_attachment_atom(mol, variable_smiles);
+    (void)find_single_anchor_atom(mol, attachment_atom, variable_smiles);
+}
+
+std::string checked_variable_transform_to_smirks(
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+) {
+    try {
+        validate_single_cut_variable(source_variable_smiles);
+        validate_single_cut_variable(target_variable_smiles);
+        return variable_transform_to_smirks(
+            source_variable_smiles,
+            target_variable_smiles
+        );
+    } catch (const InvalidQueryError&) {
+        throw;
+    }
 }
 
 }  // namespace
@@ -210,8 +284,10 @@ std::string TransformApplicator::BuildVariableTransformSmirks(
     const std::string& source_variable_smiles,
     const std::string& target_variable_smiles
 ) {
-    return variable_component_to_smirks(source_variable_smiles) + ">>" +
-        variable_component_to_smirks(target_variable_smiles);
+    return checked_variable_transform_to_smirks(
+        source_variable_smiles,
+        target_variable_smiles
+    );
 }
 
 std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(

@@ -76,12 +76,17 @@ def test_generate_products_with_statistics_attaches_prediction_metadata():
         statistics=statistics,
     )
 
-    assert len(products) == 1
+    assert len(products) == 2
     assert products[0].smiles == "c1ccc(cc1)O"
     assert products[0].transform == "[*:1]C>>[*:1]O"
     assert products[0].statistics.avg == pytest.approx(2.0)
     assert products[0].predicted_delta() == pytest.approx(2.0)
     assert products.to_dicts()[0]["predicted_delta"] == pytest.approx(2.0)
+    assert products[1].smiles == "Cc1ccccn1"
+    assert products[1].transform == "[*:1]c1ccccc1>>[*:1]c1ccccn1"
+    assert products[1].statistics.avg == pytest.approx(0.0)
+    assert products[1].predicted_delta() == pytest.approx(0.0)
+    assert products.to_dicts()[1]["predicted_delta"] == pytest.approx(0.0)
 
 
 def test_predict_transform_delta_rejects_unknown_aggregation():

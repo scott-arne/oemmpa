@@ -118,6 +118,28 @@ TEST(TransformApplicationTest, AppliesSingleAtomVariableTransform) {
     EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
 }
 
+TEST(TransformApplicationTest, AppliesSingleCutMultiAtomVariableTransform) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "CCc1ccccc1",
+            "CC[*:1]>>O[*:1]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+}
+
+TEST(TransformApplicationTest, AppliesSingleCutMultiAtomVariableTransformReverse) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "Oc1ccccc1",
+            "O[*:1]>>CC[*:1]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "CCc1ccccc1");
+}
+
 TEST(TransformApplicationTest, AppliesSingleAtomVariableTransformFromPair) {
     const MatchedPair pair(
         1,
@@ -260,13 +282,13 @@ TEST(TransformApplicationTest, GeneratesMMPDBReferenceProductsWithMinPairsStyleF
 }
 
 TEST(TransformApplicationTest, SkipsUnsupportedTransformsByDefaultDuringGeneration) {
-    Transform unsupported("CC[*:1]>>O[*:1]");
+    Transform unsupported("C([*:1])[*:2]>>O[*:1]");
     unsupported.AddPair(MakeSingleCutPair(
-        "ethylbenzene",
+        "isopropyl_fragment",
         "phenol",
-        "CCc1ccccc1",
+        "CCO",
         "Oc1ccccc1",
-        "CC[*:1]",
+        "C([*:1])[*:2]",
         "O[*:1]"
     ));
 
@@ -284,13 +306,13 @@ TEST(TransformApplicationTest, SkipsUnsupportedTransformsByDefaultDuringGenerati
 }
 
 TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
-    Transform unsupported("CC[*:1]>>O[*:1]");
+    Transform unsupported("C([*:1])[*:2]>>O[*:1]");
     unsupported.AddPair(MakeSingleCutPair(
-        "ethylbenzene",
+        "isopropyl_fragment",
         "phenol",
-        "CCc1ccccc1",
+        "CCO",
         "Oc1ccccc1",
-        "CC[*:1]",
+        "C([*:1])[*:2]",
         "O[*:1]"
     ));
 
@@ -304,7 +326,8 @@ TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
     } catch (const InvalidQueryError& error) {
         EXPECT_STREQ(
             error.what(),
-            "only single-cut single-atom variable transforms are supported: CC[*:1]"
+            "only single-cut single-atom variable transforms are supported: "
+            "C([*:1])[*:2]"
         );
     }
 }
@@ -318,16 +341,11 @@ TEST(TransformApplicationTest, RejectsMalformedVariableTransform) {
     }
 }
 
-TEST(TransformApplicationTest, RejectsMultiAtomVariableTransform) {
-    try {
+TEST(TransformApplicationTest, BuildsSmirksForSingleCutMultiAtomVariableTransform) {
+    const std::string smirks =
         TransformApplicator::BuildVariableTransformSmirks("CC[*:1]>>O[*:1]");
-        FAIL() << "Expected InvalidQueryError";
-    } catch (const InvalidQueryError& error) {
-        EXPECT_STREQ(
-            error.what(),
-            "only single-cut single-atom variable transforms are supported: CC[*:1]"
-        );
-    }
+
+    EXPECT_EQ(smirks, "[*:1][CH2:2][CH3:3]>>[*:1][OH:2]");
 }
 
 TEST(TransformApplicationTest, RejectsMultiCutVariableTransform) {
