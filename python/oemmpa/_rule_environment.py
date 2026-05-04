@@ -498,6 +498,15 @@ def _transform_maps_reference_to_query(reference, query, transform):
     )
 
 
+def _transform_generates_products(source, transform):
+    from ._transform import apply_variable_transform
+
+    try:
+        return bool(apply_variable_transform(source, transform))
+    except ValueError:
+        return False
+
+
 def find_transform_environments(
     store,
     smiles,
@@ -555,6 +564,21 @@ def find_transform_environments(
                 continue
             match_key = (row.property_name, row.transform)
             candidate = RuleEnvironmentMatch(query_environment, row)
+            current = best_matches.get(match_key)
+            if current is None or _score_key(row, selected_score) > _score_key(
+                current.statistics,
+                selected_score,
+            ):
+                best_matches[match_key] = candidate
+
+    if not query_environments:
+        for row in statistics:
+            if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if not _transform_generates_products(smiles, row.transform):
+                continue
+            match_key = (row.property_name, row.transform)
+            candidate = RuleEnvironmentMatch(_implicit_hydrogen_environment(row), row)
             current = best_matches.get(match_key)
             if current is None or _score_key(row, selected_score) > _score_key(
                 current.statistics,
@@ -852,6 +876,12 @@ def predict_property_delta(
                     continue
                 if _environment_key(row) != query_key:
                     continue
+                if not _transform_maps_reference_to_query(
+                    reference,
+                    smiles,
+                    row.transform,
+                ):
+                    continue
                 candidates.append((row, query_environment, reference_environment))
         if reference_matches:
             continue
@@ -871,6 +901,26 @@ def predict_property_delta(
                     row,
                     query_environment,
                     _implicit_hydrogen_environment(row),
+                )
+            )
+    for reference_environment in reference_environments:
+        reference_key = _environment_key(reference_environment)
+        for row in statistics:
+            if row.to_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if row.from_smiles != reference_environment.variable_smiles:
+                continue
+            if _environment_key(row) != reference_key:
+                continue
+            transform = row.transform
+            possible_transforms.append(transform)
+            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
+                continue
+            candidates.append(
+                (
+                    row,
+                    _implicit_hydrogen_environment(row),
+                    reference_environment,
                 )
             )
 

@@ -218,6 +218,32 @@ def test_find_transform_environments_matches_hydrogen_deletion_rows():
     assert hydrogen.avg == pytest.approx(-16.0)
 
 
+def test_find_transform_environments_matches_implicit_hydrogen_insertion_rows():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_transform_environments(
+        store,
+        "c1ccncc1",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert "[*:1][H]>>[*:1]O" in by_transform
+    hydrogen = by_transform["[*:1][H]>>[*:1]O"]
+    assert hydrogen.radius == 1
+    assert hydrogen.count == 1
+    assert hydrogen.avg == pytest.approx(16.0)
+
+
 def test_discovered_hydrogen_transform_applies_to_query_source():
     import oemmpa
     from oemmpa import RuleSelectionOptions, find_transform_environments
@@ -266,6 +292,43 @@ def test_predict_property_delta_matches_query_and_reference_environments():
     assert prediction.radius == 0
     assert prediction.query_environment.variable_smiles == "[*:1]O"
     assert prediction.reference_environment.variable_smiles == "[*:1]C"
+
+
+def test_predict_property_delta_rejects_reference_that_does_not_generate_query():
+    from oemmpa import predict_property_delta
+
+    store = _store_with_toluene_phenol_statistics()
+
+    with pytest.raises(KeyError):
+        predict_property_delta(
+            store,
+            smiles="Oc1ccccc1",
+            reference="Cc1ccccn1",
+            property_name="pIC50",
+        )
+
+
+def test_predict_property_delta_supports_hydrogen_deletion_reference_direction():
+    from oemmpa import RuleSelectionOptions, predict_property_delta
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    prediction = predict_property_delta(
+        store,
+        smiles="c1ccncc1",
+        reference="c1cccnc1O",
+        property_name="MW",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+
+    assert prediction.transform == "[*:1]O>>[*:1][H]"
+    assert prediction.predicted_delta == pytest.approx(-16.0)
+    assert prediction.query_environment.variable_smiles == "[*:1][H]"
+    assert prediction.reference_environment.variable_smiles == "[*:1]O"
 
 
 def test_predict_rule_environment_delta_selects_environment_row():
