@@ -45,6 +45,24 @@ testpaths = ["tests/python"]
 python_files = ["test_*.py"]
 addopts = "-v"
 
+[tool.ruff.lint.per-file-ignores]
+"python/oemmpa/__init__.py" = ["E402"]
+"python/oemmpa/oemmpa.py" = ["F401"]
+
+[tool.mypy]
+exclude = [
+    "python/oemmpa/_build_info.py",
+    "python/oemmpa/oemmpa.py",
+]
+
+[[tool.mypy.overrides]]
+module = ["openeye", "openeye.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["oemmpa._build_info", "oemmpa.oemmpa"]
+ignore_errors = true
+
 [tool.scikit-build]
 cmake.version = ">=3.21"
 cmake.build-type = "Release"

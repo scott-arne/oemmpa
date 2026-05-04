@@ -2,7 +2,7 @@
 
 import operator
 
-from . import _oemmpa
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, iter_dataframe_records
 from ._results import (
     PairCollection,

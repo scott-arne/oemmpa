@@ -1,6 +1,6 @@
 """Transform application helpers."""
 
-from . import _oemmpa
+from . import _oemmpa  # type: ignore[attr-defined]
 
 
 def _transform_error_to_value_error(exc):

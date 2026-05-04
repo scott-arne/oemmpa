@@ -1,6 +1,6 @@
 """Python helpers for optional DuckDB-backed storage."""
 
-from . import _oemmpa
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import load_report_from_raw
 from ._rule_environment import wrap_rule_environment_statistics
 from ._results import PairCollection, PairResult, TransformCollection, TransformResult

@@ -192,7 +192,7 @@ def _mmpdb_reference_store(property_names=("MW", "MP")):
 
 
 def _rdkit_canonical_smiles(smiles):
-    rdkit = pytest.importorskip("rdkit")
+    pytest.importorskip("rdkit")
     from rdkit import Chem
 
     mol = Chem.MolFromSmiles(smiles)
