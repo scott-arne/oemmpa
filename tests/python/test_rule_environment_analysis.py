@@ -177,6 +177,28 @@ def test_find_transform_environments_matches_query_environment_rows():
     assert matches[0].statistics.avg == pytest.approx(1.5)
 
 
+def test_predict_property_delta_matches_query_and_reference_environments():
+    from oemmpa import RuleSelectionOptions, predict_property_delta
+
+    store = _store_with_toluene_phenol_statistics()
+
+    prediction = predict_property_delta(
+        store,
+        smiles="Oc1ccccc1",
+        reference="Cc1ccccc1",
+        property_name="pIC50",
+        value=6.0,
+        selection=RuleSelectionOptions(max_radius=1, score=" -min-radius"),
+    )
+
+    assert prediction.transform == "[*:1]C>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(1.5)
+    assert prediction.predicted_value == pytest.approx(7.5)
+    assert prediction.radius == 0
+    assert prediction.query_environment.variable_smiles == "[*:1]O"
+    assert prediction.reference_environment.variable_smiles == "[*:1]C"
+
+
 def test_predict_rule_environment_delta_selects_environment_row():
     from oemmpa import RuleSelectionOptions, predict_rule_environment_delta
 

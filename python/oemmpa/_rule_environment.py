@@ -585,9 +585,18 @@ class RuleEnvironmentPredictionResult:
     pseudosmiles: str
     std: float | None
     p_value: float | None
+    query_environment: QueryEnvironmentResult | None = None
+    reference_environment: QueryEnvironmentResult | None = None
 
     @classmethod
-    def from_statistics(cls, row, aggregation, value=None):
+    def from_statistics(
+        cls,
+        row,
+        aggregation,
+        value=None,
+        query_environment=None,
+        reference_environment=None,
+    ):
         """Build a prediction from a selected statistics row."""
         normalized_aggregation = "avg" if aggregation == "mean" else str(aggregation)
         predicted_delta = row.predicted_delta(normalized_aggregation)
@@ -607,11 +616,13 @@ class RuleEnvironmentPredictionResult:
             pseudosmiles=row.pseudosmiles,
             std=row.std,
             p_value=row.p_value,
+            query_environment=query_environment,
+            reference_environment=reference_environment,
         )
 
     def to_dict(self):
         """Return a serializable prediction mapping."""
-        return {
+        result = {
             "rule_environment_id": self.rule_environment_id,
             "transform": self.transform,
             "property": self.property_name,
@@ -625,6 +636,11 @@ class RuleEnvironmentPredictionResult:
             "std": self.std,
             "p_value": self.p_value,
         }
+        if self.query_environment is not None:
+            result["query_environment"] = self.query_environment.to_dict()
+        if self.reference_environment is not None:
+            result["reference_environment"] = self.reference_environment.to_dict()
+        return result
 
 
 def _score_key(row, score):
@@ -718,6 +734,108 @@ def predict_rule_environment_delta(
     )
 
 
+def predict_property_delta(
+    store,
+    smiles,
+    reference,
+    property_name,
+    value=None,
+    *,
+    selection=None,
+    aggregation=None,
+    min_radius=None,
+    max_radius=None,
+    min_pairs=None,
+    substructure=None,
+    substructure_smarts=None,
+    where=None,
+    score=None,
+):
+    """Predict a property delta from query and reference molecule environments."""
+    values = _selection_filter_values(
+        selection=selection,
+        property_name=property_name,
+        min_radius=min_radius,
+        max_radius=max_radius,
+        min_pairs=min_pairs,
+        substructure=substructure,
+        substructure_smarts=substructure_smarts,
+        where=where,
+        apply_defaults=True,
+    )
+    if selection is not None:
+        selected_score = selection.score
+        selected_aggregation = selection.aggregation
+    else:
+        selected_score = RuleSelectionOptions().score
+        selected_aggregation = RuleSelectionOptions().aggregation
+    if score is not None:
+        selected_score = _normalize_score(score)
+    if aggregation is not None:
+        selected_aggregation = _normalize_aggregation(aggregation)
+
+    query_environments = compute_query_environments(
+        smiles,
+        values["min_radius"],
+        values["max_radius"],
+    )
+    reference_environments = compute_query_environments(
+        reference,
+        values["min_radius"],
+        values["max_radius"],
+    )
+
+    references_by_key = {}
+    for reference_environment in reference_environments:
+        references_by_key.setdefault(
+            _environment_key(reference_environment),
+            [],
+        ).append(reference_environment)
+
+    statistics = store.rule_environment_statistics(values["property_name"]).filter(
+        min_radius=values["min_radius"],
+        max_radius=values["max_radius"],
+        min_pairs=values["min_pairs"],
+        substructure_smarts=values["substructure_smarts"],
+        where=values["where"],
+    )
+
+    candidates = []
+    possible_transforms = []
+    for query_environment in query_environments:
+        query_key = _environment_key(query_environment)
+        for reference_environment in references_by_key.get(query_key, []):
+            transform = (
+                reference_environment.variable_smiles
+                + ">>"
+                + query_environment.variable_smiles
+            )
+            possible_transforms.append(transform)
+            for row in statistics:
+                if row.transform != transform:
+                    continue
+                if _environment_key(row) != query_key:
+                    continue
+                candidates.append((row, query_environment, reference_environment))
+
+    if not candidates:
+        if possible_transforms:
+            raise KeyError(sorted(set(possible_transforms))[0])
+        raise KeyError(f"{reference}>>{smiles}")
+
+    selected_row, query_environment, reference_environment = max(
+        candidates,
+        key=lambda candidate: _score_key(candidate[0], selected_score),
+    )
+    return RuleEnvironmentPredictionResult.from_statistics(
+        selected_row,
+        selected_aggregation,
+        value=value,
+        query_environment=query_environment,
+        reference_environment=reference_environment,
+    )
+
+
 __all__ = [
     "QueryEnvironmentCollection",
     "QueryEnvironmentResult",
@@ -729,6 +847,7 @@ __all__ = [
     "RuleEnvironmentStatisticsResult",
     "compute_query_environments",
     "find_transform_environments",
+    "predict_property_delta",
     "predict_rule_environment_delta",
     "wrap_rule_environment_statistics",
 ]

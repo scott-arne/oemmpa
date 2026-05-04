@@ -461,6 +461,7 @@ from ._rule_environment import (
     RuleEnvironmentStatisticsResult,
     compute_query_environments,
     find_transform_environments,
+    predict_property_delta,
     predict_rule_environment_delta,
 )
 from ._storage import DuckDBStore, duckdb_available
@@ -509,6 +510,7 @@ __all__ = [
     "duckdb_available",
     "find_transform_environments",
     "generate_products",
+    "predict_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",
 ]

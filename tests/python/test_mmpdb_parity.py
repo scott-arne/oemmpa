@@ -643,6 +643,42 @@ def test_mmpdb_phase10_smarts_substructure_filtering_uses_target_fragment():
     }
 
 
+def test_mmpdb_phase10_reference_based_prediction_matches_supported_transform():
+    from oemmpa import predict_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    prediction = predict_property_delta(
+        store,
+        smiles="c1cccnc1O",
+        reference="Clc1ccccn1",
+        property_name="MW",
+        value=20.1,
+    )
+
+    assert prediction.transform == "[*:1]Cl>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(-18.5)
+    assert prediction.predicted_value == pytest.approx(1.6)
+    assert prediction.radius == 1
+    assert prediction.count == 1
+    assert prediction.query_environment.variable_smiles == "[*:1]O"
+    assert prediction.reference_environment.variable_smiles == "[*:1]Cl"
+
+    pairs = store.pairs_for_rule_environment(prediction.rule_environment_id)
+    assert len(pairs) == 1
+    assert pairs[0].transform == prediction.transform
+    assert pairs[0].property_delta("MW") == pytest.approx(-18.5)
+
+    with pytest.raises(KeyError, match=r"\[\*:1\]Cl>>\[\*:1\]O"):
+        predict_property_delta(
+            store,
+            smiles="c1cccnc1O",
+            reference="Clc1ccccn1",
+            property_name="MW",
+            where="count > 10",
+        )
+
+
 def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     from oemmpa import predict_rule_environment_delta
 
