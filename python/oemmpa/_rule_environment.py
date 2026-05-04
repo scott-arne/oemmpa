@@ -498,13 +498,27 @@ def _transform_maps_reference_to_query(reference, query, transform):
     )
 
 
-def _transform_generates_products(source, transform):
+def _hydrogen_transform_matches_source_environment(source, row):
     from ._transform import apply_variable_transform
 
     try:
-        return bool(apply_variable_transform(source, transform))
+        products = apply_variable_transform(source, row.transform)
     except ValueError:
         return False
+
+    row_key = _environment_key(row)
+    for product in products:
+        product_environments = compute_query_environments(
+            product,
+            row.radius,
+            row.radius,
+        )
+        for environment in product_environments:
+            if environment.variable_smiles != row.to_smiles:
+                continue
+            if _environment_key(environment) == row_key:
+                return True
+    return False
 
 
 def find_transform_environments(
@@ -575,7 +589,7 @@ def find_transform_environments(
         for row in statistics:
             if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
                 continue
-            if not _transform_generates_products(smiles, row.transform):
+            if not _hydrogen_transform_matches_source_environment(smiles, row):
                 continue
             match_key = (row.property_name, row.transform)
             candidate = RuleEnvironmentMatch(_implicit_hydrogen_environment(row), row)

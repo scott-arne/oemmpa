@@ -244,6 +244,27 @@ def test_find_transform_environments_matches_implicit_hydrogen_insertion_rows():
     assert hydrogen.avg == pytest.approx(16.0)
 
 
+def test_find_transform_environments_rejects_wrong_implicit_hydrogen_environment():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_transform_environments(
+        store,
+        "c1ccccc1",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=2,
+            max_radius=3,
+        ),
+    )
+
+    assert {
+        match.statistics.transform
+        for match in matches
+    }.isdisjoint({"[*:1][H]>>[*:1]O"})
+
+
 def test_discovered_hydrogen_transform_applies_to_query_source():
     import oemmpa
     from oemmpa import RuleSelectionOptions, find_transform_environments
