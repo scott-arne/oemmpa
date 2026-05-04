@@ -7,6 +7,8 @@
 
 #include <oechem.h>
 
+#include <algorithm>
+
 namespace OEMMPA {
 namespace test {
 

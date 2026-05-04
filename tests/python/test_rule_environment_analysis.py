@@ -239,6 +239,7 @@ def test_discovered_hydrogen_transform_applies_to_query_source():
         for match in matches
     }
 
+    assert "[*:1]O>>[*:1][H]" in by_transform
     hydrogen = by_transform["[*:1]O>>[*:1][H]"]
     products = oemmpa.apply_variable_transform(source_smiles, hydrogen.transform)
 
