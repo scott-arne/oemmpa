@@ -339,6 +339,64 @@ TEST(MemoryIndexTest, HydrogenParentBuildsDeletionAndInsertionPairs) {
     ));
 }
 
+TEST(MemoryIndexTest, DuplicateFragmentationCanSupplyHydrogenParentMetadata) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1
+    ));
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    EXPECT_TRUE(HasTransform(pairs, "[*:1]O>>[*:1][H]"));
+    EXPECT_TRUE(HasTransform(pairs, "[*:1][H]>>[*:1]O"));
+}
+
+TEST(MemoryIndexTest, ExplicitHydrogenFragmentationDoesNotInflateSyntheticHydrogenSupport) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+    index.AddFragmentation(Fragmentation(
+        benzene.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1][H]",
+        1
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+    const std::vector<Transform> transforms = index.GetTransforms(QueryOptions());
+
+    EXPECT_EQ(pairs.size(), 2);
+    ASSERT_EQ(transforms.size(), 2);
+    for (const Transform& transform : transforms) {
+        EXPECT_EQ(transform.GetSupportCount(), 1);
+    }
+}
+
 TEST(MemoryIndexTest, HydrogenRowsRequireLoadedHydrogenParent) {
     const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
     const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");

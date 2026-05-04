@@ -321,9 +321,25 @@ void add_candidate_if_allowed(
         heavy_bond_delta
     );
 
-    candidates_by_group[
+    std::vector<MatchedPair>& candidates = candidates_by_group[
         {constant_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()}
-    ].push_back(pair);
+    ];
+    const auto duplicate = std::find_if(
+        candidates.begin(),
+        candidates.end(),
+        [&pair](const MatchedPair& candidate) {
+            return candidate.GetSourceVariableSmiles() == pair.GetSourceVariableSmiles() &&
+                candidate.GetTargetVariableSmiles() == pair.GetTargetVariableSmiles() &&
+                candidate.GetCutCount() == pair.GetCutCount() &&
+                candidate.GetHeavyAtomDelta() == pair.GetHeavyAtomDelta() &&
+                candidate.GetHeavyBondDelta() == pair.GetHeavyBondDelta();
+        }
+    );
+    if (duplicate != candidates.end()) {
+        return;
+    }
+
+    candidates.push_back(pair);
 }
 
 void add_hydrogen_candidates_for_fragmentation(
@@ -430,6 +446,20 @@ void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
         fragmentation.GetCutCount()
     };
     if (!fragmentation_keys_.insert(key).second) {
+        if (!fragmentation.GetConstantWithHydrogenSmiles().empty()) {
+            std::vector<Fragmentation>& bucket =
+                constant_buckets_[fragmentation.GetConstantSmiles()];
+            for (Fragmentation& existing : bucket) {
+                if (existing.GetMoleculeId() == molecule_id &&
+                    existing.GetConstantSmiles() == fragmentation.GetConstantSmiles() &&
+                    existing.GetVariableSmiles() == fragmentation.GetVariableSmiles() &&
+                    existing.GetCutCount() == fragmentation.GetCutCount() &&
+                    existing.GetConstantWithHydrogenSmiles().empty()) {
+                    existing = fragmentation;
+                    break;
+                }
+            }
+        }
         return;
     }
 
