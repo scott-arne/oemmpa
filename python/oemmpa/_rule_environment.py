@@ -136,6 +136,7 @@ def _selection_filter_values(
     max_radius=None,
     min_pairs=None,
     substructure=None,
+    substructure_smarts=None,
     where=None,
     apply_defaults=False,
 ):
@@ -148,7 +149,7 @@ def _selection_filter_values(
             "min_radius": None,
             "max_radius": None,
             "min_pairs": None,
-            "substructure": None,
+            "substructure_smarts": None,
             "where": None,
         }
         if apply_defaults:
@@ -160,16 +161,27 @@ def _selection_filter_values(
             "min_radius": selection.min_radius,
             "max_radius": selection.max_radius,
             "min_pairs": selection.min_pairs,
-            "substructure": selection.substructure_smarts,
+            "substructure_smarts": selection.substructure_smarts,
             "where": selection.where,
         }
+
+    if (
+        substructure is not None
+        and substructure_smarts is not None
+        and str(substructure) != str(substructure_smarts)
+    ):
+        raise ValueError("substructure and substructure_smarts disagree")
 
     overrides = {
         "property_name": property_name,
         "min_radius": min_radius,
         "max_radius": max_radius,
         "min_pairs": min_pairs,
-        "substructure": substructure,
+        "substructure_smarts": (
+            substructure_smarts
+            if substructure_smarts is not None
+            else substructure
+        ),
         "where": where,
     }
     for key, value in overrides.items():
@@ -277,6 +289,7 @@ class RuleEnvironmentStatisticsCollection(list):
         max_radius=None,
         min_pairs=None,
         substructure=None,
+        substructure_smarts=None,
         where=None,
     ):
         """Return rows matching the requested structured filters."""
@@ -287,6 +300,7 @@ class RuleEnvironmentStatisticsCollection(list):
             max_radius=max_radius,
             min_pairs=min_pairs,
             substructure=substructure,
+            substructure_smarts=substructure_smarts,
             where=where,
         )
         rows = self
@@ -310,13 +324,13 @@ class RuleEnvironmentStatisticsCollection(list):
             if min_pairs < 0:
                 raise ValueError("min_pairs must be greater than or equal to zero")
             rows = [row for row in rows if row.count >= min_pairs]
-        substructure = values["substructure"]
-        if substructure is not None:
-            substructure = str(substructure)
+        substructure_smarts = values["substructure_smarts"]
+        if substructure_smarts is not None:
+            substructure_smarts = str(substructure_smarts)
             rows = [
                 row
                 for row in rows
-                if substructure in row.from_smiles or substructure in row.to_smiles
+                if _smiles_contains_substructure(row.to_smiles, substructure_smarts)
             ]
         where = values["where"]
         if where is not None:
@@ -342,6 +356,18 @@ def wrap_rule_environment_statistics(raw_rows):
         RuleEnvironmentStatisticsResult.from_raw(row)
         for row in raw_rows
     )
+
+
+def _smiles_contains_substructure(smiles, smarts):
+    from . import _oemmpa
+
+    try:
+        return bool(_oemmpa.SmilesContainsSubstructure(str(smiles), str(smarts)))
+    except RuntimeError as exc:
+        message = str(exc)
+        if "invalid substructure SMARTS:" in message:
+            raise ValueError(message) from exc
+        raise
 
 
 @dataclass(frozen=True)
@@ -447,6 +473,7 @@ def find_transform_environments(
     max_radius=None,
     min_pairs=None,
     substructure=None,
+    substructure_smarts=None,
     where=None,
     score=None,
 ):
@@ -458,6 +485,7 @@ def find_transform_environments(
         max_radius=max_radius,
         min_pairs=min_pairs,
         substructure=substructure,
+        substructure_smarts=substructure_smarts,
         where=where,
         apply_defaults=True,
     )
@@ -478,7 +506,7 @@ def find_transform_environments(
         min_radius=values["min_radius"],
         max_radius=values["max_radius"],
         min_pairs=values["min_pairs"],
-        substructure=values["substructure"],
+        substructure_smarts=values["substructure_smarts"],
         where=values["where"],
     )
 
@@ -623,6 +651,7 @@ def predict_rule_environment_delta(
     max_radius=None,
     min_pairs=None,
     substructure=None,
+    substructure_smarts=None,
     where=None,
     score=None,
 ):
@@ -636,7 +665,8 @@ def predict_rule_environment_delta(
     :param min_radius: Minimum environment radius to consider.
     :param max_radius: Maximum environment radius to consider.
     :param min_pairs: Minimum supporting pair count.
-    :param substructure: Optional source/target variable text filter.
+    :param substructure: Backwards-compatible alias for ``substructure_smarts``.
+    :param substructure_smarts: Optional target-variable SMARTS filter.
     :param where: Optional safe where expression.
     :param score: Row selection mode.
     :returns: :class:`RuleEnvironmentPredictionResult`.
@@ -653,6 +683,7 @@ def predict_rule_environment_delta(
         max_radius=max_radius,
         min_pairs=min_pairs,
         substructure=substructure,
+        substructure_smarts=substructure_smarts,
         where=where,
         apply_defaults=True,
     )
@@ -673,7 +704,7 @@ def predict_rule_environment_delta(
         min_radius=values["min_radius"],
         max_radius=values["max_radius"],
         min_pairs=values["min_pairs"],
-        substructure=values["substructure"],
+        substructure_smarts=values["substructure_smarts"],
         where=values["where"],
     )
     if not rows:

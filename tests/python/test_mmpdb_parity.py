@@ -609,6 +609,40 @@ def test_mmpdb_phase10_query_environment_matching_applies_selection_options():
     assert matches[0].statistics.count == 3
 
 
+def test_mmpdb_phase10_smarts_substructure_filtering_uses_target_fragment():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    chlorine_matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=0,
+            max_radius=1,
+            substructure_smarts="Cl",
+        ),
+    )
+    assert {match.statistics.to_smiles for match in chlorine_matches} == {"[*:1]Cl"}
+    assert {match.statistics.transform for match in chlorine_matches} == {
+        "[*:1]O>>[*:1]Cl"
+    }
+
+    nitrogen_matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        property_name="MW",
+        min_radius=0,
+        max_radius=1,
+        substructure_smarts="N",
+    )
+    assert {match.statistics.to_smiles for match in nitrogen_matches} == {"[*:1]N"}
+    assert {match.statistics.transform for match in nitrogen_matches} == {
+        "[*:1]O>>[*:1]N"
+    }
+
+
 def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     from oemmpa import predict_rule_environment_delta
 

@@ -105,5 +105,18 @@ TEST(QueryEnvironmentTest, RejectsInvalidRadiusBounds) {
     );
 }
 
+TEST(QueryEnvironmentTest, SmartsSubstructureSearchMatchesSmiles) {
+    EXPECT_TRUE(SmilesContainsSubstructure("[*:1]Cl", "Cl"));
+    EXPECT_TRUE(SmilesContainsSubstructure("[*:1]N", "N"));
+    EXPECT_FALSE(SmilesContainsSubstructure("[*:1]Cl", "N"));
+}
+
+TEST(QueryEnvironmentTest, InvalidSubstructureSmartsThrowsInvalidQueryError) {
+    EXPECT_THROW(
+        SmilesContainsSubstructure("[*:1]Cl", "ZZTop"),
+        InvalidQueryError
+    );
+}
+
 }  // namespace test
 }  // namespace OEMMPA

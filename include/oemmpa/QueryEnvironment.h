@@ -44,6 +44,11 @@ std::vector<QueryEnvironment> ComputeQueryEnvironments(
     unsigned int max_radius = 5
 );
 
+bool SmilesContainsSubstructure(
+    const std::string& smiles,
+    const std::string& smarts
+);
+
 }  // namespace OEMMPA
 
 #endif  // OEMMPA_QUERY_ENVIRONMENT_H

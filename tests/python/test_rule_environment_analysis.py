@@ -63,8 +63,14 @@ def test_rule_environment_statistics_collection_filters_rows():
     assert {row.transform for row in one_transform} == {rows[0].transform}
 
     assert rows.filter(min_pairs=2) == []
-    assert len(rows.filter(substructure="O")) == len(rows)
+    oxygen_targets = rows.filter(substructure_smarts="O")
+    assert len(oxygen_targets) == 6
+    assert {row.to_smiles for row in oxygen_targets} == {"[*:1]O"}
+    assert rows.filter(substructure="O") == oxygen_targets
     assert rows.filter(substructure="N") == []
+
+    with pytest.raises(ValueError, match="invalid substructure SMARTS: ZZTop"):
+        rows.filter(substructure_smarts="ZZTop")
 
 
 def test_rule_environment_statistics_collection_supports_safe_where_filters():

@@ -396,6 +396,7 @@ _RAW_BINDING_EXPORTS = (
     "ScoringMode_MinimalHeavyBondChange",
     "ScoringOptions",
     "SmartsFragmentationStrategy",
+    "SmilesContainsSubstructure",
     "StorageError",
     "StringVector",
     "Transform",

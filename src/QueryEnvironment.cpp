@@ -1,9 +1,12 @@
 #include "oemmpa/QueryEnvironment.h"
 
 #include "oemmpa/EnvironmentFingerprint.h"
+#include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MoleculeRecord.h"
+
+#include <oechem.h>
 
 #include <utility>
 
@@ -95,6 +98,31 @@ std::vector<QueryEnvironment> ComputeQueryEnvironments(
     }
 
     return environments;
+}
+
+bool SmilesContainsSubstructure(
+    const std::string& smiles,
+    const std::string& smarts
+) {
+    OEChem::OEQMol query;
+    if (!OEChem::OEParseSmarts(query, smarts.c_str())) {
+        throw InvalidQueryError("invalid substructure SMARTS: " + smarts);
+    }
+
+    OEChem::OESubSearch subsearch;
+    if (!subsearch.Init(query)) {
+        throw InvalidQueryError("invalid substructure SMARTS: " + smarts);
+    }
+
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, smiles)) {
+        throw InvalidQueryError("invalid substructure target SMILES: " + smiles);
+    }
+
+    for (OESystem::OEIter<OEChem::OEMatchBase> match = subsearch.Match(mol); match; ++match) {
+        return true;
+    }
+    return false;
 }
 
 }  // namespace OEMMPA
