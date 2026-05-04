@@ -309,7 +309,7 @@ def test_load_report_counts_are_derived_from_rows():
     assert report.rejected_count == 1
 
     with pytest.raises(TypeError):
-        LoadReport(accepted_count=99)
+        LoadReport(accepted_count=99)  # pyright: ignore[reportCallIssue]
 
 
 def test_add_molecules_from_file_matches_mmpdb_whitespace_delimiter():

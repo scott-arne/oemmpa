@@ -21,6 +21,8 @@ REQUIRED_COLUMNS = [
 EXPECTED_TEXT_LINE_COUNTS = {
     "tests/data/mmpdb/test_data.smi": 9,
     "tests/data/mmpdb/test_data.csv": 10,
+    "tests/data/mmpdb/test_data_2019_rule_environments.tsv": 322,
+    "tests/data/mmpdb/test_data_2019_rule_environment_pairs.tsv": 343,
     "tests/data/mmpdb/fragment/space.smi": 3,
     "tests/data/mmpdb/fragment/tab.smi": 2,
     "tests/data/mmpdb/fragment/two_tabs.smi": 2,

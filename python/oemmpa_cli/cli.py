@@ -134,7 +134,7 @@ def _load_properties(analyzer, path, id_column, property_name):
                 raise ValueError(f"row {row_number}: missing molecule id")
 
             value = row.get(property_name)
-            if value in {None, "", "*"}:
+            if value is None or value == "" or value == "*":
                 continue
             try:
                 analyzer.add_property(molecule_id, property_name, float(value))

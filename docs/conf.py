@@ -1,6 +1,8 @@
 """Sphinx configuration for OEMMPA documentation."""
 
+import os
 from pathlib import Path
+from shutil import which
 import sys
 import warnings
 
@@ -11,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
+
+HOMEBREW_DOXYGEN = Path("/opt/homebrew/bin/doxygen")
+if which("doxygen") is None and HOMEBREW_DOXYGEN.exists():
+    os.environ["PATH"] = (
+        f"{HOMEBREW_DOXYGEN.parent}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
 
 warnings.filterwarnings(
     "ignore",

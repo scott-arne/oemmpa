@@ -2,6 +2,9 @@
 OEMMPA - Enhanced matched molecular pair capabilities with the OpenEye Toolkits
 """
 
+# ruff: noqa: E402
+
+from importlib import metadata
 import os
 import re
 import warnings
@@ -326,7 +329,6 @@ def _check_openeye_version():
         return
 
     try:
-        from importlib import metadata
         runtime_version = metadata.version("openeye-toolkits")
     except metadata.PackageNotFoundError:
         warnings.warn(
@@ -448,9 +450,14 @@ from ._analytics import (
     predict_transform_delta,
 )
 from ._rule_environment import (
+    RuleEnvironmentMatch,
+    RuleEnvironmentMatchCollection,
     RuleEnvironmentPredictionResult,
     RuleEnvironmentStatisticsCollection,
     RuleEnvironmentStatisticsResult,
+    RuleSelectionOptions,
+    find_transform_environments,
+    predict_property_delta,
     predict_rule_environment_delta,
 )
 from ._storage import DuckDBStore, duckdb_available
@@ -460,9 +467,10 @@ from ._transform import (
     apply_variable_transform,
     build_variable_transform_smirks,
     generate_products,
+    generate_products_from_rule_environments,
 )
 
-del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _name, _swig_proxy
+del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _swig_proxy
 
 __all__ = [
     "__version__",
@@ -477,9 +485,12 @@ __all__ = [
     "PairResult",
     "PredictionResult",
     "RowError",
+    "RuleEnvironmentMatch",
+    "RuleEnvironmentMatchCollection",
     "RuleEnvironmentPredictionResult",
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",
+    "RuleSelectionOptions",
     "TransformCollection",
     "TransformResult",
     "TransformStatisticsCollection",
@@ -491,7 +502,10 @@ __all__ = [
     "calculate_molecular_weight",
     "compute_transform_statistics",
     "duckdb_available",
+    "find_transform_environments",
     "generate_products",
+    "generate_products_from_rule_environments",
+    "predict_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",
 ]

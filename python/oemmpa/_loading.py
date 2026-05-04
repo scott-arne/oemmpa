@@ -88,7 +88,7 @@ def iter_dataframe_records(frame):
 
     iterrows = getattr(frame, "iterrows", None)
     if callable(iterrows):
-        for row_number, (_index, row) in enumerate(iterrows(), start=1):
+        for row_number, (_index, row) in enumerate(iterrows(), start=1):  # pyright: ignore[reportArgumentType]
             yield row_number, _row_to_mapping(row)
         return
 
@@ -144,7 +144,7 @@ def _row_to_mapping(row):
 
     to_dict = getattr(row, "to_dict", None)
     if callable(to_dict):
-        return dict(to_dict())
+        return dict(to_dict())  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
         raise TypeError("sequence rows require dataframe columns")

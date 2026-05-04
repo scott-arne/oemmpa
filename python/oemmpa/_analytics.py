@@ -149,7 +149,7 @@ def _aggregate_values(values):
     q1, median, q3 = _quartiles(values)
 
     paired_t = None
-    if count > 1:
+    if count > 1 and std is not None:
         if std == 0.0:
             paired_t = 100000000
         else:

@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 
-from invoke import task
+from invoke.tasks import task
 
 
 PROJECT_ROOT = Path(__file__).parent.absolute()

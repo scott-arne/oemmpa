@@ -11,10 +11,10 @@ class FakePair:
     def GetTargetMoleculeId(self):
         return 2
 
-    def GetSourceExternalId(self):
+    def GetSourceExternalId(self) -> str:
         return "tol"
 
-    def GetTargetExternalId(self):
+    def GetTargetExternalId(self) -> str:
         return "phenol"
 
     def GetConstantSmiles(self):

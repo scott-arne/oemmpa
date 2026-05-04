@@ -1,6 +1,8 @@
 upstream_project	upstream_path	local_path	phase	reason
 mmpdb	tests/test_data.smi	tests/data/mmpdb/test_data.smi	7	Reference molecule IDs and small matched-pair fixture.
 mmpdb	tests/test_data.csv	tests/data/mmpdb/test_data.csv	7	Reference property values for MMPDB parity tests.
+mmpdb	tests/test_data_2019.mmpdb:rule_environment	tests/data/mmpdb/test_data_2019_rule_environments.tsv	10	Reference rule-environment rows for count-divergence classification.
+mmpdb	tests/test_data_2019.mmpdb:pair	tests/data/mmpdb/test_data_2019_rule_environment_pairs.tsv	10	Reference supporting pair rows for count-divergence classification.
 oemmpa	tests/data/mmpdb/generate_pyridinol.tsv	tests/data/mmpdb/generate_pyridinol.tsv	7	Derived transform-generation fixture already used by OEMMPA parity tests.
 mmpdb	tests/space.smi	tests/data/mmpdb/fragment/space.smi	8	Delimiter and gzip input parity fixture.
 mmpdb	tests/space.smi.gz	tests/data/mmpdb/fragment/space.smi.gz	8	Gzip input parity fixture.

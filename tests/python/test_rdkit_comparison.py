@@ -61,7 +61,9 @@ def test_run_oemmpa_uses_worktree_package_when_stale_package_is_imported(monkeyp
     result = run_oemmpa(BENCHMARK_DATA)
 
     assert result["pair_count"] > 0
-    assert sys.modules["oemmpa"].__file__.startswith(str(BENCHMARK_DATA.parents[2]))
+    package_file = sys.modules["oemmpa"].__file__
+    assert package_file is not None
+    assert package_file.startswith(str(BENCHMARK_DATA.parents[2]))
 
 
 def test_run_rdkit_reports_unavailable_when_rdkit_import_fails(monkeypatch):

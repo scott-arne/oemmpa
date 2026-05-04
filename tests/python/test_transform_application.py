@@ -95,6 +95,22 @@ def test_apply_variable_transform_rejects_unsupported_multi_atom_transform():
         apply_variable_transform("CCc1ccccc1", "CC[*:1]>>O[*:1]")
 
 
+def test_apply_variable_transform_rejects_multi_cut_hydrogen_transform():
+    from oemmpa import apply_variable_transform, build_variable_transform_smirks
+
+    transform = "C([*:1])[*:2]>>[*:1][H].O[*:2]"
+    error = (
+        r"only single-cut single-atom variable transforms are supported: "
+        r"C\(\[\*:1\]\)\[\*:2\]"
+    )
+
+    with pytest.raises(ValueError, match=error):
+        build_variable_transform_smirks(transform)
+
+    with pytest.raises(ValueError, match=error):
+        apply_variable_transform("CCO", transform)
+
+
 def test_pair_result_applies_its_observed_transform():
     from oemmpa import Analyzer
 
@@ -142,6 +158,67 @@ def test_generate_products_filters_transform_collection_by_support():
     ]
 
 
+def test_generate_products_can_use_selected_rule_environments():
+    from oemmpa import (
+        Analyzer,
+        DuckDBStore,
+        RuleSelectionOptions,
+        find_transform_environments,
+        generate_products_from_rule_environments,
+    )
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.5)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    selection = RuleSelectionOptions(
+        property_name="pIC50",
+        min_radius=4,
+        score="largest-radius",
+    )
+
+    matches = find_transform_environments(
+        store,
+        transform="[*:1]C>>[*:1]O",
+        selection=selection,
+    )
+    products = generate_products_from_rule_environments(
+        "Cc1ccccc1",
+        store,
+        transform="[*:1]C>>[*:1]O",
+        selection=selection,
+    )
+    products_from_matches = generate_products_from_rule_environments(
+        "Cc1ccccc1",
+        matches,
+    )
+
+    assert len(matches) == 1
+    assert matches[0].statistics.radius == 5
+    assert matches[0].supporting_pairs()[0].property_delta("pIC50") == pytest.approx(
+        1.5
+    )
+    assert matches.to_transforms()[0].support_count == 1
+    assert products.to_dicts() == [
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "support_count": 1,
+            "property": "pIC50",
+            "predicted_delta": pytest.approx(1.5),
+            "count": 1,
+            "std": None,
+            "p_value": None,
+        }
+    ]
+    assert products_from_matches.to_dicts() == products.to_dicts()
+
+
 def test_generate_products_can_reject_unsupported_transform_collection_entries():
     from oemmpa import _oemmpa, generate_products
 
@@ -153,6 +230,26 @@ def test_generate_products_can_reject_unsupported_transform_collection_entries()
     ):
         generate_products(
             "CCc1ccccc1",
+            [unsupported],
+            min_support=0,
+            skip_unsupported=False,
+        )
+
+
+def test_generate_products_keeps_multi_cut_hydrogen_transform_unsupported():
+    from oemmpa import _oemmpa, generate_products
+
+    unsupported = _oemmpa.Transform("C([*:1])[*:2]>>[*:1][H].O[*:2]")
+
+    assert generate_products("CCO", [unsupported], min_support=0) == []
+
+    with pytest.raises(
+        ValueError,
+        match=r"only single-cut single-atom variable transforms are supported: "
+        r"C\(\[\*:1\]\)\[\*:2\]",
+    ):
+        generate_products(
+            "CCO",
             [unsupported],
             min_support=0,
             skip_unsupported=False,

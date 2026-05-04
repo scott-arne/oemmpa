@@ -342,5 +342,31 @@ TEST(TransformApplicationTest, RejectsMultiCutVariableTransform) {
     }
 }
 
+TEST(TransformApplicationTest, RejectsMultiCutHydrogenVariableTransform) {
+    const std::string transform = "C([*:1])[*:2]>>[*:1][H].O[*:2]";
+
+    try {
+        TransformApplicator::BuildVariableTransformSmirks(transform);
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "only single-cut single-atom variable transforms are supported: "
+            "C([*:1])[*:2]"
+        );
+    }
+
+    try {
+        TransformApplicator::ApplyVariableTransform("CCO", transform);
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "only single-cut single-atom variable transforms are supported: "
+            "C([*:1])[*:2]"
+        );
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA
