@@ -15,6 +15,7 @@ namespace {
 
 struct ComponentRecord {
     std::string smiles;
+    std::string hydrogen_smiles;
     unsigned int heavy_atom_count = 0;
     std::set<unsigned int> attachment_labels;
 };
@@ -198,7 +199,36 @@ std::string CanonicalSmiles(const OEChem::OEMolBase& mol) {
     return smiles;
 }
 
-std::vector<ComponentRecord> SplitComponents(const OEChem::OEMolBase& mol) {
+std::string ConstantWithHydrogenSmiles(const OEChem::OEMolBase& mol) {
+    OEChem::OEGraphMol hydrogen_mol(mol);
+    OEChem::OEAtomBase* dummy_atom = nullptr;
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = hydrogen_mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() != 0) {
+            continue;
+        }
+        if (atom->GetMapIdx() != 1 || dummy_atom != nullptr) {
+            return "";
+        }
+        dummy_atom = atom;
+    }
+
+    if (dummy_atom == nullptr) {
+        return "";
+    }
+
+    // MMPDB stores the one-cut constant as if the attachment point were
+    // capped by hydrogen, using normal molecule canonicalization.
+    dummy_atom->SetAtomicNum(1);
+    dummy_atom->SetMapIdx(0);
+    OEChem::OESuppressHydrogens(hydrogen_mol);
+    return OEChem::OEMolToSmiles(hydrogen_mol);
+}
+
+std::vector<ComponentRecord> SplitComponents(
+    const OEChem::OEMolBase& mol,
+    bool include_hydrogen_smiles
+) {
     std::vector<unsigned int> parts(mol.GetMaxAtomIdx(), 0);
     const unsigned int part_count = OEChem::OEDetermineComponents(mol, parts.data());
     OEChem::OEPartPred part_pred(parts.data(), static_cast<unsigned int>(parts.size()));
@@ -213,8 +243,11 @@ std::vector<ComponentRecord> SplitComponents(const OEChem::OEMolBase& mol) {
             continue;
         }
 
+        const std::string hydrogen_smiles =
+            include_hydrogen_smiles ? ConstantWithHydrogenSmiles(component) : "";
         components.push_back({
             CanonicalSmiles(component),
+            hydrogen_smiles,
             CountHeavyAtoms(component),
             CollectAttachmentLabels(component)
         });
@@ -310,6 +343,7 @@ void AddFragmentationRecord(
     const std::string& constant_smiles,
     const std::string& variable_smiles,
     unsigned int cut_count,
+    const std::string& constant_with_hydrogen_smiles,
     std::set<FragmentationKey>& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
@@ -331,7 +365,8 @@ void AddFragmentationRecord(
         molecule_id,
         constant_smiles,
         variable_smiles,
-        cut_count
+        cut_count,
+        constant_with_hydrogen_smiles
     );
 }
 
@@ -395,12 +430,12 @@ void AddFragmentationForCombination(
         return;
     }
 
-    const std::vector<ComponentRecord> components = SplitComponents(cut_mol);
+    const unsigned int cut_count = static_cast<unsigned int>(combination.size());
+    const std::vector<ComponentRecord> components = SplitComponents(cut_mol, cut_count == 1);
     if (components.size() < 2) {
         return;
     }
 
-    const unsigned int cut_count = static_cast<unsigned int>(combination.size());
     if (cut_count == 1) {
         const std::vector<size_t> constant_indices =
             SelectSingleCutConstantIndices(components, cut_count);
@@ -410,6 +445,7 @@ void AddFragmentationForCombination(
                 components[constant_index].smiles,
                 JoinOtherComponentSmiles(components, constant_index),
                 cut_count,
+                components[constant_index].hydrogen_smiles,
                 seen,
                 fragmentations
             );
@@ -429,6 +465,7 @@ void AddFragmentationForCombination(
         JoinOtherComponentSmiles(components, variable_index),
         components[variable_index].smiles,
         cut_count,
+        "",
         seen,
         fragmentations
     );

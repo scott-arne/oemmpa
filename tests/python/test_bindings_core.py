@@ -103,6 +103,29 @@ def test_cpp_analyzer_binding_accepts_smiles():
     assert len(pairs) > 0
 
 
+def test_fragmentation_binding_exposes_hydrogen_constant():
+    from openeye import oechem
+
+    package = import_worktree_oemmpa()
+    _oemmpa = package._oemmpa
+
+    mol = oechem.OEGraphMol()
+    assert oechem.OESmilesToMol(mol, "c1ccccc1O")
+    fragmenter = _oemmpa.Fragmenter()
+    fragmenter.SetMaxCuts(1)
+    benzene = _oemmpa.MoleculeRecord.FromSmiles(1, "c1ccccc1", "benzene")
+
+    fragmentations = fragmenter.Fragment(7, mol)
+
+    assert any(
+        fragmentation.GetConstantSmiles() == "[*:1]c1ccccc1"
+        and fragmentation.GetVariableSmiles() == "[*:1]O"
+        and fragmentation.GetConstantWithHydrogenSmiles()
+        == benzene.GetCanonicalSmiles()
+        for fragmentation in fragmentations
+    )
+
+
 def test_environment_fingerprint_helper_is_exposed_to_python():
     _oemmpa = import_worktree_raw_bindings()
 
