@@ -115,6 +115,22 @@ def test_environment_fingerprint_helper_is_exposed_to_python():
     assert ":1]" in fingerprints[0].GetSmarts()
 
 
+def test_query_environment_binding_is_exposed_to_python():
+    _oemmpa = import_worktree_raw_bindings()
+
+    environments = _oemmpa.ComputeQueryEnvironments("c1cccnc1O", 0, 2)
+
+    assert hasattr(_oemmpa, "QueryEnvironmentVector")
+    assert len(environments) > 0
+    assert {environment.GetRadius() for environment in environments} >= {0, 1, 2}
+    assert "[*:1]O" in {
+        environment.GetVariableSmiles()
+        for environment in environments
+    }
+    assert all(environment.GetSmarts() for environment in environments)
+    assert all(environment.GetPseudoSmiles() for environment in environments)
+
+
 def test_rule_environment_statistics_binding_is_exposed_to_python():
     package = import_worktree_oemmpa()
     if not package.duckdb_available():

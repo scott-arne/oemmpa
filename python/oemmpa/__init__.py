@@ -384,6 +384,8 @@ _RAW_BINDING_EXPORTS = (
     "MoleculeRecord",
     "OEMMPAError",
     "PairScoring",
+    "QueryEnvironment",
+    "QueryEnvironmentVector",
     "QueryOptions",
     "RuleEnvironmentStatistics",
     "RuleEnvironmentStatisticsVector",

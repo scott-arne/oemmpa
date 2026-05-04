@@ -81,6 +81,7 @@ set(OEMMPA_SOURCES
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
     src/EnvironmentFingerprint.cpp
+    src/QueryEnvironment.cpp
     src/FragmentationMethod.cpp
     src/DMCSSMethod.cpp
     src/Analyzer.cpp

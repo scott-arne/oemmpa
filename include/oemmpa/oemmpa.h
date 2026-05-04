@@ -27,6 +27,7 @@
 #include "oemmpa/OEMedChemMethod.h"
 #endif
 #include "oemmpa/PairScoring.h"
+#include "oemmpa/QueryEnvironment.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Transform.h"

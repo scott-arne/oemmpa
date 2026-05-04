@@ -2,6 +2,7 @@
 
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/QueryEnvironment.h"
 
 #include <string>
 #include <vector>
@@ -71,6 +72,35 @@ TEST(EnvironmentFingerprintTest, InvalidAttachmentLabelsRaiseFingerprintError) {
     );
     EXPECT_THROW(
         ComputeConstantEnvironmentFingerprints("c1ccccc1", 0, 2),
+        EnvironmentFingerprintError
+    );
+}
+
+TEST(QueryEnvironmentTest, ComputesQueryEnvironmentsFromInputSmiles) {
+    const std::vector<QueryEnvironment> environments =
+        ComputeQueryEnvironments("c1cccnc1O", 0, 2);
+
+    ASSERT_FALSE(environments.empty());
+
+    bool saw_hydroxy_variable = false;
+    for (const QueryEnvironment& environment : environments) {
+        EXPECT_GE(environment.GetRadius(), 0U);
+        EXPECT_LE(environment.GetRadius(), 2U);
+        EXPECT_FALSE(environment.GetConstantSmiles().empty());
+        EXPECT_FALSE(environment.GetVariableSmiles().empty());
+        EXPECT_FALSE(environment.GetSmarts().empty());
+        EXPECT_FALSE(environment.GetPseudoSmiles().empty());
+        if (environment.GetVariableSmiles() == "[*:1]O") {
+            saw_hydroxy_variable = true;
+        }
+    }
+
+    EXPECT_TRUE(saw_hydroxy_variable);
+}
+
+TEST(QueryEnvironmentTest, RejectsInvalidRadiusBounds) {
+    EXPECT_THROW(
+        ComputeQueryEnvironments("c1cccnc1O", 3, 2),
         EnvironmentFingerprintError
     );
 }
