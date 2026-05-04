@@ -26,11 +26,156 @@ _WHERE_PATTERN = re.compile(
     r"(?P<value>[0-9]+)\s*$"
 )
 
+_SCORE_ALIASES = {
+    "-min-radius": "smallest-radius",
+    " -min-radius": "smallest-radius",
+}
+_SUPPORTED_SCORES = {
+    "largest-radius",
+    "smallest-radius",
+    "largest-count",
+    "smallest-count",
+}
+_SUPPORTED_AGGREGATIONS = {"avg", "mean", "median"}
+
 
 def _optional(raw_row, has_name, getter_name):
     if not getattr(raw_row, has_name)():
         return None
     return getattr(raw_row, getter_name)()
+
+
+def _coerce_int(name, value):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _coerce_radius(name, value):
+    radius = _coerce_int(name, value)
+    if radius < 0 or radius > 5:
+        raise ValueError(f"{name} must be between 0 and 5")
+    return radius
+
+
+def _normalize_score(score):
+    score = str(score)
+    score = _SCORE_ALIASES.get(score, score)
+    if score not in _SUPPORTED_SCORES:
+        raise ValueError(f"unsupported score: {score}")
+    return score
+
+
+def _normalize_aggregation(aggregation):
+    aggregation = str(aggregation)
+    if aggregation not in _SUPPORTED_AGGREGATIONS:
+        raise ValueError(f"unsupported aggregation: {aggregation}")
+    return "avg" if aggregation == "mean" else aggregation
+
+
+@dataclass(frozen=True)
+class RuleSelectionOptions:
+    """Structured rule-environment selection options."""
+
+    property_name: str | None = None
+    min_radius: int = 0
+    max_radius: int = 5
+    min_pairs: int = 1
+    substructure_smarts: str | None = None
+    where: str | None = None
+    score: str = "largest-radius"
+    aggregation: str = "avg"
+
+    def __post_init__(self):
+        min_radius = _coerce_radius("min_radius", self.min_radius)
+        max_radius = _coerce_radius("max_radius", self.max_radius)
+        if min_radius > max_radius:
+            raise ValueError("min_radius must be less than or equal to max_radius")
+
+        min_pairs = _coerce_int("min_pairs", self.min_pairs)
+        if min_pairs < 0:
+            raise ValueError("min_pairs must be greater than or equal to zero")
+
+        property_name = (
+            None if self.property_name is None else str(self.property_name)
+        )
+        substructure_smarts = (
+            None
+            if self.substructure_smarts is None
+            else str(self.substructure_smarts)
+        )
+        where = None if self.where is None else str(self.where)
+
+        object.__setattr__(self, "property_name", property_name)
+        object.__setattr__(self, "min_radius", min_radius)
+        object.__setattr__(self, "max_radius", max_radius)
+        object.__setattr__(self, "min_pairs", min_pairs)
+        object.__setattr__(self, "substructure_smarts", substructure_smarts)
+        object.__setattr__(self, "where", where)
+        object.__setattr__(self, "score", _normalize_score(self.score))
+        object.__setattr__(
+            self,
+            "aggregation",
+            _normalize_aggregation(self.aggregation),
+        )
+
+    @property
+    def normalized_aggregation(self):
+        """Return aggregation with aliases resolved."""
+        return self.aggregation
+
+
+def _selection_filter_values(
+    *,
+    selection=None,
+    property_name=None,
+    min_radius=None,
+    max_radius=None,
+    min_pairs=None,
+    substructure=None,
+    where=None,
+    apply_defaults=False,
+):
+    if selection is not None and not isinstance(selection, RuleSelectionOptions):
+        raise TypeError("selection must be a RuleSelectionOptions instance")
+
+    if selection is None:
+        values = {
+            "property_name": None,
+            "min_radius": None,
+            "max_radius": None,
+            "min_pairs": None,
+            "substructure": None,
+            "where": None,
+        }
+        if apply_defaults:
+            selection = RuleSelectionOptions()
+
+    if selection is not None:
+        values = {
+            "property_name": selection.property_name,
+            "min_radius": selection.min_radius,
+            "max_radius": selection.max_radius,
+            "min_pairs": selection.min_pairs,
+            "substructure": selection.substructure_smarts,
+            "where": selection.where,
+        }
+
+    overrides = {
+        "property_name": property_name,
+        "min_radius": min_radius,
+        "max_radius": max_radius,
+        "min_pairs": min_pairs,
+        "substructure": substructure,
+        "where": where,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            values[key] = value
+    return values
 
 
 @dataclass(frozen=True)
@@ -125,6 +270,7 @@ class RuleEnvironmentStatisticsCollection(list):
     def filter(
         self,
         *,
+        selection=None,
         property_name=None,
         transform=None,
         min_radius=None,
@@ -134,24 +280,37 @@ class RuleEnvironmentStatisticsCollection(list):
         where=None,
     ):
         """Return rows matching the requested structured filters."""
+        values = _selection_filter_values(
+            selection=selection,
+            property_name=property_name,
+            min_radius=min_radius,
+            max_radius=max_radius,
+            min_pairs=min_pairs,
+            substructure=substructure,
+            where=where,
+        )
         rows = self
+        property_name = values["property_name"]
         if property_name is not None:
-            property_name = str(property_name)
             rows = [row for row in rows if row.property_name == property_name]
         if transform is not None:
             transform = str(transform)
             rows = [row for row in rows if row.transform == transform]
+        min_radius = values["min_radius"]
         if min_radius is not None:
-            min_radius = int(min_radius)
+            min_radius = _coerce_radius("min_radius", min_radius)
             rows = [row for row in rows if row.radius >= min_radius]
+        max_radius = values["max_radius"]
         if max_radius is not None:
-            max_radius = int(max_radius)
+            max_radius = _coerce_radius("max_radius", max_radius)
             rows = [row for row in rows if row.radius <= max_radius]
+        min_pairs = values["min_pairs"]
         if min_pairs is not None:
-            min_pairs = int(min_pairs)
-            if min_pairs < 1:
-                raise ValueError("min_pairs must be greater than or equal to one")
+            min_pairs = _coerce_int("min_pairs", min_pairs)
+            if min_pairs < 0:
+                raise ValueError("min_pairs must be greater than or equal to zero")
             rows = [row for row in rows if row.count >= min_pairs]
+        substructure = values["substructure"]
         if substructure is not None:
             substructure = str(substructure)
             rows = [
@@ -159,6 +318,7 @@ class RuleEnvironmentStatisticsCollection(list):
                 for row in rows
                 if substructure in row.from_smiles or substructure in row.to_smiles
             ]
+        where = values["where"]
         if where is not None:
             rows = _filter_where(rows, where)
         return RuleEnvironmentStatisticsCollection(rows)
@@ -294,15 +454,16 @@ def predict_rule_environment_delta(
     statistics,
     transform,
     *,
+    selection=None,
     property_name=None,
-    aggregation="avg",
+    aggregation=None,
     value=None,
-    min_radius=0,
-    max_radius=5,
-    min_pairs=1,
+    min_radius=None,
+    max_radius=None,
+    min_pairs=None,
     substructure=None,
     where=None,
-    score="largest-radius",
+    score=None,
 ):
     """Predict a property delta from stored rule-environment statistics.
 
@@ -324,27 +485,49 @@ def predict_rule_environment_delta(
     if not isinstance(statistics, RuleEnvironmentStatisticsCollection):
         statistics = RuleEnvironmentStatisticsCollection(statistics)
 
-    rows = statistics.filter(
+    values = _selection_filter_values(
+        selection=selection,
         property_name=property_name,
-        transform=transform,
         min_radius=min_radius,
         max_radius=max_radius,
         min_pairs=min_pairs,
         substructure=substructure,
         where=where,
+        apply_defaults=True,
+    )
+    if selection is not None:
+        selected_score = selection.score
+        selected_aggregation = selection.aggregation
+    else:
+        selected_score = RuleSelectionOptions().score
+        selected_aggregation = RuleSelectionOptions().aggregation
+    if score is not None:
+        selected_score = _normalize_score(score)
+    if aggregation is not None:
+        selected_aggregation = _normalize_aggregation(aggregation)
+
+    rows = statistics.filter(
+        property_name=values["property_name"],
+        transform=transform,
+        min_radius=values["min_radius"],
+        max_radius=values["max_radius"],
+        min_pairs=values["min_pairs"],
+        substructure=values["substructure"],
+        where=values["where"],
     )
     if not rows:
         raise KeyError(transform)
 
-    selected = max(rows, key=lambda row: _score_key(row, str(score)))
+    selected = max(rows, key=lambda row: _score_key(row, selected_score))
     return RuleEnvironmentPredictionResult.from_statistics(
         selected,
-        aggregation,
+        selected_aggregation,
         value=value,
     )
 
 
 __all__ = [
+    "RuleSelectionOptions",
     "RuleEnvironmentPredictionResult",
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",

@@ -449,6 +449,7 @@ from ._analytics import (
 )
 from ._rule_environment import (
     RuleEnvironmentPredictionResult,
+    RuleSelectionOptions,
     RuleEnvironmentStatisticsCollection,
     RuleEnvironmentStatisticsResult,
     predict_rule_environment_delta,
@@ -478,6 +479,7 @@ __all__ = [
     "PredictionResult",
     "RowError",
     "RuleEnvironmentPredictionResult",
+    "RuleSelectionOptions",
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",
     "TransformCollection",

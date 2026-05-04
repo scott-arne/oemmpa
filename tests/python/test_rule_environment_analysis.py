@@ -83,8 +83,58 @@ def test_rule_environment_statistics_collection_supports_safe_where_filters():
         rows.filter(where="count + radius > 1")
 
 
+def test_rule_selection_options_validate_and_filter_like_keywords():
+    from oemmpa import RuleSelectionOptions
+
+    store = _store_with_toluene_phenol_statistics()
+    rows = store.rule_environment_statistics("pIC50")
+    selection = RuleSelectionOptions(
+        property_name="pIC50",
+        min_radius=2,
+        max_radius=4,
+        min_pairs=0,
+        where="count >= 1",
+        score=" -min-radius",
+    )
+
+    selected_rows = rows.filter(
+        selection=selection,
+        transform="[*:1]C>>[*:1]O",
+    )
+    keyword_rows = rows.filter(
+        property_name="pIC50",
+        transform="[*:1]C>>[*:1]O",
+        min_radius=2,
+        max_radius=4,
+        min_pairs=0,
+        where="count >= 1",
+    )
+
+    assert selected_rows == keyword_rows
+    assert {row.radius for row in selected_rows} == {2, 3, 4}
+    assert selection.score == "smallest-radius"
+    assert selection.normalized_aggregation == "avg"
+
+
+def test_rule_selection_options_reject_invalid_values():
+    from oemmpa import RuleSelectionOptions
+
+    with pytest.raises(ValueError, match="min_radius must be between 0 and 5"):
+        RuleSelectionOptions(min_radius=-1)
+    with pytest.raises(ValueError, match="max_radius must be between 0 and 5"):
+        RuleSelectionOptions(max_radius=6)
+    with pytest.raises(ValueError, match="min_radius must be less than or equal"):
+        RuleSelectionOptions(min_radius=4, max_radius=2)
+    with pytest.raises(ValueError, match="min_pairs must be greater than or equal"):
+        RuleSelectionOptions(min_pairs=-1)
+    with pytest.raises(ValueError, match="unsupported aggregation"):
+        RuleSelectionOptions(aggregation="mode")
+    with pytest.raises(ValueError, match="unsupported score"):
+        RuleSelectionOptions(score="BAD_VARIABLE")
+
+
 def test_predict_rule_environment_delta_selects_environment_row():
-    from oemmpa import predict_rule_environment_delta
+    from oemmpa import RuleSelectionOptions, predict_rule_environment_delta
 
     store = _store_with_toluene_phenol_statistics()
     rows = store.rule_environment_statistics("pIC50")
@@ -125,6 +175,20 @@ def test_predict_rule_environment_delta_selects_environment_row():
         score="smallest-radius",
     )
     assert radius_two_prediction.radius == 2
+
+    selection_prediction = predict_rule_environment_delta(
+        rows,
+        "[*:1]C>>[*:1]O",
+        selection=RuleSelectionOptions(
+            property_name="pIC50",
+            min_radius=1,
+            max_radius=3,
+            score="-min-radius",
+            aggregation="mean",
+        ),
+    )
+    assert selection_prediction.radius == 1
+    assert selection_prediction.aggregation == "avg"
 
     with pytest.raises(KeyError, match=r"\[\*:1\]C>>\[\*:1\]O"):
         predict_rule_environment_delta(
