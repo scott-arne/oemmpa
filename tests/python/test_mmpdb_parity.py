@@ -305,6 +305,30 @@ def test_mmpdb_generate_min_pairs_matches_collection_generation_support_filter()
     assert observed == expected
 
 
+def test_mmpdb_generate_multi_cut_hydrogen_boundary_is_explicitly_unsupported():
+    from oemmpa import _oemmpa, build_variable_transform_smirks, generate_products
+
+    transform = "C([*:1])[*:2]>>[*:1][H].O[*:2]"
+    error = (
+        r"variable transform components must be connected: "
+        r"\[\*:1\]\[H\]\.O\[\*:2\]"
+    )
+
+    with pytest.raises(ValueError, match=error):
+        build_variable_transform_smirks(transform)
+
+    unsupported = _oemmpa.Transform(transform)
+    assert generate_products("CCO", [unsupported], min_support=0) == []
+
+    with pytest.raises(ValueError, match=error):
+        generate_products(
+            "CCO",
+            [unsupported],
+            min_support=0,
+            skip_unsupported=False,
+        )
+
+
 def test_mmpdb_reference_mw_statistics_match_supported_transform_rows():
     from oemmpa import compute_transform_statistics
 
