@@ -167,6 +167,52 @@ def test_generate_products_filters_transform_collection_by_support():
     ]
 
 
+def test_generate_products_deduplicates_equivalent_attachment_matches():
+    from oemmpa import _oemmpa, generate_products
+
+    transform = _oemmpa.Transform("C[*:1]>>O[*:1]")
+
+    products = generate_products(
+        "Cc1ccc(C)cc1",
+        [transform],
+        min_support=0,
+    )
+
+    assert products.to_dicts() == [
+        {
+            "smiles": "Cc1ccc(cc1)O",
+            "transform": "C[*:1]>>O[*:1]",
+            "support_count": 0,
+        }
+    ]
+
+
+def test_generate_products_keeps_distinct_transform_provenance_for_same_product():
+    from oemmpa import _oemmpa, generate_products
+
+    products = generate_products(
+        "Cc1ccccc1",
+        [
+            _oemmpa.Transform("C[*:1]>>O[*:1]"),
+            _oemmpa.Transform("[*:1]C>>[*:1]O"),
+        ],
+        min_support=0,
+    )
+
+    assert products.to_dicts() == [
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "C[*:1]>>O[*:1]",
+            "support_count": 0,
+        },
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "support_count": 0,
+        },
+    ]
+
+
 def test_generate_products_can_use_selected_rule_environments():
     from oemmpa import (
         Analyzer,

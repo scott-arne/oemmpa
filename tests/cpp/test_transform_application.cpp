@@ -227,6 +227,71 @@ TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithSuppo
     EXPECT_EQ(products.front().GetSupportCount(), 2U);
 }
 
+TEST(TransformApplicationTest, GeneratesOneProductForEquivalentAttachmentMatches) {
+    Transform methyl_to_hydroxy("C[*:1]>>O[*:1]");
+    methyl_to_hydroxy.AddPair(MakeSingleCutPair(
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "C[*:1]",
+        "O[*:1]"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(1);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Cc1ccc(C)cc1",
+            {methyl_to_hydroxy},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "Cc1ccc(cc1)O");
+    EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
+    EXPECT_EQ(products.front().GetSupportCount(), 1U);
+}
+
+TEST(TransformApplicationTest, KeepsDistinctTransformProvenanceForSameProduct) {
+    Transform left_ordered("C[*:1]>>O[*:1]");
+    left_ordered.AddPair(MakeSingleCutPair(
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "C[*:1]",
+        "O[*:1]"
+    ));
+
+    Transform right_ordered("[*:1]C>>[*:1]O");
+    right_ordered.AddPair(MakeSingleCutPair(
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "[*:1]C",
+        "[*:1]O"
+    ));
+
+    GenerationOptions options;
+    options.SetMinSupport(1);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Cc1ccccc1",
+            {left_ordered, right_ordered},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 2U);
+    EXPECT_EQ(products[0].GetSmiles(), "c1ccc(cc1)O");
+    EXPECT_EQ(products[0].GetTransformSmiles(), "C[*:1]>>O[*:1]");
+    EXPECT_EQ(products[1].GetSmiles(), "c1ccc(cc1)O");
+    EXPECT_EQ(products[1].GetTransformSmiles(), "[*:1]C>>[*:1]O");
+}
+
 TEST(TransformApplicationTest, GeneratesMMPDBReferenceProductsWithMinPairsStyleFiltering) {
     Transform hydroxy_to_hydrogen("[*:1]O>>[*:1][H]");
     for (unsigned int pair_index = 0; pair_index < 4; ++pair_index) {
