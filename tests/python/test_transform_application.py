@@ -304,6 +304,124 @@ def test_generate_products_can_use_selected_rule_environments():
     assert products_from_matches.to_dicts() == products.to_dicts()
 
 
+def test_generate_products_from_rule_environments_supports_multi_atom_transform():
+    from oemmpa import (
+        Analyzer,
+        DuckDBStore,
+        RuleSelectionOptions,
+        find_transform_environments,
+        generate_products_from_rule_environments,
+    )
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("CCc1ccccc1", id="ethylbenzene")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("ethylbenzene", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.0)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    selection = RuleSelectionOptions(property_name="pIC50", min_radius=2)
+    matches = find_transform_environments(
+        store,
+        transform="[*:1]CC>>[*:1]O",
+        selection=selection,
+    )
+
+    products = generate_products_from_rule_environments(
+        "CCc1ccccc1",
+        matches,
+    )
+
+    assert len(matches) == 1
+    assert matches[0].statistics.radius == 5
+    assert products.to_dicts() == [
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]CC>>[*:1]O",
+            "support_count": 1,
+            "property": "pIC50",
+            "predicted_delta": pytest.approx(1.0),
+            "count": 1,
+            "std": None,
+            "p_value": None,
+        }
+    ]
+
+
+def test_generate_products_from_rule_environments_supports_multi_cut_transform():
+    from oemmpa import (
+        Analyzer,
+        DuckDBStore,
+        RuleSelectionOptions,
+        find_transform_environments,
+        generate_products_from_rule_environments,
+        _oemmpa,
+    )
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Nc1ccccc1O", id="aminophenol")
+    analyzer.add_molecule("Nc1ccncc1O", id="aminopyridinol")
+    analyzer.add_property("aminophenol", "pIC50", 6.0)
+    analyzer.add_property("aminopyridinol", "pIC50", 7.0)
+    analyzer.analyze()
+
+    scoring = _oemmpa.ScoringOptions()
+    scoring.SetMode(_oemmpa.ScoringMode_KeepAll)
+    options = _oemmpa.QueryOptions()
+    options.SetSymmetric(False)
+    options.SetScoringOptions(scoring)
+
+    store = DuckDBStore()
+    analyzer.raw.SaveTo(store.raw, options)
+    store.raw.RefreshRuleEnvironmentStatistics()
+    transform = "[*:1]c1ccccc1[*:2]>>[*:1]c1ccncc1[*:2]"
+    selection = RuleSelectionOptions(property_name="pIC50", min_radius=1)
+    matches = find_transform_environments(
+        store,
+        transform=transform,
+        selection=selection,
+    )
+
+    products = generate_products_from_rule_environments(
+        "Nc1ccccc1O",
+        store,
+        transform=transform,
+        selection=selection,
+    )
+    products_from_matches = generate_products_from_rule_environments(
+        "Nc1ccccc1O",
+        matches,
+    )
+
+    assert len(matches) == 1
+    assert matches[0].statistics.radius == 5
+    assert products.to_dicts() == products_from_matches.to_dicts()
+    assert products.to_dicts() == [
+        {
+            "smiles": "c1cncc(c1N)O",
+            "transform": transform,
+            "support_count": 1,
+            "property": "pIC50",
+            "predicted_delta": pytest.approx(1.0),
+            "count": 1,
+            "std": None,
+            "p_value": None,
+        },
+        {
+            "smiles": "c1cncc(c1O)N",
+            "transform": transform,
+            "support_count": 1,
+            "property": "pIC50",
+            "predicted_delta": pytest.approx(1.0),
+            "count": 1,
+            "std": None,
+            "p_value": None,
+        },
+    ]
+
+
 def test_generate_products_can_reject_unsupported_transform_collection_entries():
     from oemmpa import _oemmpa, generate_products
 

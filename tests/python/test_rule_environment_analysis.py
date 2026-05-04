@@ -198,6 +198,39 @@ def test_rule_environment_statistics_collection_has_explicit_rule_views():
         rows.filter(rule_view="raw-sql")
 
 
+def test_rule_environment_matches_default_to_mmpdb_compatible_product_view():
+    from oemmpa import (
+        RuleSelectionOptions,
+        find_transform_environments,
+        generate_products_from_rule_environments,
+    )
+
+    store = _store_with_openeye_native_toluene_phenol_statistics()
+    default_selection = RuleSelectionOptions(property_name="pIC50")
+    native_selection = RuleSelectionOptions(
+        property_name="pIC50",
+        rule_view="openeye-native",
+    )
+
+    default_matches = find_transform_environments(store, selection=default_selection)
+    native_matches = find_transform_environments(store, selection=native_selection)
+    default_products = generate_products_from_rule_environments(
+        "Cc1ccccc1",
+        default_matches,
+    )
+    native_products = generate_products_from_rule_environments(
+        "Cc1ccccc1",
+        native_matches,
+    )
+
+    assert {match.transform for match in default_matches} == {"[*:1]C>>[*:1]O"}
+    assert {match.transform for match in native_matches} == {
+        "[*:1]C>>[*:1]O",
+        "[*:1]O>>[*:1]C",
+    }
+    assert default_products.to_dicts() == native_products.to_dicts()
+
+
 def test_rule_environment_statistics_collection_supports_safe_where_filters():
     store = _store_with_toluene_phenol_statistics()
     rows = store.rule_environment_statistics("pIC50")
