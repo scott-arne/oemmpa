@@ -225,6 +225,71 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
+## Querying Stored Rule Environments
+
+DuckDB-backed stores keep the local environment around each observed change.
+That makes it possible to ask a more chemical question than "which transforms
+exist?" For example, you can start from a query molecule and find only the
+stored transformations whose changing group and local environment match the
+query.
+
+```python
+from oemmpa import (
+    Analyzer,
+    DuckDBStore,
+    RuleSelectionOptions,
+    find_transform_environments,
+    predict_property_delta,
+)
+
+analyzer = Analyzer()
+analyzer.add_molecule("Cc1ccccc1", id="tol")
+analyzer.add_molecule("Oc1ccccc1", id="phenol")
+analyzer.add_property("tol", "pIC50", 6.0)
+analyzer.add_property("phenol", "pIC50", 7.5)
+analyzer.analyze()
+
+store = DuckDBStore()
+store.save_analyzer(analyzer)
+
+matches = find_transform_environments(
+    store,
+    "Cc1ccccc1",
+    selection=RuleSelectionOptions(
+        property_name="pIC50",
+        min_radius=0,
+        max_radius=2,
+        substructure_smarts="O",
+    ),
+)
+
+for match in matches:
+    print(match.statistics.transform, match.statistics.avg)
+```
+
+You can also compare a query molecule with a reference molecule and ask for
+the predicted property change between them. The result records the selected
+rule-environment row, so supporting matched pairs can be recovered from the
+store.
+
+```python
+prediction = predict_property_delta(
+    store,
+    smiles="Oc1ccccc1",
+    reference="Cc1ccccc1",
+    property_name="pIC50",
+    value=6.0,
+)
+
+print(prediction.predicted_delta)
+print(prediction.predicted_value)
+
+supporting_pairs = store.pairs_for_rule_environment(
+    prediction.rule_environment_id
+)
+print(supporting_pairs.to_dicts())
+```
+
 ## Command-Line Use
 
 The `oemmpa-cli` command works with the same SMILES and property files shown

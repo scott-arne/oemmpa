@@ -246,6 +246,21 @@ property name, variable transformation, environment radius, SMARTS,
 pseudosmiles, and aggregate values. `GetPairsForRuleEnvironment()` returns the
 matched pairs that contributed to a selected rule environment.
 
+`ComputeQueryEnvironments()` computes the same local environment descriptors
+from an input SMILES string. Python uses this to match a query molecule or a
+query/reference molecule pair against stored rule environments. The C++ helper
+is also useful when embedding OEMMPA in an application that wants to keep its
+own storage layer.
+
+```cpp
+std::vector<OEMMPA::QueryEnvironment> environments =
+    OEMMPA::ComputeQueryEnvironments("Oc1ccccc1", 0, 2);
+```
+
+`SmilesContainsSubstructure()` applies a SMARTS query to a SMILES string. It is
+used by Python rule-environment filtering so `substructure_smarts` means a
+chemical SMARTS match rather than a text search.
+
 MMPDB keeps a separate fragment database, then stores the final matched-pair
 database in `compound`, `rule_smiles`,
 `rule`, `environment_fingerprint`, `rule_environment`, `constant_smiles`, and
@@ -283,6 +298,11 @@ manual SMILES conversion.
 The Python `Analyzer` adds convenient IDs, loading reports, result wrappers,
 and dataframe helpers around the C++ analyzer.
 
+Python also adds chemistry-centered helpers above the DuckDB store. They can
+find stored transformations compatible with an input molecule and predict a
+property delta from a query/reference molecule pair while retaining the
+selected rule-environment row for pair inspection.
+
 ## Current Scope
 
 The fragmentation, DMCSS, and initial OEMedChem methods are available now.
@@ -292,6 +312,8 @@ storage can save molecules, properties, and pairs; load SMILES and property
 files; refresh rule-environment property statistics; and query stored pairs,
 transformations, and rule-environment statistics. Python transformation
 statistics, rule-environment prediction helpers, product generation, and
-file-based CLI commands are available on top of the common result objects. A
-separate fragment database, input-SMILES environment matching, multi-atom
-product generation, and C++ analytics APIs remain later work.
+file-based CLI commands are available on top of the common result objects.
+Input-SMILES environment matching, SMARTS-filtered rule selection, and
+reference-based property prediction are available through the Python API. A
+separate fragment database, multi-atom product generation, and C++ analytics
+APIs remain later work.
