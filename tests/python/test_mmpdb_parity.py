@@ -80,19 +80,19 @@ MMPDB_PHASE9_REFERENCE_STATS_BY_PROPERTY = {
 
 OEMMPA_PHASE9_OBSERVED_COUNTS = {
     "compound": 9,
-    "rule": 86,
-    "pair": 588,
-    "environment_fingerprint": 24,
-    "rule_environment": 570,
-    "rule_environment_statistics": 938,
-    "constant_smiles": 8,
+    "rule": 92,
+    "pair": 672,
+    "environment_fingerprint": 29,
+    "rule_environment": 630,
+    "rule_environment_statistics": 1054,
+    "constant_smiles": 10,
     "property_name": 2,
     "compound_property": 17,
 }
 
 OEMMPA_PHASE9_OBSERVED_STATS_BY_PROPERTY = {
-    "MP": 368,
-    "MW": 570,
+    "MP": 424,
+    "MW": 630,
 }
 
 
@@ -485,7 +485,7 @@ def test_mmpdb_phase9_count_surplus_is_unique_openeye_native_rows():
 
     attachment_classes = _statistics_attachment_classes(store)
     assert attachment_classes == {
-        "single_attachment": 844,
+        "single_attachment": 960,
         "multi_attachment": 94,
     }
 
@@ -575,9 +575,11 @@ def test_mmpdb_phase10_query_environment_matching_uses_source_smiles_context():
 
     assert set(by_transform) == {
         "[*:1]O>>[*:1]Cl",
+        "[*:1]O>>[*:1][H]",
         "[*:1]O>>[*:1]N",
     }
     assert by_transform["[*:1]O>>[*:1]Cl"].avg == pytest.approx(18.5)
+    assert by_transform["[*:1]O>>[*:1][H]"].avg == pytest.approx(-16.0)
     assert by_transform["[*:1]O>>[*:1]N"].avg == pytest.approx(-1.0)
 
     assert find_transform_environments(
@@ -603,10 +605,19 @@ def test_mmpdb_phase10_query_environment_matching_applies_selection_options():
         ),
     )
 
-    assert len(matches) == 1
-    assert matches[0].statistics.transform == "[*:1]O>>[*:1]N"
-    assert matches[0].statistics.radius == 0
-    assert matches[0].statistics.count == 3
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert set(by_transform) == {
+        "[*:1]O>>[*:1][H]",
+        "[*:1]O>>[*:1]N",
+    }
+    assert by_transform["[*:1]O>>[*:1][H]"].radius == 0
+    assert by_transform["[*:1]O>>[*:1][H]"].count == 4
+    assert by_transform["[*:1]O>>[*:1]N"].radius == 0
+    assert by_transform["[*:1]O>>[*:1]N"].count == 3
 
 
 def test_mmpdb_phase10_smarts_substructure_filtering_uses_target_fragment():
@@ -698,17 +709,86 @@ def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     assert pairs[0].property_delta("MW") == pytest.approx(-18.5)
 
 
-def test_mmpdb_hydrogen_deletion_transform_is_currently_out_of_scope():
-    from oemmpa import compute_transform_statistics
+def test_mmpdb_hydrogen_deletion_matches_reference_query_at_radius_one():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
 
-    analyzer = _mmpdb_reference_analyzer(property_names=("MW",))
+    store = _mmpdb_reference_store(property_names=("MW",))
 
-    statistics = compute_transform_statistics(analyzer.transforms(), "MW")
+    matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
 
-    # MMPDB emits an O>>H deletion transform for this fixture. OEMMPA's current
-    # observed-transform support is restricted to explicit non-hydrogen
-    # single-atom substitutions.
-    assert statistics.get("[*:1]O>>[*:1][H]") is None
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    assert hydrogen.radius == 1
+    assert hydrogen.avg == pytest.approx(-16.0)
+
+
+def test_mmpdb_hydrogen_deletion_does_not_match_reference_query_at_radius_two():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=2,
+            max_radius=2,
+        ),
+    )
+
+    assert {
+        match.statistics.transform
+        for match in matches
+    }.isdisjoint({"[*:1]O>>[*:1][H]"})
+
+
+def test_mmpdb_hydrogen_deletion_mp_delta_matches_reference_fixture_when_present():
+    store = _mmpdb_reference_store(property_names=("MP",))
+    rows = store.rule_environment_statistics("MP").filter(
+        transform="[*:1]O>>[*:1][H]",
+        min_radius=1,
+        max_radius=1,
+    )
+    if not rows:
+        pytest.skip("MMPDB reference fixture does not provide MP for O>>H")
+
+    assert rows[0].avg == pytest.approx(-93.0)
+
+
+def test_mmpdb_hydrogen_reference_prediction_matches_deletion_delta():
+    from oemmpa import RuleSelectionOptions, predict_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    prediction = predict_property_delta(
+        store,
+        smiles="c1cccnc1O",
+        reference="c1ccncc1",
+        property_name="MW",
+        value=20.1,
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+            min_pairs=1,
+        ),
+    )
+
+    assert prediction.transform == "[*:1][H]>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(16.0)
+    assert prediction.predicted_value == pytest.approx(36.1)
 
 
 def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():

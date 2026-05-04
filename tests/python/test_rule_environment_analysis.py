@@ -24,6 +24,21 @@ def _store_with_toluene_phenol_statistics():
     return store
 
 
+def _store_with_pyridinol_hydrogen_statistics():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("c1cccnc1O", id="pyridinol")
+    analyzer.add_molecule("c1ccncc1", id="pyridine")
+    analyzer.add_property("pyridinol", "MW", 95.0)
+    analyzer.add_property("pyridine", "MW", 79.0)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    return store
+
+
 def test_store_returns_wrapped_rule_environment_statistics():
     store = _store_with_toluene_phenol_statistics()
 
@@ -175,6 +190,32 @@ def test_find_transform_environments_matches_query_environment_rows():
     assert matches[0].statistics.transform == "[*:1]C>>[*:1]O"
     assert matches[0].statistics.radius == 0
     assert matches[0].statistics.avg == pytest.approx(1.5)
+
+
+def test_find_transform_environments_matches_hydrogen_deletion_rows():
+    from oemmpa import RuleSelectionOptions, find_transform_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_transform_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert "[*:1]O>>[*:1][H]" in by_transform
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    assert hydrogen.radius == 1
+    assert hydrogen.count == 1
+    assert hydrogen.avg == pytest.approx(-16.0)
 
 
 def test_predict_property_delta_matches_query_and_reference_environments():

@@ -37,6 +37,7 @@ _SUPPORTED_SCORES = {
     "smallest-count",
 }
 _SUPPORTED_AGGREGATIONS = {"avg", "mean", "median"}
+_HYDROGEN_VARIABLE_SMILES = "[*:1][H]"
 
 
 def _optional(raw_row, has_name, getter_name):
@@ -463,6 +464,19 @@ def _environment_key(row):
     )
 
 
+def _implicit_hydrogen_environment(row):
+    """Build an environment placeholder for implicit-hydrogen transforms."""
+    return QueryEnvironmentResult(
+        constant_smiles="",
+        variable_smiles=_HYDROGEN_VARIABLE_SMILES,
+        cut_count=1,
+        radius=row.radius,
+        smarts=row.smarts,
+        pseudosmiles=row.pseudosmiles,
+        parent_smarts=row.parent_smarts,
+    )
+
+
 def find_transform_environments(
     store,
     smiles,
@@ -804,7 +818,8 @@ def predict_property_delta(
     possible_transforms = []
     for query_environment in query_environments:
         query_key = _environment_key(query_environment)
-        for reference_environment in references_by_key.get(query_key, []):
+        reference_matches = references_by_key.get(query_key, [])
+        for reference_environment in reference_matches:
             transform = (
                 reference_environment.variable_smiles
                 + ">>"
@@ -817,6 +832,24 @@ def predict_property_delta(
                 if _environment_key(row) != query_key:
                     continue
                 candidates.append((row, query_environment, reference_environment))
+        if reference_matches:
+            continue
+        for row in statistics:
+            if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if row.to_smiles != query_environment.variable_smiles:
+                continue
+            if _environment_key(row) != query_key:
+                continue
+            transform = row.transform
+            possible_transforms.append(transform)
+            candidates.append(
+                (
+                    row,
+                    query_environment,
+                    _implicit_hydrogen_environment(row),
+                )
+            )
 
     if not candidates:
         if possible_transforms:
