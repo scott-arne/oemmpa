@@ -96,14 +96,44 @@ def test_apply_variable_transform_converts_and_applies_multi_atom_transform():
     ]
 
 
+def test_apply_variable_transform_converts_and_applies_two_cut_transform():
+    from oemmpa import apply_variable_transform
+
+    assert apply_variable_transform(
+        "c1ccc(CCc2ccccc2)cc1",
+        "[*:1]CC[*:2]>>[*:1]O[*:2]",
+    ) == ["c1ccc(cc1)Oc2ccccc2"]
+    assert apply_variable_transform(
+        "c1ccc(CCc2ccccc2)cc1",
+        "[*:2]CC[*:1]>>[*:1]O[*:2]",
+    ) == ["c1ccc(cc1)Oc2ccccc2"]
+
+
+def test_apply_variable_transform_converts_and_applies_three_cut_transform():
+    from oemmpa import apply_variable_transform
+
+    assert apply_variable_transform(
+        "C(c1ccccc1)(c2ccccc2)c3ccccc3",
+        "C([*:1])([*:2])[*:3]>>N([*:1])([*:2])[*:3]",
+    ) == ["c1ccc(cc1)N(c2ccccc2)c3ccccc3"]
+
+
+def test_build_variable_transform_smirks_rejects_mismatched_attachment_labels():
+    from oemmpa import build_variable_transform_smirks
+
+    with pytest.raises(
+        ValueError,
+        match=r"source and target variable attachment labels must match: "
+        r"\[\*:1\]CC\[\*:2\]>>\[\*:1\]O\[\*:3\]",
+    ):
+        build_variable_transform_smirks("[*:1]CC[*:2]>>[*:1]O[*:3]")
+
+
 def test_apply_variable_transform_rejects_multi_cut_hydrogen_transform():
     from oemmpa import apply_variable_transform, build_variable_transform_smirks
 
     transform = "C([*:1])[*:2]>>[*:1][H].O[*:2]"
-    error = (
-        r"only single-cut single-atom variable transforms are supported: "
-        r"C\(\[\*:1\]\)\[\*:2\]"
-    )
+    error = r"variable transform components must be connected: \[\*:1\]\[H\]\.O\[\*:2\]"
 
     with pytest.raises(ValueError, match=error):
         build_variable_transform_smirks(transform)
@@ -281,8 +311,8 @@ def test_generate_products_can_reject_unsupported_transform_collection_entries()
 
     with pytest.raises(
         ValueError,
-        match=r"only single-cut single-atom variable transforms are supported: "
-        r"C\(\[\*:1\]\)\[\*:2\]",
+        match=r"source and target variable attachment labels must match: "
+        r"C\(\[\*:1\]\)\[\*:2\]>>O\[\*:1\]",
     ):
         generate_products(
             "CCO",
@@ -301,8 +331,8 @@ def test_generate_products_keeps_multi_cut_hydrogen_transform_unsupported():
 
     with pytest.raises(
         ValueError,
-        match=r"only single-cut single-atom variable transforms are supported: "
-        r"C\(\[\*:1\]\)\[\*:2\]",
+        match=r"variable transform components must be connected: "
+        r"\[\*:1\]\[H\]\.O\[\*:2\]",
     ):
         generate_products(
             "CCO",

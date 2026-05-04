@@ -3,9 +3,11 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 
+#include <map>
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace OEMMPA {
 namespace {
@@ -57,100 +59,152 @@ std::pair<std::string, std::string> split_variable_transform(
     return {source_variable, target_variable};
 }
 
-OEChem::OEAtomBase* find_single_attachment_atom(
-    OEChem::OEMolBase& mol,
-    const std::string& variable_smiles
-) {
-    OEChem::OEAtomBase* attachment_atom = nullptr;
-    unsigned int attachment_count = 0;
-
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() == 1) {
-            attachment_atom = &*atom;
-            ++attachment_count;
-            continue;
-        }
-
-        if (atom->GetAtomicNum() == 0) {
-            throw InvalidQueryError(
-                "only single-cut single-atom variable transforms are supported: " +
-                variable_smiles
-            );
-        }
-    }
-
-    if (attachment_count != 1) {
-        throw InvalidQueryError(
-            "only single-cut single-atom variable transforms are supported: " +
-            variable_smiles
-        );
-    }
-    return attachment_atom;
+std::string unsupported_variable_message(const std::string& variable_smiles) {
+    return "only connected variable transforms with one to three attachment "
+        "labels are supported: " + variable_smiles;
 }
 
-OEChem::OEAtomBase* find_single_anchor_atom(
-    OEChem::OEMolBase& mol,
-    const OEChem::OEAtomBase* attachment_atom,
+void ensure_connected_variable(
+    const OEChem::OEMolBase& mol,
     const std::string& variable_smiles
 ) {
-    OEChem::OEAtomBase* anchor_atom = nullptr;
-    unsigned int anchor_count = 0;
-
+    OEChem::OEAtomBase* first_atom = nullptr;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetAtomicNum() == 0) {
+        first_atom = &*atom;
+        break;
+    }
+    if (first_atom == nullptr) {
+        throw InvalidQueryError(unsupported_variable_message(variable_smiles));
+    }
+
+    std::set<unsigned int> visited;
+    std::vector<OEChem::OEAtomBase*> stack = {first_atom};
+    while (!stack.empty()) {
+        OEChem::OEAtomBase* atom = stack.back();
+        stack.pop_back();
+        if (!visited.insert(atom->GetIdx()).second) {
             continue;
         }
-        if (mol.GetBond(attachment_atom, &*atom) != nullptr) {
-            anchor_atom = &*atom;
-            ++anchor_count;
+        for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom->GetAtoms();
+             neighbor;
+             ++neighbor) {
+            if (visited.find(neighbor->GetIdx()) == visited.end()) {
+                stack.push_back(&*neighbor);
+            }
         }
     }
 
-    if (anchor_count != 1) {
+    if (visited.size() != mol.NumAtoms()) {
         throw InvalidQueryError(
-            "only single-cut single-atom variable transforms are supported: " +
-            variable_smiles
+            "variable transform components must be connected: " + variable_smiles
         );
     }
-    return anchor_atom;
 }
 
-OEChem::OEGraphMol parse_single_cut_variable(const std::string& variable_smiles) {
+OEChem::OEGraphMol parse_variable(const std::string& variable_smiles) {
     OEChem::OEGraphMol mol;
     if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
         throw InvalidQueryError("invalid variable SMILES: " + variable_smiles);
     }
+    ensure_connected_variable(mol, variable_smiles);
     return mol;
 }
 
-std::string variable_component_to_smirks(
-    const std::string& variable_smiles,
-    bool map_deleted_atoms
+std::map<unsigned int, OEChem::OEAtomBase*> find_attachment_atoms(
+    OEChem::OEMolBase& mol,
+    const std::string& variable_smiles
 ) {
-    OEChem::OEGraphMol mol = parse_single_cut_variable(variable_smiles);
-    OEChem::OEAtomBase* attachment_atom =
-        find_single_attachment_atom(mol, variable_smiles);
-    OEChem::OEAtomBase* anchor_atom =
-        find_single_anchor_atom(mol, attachment_atom, variable_smiles);
+    std::map<unsigned int, OEChem::OEAtomBase*> attachment_atoms;
 
-    unsigned int next_deleted_map_idx = 3;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() != 0) {
+            continue;
+        }
+        const unsigned int label = atom->GetMapIdx();
+        if (label == 0 || label > 3 || attachment_atoms.count(label) != 0) {
+            throw InvalidQueryError(unsupported_variable_message(variable_smiles));
+        }
+        attachment_atoms[label] = &*atom;
+    }
 
+    if (attachment_atoms.empty() || attachment_atoms.size() > 3) {
+        throw InvalidQueryError(unsupported_variable_message(variable_smiles));
+    }
+
+    return attachment_atoms;
+}
+
+std::map<unsigned int, OEChem::OEAtomBase*> find_anchor_atoms(
+    OEChem::OEMolBase& mol,
+    const std::map<unsigned int, OEChem::OEAtomBase*>& attachment_atoms,
+    const std::string& variable_smiles
+) {
+    std::map<unsigned int, OEChem::OEAtomBase*> anchor_atoms;
+
+    for (const auto& attachment : attachment_atoms) {
+        OEChem::OEAtomBase* anchor_atom = nullptr;
+        unsigned int anchor_count = 0;
+
+        for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+            if (atom->GetAtomicNum() == 0) {
+                continue;
+            }
+            if (mol.GetBond(attachment.second, &*atom) != nullptr) {
+                anchor_atom = &*atom;
+                ++anchor_count;
+            }
+        }
+
+        if (anchor_count != 1) {
+            throw InvalidQueryError(unsupported_variable_message(variable_smiles));
+        }
+        anchor_atoms[attachment.first] = anchor_atom;
+    }
+
+    return anchor_atoms;
+}
+
+std::vector<OEChem::OEAtomBase*> real_atoms(OEChem::OEMolBase& mol) {
+    std::vector<OEChem::OEAtomBase*> atoms;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() > 0) {
+            atoms.push_back(&*atom);
+        }
+    }
+    return atoms;
+}
+
+void clear_atom_maps(OEChem::OEMolBase& mol) {
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
         atom->SetMapIdx(0);
     }
-    attachment_atom->SetMapIdx(1);
-    anchor_atom->SetMapIdx(2);
+}
 
-    if (map_deleted_atoms) {
-        for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-            if (atom->GetAtomicNum() == 0 || &*atom == anchor_atom) {
-                continue;
-            }
-            atom->SetMapIdx(next_deleted_map_idx);
-            ++next_deleted_map_idx;
-        }
+unsigned int next_map_idx(
+    const std::map<unsigned int, OEChem::OEAtomBase*>& attachment_atoms
+) {
+    return attachment_atoms.rbegin()->first + 1;
+}
+
+void map_attachment_atoms(
+    const std::map<unsigned int, OEChem::OEAtomBase*>& attachment_atoms
+) {
+    for (const auto& attachment : attachment_atoms) {
+        attachment.second->SetMapIdx(attachment.first);
     }
+}
 
+std::set<unsigned int> attachment_labels(
+    const std::map<unsigned int, OEChem::OEAtomBase*>& attachment_atoms
+) {
+    std::set<unsigned int> labels;
+    for (const auto& attachment : attachment_atoms) {
+        labels.insert(attachment.first);
+    }
+    return labels;
+}
+
+std::string variable_component_smiles(OEChem::OEMolBase& mol) {
     std::string smirks;
     const unsigned int smiles_flags =
         OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
@@ -158,35 +212,72 @@ std::string variable_component_to_smirks(
     return smirks;
 }
 
+std::string variable_component_to_smirks(
+    const std::string& variable_smiles,
+    bool is_source,
+    bool preserve_single_cut_anchor
+) {
+    OEChem::OEGraphMol mol = parse_variable(variable_smiles);
+    const auto attachment_atoms = find_attachment_atoms(mol, variable_smiles);
+    const auto anchor_atoms = find_anchor_atoms(mol, attachment_atoms, variable_smiles);
+    const std::vector<OEChem::OEAtomBase*> changing_atoms = real_atoms(mol);
+    if (changing_atoms.empty()) {
+        throw InvalidQueryError(unsupported_variable_message(variable_smiles));
+    }
+
+    clear_atom_maps(mol);
+    map_attachment_atoms(attachment_atoms);
+
+    unsigned int map_idx = next_map_idx(attachment_atoms);
+    OEChem::OEAtomBase* preserved_anchor = nullptr;
+    if (preserve_single_cut_anchor) {
+        preserved_anchor = anchor_atoms.begin()->second;
+        preserved_anchor->SetMapIdx(map_idx);
+        ++map_idx;
+    }
+
+    if (is_source) {
+        for (OEChem::OEAtomBase* atom : changing_atoms) {
+            if (atom == preserved_anchor) {
+                continue;
+            }
+            atom->SetMapIdx(map_idx);
+            ++map_idx;
+        }
+    }
+
+    return variable_component_smiles(mol);
+}
+
 std::string variable_transform_to_smirks(
     const std::string& source_variable_smiles,
     const std::string& target_variable_smiles
 ) {
-    return variable_component_to_smirks(source_variable_smiles, true) + ">>" +
-        variable_component_to_smirks(target_variable_smiles, false);
-}
-
-void validate_single_cut_variable(const std::string& variable_smiles) {
-    OEChem::OEGraphMol mol = parse_single_cut_variable(variable_smiles);
-    OEChem::OEAtomBase* attachment_atom =
-        find_single_attachment_atom(mol, variable_smiles);
-    (void)find_single_anchor_atom(mol, attachment_atom, variable_smiles);
-}
-
-std::string checked_variable_transform_to_smirks(
-    const std::string& source_variable_smiles,
-    const std::string& target_variable_smiles
-) {
-    try {
-        validate_single_cut_variable(source_variable_smiles);
-        validate_single_cut_variable(target_variable_smiles);
-        return variable_transform_to_smirks(
-            source_variable_smiles,
-            target_variable_smiles
+    OEChem::OEGraphMol source_mol = parse_variable(source_variable_smiles);
+    OEChem::OEGraphMol target_mol = parse_variable(target_variable_smiles);
+    const auto source_attachment_atoms =
+        find_attachment_atoms(source_mol, source_variable_smiles);
+    const auto target_attachment_atoms =
+        find_attachment_atoms(target_mol, target_variable_smiles);
+    if (attachment_labels(source_attachment_atoms) !=
+        attachment_labels(target_attachment_atoms)) {
+        throw InvalidQueryError(
+            "source and target variable attachment labels must match: " +
+            source_variable_smiles + ">>" + target_variable_smiles
         );
-    } catch (const InvalidQueryError&) {
-        throw;
     }
+    const bool preserve_single_cut_anchor = source_attachment_atoms.size() == 1;
+
+    return variable_component_to_smirks(
+        source_variable_smiles,
+        true,
+        preserve_single_cut_anchor
+    ) + ">>" +
+        variable_component_to_smirks(
+            target_variable_smiles,
+            false,
+            preserve_single_cut_anchor
+        );
 }
 
 }  // namespace
@@ -284,7 +375,7 @@ std::string TransformApplicator::BuildVariableTransformSmirks(
     const std::string& source_variable_smiles,
     const std::string& target_variable_smiles
 ) {
-    return checked_variable_transform_to_smirks(
+    return variable_transform_to_smirks(
         source_variable_smiles,
         target_variable_smiles
     );

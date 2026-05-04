@@ -12,6 +12,9 @@ def _transform_error_to_value_error(exc) -> NoReturn:
         or "invalid transform SMIRKS" in message
         or "invalid variable SMILES" in message
         or "only single-cut single-atom variable transforms are supported" in message
+        or "only connected variable transforms" in message
+        or "source and target variable attachment labels must match" in message
+        or "variable transform components must be connected" in message
         or "molecule has no atoms" in message
     ):
         raise ValueError(message) from exc
@@ -48,10 +51,11 @@ def apply_transform_smirks(source, smirks):
 
 
 def build_variable_transform_smirks(transform):
-    """Convert an observed single-cut variable transform to SMIRKS.
+    """Convert an observed variable transform to SMIRKS.
 
     :param transform: Transform string in ``source_variable>>target_variable``
-        form, such as ``"C[*:1]>>O[*:1]"``.
+        form, such as ``"C[*:1]>>O[*:1]"`` or
+        ``"[*:1]CC[*:2]>>[*:1]O[*:2]"``.
     :returns: Chemically explicit unimolecular SMIRKS.
     :raises ValueError: If the transform is malformed or currently
         unsupported.
@@ -65,7 +69,7 @@ def build_variable_transform_smirks(transform):
 
 
 def apply_variable_transform(source, transform):
-    """Apply an observed single-cut variable transform.
+    """Apply an observed variable transform.
 
     :param source: Source molecule as a SMILES string or supported OpenEye
         molecule object.

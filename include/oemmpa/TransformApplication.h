@@ -117,28 +117,30 @@ public:
         const std::string& transform_smirks
     );
 
-    /// \brief Convert an observed single-cut variable transform to SMIRKS.
+    /// \brief Convert an observed variable transform to SMIRKS.
     ///
     /// \param variable_transform_smiles Transform string in
     ///     ``source_variable>>target_variable`` form.
-    /// \returns Reaction-ready SMIRKS for the supported single-atom case.
+    /// \returns Reaction-ready SMIRKS for supported connected variables with
+    ///     one to three attachment labels.
     /// \throws InvalidQueryError If the transform is malformed or unsupported.
     static std::string BuildVariableTransformSmirks(
         const std::string& variable_transform_smiles
     );
 
-    /// \brief Convert observed single-cut variables to SMIRKS.
+    /// \brief Convert observed variables to SMIRKS.
     ///
     /// \param source_variable_smiles Source variable SMILES.
     /// \param target_variable_smiles Target variable SMILES.
-    /// \returns Reaction-ready SMIRKS for the supported single-atom case.
+    /// \returns Reaction-ready SMIRKS for supported connected variables with
+    ///     one to three attachment labels.
     /// \throws InvalidQueryError If either variable is malformed or unsupported.
     static std::string BuildVariableTransformSmirks(
         const std::string& source_variable_smiles,
         const std::string& target_variable_smiles
     );
 
-    /// \brief Apply an observed single-cut variable transform to a source SMILES.
+    /// \brief Apply an observed variable transform to a source SMILES.
     ///
     /// \param source_smiles Source molecule SMILES.
     /// \param variable_transform_smiles Transform string in
@@ -151,7 +153,7 @@ public:
         const std::string& variable_transform_smiles
     );
 
-    /// \brief Apply an observed single-cut variable transform to an OpenEye molecule.
+    /// \brief Apply an observed variable transform to an OpenEye molecule.
     ///
     /// \param source_mol Source molecule.
     /// \param variable_transform_smiles Transform string in

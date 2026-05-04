@@ -140,6 +140,39 @@ TEST(TransformApplicationTest, AppliesSingleCutMultiAtomVariableTransformReverse
     EXPECT_EQ(products.front().GetSmiles(), "CCc1ccccc1");
 }
 
+TEST(TransformApplicationTest, AppliesTwoCutVariableTransform) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "c1ccc(CCc2ccccc2)cc1",
+            "[*:1]CC[*:2]>>[*:1]O[*:2]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)Oc2ccccc2");
+}
+
+TEST(TransformApplicationTest, AppliesTwoCutVariableTransformWithReversedAttachmentOrder) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "c1ccc(CCc2ccccc2)cc1",
+            "[*:2]CC[*:1]>>[*:1]O[*:2]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)Oc2ccccc2");
+}
+
+TEST(TransformApplicationTest, AppliesThreeCutVariableTransform) {
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "C(c1ccccc1)(c2ccccc2)c3ccccc3",
+            "C([*:1])([*:2])[*:3]>>N([*:1])([*:2])[*:3]"
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)N(c2ccccc2)c3ccccc3");
+}
+
 TEST(TransformApplicationTest, AppliesSingleAtomVariableTransformFromPair) {
     const MatchedPair pair(
         1,
@@ -391,8 +424,8 @@ TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
     } catch (const InvalidQueryError& error) {
         EXPECT_STREQ(
             error.what(),
-            "only single-cut single-atom variable transforms are supported: "
-            "C([*:1])[*:2]"
+            "source and target variable attachment labels must match: "
+            "C([*:1])[*:2]>>O[*:1]"
         );
     }
 }
@@ -413,14 +446,28 @@ TEST(TransformApplicationTest, BuildsSmirksForSingleCutMultiAtomVariableTransfor
     EXPECT_EQ(smirks, "[*:1][CH2:2][CH3:3]>>[*:1][OH:2]");
 }
 
-TEST(TransformApplicationTest, RejectsMultiCutVariableTransform) {
+TEST(TransformApplicationTest, RejectsMismatchedAttachmentLabels) {
     try {
         TransformApplicator::BuildVariableTransformSmirks("C([*:1])[*:2]>>O[*:1]");
         FAIL() << "Expected InvalidQueryError";
     } catch (const InvalidQueryError& error) {
         EXPECT_STREQ(
             error.what(),
-            "only single-cut single-atom variable transforms are supported: C([*:1])[*:2]"
+            "source and target variable attachment labels must match: "
+            "C([*:1])[*:2]>>O[*:1]"
+        );
+    }
+}
+
+TEST(TransformApplicationTest, RejectsTargetAttachmentLabelsAbsentFromSource) {
+    try {
+        TransformApplicator::BuildVariableTransformSmirks("[*:1]CC[*:2]>>[*:1]O[*:3]");
+        FAIL() << "Expected InvalidQueryError";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(
+            error.what(),
+            "source and target variable attachment labels must match: "
+            "[*:1]CC[*:2]>>[*:1]O[*:3]"
         );
     }
 }
@@ -434,8 +481,7 @@ TEST(TransformApplicationTest, RejectsMultiCutHydrogenVariableTransform) {
     } catch (const InvalidQueryError& error) {
         EXPECT_STREQ(
             error.what(),
-            "only single-cut single-atom variable transforms are supported: "
-            "C([*:1])[*:2]"
+            "variable transform components must be connected: [*:1][H].O[*:2]"
         );
     }
 
@@ -445,8 +491,7 @@ TEST(TransformApplicationTest, RejectsMultiCutHydrogenVariableTransform) {
     } catch (const InvalidQueryError& error) {
         EXPECT_STREQ(
             error.what(),
-            "only single-cut single-atom variable transforms are supported: "
-            "C([*:1])[*:2]"
+            "variable transform components must be connected: [*:1][H].O[*:2]"
         );
     }
 }
