@@ -207,6 +207,59 @@ def _pair_between(pairs, source_id, target_id):
     raise AssertionError(f"missing pair {source_id!r} -> {target_id!r}")
 
 
+def _supporting_pair_key(pair):
+    row = pair.to_dict()
+    return (
+        row["source_id"],
+        row["target_id"],
+        row["constant"],
+        row["source_variable"],
+        row["target_variable"],
+        row["transform"],
+        row["cut_count"],
+    )
+
+
+def _supporting_pair_keys_by_environment(store):
+    keys_by_environment = {}
+    for row in store.rule_environment_statistics():
+        if row.rule_environment_id in keys_by_environment:
+            continue
+        keys_by_environment[row.rule_environment_id] = tuple(
+            sorted(
+                _supporting_pair_key(pair)
+                for pair in store.pairs_for_rule_environment(row.rule_environment_id)
+            )
+        )
+    return keys_by_environment
+
+
+def _rule_environment_statistics_keys(store):
+    supporting_pairs = _supporting_pair_keys_by_environment(store)
+    return [
+        (
+            row.property_name,
+            row.transform,
+            row.radius,
+            row.smarts,
+            row.pseudosmiles,
+            row.parent_smarts,
+            supporting_pairs[row.rule_environment_id],
+        )
+        for row in store.rule_environment_statistics()
+    ]
+
+
+def _statistics_attachment_classes(store):
+    classes = {"single_attachment": 0, "multi_attachment": 0}
+    for row in store.rule_environment_statistics():
+        if "[*:2]" in row.from_smiles or "[*:2]" in row.to_smiles:
+            classes["multi_attachment"] += 1
+        else:
+            classes["single_attachment"] += 1
+    return classes
+
+
 def test_mmpdb_reference_data_loads_expected_ids():
     from oemmpa import Analyzer
 
@@ -409,6 +462,32 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     assert observed_counts["rule_environment"] >= observed_counts["rule"]
     assert len(store.pairs()) == len(analyzer.pairs())
     assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS
+
+
+def test_mmpdb_phase9_count_surplus_is_unique_openeye_native_rows():
+    from oemmpa import DuckDBStore
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MW", "MP"))
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+
+    statistics_keys = _rule_environment_statistics_keys(store)
+    supporting_pair_keys = _supporting_pair_keys_by_environment(store)
+
+    assert store.row_count("compound") == MMPDB_PHASE9_REFERENCE_COUNTS["compound"]
+    assert store.row_count("compound_property") == MMPDB_PHASE9_REFERENCE_COUNTS[
+        "compound_property"
+    ]
+    assert len(statistics_keys) == store.row_count("rule_environment_statistics")
+    assert len(statistics_keys) == len(set(statistics_keys))
+    assert all(len(keys) == len(set(keys)) for keys in supporting_pair_keys.values())
+    assert len(store.pairs()) == len(analyzer.pairs())
+
+    attachment_classes = _statistics_attachment_classes(store)
+    assert attachment_classes == {
+        "single_attachment": 844,
+        "multi_attachment": 94,
+    }
 
 
 def test_mmpdb_phase10_rule_environment_statistics_expose_transform_metadata():
