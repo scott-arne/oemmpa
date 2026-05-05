@@ -3,6 +3,7 @@
 #include "oemmpa/Error.h"
 
 #include <algorithm>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -305,6 +306,110 @@ std::string JoinOtherComponentSmiles(
     return joined.str();
 }
 
+std::string AttachmentUnlabeledSmiles(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, smiles)) {
+        throw FragmentationError("could not parse generated fragmentation SMILES: " + smiles);
+    }
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() == 0) {
+            atom->SetMapIdx(0);
+        }
+    }
+
+    return CanonicalSmiles(mol);
+}
+
+std::map<unsigned int, std::string> ConstantComponentKeysByLabel(
+    const std::string& constant_smiles
+) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, constant_smiles)) {
+        throw FragmentationError(
+            "could not parse generated constant SMILES: " + constant_smiles
+        );
+    }
+
+    std::map<unsigned int, std::string> component_keys;
+    for (const ComponentRecord& component : SplitComponents(mol)) {
+        if (component.attachment_labels.size() != 1) {
+            throw FragmentationError("multi-cut constant component must have one attachment");
+        }
+        component_keys[*component.attachment_labels.begin()] =
+            AttachmentUnlabeledSmiles(component.smiles);
+    }
+    return component_keys;
+}
+
+std::map<unsigned int, unsigned int> VariableSymmetryClassesByLabel(
+    const std::string& variable_smiles
+) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
+        throw FragmentationError(
+            "could not parse generated variable SMILES: " + variable_smiles
+        );
+    }
+
+    OEChem::OEPerceiveSymmetry(mol, true, true);
+
+    std::map<unsigned int, unsigned int> symmetry_classes;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
+            symmetry_classes[atom->GetMapIdx()] = atom->GetSymmetryClass();
+        }
+    }
+    return symmetry_classes;
+}
+
+std::string JoinDescriptors(const std::vector<std::string>& descriptors) {
+    std::ostringstream joined;
+    for (size_t i = 0; i < descriptors.size(); ++i) {
+        if (i > 0) {
+            joined << ";";
+        }
+        joined << descriptors[i];
+    }
+    return joined.str();
+}
+
+std::pair<std::string, std::string> MultiCutAttachmentEquivalenceKey(
+    const std::string& constant_smiles,
+    const std::string& variable_smiles,
+    unsigned int cut_count
+) {
+    // MMPDB deduplicates multi-cut records across equivalent attachment-label
+    // permutations; use variable symmetry plus constant component identity for
+    // the key while preserving OEMMPA's mapped-label output.
+    const std::map<unsigned int, std::string> constant_keys =
+        ConstantComponentKeysByLabel(constant_smiles);
+    const std::map<unsigned int, unsigned int> variable_symmetry_classes =
+        VariableSymmetryClassesByLabel(variable_smiles);
+
+    std::vector<std::string> attachment_descriptors;
+    attachment_descriptors.reserve(cut_count);
+    for (unsigned int label = 1; label <= cut_count; ++label) {
+        const auto constant_key = constant_keys.find(label);
+        const auto variable_symmetry_class = variable_symmetry_classes.find(label);
+        if (
+            constant_key == constant_keys.end() ||
+            variable_symmetry_class == variable_symmetry_classes.end()
+        ) {
+            throw FragmentationError("generated multi-cut attachment labels are incomplete");
+        }
+        attachment_descriptors.push_back(
+            std::to_string(variable_symmetry_class->second) + ":" + constant_key->second
+        );
+    }
+    std::sort(attachment_descriptors.begin(), attachment_descriptors.end());
+
+    return {
+        AttachmentUnlabeledSmiles(variable_smiles),
+        JoinDescriptors(attachment_descriptors)
+    };
+}
+
 void AddFragmentationRecord(
     unsigned int molecule_id,
     const std::string& constant_smiles,
@@ -317,10 +422,21 @@ void AddFragmentationRecord(
         return;
     }
 
+    std::string dedupe_constant_key = constant_smiles;
+    std::string dedupe_variable_key = variable_smiles;
+    if (cut_count > 1) {
+        std::tie(dedupe_constant_key, dedupe_variable_key) =
+            MultiCutAttachmentEquivalenceKey(
+                constant_smiles,
+                variable_smiles,
+                cut_count
+            );
+    }
+
     const auto key = std::make_tuple(
         molecule_id,
-        constant_smiles,
-        variable_smiles,
+        dedupe_constant_key,
+        dedupe_variable_key,
         cut_count
     );
     if (!seen.insert(key).second) {

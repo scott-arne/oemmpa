@@ -287,6 +287,39 @@ TEST(FragmenterTest, MultiCutFragmentationUsesDisconnectedPiecesAsConstant) {
     }), 1);
 }
 
+TEST(FragmenterTest, MultiCutFragmentationMatchesMMPDBCanonicalAttachmentDeduplication) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    SmartsFragmentationStrategy strategy(
+        "[#6+0;!$(*=,#[!#6])]!@!=!#[!#0;!#1]"
+    );
+    Fragmenter fragmenter(strategy);
+
+    const std::set<FragmentationRecord> records =
+        NormalizeFragmentations(fragmenter.Fragment(101, mol));
+
+    const std::set<FragmentationRecord> expected = {
+        {"[*:1]C", "[*:1]CCC", 1},
+        {"[*:1]CC", "[*:1]CC", 1},
+        {"[*:1]CCC", "[*:1]C", 1},
+        {"[*:1]C.[*:2]C", "[*:1]CC[*:2]", 2},
+        {"[*:1]C.[*:2]CC", "[*:1]C[*:2]", 2},
+    };
+    EXPECT_EQ(records, expected);
+}
+
+TEST(FragmenterTest, MMPDBNumCutsTwoAlkaneRecordCountUsesCanonicalAttachments) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCCCCC");
+    SmartsFragmentationStrategy strategy("C-C");
+    Fragmenter fragmenter(strategy);
+    fragmenter.SetMinCuts(1);
+    fragmenter.SetMaxCuts(2);
+
+    const std::set<FragmentationRecord> records =
+        NormalizeFragmentations(fragmenter.Fragment(103, mol));
+
+    EXPECT_EQ(records.size(), 15);
+}
+
 TEST(FragmenterTest, DuplicateCutBondsDoNotDuplicateFragmentations) {
     OEChem::OEGraphMol mol = MolFromSmiles("CCO");
     SmartsFragmentationStrategy strategy(std::vector<std::string>{

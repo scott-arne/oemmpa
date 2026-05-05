@@ -1,5 +1,7 @@
 """Tests for the focused RDKit comparison benchmark."""
 
+import itertools
+import re
 import sys
 import types
 from pathlib import Path
@@ -18,6 +20,7 @@ BENCHMARK_DATA = (
 def _oemmpa_fragmentations(
     smiles: str,
     *,
+    min_cuts: int = 1,
     max_cuts: int = 2,
     strategy_smarts: str | None = None,
     strategy=None,
@@ -36,7 +39,7 @@ def _oemmpa_fragmentations(
         fragmenter = _oemmpa.Fragmenter(
             _oemmpa.SmartsFragmentationStrategy(strategy_smarts)
         )
-    fragmenter.SetMinCuts(1)
+    fragmenter.SetMinCuts(min_cuts)
     fragmenter.SetMaxCuts(max_cuts)
     return list(fragmenter.Fragment(1, mol))
 
@@ -52,6 +55,41 @@ def _rdkit_like_fragment_records(fragmentations):
         else:
             records.add((variable, constant))
     return records
+
+
+def _rdkit_canonical_record(record):
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+
+    def canonicalize(smiles):
+        if not smiles:
+            return smiles
+        mol = Chem.MolFromSmiles(smiles)
+        assert mol is not None, smiles
+        return Chem.MolToSmiles(mol, True)
+
+    return tuple(canonicalize(smiles) for smiles in record)
+
+
+def _label_permutation_canonical_record(record):
+    labels = sorted({int(label) for smiles in record for label in re.findall(r"\[\*:(\d+)\]", smiles)})
+    if not labels:
+        return _rdkit_canonical_record(record)
+
+    candidates = []
+    for permutation in itertools.permutations(labels):
+        label_map = dict(zip(labels, permutation, strict=True))
+
+        def relabel(smiles):
+            return re.sub(
+                r"\[\*:(\d+)\]",
+                lambda match: f"[*:{label_map[int(match.group(1))]}]",
+                smiles,
+            )
+
+        candidates.append(_rdkit_canonical_record(tuple(relabel(smiles) for smiles in record)))
+
+    return min(candidates)
 
 
 def test_read_smiles_preserves_ids():
@@ -184,6 +222,30 @@ def test_rdkit_test7_two_cut_ring_transform_application_is_supported():
     ]
 
 
+def test_rdkit_test1_molecule_output_chemistry_matches_fragment_records():
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+    from rdkit.Chem import rdMMPA
+
+    mol = Chem.MolFromSmiles("c1ccccc1OC")
+    assert mol is not None
+
+    rdkit_records = set()
+    for core_mol, chains_mol in rdMMPA.FragmentMol(mol):
+        core = "" if core_mol is None else Chem.MolToSmiles(core_mol, True)
+        chains = Chem.MolToSmiles(chains_mol, True)
+        rdkit_records.add(_label_permutation_canonical_record((core, chains)))
+
+    oemmpa_records = {
+        _label_permutation_canonical_record(record)
+        for record in _rdkit_like_fragment_records(
+            _oemmpa_fragmentations("c1ccccc1OC")
+        )
+    }
+
+    assert oemmpa_records == rdkit_records
+
+
 def test_rdkit_test2_string_output_fragment_records_are_represented():
     records = _rdkit_like_fragment_records(_oemmpa_fragmentations("c1ccccc1OC"))
 
@@ -206,6 +268,34 @@ def test_rdkit_test3_pattern_argument_fragment_records_are_represented():
     assert records == {
         ("", "[*:1]OC.[*:1]c1ccccc1"),
     }
+
+
+def test_rdkit_test4_default_fragment_records_match_reference_count_and_core():
+    records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(
+            "Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1",
+            max_cuts=3,
+        )
+    )
+
+    assert len(records) == 18
+    assert "[*:1]C([*:2])[*:3]" in {core for core, _chains in records}
+
+
+def test_rdkit_test7_aminophenol_one_two_cut_union_matches_combined_output():
+    smiles = "Oc1ccccc1N"
+
+    one_cut_records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(smiles, min_cuts=1, max_cuts=1)
+    )
+    two_cut_records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(smiles, min_cuts=2, max_cuts=2)
+    )
+    combined_records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(smiles, min_cuts=1, max_cuts=2)
+    )
+
+    assert one_cut_records | two_cut_records == combined_records
 
 
 def test_rdkit_test8_explicit_bond_list_matches_default_fragmentation():
