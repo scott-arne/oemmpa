@@ -42,6 +42,26 @@ public:
         unsigned int max_rotatable_bonds,
         bool clear_max_rotatable_bonds,
         bool set_rotatable_smarts,
+        const std::string& rotatable_smarts,
+        bool set_cut_smarts,
+        const std::string& cut_smarts
+    );
+
+    /// \brief Transactionally configure fragmentation-method controls.
+    void ConfigureFragmentation(
+        bool set_min_cuts,
+        unsigned int min_cuts,
+        bool set_max_cuts,
+        unsigned int max_cuts,
+        bool set_max_cut_bonds,
+        unsigned int max_cut_bonds,
+        bool set_max_heavy_atoms,
+        unsigned int max_heavy_atoms,
+        bool clear_max_heavy_atoms,
+        bool set_max_rotatable_bonds,
+        unsigned int max_rotatable_bonds,
+        bool clear_max_rotatable_bonds,
+        bool set_rotatable_smarts,
         const std::string& rotatable_smarts
     );
 
@@ -68,6 +88,9 @@ public:
 
     /// \brief Configure fragmentation-method SMARTS used to count rotatable bonds.
     void SetFragmentationRotatableSmarts(const std::string& rotatable_smarts);
+
+    /// \brief Configure fragmentation-method SMARTS used to select cut bonds.
+    void SetFragmentationCutSmarts(const std::string& cut_smarts);
 
     /// \brief Add a molecule from SMILES and return its assigned internal ID.
     ///

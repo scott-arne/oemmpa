@@ -251,8 +251,12 @@ database in `compound`, `rule_smiles`,
 `rule`, `environment_fingerprint`, `rule_environment`, `constant_smiles`, and
 `pair` tables. OEMMPA is following that cue: fragmentations remain an
 intermediate analysis result and are not exposed as a stable DuckDB table yet.
+Cut R-group workflows are implemented in the Python layer by converting
+one-wildcard R-group SMILES to SMARTS and reusing `SmartsFragmentationStrategy`.
 Database-backed transformation queries, a separate fragment database, and
-production analytics remain later work.
+production analytics remain later work. Fragment storage should be reopened
+when a workflow needs queryable fragment rows for reuse, explainability, or
+large-dataset indexing before matched-pair generation.
 
 ## Querying And Scoring
 
@@ -292,6 +296,7 @@ storage can save molecules, properties, and pairs; load SMILES and property
 files; refresh rule-environment property statistics; and query stored pairs,
 transformations, and rule-environment statistics. Python transformation
 statistics, rule-environment prediction helpers, product generation, and
-file-based CLI commands are available on top of the common result objects. A
+cut R-group workflow helpers are available on top of the common result objects.
+File-based CLI commands are available for transform and prediction workflows. A
 separate fragment database, input-SMILES environment matching, multi-atom
 product generation, and C++ analytics APIs remain later work.

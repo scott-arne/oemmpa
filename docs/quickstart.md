@@ -207,6 +207,28 @@ Observed-transform application supports connected changing groups with one,
 two, or three attachment labels. Disconnected multi-cut products, including the
 remaining unresolved multi-cut hydrogen cases, raise `ValueError`.
 
+## Cut R-Group Fragmentation
+
+Use `configure_fragmentation(cut_rgroups=...)` when you want to fragment only
+at the attachment points for known R-groups. Each R-group SMILES must contain
+one wildcard atom:
+
+```python
+from oemmpa import Analyzer, rgroups_to_recursive_smarts
+
+analyzer = Analyzer()
+analyzer.add_molecule("Oc1ccccc1N", id="aminophenol")
+analyzer.add_molecule("Oc1ccccc1C", id="cresol")
+analyzer.configure_fragmentation(cut_rgroups=["Oc1ccccc1*"], max_cuts=1)
+print(analyzer.analyze().pairs().to_dicts())
+
+cut_smarts = rgroups_to_recursive_smarts(["Oc1ccccc1*"])
+```
+
+`cut_rgroup_file` reads the same first-column R-group file format used by
+MMPDB's `rgroup2smarts`. The helper functions use RDKit when called, while
+normal OEMMPA imports and default fragmentation do not require RDKit.
+
 ## Transform Statistics And Prediction
 
 `compute_transform_statistics()` summarizes property changes for each observed
@@ -378,6 +400,7 @@ storage can save molecules, properties, and matched pairs; load SMILES and
 property files; refresh rule-environment property statistics; and read stored
 pairs and rule-environment statistics back into the usual result objects.
 Transformation statistics, property-change predictions, product generation,
-and the command-line tools are available now. Separate fragment databases,
-input-SMILES environment matching, and multi-atom product generation are
-planned for later work.
+cut R-group fragmentation workflows, and the command-line tools are available
+now. Separate fragment databases remain deferred until there is a concrete need
+to query fragment rows before pair generation. Input-SMILES environment
+matching and multi-atom product generation are planned for later work.

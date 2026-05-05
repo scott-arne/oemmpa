@@ -4,6 +4,7 @@ import operator
 
 from . import _oemmpa
 from ._loading import LoadReport, iter_dataframe_records
+from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
     PairCollection,
     PairResult,
@@ -184,6 +185,9 @@ class Analyzer:
         max_heavy_atoms=None,
         max_rotatable_bonds=None,
         rotatable_smarts=None,
+        cut_smarts=None,
+        cut_rgroups=None,
+        cut_rgroup_file=None,
         clear_max_heavy_atoms=False,
         clear_max_rotatable_bonds=False,
     ):
@@ -196,6 +200,12 @@ class Analyzer:
         :param max_heavy_atoms: Optional maximum molecule heavy atom count.
         :param max_rotatable_bonds: Optional maximum rotatable bond count.
         :param rotatable_smarts: Optional SMARTS used to count rotatable bonds.
+        :param cut_smarts: Optional SMARTS used to select fragmentation cut
+            bonds.
+        :param cut_rgroups: Optional R-group SMILES string or iterable of
+            R-group SMILES strings converted with MMPDB-style
+            ``rgroup2smarts`` behavior before selecting cut bonds.
+        :param cut_rgroup_file: Optional path to a MMPDB-style R-group file.
         :param clear_max_heavy_atoms: Clear the maximum-heavy-atom guard when
             true.
         :param clear_max_rotatable_bonds: Clear the maximum-rotatable-bond
@@ -233,6 +243,26 @@ class Analyzer:
         rotatable_smarts_value = (
             "" if rotatable_smarts is None else str(rotatable_smarts)
         )
+        cut_strategy_sources = [
+            cut_smarts is not None,
+            cut_rgroups is not None,
+            cut_rgroup_file is not None,
+        ]
+        if sum(cut_strategy_sources) > 1:
+            raise ValueError(
+                "at most one cut strategy source may be supplied: "
+                "cut_smarts, cut_rgroups, cut_rgroup_file"
+            )
+        cut_smarts_value = ""
+        if cut_smarts is not None:
+            cut_smarts_value = str(cut_smarts)
+        elif cut_rgroups is not None:
+            cut_smarts_value = rgroups_to_recursive_smarts(cut_rgroups)
+        elif cut_rgroup_file is not None:
+            cut_smarts_value = rgroups_to_recursive_smarts(
+                read_rgroup_file(cut_rgroup_file)
+            )
+
         has_change = any(
             (
                 min_cuts is not None,
@@ -243,6 +273,7 @@ class Analyzer:
                 max_rotatable_bonds is not None,
                 clear_max_rotatable_bonds,
                 rotatable_smarts is not None,
+                any(cut_strategy_sources),
             )
         )
         if not has_change:
@@ -264,6 +295,8 @@ class Analyzer:
                 clear_max_rotatable_bonds,
                 rotatable_smarts is not None,
                 rotatable_smarts_value,
+                any(cut_strategy_sources),
+                cut_smarts_value,
             )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc

@@ -97,6 +97,22 @@ molecules above a heavy-atom or rotatable-bond threshold. These controls are
 useful for keeping large jobs predictable and for reproducing a validation
 protocol.
 
+`cut_smarts` replaces the default MMPDB-style cut-bond SMARTS with an explicit
+SMARTS query. `cut_rgroups` and `cut_rgroup_file` provide the MMPDB
+`rgroup2smarts` workflow: one-wildcard R-group SMILES are converted to a
+recursive cut SMARTS, then passed through the usual SMARTS fragmentation
+strategy.
+
+```python
+analyzer.configure_fragmentation(cut_rgroups=["Oc1ccccc1*"], max_cuts=1)
+analyzer.configure_fragmentation(cut_rgroup_file="rgroups.txt")
+```
+
+The helper functions `rgroup_smiles_to_smarts()`,
+`rgroups_to_recursive_smarts()`, and `read_rgroup_file()` expose the conversion
+step directly for users who want to inspect or reuse the generated SMARTS.
+These helpers use RDKit when called; importing `oemmpa` does not require RDKit.
+
 Use `clear_max_heavy_atoms=True` or `clear_max_rotatable_bonds=True` to remove
 those optional molecule-size guards. Invalid settings raise `ValueError` and
 leave the previous fragmentation settings in place.
@@ -440,8 +456,8 @@ calls raise errors immediately.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose broader OEMedChem-specific analyses, cut R-group
-workflows, a separate fragment database, or a fully designed command-line
-reporting workflow for transform and prediction output. These can be added
-later without changing the basic `Analyzer` workflow or the result objects
-shown above.
+OEMMPA does not yet expose broader OEMedChem-specific analyses, a separate
+fragment database, or a fully designed command-line reporting workflow for
+transform and prediction output. A separate fragment database should be added
+only when users need queryable fragment rows for reuse, explainability, or
+large-dataset indexing before matched-pair generation.

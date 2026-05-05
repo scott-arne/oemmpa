@@ -25,7 +25,7 @@ def _oemmpa_fragmentations(
     strategy_smarts: str | None = None,
     strategy=None,
 ):
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
     from oemmpa import _oemmpa
 
     mol = oechem.OEGraphMol()
@@ -299,7 +299,7 @@ def test_rdkit_test7_aminophenol_one_two_cut_union_matches_combined_output():
 
 
 def test_rdkit_test8_explicit_bond_list_matches_default_fragmentation():
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
     from oemmpa import _oemmpa
 
     mol = oechem.OEGraphMol()

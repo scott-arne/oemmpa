@@ -436,6 +436,11 @@ from .oemmpa import ( # type: ignore
 )
 from ._facade import Analyzer
 from ._loading import LoadReport, RowError
+from ._rgroup import (
+    read_rgroup_file,
+    rgroup_smiles_to_smarts,
+    rgroups_to_recursive_smarts,
+)
 from ._results import (
     GeneratedProductCollection,
     GeneratedProductResult,
@@ -510,4 +515,7 @@ __all__ = [
     "predict_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",
+    "read_rgroup_file",
+    "rgroup_smiles_to_smarts",
+    "rgroups_to_recursive_smarts",
 ]

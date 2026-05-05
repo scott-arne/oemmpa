@@ -42,7 +42,7 @@ pytest.importorskip("openeye.oechem", reason="OpenEye Toolkits not installed")
 @pytest.fixture
 def aspirin_mol():
     """Create an aspirin molecule (C9H8O4) for testing."""
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
 
     mol = oechem.OEGraphMol()
     oechem.OESmilesToMol(mol, "CC(=O)OC1=CC=CC=C1C(=O)O")
@@ -52,7 +52,7 @@ def aspirin_mol():
 @pytest.fixture
 def ethanol_mol():
     """Create an ethanol molecule (C2H6O) for testing."""
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
 
     mol = oechem.OEGraphMol()
     oechem.OESmilesToMol(mol, "CCO")

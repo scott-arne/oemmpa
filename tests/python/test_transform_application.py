@@ -15,7 +15,7 @@ def test_apply_transform_smirks_returns_canonical_product_smiles():
 
 
 def test_apply_transform_smirks_accepts_openeye_molecules():
-    from openeye import oechem
+    from openeye import oechem  # type: ignore[import-untyped]
     from oemmpa import apply_transform_smirks
 
     mol = oechem.OEGraphMol()

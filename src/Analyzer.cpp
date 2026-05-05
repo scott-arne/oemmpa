@@ -127,7 +127,9 @@ void Analyzer::ConfigureFragmentation(
     unsigned int max_rotatable_bonds,
     bool clear_max_rotatable_bonds,
     bool set_rotatable_smarts,
-    const std::string& rotatable_smarts
+    const std::string& rotatable_smarts,
+    bool set_cut_smarts,
+    const std::string& cut_smarts
 ) {
     if (set_max_heavy_atoms && clear_max_heavy_atoms) {
         throw InvalidQueryError("max_heavy_atoms cannot be set and cleared");
@@ -157,8 +159,48 @@ void Analyzer::ConfigureFragmentation(
     if (set_rotatable_smarts) {
         fragmenter.SetRotatableSmarts(rotatable_smarts);
     }
+    if (set_cut_smarts) {
+        SmartsFragmentationStrategy strategy(cut_smarts);
+        fragmenter.SetStrategy(strategy);
+    }
 
     CommitFragmenter(fragmenter);
+}
+
+void Analyzer::ConfigureFragmentation(
+    bool set_min_cuts,
+    unsigned int min_cuts,
+    bool set_max_cuts,
+    unsigned int max_cuts,
+    bool set_max_cut_bonds,
+    unsigned int max_cut_bonds,
+    bool set_max_heavy_atoms,
+    unsigned int max_heavy_atoms,
+    bool clear_max_heavy_atoms,
+    bool set_max_rotatable_bonds,
+    unsigned int max_rotatable_bonds,
+    bool clear_max_rotatable_bonds,
+    bool set_rotatable_smarts,
+    const std::string& rotatable_smarts
+) {
+    ConfigureFragmentation(
+        set_min_cuts,
+        min_cuts,
+        set_max_cuts,
+        max_cuts,
+        set_max_cut_bonds,
+        max_cut_bonds,
+        set_max_heavy_atoms,
+        max_heavy_atoms,
+        clear_max_heavy_atoms,
+        set_max_rotatable_bonds,
+        max_rotatable_bonds,
+        clear_max_rotatable_bonds,
+        set_rotatable_smarts,
+        rotatable_smarts,
+        false,
+        ""
+    );
 }
 
 void Analyzer::SetFragmentationMinCuts(unsigned int min_cuts) {
@@ -206,6 +248,13 @@ void Analyzer::ClearFragmentationMaxRotatableBonds() {
 void Analyzer::SetFragmentationRotatableSmarts(const std::string& rotatable_smarts) {
     Fragmenter fragmenter = RequireFragmenter();
     fragmenter.SetRotatableSmarts(rotatable_smarts);
+    CommitFragmenter(fragmenter);
+}
+
+void Analyzer::SetFragmentationCutSmarts(const std::string& cut_smarts) {
+    Fragmenter fragmenter = RequireFragmenter();
+    SmartsFragmentationStrategy strategy(cut_smarts);
+    fragmenter.SetStrategy(strategy);
     CommitFragmenter(fragmenter);
 }
 
