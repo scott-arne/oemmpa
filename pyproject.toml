@@ -45,6 +45,9 @@ testpaths = ["tests/python"]
 python_files = ["test_*.py"]
 addopts = "-v"
 
+[tool.ruff]
+extend-exclude = ["python/oemmpa/oemmpa.py"]
+
 [tool.scikit-build]
 cmake.version = ">=3.21"
 cmake.build-type = "Release"
