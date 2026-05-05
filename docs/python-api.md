@@ -179,13 +179,29 @@ products = apply_transform_smirks(
 ```
 
 `build_variable_transform_smirks()` converts supported observed OEMMPA
-transforms to explicit SMIRKS, and `apply_variable_transform()` applies them:
+transforms to explicit SMIRKS, and `apply_variable_transform()` applies them.
+Observed transforms use `source_variable>>target_variable` strings:
 
 ```python
 from oemmpa import apply_variable_transform, build_variable_transform_smirks
 
 smirks = build_variable_transform_smirks("C[*:1]>>O[*:1]")
 products = apply_variable_transform("Cc1ccccc1", "C[*:1]>>O[*:1]")
+```
+
+Changing groups can be larger than one atom, and connected two- or three-cut
+replacements are supported:
+
+```python
+ethyl_to_hydroxyl = apply_variable_transform(
+    "CCc1ccccc1",
+    "[*:1]CC>>[*:1]O",
+)
+
+linker_replacement = apply_variable_transform(
+    "c1ccc(CCc2ccccc2)cc1",
+    "[*:1]CC[*:2]>>[*:1]O[*:2]",
+)
 ```
 
 `PairResult.apply_transform()` applies that pair's observed transform to its
@@ -238,9 +254,10 @@ exposes `GenerationOptions`, `GeneratedProduct`, `GeneratedProductVector`,
 `TransformApplicator`, `TransformProduct`, and `TransformProductVector` through
 `oemmpa._oemmpa`.
 
-Observed-transform conversion currently supports single-cut transformations
-where the changing group is a single atom, such as `C[*:1]>>O[*:1]`. Multi-atom
-and multi-cut transformations raise explicit errors for now.
+Observed-transform conversion supports connected variables with one, two, or
+three attachment labels. Disconnected products are still rejected; this keeps
+ambiguous multi-cut hydrogen cases out of product generation until they have a
+clear chemical model.
 
 ## Transform Statistics And Prediction
 
@@ -277,6 +294,40 @@ method-3 convention used by MMPDB. SciPy is imported only when needed for
 
 `TransformStatisticsCollection.to_dataframe()` can export to pandas or polars
 when those packages are available.
+
+Rule-environment statistics can be used directly when a DuckDB-backed store is
+available. This lets you select transformations by property, environment
+radius, support count, and rule view before generating products.
+
+```python
+from oemmpa import (
+    DuckDBStore,
+    RuleSelectionOptions,
+    find_transform_environments,
+    generate_products_from_rule_environments,
+)
+
+store = DuckDBStore()
+store.save_analyzer(analyzer)
+
+selection = RuleSelectionOptions(
+    property_name="pIC50",
+    min_radius=2,
+    min_pairs=1,
+)
+matches = find_transform_environments(
+    store,
+    transform="[*:1]C>>[*:1]O",
+    selection=selection,
+)
+
+products = generate_products_from_rule_environments(
+    "Cc1ccccc1",
+    matches,
+)
+print(products.to_dicts())
+print(matches[0].supporting_pairs()[0].to_dict())
+```
 
 ## CLI
 
@@ -389,7 +440,8 @@ calls raise errors immediately.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose broader OEMedChem-specific analyses, a separate
-fragment database, database-backed transformation refresh, multi-atom product
-generation, or rule-environment statistics. These can be added later without
-changing the basic `Analyzer` workflow or the result objects shown above.
+OEMMPA does not yet expose broader OEMedChem-specific analyses, cut R-group
+workflows, a separate fragment database, or a fully designed command-line
+reporting workflow for transform and prediction output. These can be added
+later without changing the basic `Analyzer` workflow or the result objects
+shown above.

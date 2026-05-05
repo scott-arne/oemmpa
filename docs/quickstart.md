@@ -156,6 +156,26 @@ products = apply_variable_transform(
 )
 ```
 
+The observed transform can include larger changing groups and connected
+two- or three-cut replacements. For example, this replaces an ethyl group with
+a hydroxyl group:
+
+```python
+products = apply_variable_transform(
+    "CCc1ccccc1",
+    "[*:1]CC>>[*:1]O",
+)
+```
+
+This replaces an ethylene linker between two phenyl rings with oxygen:
+
+```python
+products = apply_variable_transform(
+    "c1ccc(CCc2ccccc2)cc1",
+    "[*:1]CC[*:2]>>[*:1]O[*:2]",
+)
+```
+
 Each matched pair can also apply its own observed transformation to its source
 molecule:
 
@@ -183,9 +203,9 @@ Unsupported observed transformations are skipped by default during collection
 generation. Pass `skip_unsupported=False` if you would rather stop immediately
 when an unsupported transformation is encountered.
 
-Observed-transform application currently supports single-cut transformations
-where the changing group is a single atom. Multi-atom and multi-cut
-transformations raise `ValueError` for now.
+Observed-transform application supports connected changing groups with one,
+two, or three attachment labels. Disconnected multi-cut products, including the
+remaining unresolved multi-cut hydrogen cases, raise `ValueError`.
 
 ## Transform Statistics And Prediction
 
@@ -223,6 +243,38 @@ products = generate_products(
     statistics=statistics,
 )
 print(products.to_dicts())
+```
+
+DuckDB-backed analyses can also generate products from selected local
+environments. This is useful when you want the selected radius, property, and
+supporting pairs to travel with the generated product.
+
+```python
+from oemmpa import (
+    DuckDBStore,
+    RuleSelectionOptions,
+    find_transform_environments,
+    generate_products_from_rule_environments,
+)
+
+store = DuckDBStore()
+store.save_analyzer(analyzer)
+
+selection = RuleSelectionOptions(
+    property_name="pIC50",
+    min_radius=2,
+)
+matches = find_transform_environments(
+    store,
+    transform="[*:1]C>>[*:1]O",
+    selection=selection,
+)
+products = generate_products_from_rule_environments(
+    "Cc1ccccc1",
+    matches,
+)
+print(products.to_dicts())
+print(matches[0].supporting_pairs()[0].to_dict())
 ```
 
 ## Command-Line Use

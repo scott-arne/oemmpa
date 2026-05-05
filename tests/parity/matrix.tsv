@@ -36,9 +36,9 @@ phase	upstream_project	upstream_file	upstream_test	oemmpa_file	oemmpa_test	statu
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test1	-	-	deferred	Broader default FragmentMol output parity remains deferred after Phase 8 control coverage.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test2	-	-	deferred	String fragmentation output parity remains deferred after Phase 8 control coverage.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test3	-	-	deferred	Pattern-argument parity remains deferred pending a focused API decision.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	-	-	deferred	Broader multi-cut output parity remains deferred after Phase 8 control coverage.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test4	tests/python/test_rdkit_comparison.py	test_rdkit_test4_three_cut_core_transform_application_is_supported	accepted divergence	OEMMPA can apply the three-cut core shape used by RDKit test4 as an observed transform; full FragmentMol count and string-output parity remain separate follow-up work.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test5	tests/cpp/test_fragmenter.cpp	MaxCutBondsSuppressesDenseCutSurfaces	matched	OEMMPA now supports an RDKit-style cut-bond surface guard.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test6	tests/cpp/test_fragmenter.cpp	OneAndTwoCutUnionMatchesMaxCutsTwo	matched	OEMMPA one-cut and two-cut records union to the max-cuts-two result.
-7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	-	-	deferred	Larger multi-cut examples remain deferred after Phase 8 control coverage.
+7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test7	tests/python/test_rdkit_comparison.py	test_rdkit_test7_two_cut_ring_transform_application_is_supported	accepted divergence	OEMMPA can apply a two-cut aminophenol ring transform derived from the RDKit test7 molecule; full FragmentMol union-output parity remains separate follow-up work.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test8	-	-	deferred	Explicit bond-list parity remains deferred pending a focused API decision.
 7	rdkit	Code/GraphMol/MMPA/Wrap/testMMPA.py	TestCase.test9	tests/cpp/test_fragmenter.cpp	InvalidCutBoundsThrowFragmentationError	matched	OEMMPA already rejects invalid cut bounds.

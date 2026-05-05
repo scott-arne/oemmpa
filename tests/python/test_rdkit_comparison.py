@@ -118,3 +118,28 @@ def test_compare_reports_normalized_overlap_when_rdkit_is_available():
 
     assert len(result["common_molecule_pairs"]) > 0
     assert len(result["common_chemistry_pairs"]) > 0
+
+
+def test_rdkit_test4_three_cut_core_transform_application_is_supported():
+    from oemmpa import apply_variable_transform
+
+    products = apply_variable_transform(
+        "Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1",
+        "C([*:1])([*:2])[*:3]>>N([*:1])([*:2])[*:3]",
+    )
+
+    assert products == ["Cc1ccccc1NC(=O)N(C)[NH+]2CCCC2"]
+
+
+def test_rdkit_test7_two_cut_ring_transform_application_is_supported():
+    from oemmpa import apply_variable_transform
+
+    products = apply_variable_transform(
+        "Oc1ccccc1N",
+        "[*:1]c1ccccc1[*:2]>>[*:1]c1ccncc1[*:2]",
+    )
+
+    assert products == [
+        "c1cncc(c1N)O",
+        "c1cncc(c1O)N",
+    ]
