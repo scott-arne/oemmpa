@@ -84,6 +84,77 @@ Supported dataframe-like inputs include:
 Pandas and polars are optional. OEMMPA does not import either package while
 loading unless the supplied object already comes from that package.
 
+## Query Layer
+
+`analyze_dataframe()` is the dataframe-first entry point for exploratory MMP
+work. It loads molecules and properties, runs analysis, and returns an
+`AnalysisResult`:
+
+```python
+from oemmpa import analyze_dataframe
+
+analysis = analyze_dataframe(
+    frame,
+    smiles="smiles",
+    id="compound_id",
+    properties=["pIC50"],
+)
+```
+
+`analysis.pairs` is a `PairQuery`. It supports chainable filtering by property
+delta and by SMARTS matches against the constant, source variable, and target
+variable regions:
+
+```python
+hits = (
+    analysis.pairs
+    .with_delta("pIC50")
+    .improves("pIC50", higher_is_better=True)
+    .where_constant_matches("c1ccccc1")
+    .where_from_matches("[#6]")
+    .where_to_matches("[#8]")
+)
+
+hits.to_dataframe()
+```
+
+`higher_is_better` defaults to `True`, matching pIC50 semantics. Use
+`higher_is_better=False` for endpoints such as IC50 where lower values are
+preferred. `decreases()` keeps the opposite direction.
+
+`analysis.transforms` is a `TransformQuery`. It can compute transform
+statistics, filter to improving transformations, rank them by predicted delta,
+and export plotting-friendly rows:
+
+```python
+rules = analysis.transforms.with_statistics("pIC50").improves("pIC50").top(25)
+rules.to_dataframe()
+```
+
+Use `AnalysisResult.generate()` when you want to apply improving rules to a
+new molecule:
+
+```python
+products = analysis.generate(
+    "Cc1ccccc1",
+    property_name="pIC50",
+    min_support=2,
+)
+products.to_dataframe()
+```
+
+Use `AnalysisResult.opportunities()` to ask what observed matched pairs and
+generated products suggest for one molecule in the analyzed dataset:
+
+```python
+opportunities = analysis.opportunities(
+    "compound_123",
+    property_name="pIC50",
+)
+opportunities.pairs.to_dataframe()
+opportunities.products.to_dataframe()
+```
+
 ### configure_fragmentation
 
 ```python

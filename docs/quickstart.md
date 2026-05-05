@@ -105,6 +105,62 @@ When `id_column` is provided, rows with missing or blank IDs are rejected.
 Property columns are converted to numeric values before insertion, so property
 formatting errors are reported cleanly and do not leave partial rows behind.
 
+## Querying Dataframe Analyses
+
+For interactive dataframe work, `analyze_dataframe()` loads molecules,
+properties, runs analysis, and returns a queryable result object:
+
+```python
+from oemmpa import analyze_dataframe
+
+analysis = analyze_dataframe(
+    df,
+    smiles="smiles",
+    id="compound_id",
+    properties=["pIC50"],
+)
+
+improving_pairs = (
+    analysis.pairs
+    .with_delta("pIC50")
+    .improves("pIC50", higher_is_better=True)
+    .where_constant_matches("c1ccccc1")
+    .where_from_matches("[#6]")
+    .where_to_matches("[#8]")
+)
+
+pairs_df = improving_pairs.to_dataframe()
+```
+
+`higher_is_better` defaults to `True`, which matches pIC50-style potency
+columns. Set it to `False` for endpoints where lower values are better.
+
+Transform queries can attach property statistics and rank transformations by
+predicted improvement:
+
+```python
+rules = analysis.transforms.with_statistics("pIC50").improves("pIC50").top(25)
+rules_df = rules.to_dataframe()
+```
+
+The same objective can drive product generation and molecule-level
+opportunity review:
+
+```python
+products = analysis.generate(
+    "Cc1ccccc1",
+    property_name="pIC50",
+    min_support=2,
+)
+
+opportunities = analysis.opportunities(
+    "compound_123",
+    property_name="pIC50",
+)
+print(opportunities.pairs.to_dicts())
+print(opportunities.products.to_dicts())
+```
+
 ## Results
 
 Run `analyze()` before asking for pairs or transformations. If you add more
