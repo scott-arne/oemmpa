@@ -376,6 +376,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Template instantiations for container types
 // ============================================================================
 %template(StringVector) std::vector<std::string>;
+%template(UnsignedIntVector) std::vector<unsigned int>;
 %template(LoadErrorVector) std::vector<OEMMPA::LoadError>;
 %template(CutBondVector) std::vector<OEMMPA::CutBond>;
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
@@ -398,6 +399,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 %ignore OEMMPA::FragmentationStrategy::Clone;
 %ignore OEMMPA::SmartsFragmentationStrategy::Clone;
+%ignore OEMMPA::BondIndexFragmentationStrategy::Clone;
 %ignore OEMMPA::MoleculeRecord::GetMol;
 %ignore OEMMPA::AnalysisMethod::GetFragmenter;
 %ignore OEMMPA::AnalysisMethod::SetFragmenter;

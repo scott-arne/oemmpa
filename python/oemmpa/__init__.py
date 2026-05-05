@@ -362,6 +362,7 @@ _RAW_BINDING_EXPORTS = (
     "AnalysisMethod",
     "AnalysisStateError",
     "Analyzer",
+    "BondIndexFragmentationStrategy",
     "CutBond",
     "CutBondVector",
     "DuplicateIdError",
@@ -403,6 +404,7 @@ _RAW_BINDING_EXPORTS = (
     "TransformProduct",
     "TransformProductVector",
     "TransformVector",
+    "UnsignedIntVector",
 )
 
 _OPTIONAL_RAW_BINDING_EXPORTS = (

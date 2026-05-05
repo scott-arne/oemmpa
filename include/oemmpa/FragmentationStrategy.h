@@ -53,6 +53,22 @@ private:
     std::vector<OEChem::OESubSearch> subsearches_;
 };
 
+/// \brief Fragmentation strategy backed by explicit molecule bond indices.
+///
+/// This mirrors RDKit ``FragmentMol`` explicit bond-list workflows while
+/// keeping OEMMPA's core fragmenter responsible for cut enumeration and
+/// constant/variable normalization.
+class BondIndexFragmentationStrategy : public FragmentationStrategy {
+public:
+    explicit BondIndexFragmentationStrategy(const std::vector<unsigned int>& bond_indices);
+
+    std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const override;
+    std::unique_ptr<FragmentationStrategy> Clone() const override;
+
+private:
+    std::vector<unsigned int> bond_indices_;
+};
+
 }  // namespace OEMMPA
 
 #endif  // OEMMPA_FRAGMENTATION_STRATEGY_H

@@ -19,6 +19,7 @@ namespace test {
 namespace {
 
 using FragmentationRecord = std::tuple<std::string, std::string, unsigned int>;
+using RDKitLikeRecord = std::pair<std::string, std::string>;
 
 OEChem::OEGraphMol MolFromSmiles(const std::string& smiles) {
     OEChem::OEGraphMol mol;
@@ -55,6 +56,56 @@ std::set<FragmentationRecord> NormalizeFragmentations(
             fragmentation.GetConstantSmiles(),
             fragmentation.GetVariableSmiles(),
             fragmentation.GetCutCount()
+        });
+    }
+    return records;
+}
+
+std::vector<unsigned int> CutBondIndices(const std::vector<CutBond>& cut_bonds) {
+    std::vector<unsigned int> bond_indices;
+    bond_indices.reserve(cut_bonds.size());
+    for (const CutBond& cut_bond : cut_bonds) {
+        bond_indices.push_back(cut_bond.bond_idx);
+    }
+    return bond_indices;
+}
+
+std::string JoinSortedSmiles(const std::vector<std::string>& smiles) {
+    std::vector<std::string> sorted = smiles;
+    std::sort(sorted.begin(), sorted.end());
+
+    std::string joined;
+    for (const std::string& component : sorted) {
+        if (!joined.empty()) {
+            joined += ".";
+        }
+        joined += component;
+    }
+    return joined;
+}
+
+std::set<RDKitLikeRecord> NormalizeRDKitLikeRecords(
+    const std::vector<Fragmentation>& fragmentations
+) {
+    std::set<RDKitLikeRecord> records;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        if (fragmentation.GetCutCount() == 1) {
+            records.insert({
+                "",
+                JoinSortedSmiles({
+                    fragmentation.GetConstantSmiles(),
+                    fragmentation.GetVariableSmiles()
+                })
+            });
+            continue;
+        }
+
+        // OEMMPA uses MMPDB's multi-cut convention: the disconnected pieces are
+        // the constant and the all-label component is the variable. RDKit's
+        // string-output tuple presents the all-label component first.
+        records.insert({
+            fragmentation.GetVariableSmiles(),
+            fragmentation.GetConstantSmiles()
         });
     }
     return records;
@@ -365,6 +416,64 @@ TEST(FragmenterTest, OneAndTwoCutUnionMatchesMaxCutsTwo) {
     expected.insert(two_cut_records.begin(), two_cut_records.end());
 
     EXPECT_EQ(NormalizeFragmentations(combined.Fragment(37, mol)), expected);
+}
+
+TEST(FragmenterTest, RDKitTest2StringOutputChemistryIsRepresented) {
+    OEChem::OEGraphMol mol = MolFromSmiles("c1ccccc1OC");
+    Fragmenter fragmenter;
+    fragmenter.SetMinCuts(1);
+    fragmenter.SetMaxCuts(2);
+
+    const std::set<RDKitLikeRecord> records =
+        NormalizeRDKitLikeRecords(fragmenter.Fragment(73, mol));
+
+    const std::set<RDKitLikeRecord> expected = {
+        {"", "[*:1]OC.[*:1]c1ccccc1"},
+        {"", "[*:1]C.[*:1]Oc1ccccc1"},
+        {"[*:1]O[*:2]", "[*:1]c1ccccc1.[*:2]C"},
+    };
+    EXPECT_EQ(records, expected);
+}
+
+TEST(FragmenterTest, RDKitTest3PatternArgumentChemistryIsRepresented) {
+    OEChem::OEGraphMol mol = MolFromSmiles("c1ccccc1OC");
+    SmartsFragmentationStrategy strategy("[c:1]-[O:2]");
+    Fragmenter fragmenter(strategy);
+    fragmenter.SetMinCuts(1);
+    fragmenter.SetMaxCuts(1);
+
+    const std::set<RDKitLikeRecord> records =
+        NormalizeRDKitLikeRecords(fragmenter.Fragment(79, mol));
+
+    const std::set<RDKitLikeRecord> expected = {
+        {"", "[*:1]OC.[*:1]c1ccccc1"},
+    };
+    EXPECT_EQ(records, expected);
+}
+
+TEST(FragmenterTest, RDKitTest8ExplicitBondListMatchesDefaultCutBonds) {
+    OEChem::OEGraphMol mol = MolFromSmiles("Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1");
+    SmartsFragmentationStrategy default_strategy =
+        SmartsFragmentationStrategy::RDKitCompatible();
+    Fragmenter default_fragmenter(default_strategy);
+
+    BondIndexFragmentationStrategy explicit_strategy(
+        CutBondIndices(default_strategy.FindCutBonds(mol))
+    );
+    Fragmenter explicit_fragmenter(explicit_strategy);
+
+    EXPECT_EQ(
+        NormalizeFragmentations(explicit_fragmenter.Fragment(83, mol)),
+        NormalizeFragmentations(default_fragmenter.Fragment(83, mol))
+    );
+}
+
+TEST(FragmenterTest, ExplicitBondListRejectsUnknownBondIndices) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCO");
+    BondIndexFragmentationStrategy explicit_strategy({9999});
+    Fragmenter fragmenter(explicit_strategy);
+
+    EXPECT_THROW(fragmenter.Fragment(89, mol), InvalidQueryError);
 }
 
 TEST(FragmenterTest, MaxCutBondsSuppressesDenseCutSurfaces) {

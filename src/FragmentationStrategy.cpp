@@ -152,4 +152,50 @@ SmartsFragmentationStrategy SmartsFragmentationStrategy::RDKitCompatible() {
     return DefaultPreset();
 }
 
+BondIndexFragmentationStrategy::BondIndexFragmentationStrategy(
+    const std::vector<unsigned int>& bond_indices
+) : bond_indices_(bond_indices) {}
+
+std::vector<CutBond> BondIndexFragmentationStrategy::FindCutBonds(
+    const OEChem::OEMolBase& mol
+) const {
+    std::vector<CutBond> cut_bonds;
+    std::set<unsigned int> seen_bond_indices;
+
+    for (const unsigned int bond_index : bond_indices_) {
+        if (!seen_bond_indices.insert(bond_index).second) {
+            continue;
+        }
+
+        OEChem::OEBondBase* selected_bond = nullptr;
+        for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+            if (bond->GetIdx() == bond_index) {
+                selected_bond = bond;
+                break;
+            }
+        }
+
+        if (selected_bond == nullptr) {
+            throw InvalidQueryError(
+                "explicit cut bond index not found: " + std::to_string(bond_index)
+            );
+        }
+
+        const unsigned int first_idx = selected_bond->GetBgn()->GetIdx();
+        const unsigned int second_idx = selected_bond->GetEnd()->GetIdx();
+        const auto sorted_indices = std::minmax(first_idx, second_idx);
+        cut_bonds.push_back({
+            sorted_indices.first,
+            sorted_indices.second,
+            selected_bond->GetIdx()
+        });
+    }
+
+    return cut_bonds;
+}
+
+std::unique_ptr<FragmentationStrategy> BondIndexFragmentationStrategy::Clone() const {
+    return std::make_unique<BondIndexFragmentationStrategy>(*this);
+}
+
 }  // namespace OEMMPA

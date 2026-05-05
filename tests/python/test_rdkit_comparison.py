@@ -15,6 +15,45 @@ BENCHMARK_DATA = (
 )
 
 
+def _oemmpa_fragmentations(
+    smiles: str,
+    *,
+    max_cuts: int = 2,
+    strategy_smarts: str | None = None,
+    strategy=None,
+):
+    from openeye import oechem
+    from oemmpa import _oemmpa
+
+    mol = oechem.OEGraphMol()
+    assert oechem.OESmilesToMol(mol, smiles)
+
+    if strategy is not None:
+        fragmenter = _oemmpa.Fragmenter(strategy)
+    elif strategy_smarts is None:
+        fragmenter = _oemmpa.Fragmenter()
+    else:
+        fragmenter = _oemmpa.Fragmenter(
+            _oemmpa.SmartsFragmentationStrategy(strategy_smarts)
+        )
+    fragmenter.SetMinCuts(1)
+    fragmenter.SetMaxCuts(max_cuts)
+    return list(fragmenter.Fragment(1, mol))
+
+
+def _rdkit_like_fragment_records(fragmentations):
+    records = set()
+    for fragmentation in fragmentations:
+        constant = fragmentation.GetConstantSmiles()
+        variable = fragmentation.GetVariableSmiles()
+        cut_count = fragmentation.GetCutCount()
+        if cut_count == 1:
+            records.add(("", ".".join(sorted([constant, variable]))))
+        else:
+            records.add((variable, constant))
+    return records
+
+
 def test_read_smiles_preserves_ids():
     from benchmarks.rdkit_compare import read_smiles
 
@@ -143,3 +182,55 @@ def test_rdkit_test7_two_cut_ring_transform_application_is_supported():
         "c1cncc(c1N)O",
         "c1cncc(c1O)N",
     ]
+
+
+def test_rdkit_test2_string_output_fragment_records_are_represented():
+    records = _rdkit_like_fragment_records(_oemmpa_fragmentations("c1ccccc1OC"))
+
+    assert records == {
+        ("", "[*:1]OC.[*:1]c1ccccc1"),
+        ("", "[*:1]C.[*:1]Oc1ccccc1"),
+        ("[*:1]O[*:2]", "[*:1]c1ccccc1.[*:2]C"),
+    }
+
+
+def test_rdkit_test3_pattern_argument_fragment_records_are_represented():
+    records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(
+            "c1ccccc1OC",
+            max_cuts=1,
+            strategy_smarts="[c:1]-[O:2]",
+        )
+    )
+
+    assert records == {
+        ("", "[*:1]OC.[*:1]c1ccccc1"),
+    }
+
+
+def test_rdkit_test8_explicit_bond_list_matches_default_fragmentation():
+    from openeye import oechem
+    from oemmpa import _oemmpa
+
+    mol = oechem.OEGraphMol()
+    assert oechem.OESmilesToMol(mol, "Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1")
+
+    default_strategy = _oemmpa.SmartsFragmentationStrategy.RDKitCompatible()
+    bond_indices = [cut.bond_idx for cut in default_strategy.FindCutBonds(mol)]
+    explicit_strategy = _oemmpa.BondIndexFragmentationStrategy(bond_indices)
+
+    default_records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(
+            "Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1",
+            max_cuts=3,
+        )
+    )
+    explicit_records = _rdkit_like_fragment_records(
+        _oemmpa_fragmentations(
+            "Cc1ccccc1NC(=O)C(C)[NH+]1CCCC1",
+            max_cuts=3,
+            strategy=explicit_strategy,
+        )
+    )
+
+    assert explicit_records == default_records
