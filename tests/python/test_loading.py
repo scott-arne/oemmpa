@@ -323,6 +323,28 @@ def test_add_molecules_from_file_matches_mmpdb_whitespace_delimiter():
     assert report.rejected_count == 0
 
 
+def test_add_molecules_from_file_default_whitespace_matches_mmpdb_tab_file():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(MMPDB_FRAGMENT_DIR / "tab.smi")
+
+    assert report.accepted_ids == ["record", "entry"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_default_whitespace_matches_mmpdb_two_tab_file():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(MMPDB_FRAGMENT_DIR / "two_tabs.smi")
+
+    assert report.accepted_ids == ["record", "vinyl"]
+    assert report.rejected_count == 0
+
+
 def test_add_molecules_from_file_default_whitespace_generates_ids_for_missing_ids(
     tmp_path,
 ):
@@ -443,6 +465,50 @@ def test_add_molecules_from_file_can_skip_header_row():
     )
 
     assert report.accepted_ids == ["entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_can_skip_gzip_header_row():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "space.smi.gz",
+        has_header=True,
+    )
+
+    assert report.accepted_ids == ["entry", "item"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_can_skip_tab_header_row():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "tab.smi",
+        delimiter="tab",
+        has_header=True,
+    )
+
+    assert report.accepted_ids == ["entry 2"]
+    assert report.rejected_count == 0
+
+
+def test_add_molecules_from_file_can_skip_comma_header_row():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+
+    report = analyzer.add_molecules_from_file(
+        MMPDB_FRAGMENT_DIR / "comma.smi",
+        delimiter="comma",
+        has_header=True,
+    )
+
+    assert report.accepted_ids == ["entry", "item 3"]
     assert report.rejected_count == 0
 
 

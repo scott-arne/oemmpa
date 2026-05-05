@@ -48,6 +48,19 @@ addopts = "-v"
 [tool.ruff]
 extend-exclude = ["python/oemmpa/oemmpa.py"]
 
+[tool.mypy]
+follow_imports = "normal"
+
+[[tool.mypy.overrides]]
+module = [
+    "__builtin__",
+    "_oemmpa",
+    "oemmpa._build_info",
+    "oemmpa.oemmpa",
+]
+ignore_errors = true
+ignore_missing_imports = true
+
 [tool.scikit-build]
 cmake.version = ">=3.21"
 cmake.build-type = "Release"

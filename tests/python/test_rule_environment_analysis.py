@@ -243,6 +243,10 @@ def test_rule_environment_statistics_collection_supports_safe_where_filters():
 
     with pytest.raises(ValueError, match="unsupported where variable: BAD_VARIABLE"):
         rows.filter(where="BAD_VARIABLE > 1")
+    with pytest.raises(ValueError, match="unsupported where variable: avg"):
+        rows.filter(where="avg > 0")
+    with pytest.raises(ValueError, match="unsupported where expression"):
+        rows.filter(where="count != 1")
     with pytest.raises(ValueError, match="unsupported where expression"):
         rows.filter(where="count + radius > 1")
 

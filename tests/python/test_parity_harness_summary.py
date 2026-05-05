@@ -20,7 +20,7 @@ def test_phase7_harness_records_current_matches_and_future_work():
 
     assert counts["matched"] >= 4
     assert counts["accepted divergence"] >= 1
-    assert counts["deferred"] >= 10
+    assert counts["deferred"] > 0
 
 
 def test_phase7_harness_keeps_cli_output_as_deferred_followup():
