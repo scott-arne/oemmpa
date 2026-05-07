@@ -2,8 +2,13 @@
 
 from dataclasses import dataclass
 from dataclasses import fields
-import importlib
 import re
+
+from ._dataframe import (
+    RULE_ENVIRONMENT_SMILES_COLUMNS,
+    TRANSFORM_SMIRKS_COLUMNS,
+    dataframe_from_dicts,
+)
 
 
 AGGREGATE_FIELDS = (
@@ -325,13 +330,15 @@ class RuleEnvironmentStatisticsCollection(list):
         """Return all statistics rows as dictionaries."""
         return [row.to_dict() for row in self]
 
-    def to_dataframe(self, library="pandas"):
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return statistics as a pandas or polars dataframe."""
-        if library not in {"pandas", "polars"}:
-            raise ValueError(f"unsupported dataframe library: {library}")
-
-        module = importlib.import_module(library)
-        return module.DataFrame(self.to_dicts())
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=RULE_ENVIRONMENT_SMILES_COLUMNS,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
 
 
 def wrap_rule_environment_statistics(raw_rows):

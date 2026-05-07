@@ -43,6 +43,20 @@ def test_compute_transform_statistics_uses_mmpdb_aggregate_conventions():
     assert stat.to_dict()["avg"] == pytest.approx(2.0)
 
 
+def test_transform_statistics_to_dataframe_can_return_query_molecules():
+    oepandas = pytest.importorskip("oepandas")
+    from openeye import oechem  # type: ignore[import-untyped]
+    from oemmpa import compute_transform_statistics
+
+    analyzer = _analyzed_transform_set()
+    statistics = compute_transform_statistics(analyzer.transforms(), "pIC50")
+
+    frame = statistics.to_dataframe(molecules=True)
+
+    assert isinstance(frame["transform"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame.loc[0, "transform"], oechem.OEMolBase)
+
+
 def test_predict_transform_delta_uses_requested_aggregation():
     from oemmpa import compute_transform_statistics, predict_transform_delta
 
@@ -72,7 +86,7 @@ def test_generate_products_with_statistics_attaches_prediction_metadata():
     products = generate_products(
         "Cc1ccccc1",
         analyzer.transforms(),
-        min_support=2,
+        min_evidence=2,
         statistics=statistics,
     )
 

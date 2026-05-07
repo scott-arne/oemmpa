@@ -215,7 +215,7 @@ TEST(TransformApplicationTest, AppliesMMPDBGenerateStyleVariableTransforms) {
     }
 }
 
-TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithSupportFiltering) {
+TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithEvidenceFiltering) {
     Transform methyl_to_hydroxy("C[*:1]>>O[*:1]");
     methyl_to_hydroxy.AddPair(MakeSingleCutPair(
         "tol",
@@ -245,7 +245,7 @@ TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithSuppo
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(2);
+    options.SetMinEvidence(2);
 
     const std::vector<GeneratedProduct> products =
         TransformApplicator::GenerateProducts(
@@ -257,7 +257,7 @@ TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithSuppo
     ASSERT_EQ(products.size(), 1U);
     EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
     EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_EQ(products.front().GetSupportCount(), 2U);
+    EXPECT_EQ(products.front().GetEvidenceCount(), 2U);
 }
 
 TEST(TransformApplicationTest, GeneratesOneProductForEquivalentAttachmentMatches) {
@@ -272,7 +272,7 @@ TEST(TransformApplicationTest, GeneratesOneProductForEquivalentAttachmentMatches
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(1);
+    options.SetMinEvidence(1);
 
     const std::vector<GeneratedProduct> products =
         TransformApplicator::GenerateProducts(
@@ -284,7 +284,7 @@ TEST(TransformApplicationTest, GeneratesOneProductForEquivalentAttachmentMatches
     ASSERT_EQ(products.size(), 1U);
     EXPECT_EQ(products.front().GetSmiles(), "Cc1ccc(cc1)O");
     EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_EQ(products.front().GetSupportCount(), 1U);
+    EXPECT_EQ(products.front().GetEvidenceCount(), 1U);
 }
 
 TEST(TransformApplicationTest, KeepsDistinctTransformProvenanceForSameProduct) {
@@ -309,7 +309,7 @@ TEST(TransformApplicationTest, KeepsDistinctTransformProvenanceForSameProduct) {
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(1);
+    options.SetMinEvidence(1);
 
     const std::vector<GeneratedProduct> products =
         TransformApplicator::GenerateProducts(
@@ -361,7 +361,7 @@ TEST(TransformApplicationTest, GeneratesMMPDBReferenceProductsWithMinPairsStyleF
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(2);
+    options.SetMinEvidence(2);
 
     const std::vector<GeneratedProduct> products =
         TransformApplicator::GenerateProducts(
@@ -373,10 +373,10 @@ TEST(TransformApplicationTest, GeneratesMMPDBReferenceProductsWithMinPairsStyleF
     ASSERT_EQ(products.size(), 2U);
     EXPECT_EQ(products[0].GetSmiles(), "c1ccncc1");
     EXPECT_EQ(products[0].GetTransformSmiles(), "[*:1]O>>[*:1][H]");
-    EXPECT_EQ(products[0].GetSupportCount(), 4U);
+    EXPECT_EQ(products[0].GetEvidenceCount(), 4U);
     EXPECT_EQ(products[1].GetSmiles(), "c1ccnc(c1)N");
     EXPECT_EQ(products[1].GetTransformSmiles(), "[*:1]O>>[*:1]N");
-    EXPECT_EQ(products[1].GetSupportCount(), 3U);
+    EXPECT_EQ(products[1].GetEvidenceCount(), 3U);
 }
 
 TEST(TransformApplicationTest, SkipsUnsupportedTransformsByDefaultDuringGeneration) {
@@ -391,7 +391,7 @@ TEST(TransformApplicationTest, SkipsUnsupportedTransformsByDefaultDuringGenerati
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(1);
+    options.SetMinEvidence(1);
 
     const std::vector<GeneratedProduct> products =
         TransformApplicator::GenerateProducts(
@@ -415,7 +415,7 @@ TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
     ));
 
     GenerationOptions options;
-    options.SetMinSupport(1);
+    options.SetMinEvidence(1);
     options.SetSkipUnsupportedTransforms(false);
 
     try {

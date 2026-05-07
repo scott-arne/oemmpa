@@ -87,6 +87,22 @@ def test_store_returns_wrapped_rule_environment_statistics():
     assert row_dict["radius"] == first.radius
 
 
+def test_rule_environment_statistics_to_dataframe_can_return_molecule_columns():
+    oepandas = pytest.importorskip("oepandas")
+    from openeye import oechem  # type: ignore[import-untyped]
+
+    store = _store_with_toluene_phenol_statistics()
+    rows = store.rule_environment_statistics("pIC50")
+
+    frame = rows.to_dataframe(molecules=True)
+
+    assert isinstance(frame["from_smiles"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["to_smiles"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["transform"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame.loc[0, "from_smiles"], oechem.OEMolBase)
+    assert isinstance(frame.loc[0, "transform"], oechem.OEMolBase)
+
+
 def test_rule_environment_statistics_collection_filters_rows():
     store = _store_with_toluene_phenol_statistics()
     rows = store.rule_environment_statistics("pIC50")

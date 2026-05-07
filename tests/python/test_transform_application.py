@@ -158,7 +158,7 @@ def test_pair_result_applies_its_observed_transform():
     assert pair.apply_transform() == ["c1ccc(cc1)O"]
 
 
-def test_generate_products_filters_transform_collection_by_support():
+def test_generate_products_filters_transform_collection_by_evidence():
     from oemmpa import Analyzer, generate_products
 
     analyzer = Analyzer()
@@ -172,29 +172,40 @@ def test_generate_products_filters_transform_collection_by_support():
     products = generate_products(
         "Cc1ccccc1",
         transforms,
-        min_support=2,
+        min_evidence=2,
     )
 
     assert products.__class__.__name__ == "GeneratedProductCollection"
     assert len(products) == 2
     assert products[0].smiles == "c1ccc(cc1)O"
     assert products[0].transform == "[*:1]C>>[*:1]O"
-    assert products[0].support_count == 2
+    assert products[0].evidence_count == 2
     assert products[1].smiles == "Cc1ccccn1"
     assert products[1].transform == "[*:1]c1ccccc1>>[*:1]c1ccccn1"
-    assert products[1].support_count == 2
+    assert products[1].evidence_count == 2
     assert products.to_dicts() == [
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "[*:1]C>>[*:1]O",
-            "support_count": 2,
+            "evidence_count": 2,
         },
         {
             "smiles": "Cc1ccccn1",
             "transform": "[*:1]c1ccccc1>>[*:1]c1ccccn1",
-            "support_count": 2,
+            "evidence_count": 2,
         },
     ]
+
+
+def test_generate_products_rejects_removed_min_support_keyword():
+    from oemmpa import _oemmpa, generate_products
+
+    with pytest.raises(TypeError, match="min_support"):
+        generate_products(
+            "Cc1ccccc1",
+            [_oemmpa.Transform("[*:1]C>>[*:1]O")],
+            min_support=0,
+        )
 
 
 def test_generate_products_deduplicates_equivalent_attachment_matches():
@@ -205,14 +216,14 @@ def test_generate_products_deduplicates_equivalent_attachment_matches():
     products = generate_products(
         "Cc1ccc(C)cc1",
         [transform],
-        min_support=0,
+        min_evidence=0,
     )
 
     assert products.to_dicts() == [
         {
             "smiles": "Cc1ccc(cc1)O",
             "transform": "C[*:1]>>O[*:1]",
-            "support_count": 0,
+            "evidence_count": 0,
         }
     ]
 
@@ -226,19 +237,19 @@ def test_generate_products_keeps_distinct_transform_provenance_for_same_product(
             _oemmpa.Transform("C[*:1]>>O[*:1]"),
             _oemmpa.Transform("[*:1]C>>[*:1]O"),
         ],
-        min_support=0,
+        min_evidence=0,
     )
 
     assert products.to_dicts() == [
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "C[*:1]>>O[*:1]",
-            "support_count": 0,
+            "evidence_count": 0,
         },
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "[*:1]C>>[*:1]O",
-            "support_count": 0,
+            "evidence_count": 0,
         },
     ]
 
@@ -288,12 +299,12 @@ def test_generate_products_can_use_selected_rule_environments():
     assert matches[0].supporting_pairs()[0].property_delta("pIC50") == pytest.approx(
         1.5
     )
-    assert matches.to_transforms()[0].support_count == 1
+    assert matches.to_transforms()[0].evidence_count == 1
     assert products.to_dicts() == [
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "[*:1]C>>[*:1]O",
-            "support_count": 1,
+            "evidence_count": 1,
             "property": "pIC50",
             "predicted_delta": pytest.approx(1.5),
             "count": 1,
@@ -340,7 +351,7 @@ def test_generate_products_from_rule_environments_supports_multi_atom_transform(
         {
             "smiles": "c1ccc(cc1)O",
             "transform": "[*:1]CC>>[*:1]O",
-            "support_count": 1,
+            "evidence_count": 1,
             "property": "pIC50",
             "predicted_delta": pytest.approx(1.0),
             "count": 1,
@@ -402,7 +413,7 @@ def test_generate_products_from_rule_environments_supports_multi_cut_transform()
         {
             "smiles": "c1cncc(c1N)O",
             "transform": transform,
-            "support_count": 1,
+            "evidence_count": 1,
             "property": "pIC50",
             "predicted_delta": pytest.approx(1.0),
             "count": 1,
@@ -412,7 +423,7 @@ def test_generate_products_from_rule_environments_supports_multi_cut_transform()
         {
             "smiles": "c1cncc(c1O)N",
             "transform": transform,
-            "support_count": 1,
+            "evidence_count": 1,
             "property": "pIC50",
             "predicted_delta": pytest.approx(1.0),
             "count": 1,
@@ -435,7 +446,7 @@ def test_generate_products_can_reject_unsupported_transform_collection_entries()
         generate_products(
             "CCO",
             [unsupported],
-            min_support=0,
+            min_evidence=0,
             skip_unsupported=False,
         )
 
@@ -445,7 +456,7 @@ def test_generate_products_keeps_multi_cut_hydrogen_transform_unsupported():
 
     unsupported = _oemmpa.Transform("C([*:1])[*:2]>>[*:1][H].O[*:2]")
 
-    assert generate_products("CCO", [unsupported], min_support=0) == []
+    assert generate_products("CCO", [unsupported], min_evidence=0) == []
 
     with pytest.raises(
         ValueError,
@@ -455,6 +466,6 @@ def test_generate_products_keeps_multi_cut_hydrogen_transform_unsupported():
         generate_products(
             "CCO",
             [unsupported],
-            min_support=0,
+            min_evidence=0,
             skip_unsupported=False,
         )

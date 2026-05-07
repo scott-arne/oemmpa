@@ -3,6 +3,8 @@
 import sys
 import types
 
+import pytest
+
 
 class FakePair:
     def GetSourceMoleculeId(self):
@@ -55,7 +57,18 @@ class FakeTransform:
     def GetTransformSmiles(self):
         return "C[*:1]>>O[*:1]"
 
-    def GetSupportCount(self):
+    def GetEvidenceCount(self):
+        return 2
+
+
+class FakeProduct:
+    def GetSmiles(self):
+        return "c1ccc(cc1)O"
+
+    def GetTransformSmiles(self):
+        return "C[*:1]>>O[*:1]"
+
+    def GetEvidenceCount(self):
         return 2
 
 
@@ -134,16 +147,64 @@ def test_pair_collection_to_dataframe_imports_polars_lazily(monkeypatch):
     assert calls == [collection.to_dicts()]
 
 
+def test_pair_collection_to_dataframe_can_return_molecule_columns():
+    oepandas = pytest.importorskip("oepandas")
+    from openeye import oechem  # type: ignore[import-untyped]
+    from oemmpa import PairCollection, PairResult
+
+    collection = PairCollection([PairResult(FakePair())])
+
+    frame = collection.to_dataframe(molecules=True)
+
+    assert isinstance(frame["constant"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["source_variable"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["target_variable"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["transform"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame.loc[0, "source_variable"], oechem.OEMolBase)
+    assert not isinstance(frame.loc[0, "source_variable"], str)
+    assert isinstance(frame.loc[0, "transform"], oechem.OEMolBase)
+    assert not isinstance(frame.loc[0, "transform"], str)
+
+
 def test_transform_collection_to_dicts():
     from oemmpa import TransformCollection, TransformResult
 
     collection = TransformCollection([TransformResult(FakeTransform())])
 
     assert collection[0].transform == "C[*:1]>>O[*:1]"
-    assert collection[0].support_count == 2
+    assert collection[0].evidence_count == 2
     assert collection.to_dicts() == [
         {
             "transform": "C[*:1]>>O[*:1]",
-            "support_count": 2,
+            "evidence_count": 2,
         }
     ]
+
+
+def test_transform_collection_to_dataframe_can_return_query_molecule_column():
+    oepandas = pytest.importorskip("oepandas")
+    from openeye import oechem  # type: ignore[import-untyped]
+    from oemmpa import TransformCollection, TransformResult
+
+    collection = TransformCollection([TransformResult(FakeTransform())])
+
+    frame = collection.to_dataframe(molecules=True)
+
+    assert isinstance(frame["transform"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame.loc[0, "transform"], oechem.OEMolBase)
+    assert not isinstance(frame.loc[0, "transform"], str)
+
+
+def test_generated_product_collection_to_dataframe_can_return_molecule_columns():
+    oepandas = pytest.importorskip("oepandas")
+    from openeye import oechem  # type: ignore[import-untyped]
+    from oemmpa import GeneratedProductCollection, GeneratedProductResult
+
+    collection = GeneratedProductCollection([GeneratedProductResult(FakeProduct())])
+
+    frame = collection.to_dataframe(molecules=True)
+
+    assert isinstance(frame["smiles"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame["transform"].dtype, oepandas.MoleculeDtype)
+    assert isinstance(frame.loc[0, "smiles"], oechem.OEMolBase)
+    assert isinstance(frame.loc[0, "transform"], oechem.OEMolBase)

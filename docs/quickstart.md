@@ -130,10 +130,17 @@ improving_pairs = (
 )
 
 pairs_df = improving_pairs.to_dataframe()
+molecule_pairs_df = improving_pairs.to_dataframe(molecules=True)
 ```
+
+The `smiles` argument names the molecule column. It may contain SMILES strings
+or supported OpenEye molecule objects, including ordinary pandas object columns
+and `oepandas.MoleculeDtype` columns.
 
 `higher_is_better` defaults to `True`, which matches pIC50-style potency
 columns. Set it to `False` for endpoints where lower values are better.
+Use `unchanged()` when you want pairs or transforms with exactly zero property
+delta.
 
 Transform queries can attach property statistics and rank transformations by
 predicted improvement:
@@ -150,16 +157,34 @@ opportunity review:
 products = analysis.generate(
     "Cc1ccccc1",
     property_name="pIC50",
-    min_support=2,
+    min_evidence=2,
 )
 
 opportunities = analysis.opportunities(
     "compound_123",
     property_name="pIC50",
+    min_evidence=2,
 )
+print(opportunities.rules.to_dicts())
 print(opportunities.pairs.to_dicts())
 print(opportunities.products.to_dicts())
 ```
+
+For molecule-level opportunities, `min_evidence` is a transform-level
+threshold. `opportunities.pairs` shows the observed matched pairs for the same
+transforms that survive product generation, so the pair and product tables stay
+aligned.
+
+`opportunities.rules` shows the applicable transforms with property
+statistics. For indexed molecules, `opportunities.pairs` shows the molecule's
+observed outgoing matched pairs. For novel source molecules, it shows the
+supporting evidence pairs from the analyzed dataset whose transforms apply to
+the novel source.
+
+Generated products returned by `AnalysisResult.generate()` and
+`AnalysisResult.opportunities()` include `is_known_product` and
+`known_product_ids`, so notebook workflows can distinguish novel suggestions
+from products already present in the analyzed dataset.
 
 ## Results
 
@@ -178,11 +203,13 @@ print(transforms.to_dicts())
 ```
 
 `PairCollection.to_dataframe()` imports pandas or polars only when you ask for
-that output format.
+that output format. Pass `molecules=True` to convert pair fragment SMILES and
+transform SMIRKS columns to OpenEye molecule columns for notebook rendering.
 
 ```python
 pandas_frame = pairs.to_dataframe()
 polars_frame = pairs.to_dataframe(library="polars")
+molecule_frame = pairs.to_dataframe(molecules=True)
 ```
 
 ## Applying Explicit Transforms
@@ -250,7 +277,7 @@ from oemmpa import generate_products
 products = generate_products(
     "Cc1ccccc1",
     analyzer.transforms(),
-    min_support=2,
+    min_evidence=2,
 )
 print(products.to_dicts())
 ```
@@ -382,7 +409,7 @@ oemmpa-cli generate \
   --properties properties.csv \
   --property pIC50 \
   --source Cc1ccccc1 \
-  --min-support 1
+  --min-evidence 1
 ```
 
 These commands currently read the input files, run the analysis in memory, and

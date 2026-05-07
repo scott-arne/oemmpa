@@ -34,7 +34,7 @@ TEST(DataObjectTest, DefaultConstructedObjectsHaveSafeDefaults) {
 
     Transform transform;
     EXPECT_EQ(transform.GetTransformSmiles(), "");
-    EXPECT_EQ(transform.GetSupportCount(), 0);
+    EXPECT_EQ(transform.GetEvidenceCount(), 0);
     EXPECT_TRUE(transform.GetPairs().empty());
 }
 
@@ -72,7 +72,7 @@ TEST(DataObjectTest, TransformGroupsSupportingPairs) {
     Transform transform("C[*:1]>>O[*:1]");
     transform.AddPair(pair);
     EXPECT_EQ(transform.GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_EQ(transform.GetSupportCount(), 1);
+    EXPECT_EQ(transform.GetEvidenceCount(), 1);
 }
 
 TEST(DataObjectTest, DefaultConstructedTransformAdoptsFirstPairTransform) {
@@ -86,7 +86,7 @@ TEST(DataObjectTest, DefaultConstructedTransformAdoptsFirstPairTransform) {
     transform.AddPair(pair);
 
     EXPECT_EQ(transform.GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_EQ(transform.GetSupportCount(), 1);
+    EXPECT_EQ(transform.GetEvidenceCount(), 1);
 }
 
 TEST(DataObjectTest, TransformRejectsMismatchedPairTransform) {
@@ -105,7 +105,7 @@ TEST(DataObjectTest, TransformRejectsMismatchedPairTransform) {
     transform.AddPair(matching_pair);
 
     EXPECT_THROW(transform.AddPair(mismatched_pair), AnalysisStateError);
-    EXPECT_EQ(transform.GetSupportCount(), 1);
+    EXPECT_EQ(transform.GetEvidenceCount(), 1);
 }
 
 }  // namespace test

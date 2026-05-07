@@ -156,13 +156,13 @@ def _mmpdb_reference_analyzer(property_names=("MW", "MP")):
     return analyzer.analyze()
 
 
-def _mmpdb_reference_transform(row, support_count=None):
+def _mmpdb_reference_transform(row, evidence_count=None):
     from oemmpa import _oemmpa
 
     source_variable = row["from_smiles"]
     target_variable = row["to_smiles"]
     transform = _oemmpa.Transform(f"{source_variable}>>{target_variable}")
-    for pair_index in range(support_count or int(row["#pairs"])):
+    for pair_index in range(evidence_count or int(row["#pairs"])):
         transform.AddPair(
             _oemmpa.MatchedPair(
                 pair_index + 1,
@@ -276,20 +276,20 @@ def test_mmpdb_generate_reference_products_match_observed_transform_application(
         }
 
 
-def test_mmpdb_generate_min_pairs_matches_collection_generation_support_filter():
+def test_mmpdb_generate_min_pairs_matches_collection_generation_evidence_filter():
     from oemmpa import generate_products
 
     rows = _read_mmpdb_generate_rows()
     transforms = [_mmpdb_reference_transform(row) for row in rows]
 
-    products = generate_products(rows[0]["start"], transforms, min_support=2)
+    products = generate_products(rows[0]["start"], transforms, min_evidence=2)
     expected_rows = [row for row in rows if int(row["#pairs"]) >= 2]
 
     observed = {
         (
             _rdkit_canonical_smiles(product.smiles),
             product.transform,
-            product.support_count,
+            product.evidence_count,
         )
         for product in products
     }
@@ -318,13 +318,13 @@ def test_mmpdb_generate_multi_cut_hydrogen_boundary_is_explicitly_unsupported():
         build_variable_transform_smirks(transform)
 
     unsupported = _oemmpa.Transform(transform)
-    assert generate_products("CCO", [unsupported], min_support=0) == []
+    assert generate_products("CCO", [unsupported], min_evidence=0) == []
 
     with pytest.raises(ValueError, match=error):
         generate_products(
             "CCO",
             [unsupported],
-            min_support=0,
+            min_evidence=0,
             skip_unsupported=False,
         )
 

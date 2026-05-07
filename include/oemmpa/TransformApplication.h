@@ -29,18 +29,18 @@ private:
 /// \brief Options controlling collection-level product generation.
 class GenerationOptions {
 public:
-    /// \brief Minimum transform support required before application.
+    /// \brief Minimum transform evidence required before application.
     ///
-    /// A value of zero disables support filtering.
+    /// A value of zero disables evidence filtering.
     ///
-    /// \returns Minimum support count.
-    unsigned int GetMinSupport() const;
+    /// \returns Minimum evidence count.
+    unsigned int GetMinEvidence() const;
 
-    /// \brief Set the minimum transform support required before application.
+    /// \brief Set the minimum transform evidence required before application.
     ///
-    /// \param min_support Minimum support count. Use zero to disable support
+    /// \param min_evidence Minimum evidence count. Use zero to disable evidence
     ///     filtering.
-    void SetMinSupport(unsigned int min_support);
+    void SetMinEvidence(unsigned int min_evidence);
 
     /// \brief Whether unsupported observed transforms are skipped.
     ///
@@ -55,7 +55,7 @@ public:
     void SetSkipUnsupportedTransforms(bool skip_unsupported_transforms);
 
 private:
-    unsigned int min_support_ = 1;
+    unsigned int min_evidence_ = 1;
     bool skip_unsupported_transforms_ = true;
 };
 
@@ -66,7 +66,7 @@ public:
     GeneratedProduct(
         const std::string& smiles,
         const std::string& transform_smiles,
-        unsigned int support_count
+        unsigned int evidence_count
     );
 
     /// \brief Canonical product SMILES.
@@ -79,15 +79,15 @@ public:
     /// \returns Observed transform SMILES.
     const std::string& GetTransformSmiles() const;
 
-    /// \brief Number of supporting pairs for the transform.
+    /// \brief Number of matched pairs evidencing the transform.
     ///
-    /// \returns Transform support count.
-    unsigned int GetSupportCount() const;
+    /// \returns Transform evidence count.
+    unsigned int GetEvidenceCount() const;
 
 private:
     std::string smiles_;
     std::string transform_smiles_;
-    unsigned int support_count_ = 0;
+    unsigned int evidence_count_ = 0;
 };
 
 /// \brief Applies chemically explicit molecular transforms.
@@ -178,7 +178,7 @@ public:
     /// \brief Generate products from a transform collection and source SMILES.
     ///
     /// Applies each supported observed transform to ``source_smiles`` after
-    /// support filtering. Product rows retain the transform and support count
+    /// evidence filtering. Product rows retain the transform and evidence count
     /// that generated them.
     ///
     /// \param source_smiles Source molecule SMILES.

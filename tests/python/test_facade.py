@@ -158,7 +158,7 @@ def test_facade_transforms_returns_wrapped_collection():
     assert isinstance(transforms, TransformCollection)
     assert transforms
     assert all(isinstance(transform, TransformResult) for transform in transforms)
-    assert transforms[0].support_count > 0
+    assert transforms[0].evidence_count > 0
 
 
 def test_fragmentation_controls_can_be_configured_from_python_facade():

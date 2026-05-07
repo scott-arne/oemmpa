@@ -51,7 +51,7 @@ matched pair, while variables are the source and target parts that change. The
 word `context` is reserved for future atom-environment information around a
 change site.
 
-`Transform` groups matched pairs by transform SMILES and tracks support count.
+`Transform` groups matched pairs by transform SMILES and tracks evidence count.
 
 `LoadReport` stores accepted IDs and row-level `LoadError` records. It lets
 file-loading code report bad rows without stopping the entire load.
@@ -98,13 +98,13 @@ for now.
 
 `GenerateProducts()` applies a collection of transformations to a source
 molecule and returns `GeneratedProduct` rows with canonical product SMILES, the
-generating transformation, and its support count. `GenerationOptions` controls
-minimum support filtering and whether unsupported observed transformations are
+generating transformation, and its evidence count. `GenerationOptions` controls
+minimum evidence filtering and whether unsupported observed transformations are
 skipped or reported as `InvalidQueryError`.
 
 ```cpp
 OEMMPA::GenerationOptions options;
-options.SetMinSupport(2);
+options.SetMinEvidence(2);
 
 std::vector<OEMMPA::GeneratedProduct> products =
     OEMMPA::TransformApplicator::GenerateProducts(

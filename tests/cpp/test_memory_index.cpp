@@ -84,7 +84,7 @@ TEST(MemoryIndexTest, TransformGroupingReportsPairSupport) {
 
     ASSERT_EQ(transforms.size(), 2);
     EXPECT_EQ(transforms[0].GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_GT(transforms[0].GetSupportCount(), 0);
+    EXPECT_GT(transforms[0].GetEvidenceCount(), 0);
     EXPECT_EQ(transforms[0].GetPairs()[0].GetTransformSmiles(), transforms[0].GetTransformSmiles());
 }
 
@@ -267,7 +267,7 @@ TEST(MemoryIndexTest, TransformGroupingKeepsPairSupportUnderInvariantEnforcement
 
     ASSERT_EQ(transforms.size(), 1);
     EXPECT_EQ(transforms[0].GetTransformSmiles(), "C[*:1]>>O[*:1]");
-    EXPECT_EQ(transforms[0].GetSupportCount(), 4);
+    EXPECT_EQ(transforms[0].GetEvidenceCount(), 4);
     for (const MatchedPair& pair : transforms[0].GetPairs()) {
         EXPECT_EQ(pair.GetTransformSmiles(), transforms[0].GetTransformSmiles());
     }
@@ -348,8 +348,8 @@ TEST(MemoryIndexTest, DuplicateFragmentationsDoNotInflatePairOrTransformSupport)
 
     EXPECT_EQ(pairs.size(), 2);
     ASSERT_EQ(transforms.size(), 2);
-    EXPECT_EQ(transforms[0].GetSupportCount(), 1);
-    EXPECT_EQ(transforms[1].GetSupportCount(), 1);
+    EXPECT_EQ(transforms[0].GetEvidenceCount(), 1);
+    EXPECT_EQ(transforms[1].GetEvidenceCount(), 1);
 }
 
 TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {

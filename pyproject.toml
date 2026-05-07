@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "oemmpa"
-version = "1.0.0b1"
+version = "1.0.0b2"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -60,6 +60,41 @@ module = [
 ]
 ignore_errors = true
 ignore_missing_imports = true
+
+[tool.pyright]
+venvPath = "/Users/johnss51/Applications/miniforge3/envs"
+venv = "main"
+pythonVersion = "3.13"
+include = [
+    "python",
+    "tests/python",
+    "benchmarks",
+    "tasks.py",
+]
+extraPaths = [
+    "python",
+    "build-debug/swig",
+]
+ignore = [
+    "examples",
+    "build-debug",
+    "build-debug/**",
+    "python/oemmpa/oemmpa.py",
+]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*",
+    "build",
+    "build/**",
+    "build-debug",
+    "build-debug/**",
+    "dist",
+    "dist/**",
+    "examples",
+    "examples/**",
+    "htmlcov",
+]
 
 [tool.scikit-build]
 cmake.version = ">=3.21"

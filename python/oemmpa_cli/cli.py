@@ -42,7 +42,7 @@ PREDICTION_COLUMNS = [
 GENERATION_COLUMNS = [
     "smiles",
     "transform",
-    "support_count",
+    "evidence_count",
     "property",
     "predicted_delta",
     "count",
@@ -51,7 +51,7 @@ GENERATION_COLUMNS = [
 ]
 
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
-INTEGER_COLUMNS = {"count", "support_count"}
+INTEGER_COLUMNS = {"count", "evidence_count"}
 
 
 def _add_input_arguments(parser):
@@ -165,7 +165,7 @@ def _compute_statistics(args):
     return analyzer, compute_transform_statistics(
         analyzer.transforms(),
         args.property,
-        min_count=args.min_support,
+        min_count=args.min_evidence,
     )
 
 
@@ -191,7 +191,7 @@ def _generate(args):
     products = generate_products(
         args.source,
         analyzer.transforms(),
-        min_support=args.min_support,
+        min_evidence=args.min_evidence,
         skip_unsupported=not args.strict,
         statistics=statistics,
     )
@@ -209,7 +209,7 @@ def _build_parser():
     )
     _add_input_arguments(stats_parser)
     stats_parser.add_argument(
-        "--min-support",
+        "--min-evidence",
         type=int,
         default=1,
         help="Minimum property-bearing pairs per transform.",
@@ -229,7 +229,7 @@ def _build_parser():
         help="Statistic used as the predicted delta.",
     )
     predict_parser.add_argument(
-        "--min-support",
+        "--min-evidence",
         type=int,
         default=1,
         help="Minimum property-bearing pairs per transform.",
@@ -243,10 +243,10 @@ def _build_parser():
     _add_input_arguments(generate_parser)
     generate_parser.add_argument("--source", required=True, help="Source SMILES.")
     generate_parser.add_argument(
-        "--min-support",
+        "--min-evidence",
         type=int,
         default=1,
-        help="Minimum transform support count and statistics count.",
+        help="Minimum transform evidence count and statistics count.",
     )
     generate_parser.add_argument(
         "--strict",

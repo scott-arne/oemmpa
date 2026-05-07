@@ -24,7 +24,7 @@ const std::string& Transform::GetTransformSmiles() const {
     return transform_smiles_;
 }
 
-unsigned int Transform::GetSupportCount() const {
+unsigned int Transform::GetEvidenceCount() const {
     return static_cast<unsigned int>(pairs_.size());
 }
 

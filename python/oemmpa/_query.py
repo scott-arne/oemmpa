@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import importlib
-
 from ._analytics import compute_transform_statistics
+from ._dataframe import (
+    PAIR_SMILES_COLUMNS,
+    TRANSFORM_SMIRKS_COLUMNS,
+    dataframe_from_dicts,
+)
 from ._facade import Analyzer
 from ._loading import LoadReport, iter_dataframe_records
 from ._transform import generate_products
-
-
-def _dataframe(rows, library):
-    if library not in {"pandas", "polars"}:
-        raise ValueError(f"unsupported dataframe library: {library}")
-    module = importlib.import_module(library)
-    return module.DataFrame(rows)
 
 
 def _delta_key(property_name):
@@ -38,6 +34,46 @@ def _smiles_matches(smiles, subsearch):
     if not oechem.OESmilesToMol(mol, str(smiles)):
         return False
     return bool(subsearch.SingleMatch(mol))
+
+
+def _validate_min_evidence(min_evidence):
+    min_evidence = int(min_evidence)
+    if min_evidence < 0:
+        raise ValueError("min_evidence must be greater than or equal to zero")
+    return min_evidence
+
+
+def _source_to_smiles(source):
+    if isinstance(source, str):
+        return source
+
+    from openeye import oechem  # type: ignore[import-untyped]
+
+    if isinstance(source, oechem.OEMolBase):
+        return oechem.OECreateSmiString(source)
+
+    return str(source)
+
+
+def _canonical_smiles(source):
+    smiles = _source_to_smiles(source)
+    from openeye import oechem  # type: ignore[import-untyped]
+
+    mol = oechem.OEGraphMol()
+    if not oechem.OESmilesToMol(mol, smiles):
+        return smiles
+    return oechem.OECreateSmiString(mol)
+
+
+def _known_product_ids_by_smiles(molecule_smiles):
+    ids_by_smiles = {}
+    for molecule_id, smiles in molecule_smiles.items():
+        canonical_smiles = _canonical_smiles(smiles)
+        ids_by_smiles.setdefault(canonical_smiles, []).append(str(molecule_id))
+    return {
+        smiles: tuple(molecule_ids)
+        for smiles, molecule_ids in ids_by_smiles.items()
+    }
 
 
 class PairQuery:
@@ -70,6 +106,15 @@ class PairQuery:
     def decreases(self, property_name, higher_is_better=True):
         """Return pairs whose directional delta worsens the objective."""
         return self._filter_by_delta(property_name, not bool(higher_is_better))
+
+    def unchanged(self, property_name):
+        """Return pairs whose directional delta is exactly zero."""
+        property_name = str(property_name)
+        pairs = [
+            pair for pair in self._pairs
+            if pair.property_delta(property_name) == 0
+        ]
+        return PairQuery(pairs, self._delta_properties_with(property_name))
 
     def where_constant_matches(self, smarts):
         """Return pairs whose constant region matches ``smarts``."""
@@ -109,9 +154,15 @@ class PairQuery:
             rows.append(row)
         return rows
 
-    def to_dataframe(self, library="pandas"):
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return query rows as a pandas or polars dataframe."""
-        return _dataframe(self.to_dicts(), library)
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=PAIR_SMILES_COLUMNS,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
 
     def _filter_by_delta(self, property_name, positive_delta):
         property_name = str(property_name)
@@ -125,10 +176,13 @@ class PairQuery:
                 pair for pair in self._pairs
                 if pair.property_delta(property_name) < 0
             ]
+        return PairQuery(pairs, self._delta_properties_with(property_name))
+
+    def _delta_properties_with(self, property_name):
         delta_properties = self._delta_properties
         if property_name not in delta_properties:
             delta_properties = (*delta_properties, property_name)
-        return PairQuery(pairs, delta_properties)
+        return delta_properties
 
     def _filter(self, predicate):
         return PairQuery(
@@ -181,6 +235,22 @@ class TransformQuery:
         """Return transforms whose predicted delta worsens the objective."""
         return self._filter_by_prediction(property_name, not bool(higher_is_better))
 
+    def unchanged(self, property_name=None):
+        """Return transforms whose predicted delta is exactly zero."""
+        query = self._ensure_statistics(property_name)
+        rows = []
+        for transform in query._transforms:
+            statistics = query._find_statistics(transform.transform)
+            if statistics is None:
+                continue
+            if statistics.predicted_delta() == 0:
+                rows.append(transform)
+        return TransformQuery(
+            rows,
+            statistics=query._statistics,
+            property_name=query._property_name,
+        )
+
     def top(self, n):
         """Return the first ``n`` transforms in the current ranking."""
         return TransformQuery(
@@ -208,9 +278,14 @@ class TransformQuery:
             rows.append(row)
         return rows
 
-    def to_dataframe(self, library="pandas"):
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return query rows as a pandas or polars dataframe."""
-        return _dataframe(self.to_dicts(), library)
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
 
     def _filter_by_prediction(self, property_name, positive_delta):
         query = self._ensure_statistics(property_name)
@@ -253,15 +328,27 @@ class TransformQuery:
             return None
         return self._statistics.get(transform)
 
+    def _filter(self, predicate):
+        return TransformQuery(
+            [transform for transform in self._transforms if predicate(transform)],
+            statistics=self._statistics,
+            property_name=self._property_name,
+        )
+
 
 class OpportunityResult:
-    """Molecule-level improvement opportunities."""
+    """Molecule-level improvement opportunities.
 
-    def __init__(self, molecule_id, source_smiles, pairs, products):
+    ``rules`` contains applicable transforms, ``pairs`` contains the matching
+    observed evidence pairs, and ``products`` contains generated products.
+    """
+
+    def __init__(self, molecule_id, source_smiles, pairs, products, rules):
         self.molecule_id = str(molecule_id)
         self.source_smiles = str(source_smiles)
         self.pairs = pairs
         self.products = products
+        self.rules = rules
 
     def to_dict(self):
         """Return a serializable opportunity summary."""
@@ -270,6 +357,7 @@ class OpportunityResult:
             "source_smiles": self.source_smiles,
             "pairs": self.pairs.to_dicts(),
             "products": self.products.to_dicts(),
+            "rules": self.rules.to_dicts(),
         }
 
 
@@ -280,6 +368,9 @@ class AnalysisResult:
         self.analyzer = analyzer
         self.load_report = load_report
         self.molecule_smiles = dict(molecule_smiles or {})
+        self._known_product_ids_by_smiles = _known_product_ids_by_smiles(
+            self.molecule_smiles
+        )
 
     @property
     def pairs(self):
@@ -297,7 +388,7 @@ class AnalysisResult:
         *,
         property_name=None,
         higher_is_better=True,
-        min_support=1,
+        min_evidence=1,
         skip_unsupported=True,
         transforms=None,
     ):
@@ -307,11 +398,13 @@ class AnalysisResult:
         :param property_name: Optional property used to keep improving
             transforms and attach prediction metadata.
         :param higher_is_better: Whether positive deltas are improvements.
-        :param min_support: Minimum transform support for generation.
+        :param min_evidence: Minimum transform evidence for product
+            generation. Use ``0`` to disable evidence filtering.
         :param skip_unsupported: Whether unsupported transforms are skipped.
         :param transforms: Optional transform query or collection override.
         :returns: Generated product collection.
         """
+        min_evidence = _validate_min_evidence(min_evidence)
         if transforms is None:
             query = self.transforms
         elif isinstance(transforms, TransformQuery):
@@ -325,50 +418,76 @@ class AnalysisResult:
                 higher_is_better=higher_is_better,
             )
 
-        return generate_products(
+        products = generate_products(
             source,
             query,
-            min_support=min_support,
+            min_evidence=min_evidence,
             skip_unsupported=skip_unsupported,
             statistics=query.statistics,
         )
+        return products.with_known_products(self._known_product_ids_by_smiles)
 
     def opportunities(
         self,
-        molecule_id,
+        source,
         *,
         property_name,
         higher_is_better=True,
-        min_support=1,
+        min_evidence=1,
         skip_unsupported=True,
+        source_id=None,
     ):
-        """Return matched-pair and product opportunities for one molecule."""
-        molecule_id = str(molecule_id)
-        try:
-            source_smiles = self.molecule_smiles[molecule_id]
-        except KeyError as exc:
-            raise KeyError(molecule_id) from exc
+        """Return matched-pair and product opportunities for one molecule.
 
-        outgoing = PairQuery(
-            pair for pair in self.analyzer.pairs()
-            if str(pair.source_id) == molecule_id
-        )
-        pairs = outgoing.with_delta(property_name).improves(
+        :param source: Indexed molecule identifier, source molecule SMILES, or
+            supported molecule object.
+        :param property_name: Property used to rank improving opportunities.
+        :param higher_is_better: Whether positive deltas are improvements.
+        :param min_evidence: Minimum transform evidence for included pair and
+            product opportunities. Use ``0`` to disable evidence filtering.
+        :param skip_unsupported: Whether unsupported transforms are skipped.
+        :param source_id: Optional label for non-indexed source molecules.
+        :returns: Molecule-level opportunity result.
+        """
+        min_evidence = _validate_min_evidence(min_evidence)
+        source_key = str(source)
+        if source_key in self.molecule_smiles:
+            molecule_id = source_key
+            source_smiles = self.molecule_smiles[molecule_id]
+            outgoing = PairQuery(
+                pair for pair in self.analyzer.pairs()
+                if str(pair.source_id) == molecule_id
+            )
+        else:
+            molecule_id = str(source_id) if source_id is not None else source_key
+            source_smiles = _source_to_smiles(source)
+            outgoing = self.pairs
+
+        rules = self.transforms.with_statistics(property_name).improves(
             property_name,
             higher_is_better=higher_is_better,
         )
         products = self.generate(
             source_smiles,
-            property_name=property_name,
-            higher_is_better=higher_is_better,
-            min_support=min_support,
+            min_evidence=min_evidence,
             skip_unsupported=skip_unsupported,
+            transforms=rules,
         )
+        applied_transforms = {product.transform for product in products}
+        rules = rules._filter(
+            lambda transform: transform.transform in applied_transforms
+        )
+        pairs = outgoing.with_delta(property_name).improves(
+            property_name,
+            higher_is_better=higher_is_better,
+        )
+        pairs = pairs._filter(lambda pair: pair.transform in applied_transforms)
         return OpportunityResult(
             molecule_id,
             source_smiles,
             pairs,
             products,
+            rules,
         )
 
 
@@ -421,7 +540,7 @@ def analyze_dataframe(
             continue
 
         report.record_accepted(accepted_id)
-        molecule_smiles[str(accepted_id)] = str(molecule)
+        molecule_smiles[str(accepted_id)] = _source_to_smiles(molecule)
 
     analyzer.analyze()
     return AnalysisResult(

@@ -698,7 +698,7 @@ TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {
 
     ASSERT_EQ(transforms.size(), 2U);
     for (const Transform& transform : transforms) {
-        EXPECT_EQ(transform.GetSupportCount(), 1U);
+        EXPECT_EQ(transform.GetEvidenceCount(), 1U);
         ASSERT_EQ(transform.GetPairs().size(), 1U);
         EXPECT_EQ(transform.GetTransformSmiles(), transform.GetPairs().front().GetTransformSmiles());
     }

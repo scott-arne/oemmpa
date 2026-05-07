@@ -91,7 +91,7 @@ def test_cli_generate_outputs_statistics_annotated_products():
         "pIC50",
         "--source",
         "Cc1ccccc1",
-        "--min-support",
+        "--min-evidence",
         "1",
     )
 

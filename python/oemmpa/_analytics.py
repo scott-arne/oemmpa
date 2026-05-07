@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import importlib
 
+from ._dataframe import TRANSFORM_SMIRKS_COLUMNS, dataframe_from_dicts
+
 
 AGGREGATE_FIELDS = (
     "count",
@@ -248,13 +250,14 @@ class TransformStatisticsCollection(list):
         """Return all statistics rows as dictionaries."""
         return [result.to_dict() for result in self]
 
-    def to_dataframe(self, library="pandas"):
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return statistics as a pandas or polars dataframe."""
-        if library not in {"pandas", "polars"}:
-            raise ValueError(f"unsupported dataframe library: {library}")
-
-        module = importlib.import_module(library)
-        return module.DataFrame(self.to_dicts())
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
 
 
 @dataclass(frozen=True)

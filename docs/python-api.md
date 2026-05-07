@@ -101,6 +101,10 @@ analysis = analyze_dataframe(
 )
 ```
 
+The `smiles` argument names the molecule column. The column may contain SMILES
+strings or supported OpenEye molecule objects, including ordinary pandas object
+columns and `oepandas.MoleculeDtype` columns.
+
 `analysis.pairs` is a `PairQuery`. It supports chainable filtering by property
 delta and by SMARTS matches against the constant, source variable, and target
 variable regions:
@@ -120,7 +124,8 @@ hits.to_dataframe()
 
 `higher_is_better` defaults to `True`, matching pIC50 semantics. Use
 `higher_is_better=False` for endpoints such as IC50 where lower values are
-preferred. `decreases()` keeps the opposite direction.
+preferred. `decreases()` keeps the opposite direction, and `unchanged()` keeps
+exactly zero deltas.
 
 `analysis.transforms` is a `TransformQuery`. It can compute transform
 statistics, filter to improving transformations, rank them by predicted delta,
@@ -138,9 +143,26 @@ new molecule:
 products = analysis.generate(
     "Cc1ccccc1",
     property_name="pIC50",
-    min_support=2,
+    min_evidence=2,
 )
 products.to_dataframe()
+```
+
+Products generated through `AnalysisResult` include `is_known_product` and
+`known_product_ids` columns. These fields compare canonical product SMILES
+against the analyzed molecule set; lower-level `generate_products()` remains a
+pure transform applicator and does not attach dataset metadata.
+
+For notebook rendering with CNotebook, pass `molecules=True` to
+`to_dataframe()`. The text export remains the default; `molecules=True`
+converts supported chemical columns in place to OpenEye molecule columns. This
+works for product SMILES, numbered R-group fragment SMILES such as
+`C[*:1]`, and transform SMIRKS.
+
+```python
+products.to_dataframe(molecules=True)
+hits.to_dataframe(molecules=True)
+rules.to_dataframe(molecules=True)
 ```
 
 Use `AnalysisResult.opportunities()` to ask what observed matched pairs and
@@ -150,10 +172,23 @@ generated products suggest for one molecule in the analyzed dataset:
 opportunities = analysis.opportunities(
     "compound_123",
     property_name="pIC50",
+    min_evidence=2,
 )
+opportunities.rules.to_dataframe()
 opportunities.pairs.to_dataframe()
 opportunities.products.to_dataframe()
 ```
+
+`min_evidence` is applied at the transform level. The pair table is limited to
+observed matched pairs whose transforms also pass the product-generation
+threshold, which keeps `opportunities.pairs` and `opportunities.products`
+interpretable side by side.
+
+For indexed source molecules, `opportunities.pairs` contains the source
+molecule's observed outgoing matched pairs. For novel source molecules, it
+contains supporting evidence pairs from the analyzed dataset for the applicable
+rules. `opportunities.rules` contains the applicable transforms and their
+statistics in both cases.
 
 ### configure_fragmentation
 
@@ -246,7 +281,7 @@ wrappers.
 ```python
 transform = transforms[0]
 print(transform.transform)
-print(transform.support_count)
+print(transform.evidence_count)
 print(transform.to_dict())
 ```
 
@@ -301,7 +336,7 @@ products = pair.apply_transform()
 
 `generate_products()` applies a transform collection to a source molecule and
 returns `GeneratedProductCollection` rows with product SMILES, generating
-transform, and support count:
+transform, and evidence count:
 
 ```python
 from oemmpa import generate_products
@@ -309,13 +344,14 @@ from oemmpa import generate_products
 products = generate_products(
     "Cc1ccccc1",
     analyzer.transforms(),
-    min_support=2,
+    min_evidence=2,
 )
 print(products.to_dicts())
 ```
 
 `GeneratedProductCollection.to_dataframe()` imports pandas or polars only when
-you request a dataframe.
+you request a dataframe. Use `molecules=True` to convert product SMILES and
+transform SMIRKS columns to OpenEye molecule columns for CNotebook rendering.
 
 Pass `statistics=` to attach predicted property changes to generated products:
 
@@ -384,7 +420,7 @@ when those packages are available.
 
 Rule-environment statistics can be used directly when a DuckDB-backed store is
 available. This lets you select transformations by property, environment
-radius, support count, and rule view before generating products.
+radius, evidence count, and rule view before generating products.
 
 ```python
 from oemmpa import (
@@ -445,11 +481,15 @@ database statistics can be added later without changing the file formats.
 
 ## Dataframe Export
 
-`PairCollection.to_dataframe()` imports pandas or polars lazily.
+`PairCollection.to_dataframe()` imports pandas or polars lazily. By default it
+returns text columns. Use `molecules=True` to replace pair fragment SMILES and
+transform SMIRKS with OpenEye molecule columns suitable for CNotebook
+depiction.
 
 ```python
 pandas_frame = analyzer.pairs().to_dataframe()
 polars_frame = analyzer.pairs().to_dataframe(library="polars")
+molecule_frame = analyzer.pairs().to_dataframe(molecules=True)
 ```
 
 Use `to_dicts()` when you need dependency-free structured output.

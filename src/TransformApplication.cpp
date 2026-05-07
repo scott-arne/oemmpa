@@ -289,12 +289,12 @@ const std::string& TransformProduct::GetSmiles() const {
     return smiles_;
 }
 
-unsigned int GenerationOptions::GetMinSupport() const {
-    return min_support_;
+unsigned int GenerationOptions::GetMinEvidence() const {
+    return min_evidence_;
 }
 
-void GenerationOptions::SetMinSupport(unsigned int min_support) {
-    min_support_ = min_support;
+void GenerationOptions::SetMinEvidence(unsigned int min_evidence) {
+    min_evidence_ = min_evidence;
 }
 
 bool GenerationOptions::GetSkipUnsupportedTransforms() const {
@@ -308,11 +308,11 @@ void GenerationOptions::SetSkipUnsupportedTransforms(bool skip_unsupported_trans
 GeneratedProduct::GeneratedProduct(
     const std::string& smiles,
     const std::string& transform_smiles,
-    unsigned int support_count
+    unsigned int evidence_count
 )
     : smiles_(smiles),
       transform_smiles_(transform_smiles),
-      support_count_(support_count) {}
+      evidence_count_(evidence_count) {}
 
 const std::string& GeneratedProduct::GetSmiles() const {
     return smiles_;
@@ -322,8 +322,8 @@ const std::string& GeneratedProduct::GetTransformSmiles() const {
     return transform_smiles_;
 }
 
-unsigned int GeneratedProduct::GetSupportCount() const {
-    return support_count_;
+unsigned int GeneratedProduct::GetEvidenceCount() const {
+    return evidence_count_;
 }
 
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
@@ -429,8 +429,8 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
     std::vector<GeneratedProduct> results;
 
     for (const Transform& transform : transforms) {
-        const unsigned int support_count = transform.GetSupportCount();
-        if (support_count < options.GetMinSupport()) {
+        const unsigned int evidence_count = transform.GetEvidenceCount();
+        if (evidence_count < options.GetMinEvidence()) {
             continue;
         }
 
@@ -455,7 +455,7 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
             results.emplace_back(
                 product.GetSmiles(),
                 transform.GetTransformSmiles(),
-                support_count
+                evidence_count
             );
         }
     }

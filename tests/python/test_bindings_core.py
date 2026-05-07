@@ -263,4 +263,4 @@ def test_returned_pair_vector_elements_expose_getters():
     transforms = analyzer.GetTransforms()
     assert len(transforms) > 0
     assert len(list(transforms)) == len(transforms)
-    assert transforms[0].GetSupportCount() > 0
+    assert transforms[0].GetEvidenceCount() > 0

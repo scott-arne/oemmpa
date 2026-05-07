@@ -15,7 +15,7 @@ public:
 
     void AddPair(const MatchedPair& pair);
     const std::string& GetTransformSmiles() const;
-    unsigned int GetSupportCount() const;
+    unsigned int GetEvidenceCount() const;
     const std::vector<MatchedPair>& GetPairs() const;
 
 private:

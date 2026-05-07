@@ -1,6 +1,11 @@
 """Pythonic wrappers for OEMMPA result objects."""
 
-import importlib
+from ._dataframe import (
+    PAIR_SMILES_COLUMNS,
+    PRODUCT_SMILES_COLUMNS,
+    TRANSFORM_SMIRKS_COLUMNS,
+    dataframe_from_dicts,
+)
 
 
 class PairResult:
@@ -102,21 +107,25 @@ class PairCollection(list):
         """
         return [pair.to_dict() for pair in self]
 
-    def to_dataframe(self, library="pandas"):
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return pair results as a pandas or polars dataframe.
 
         Dependencies are imported only when this method is called.
 
         :param library: Dataframe library to use, either ``"pandas"`` or
             ``"polars"``.
+        :param molecules: When ``True``, convert fragment and transform
+            columns to OpenEye molecule columns for notebook depiction.
         :returns: Dataframe object created by the requested library.
         :raises ValueError: If ``library`` is unsupported.
         """
-        if library not in {"pandas", "polars"}:
-            raise ValueError(f"unsupported dataframe library: {library}")
-
-        module = importlib.import_module(library)
-        return module.DataFrame(self.to_dicts())
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=PAIR_SMILES_COLUMNS,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
 
 
 class TransformResult:
@@ -134,18 +143,18 @@ class TransformResult:
         return self._raw_transform.GetTransformSmiles()
 
     @property
-    def support_count(self):
-        """Number of matched pairs supporting this transform."""
-        return self._raw_transform.GetSupportCount()
+    def evidence_count(self):
+        """Number of matched pairs evidencing this transform."""
+        return self._raw_transform.GetEvidenceCount()
 
     def to_dict(self):
         """Return a serializable mapping for this transform.
 
-        :returns: Dictionary containing the transform and support count.
+        :returns: Dictionary containing the transform and evidence count.
         """
         return {
             "transform": self.transform,
-            "support_count": self.support_count,
+            "evidence_count": self.evidence_count,
         }
 
 
@@ -159,17 +168,39 @@ class TransformCollection(list):
         """
         return [transform.to_dict() for transform in self]
 
+    def to_dataframe(self, library="pandas", molecules=False):
+        """Return transform results as a pandas or polars dataframe.
+
+        :param library: Dataframe library to use, either ``"pandas"`` or
+            ``"polars"``.
+        :param molecules: When ``True``, convert transform SMIRKS to OpenEye
+            molecule columns for notebook depiction.
+        :returns: Dataframe object created by the requested library.
+        """
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
+
 
 class GeneratedProductResult:
     """Generated product result wrapper.
 
     :param raw_product: Raw ``_oemmpa.GeneratedProduct`` instance to wrap.
     :param statistics: Optional transform statistics for prediction metadata.
+    :param known_product_ids: Optional analyzed-dataset molecule identifiers
+        matching this product.
     """
 
-    def __init__(self, raw_product, statistics=None):
+    def __init__(self, raw_product, statistics=None, known_product_ids=None):
         self._raw_product = raw_product
         self._statistics = statistics
+        self._known_product_ids = (
+            None if known_product_ids is None
+            else tuple(str(molecule_id) for molecule_id in known_product_ids)
+        )
 
     @property
     def smiles(self):
@@ -182,14 +213,26 @@ class GeneratedProductResult:
         return self._raw_product.GetTransformSmiles()
 
     @property
-    def support_count(self):
-        """Number of matched pairs supporting the generating transform."""
-        return self._raw_product.GetSupportCount()
+    def evidence_count(self):
+        """Number of matched pairs evidencing the generating transform."""
+        return self._raw_product.GetEvidenceCount()
 
     @property
     def statistics(self):
         """Statistics attached to this generating transform, if available."""
         return self._statistics
+
+    @property
+    def is_known_product(self):
+        """Whether this product matches a molecule in the analyzed dataset."""
+        return bool(self.known_product_ids)
+
+    @property
+    def known_product_ids(self):
+        """Analyzed-dataset molecule identifiers matching this product."""
+        if self._known_product_ids is None:
+            return ()
+        return self._known_product_ids
 
     def predicted_delta(self, aggregation="avg"):
         """Return a predicted property delta from attached statistics.
@@ -203,17 +246,32 @@ class GeneratedProductResult:
             return None
         return self._statistics.predicted_delta(aggregation)
 
+    def with_known_product_ids(self, known_product_ids):
+        """Return a copy with known-product metadata attached."""
+        return GeneratedProductResult(
+            self._raw_product,
+            statistics=self._statistics,
+            known_product_ids=known_product_ids,
+        )
+
     def to_dict(self):
         """Return a serializable mapping for this generated product.
 
-        :returns: Dictionary containing product SMILES, transform, and support
+        :returns: Dictionary containing product SMILES, transform, and evidence
             count.
         """
         row = {
             "smiles": self.smiles,
             "transform": self.transform,
-            "support_count": self.support_count,
+            "evidence_count": self.evidence_count,
         }
+        if self._known_product_ids is not None:
+            row.update(
+                {
+                    "is_known_product": self.is_known_product,
+                    "known_product_ids": list(self.known_product_ids),
+                }
+            )
         if self._statistics is not None:
             row.update(
                 {
@@ -237,18 +295,36 @@ class GeneratedProductCollection(list):
         """
         return [product.to_dict() for product in self]
 
-    def to_dataframe(self, library="pandas"):
+    def with_known_products(self, known_product_ids_by_smiles):
+        """Return a collection annotated with known-product metadata.
+
+        :param known_product_ids_by_smiles: Mapping from canonical product
+            SMILES to iterable molecule identifiers.
+        :returns: Annotated generated-product collection.
+        """
+        return GeneratedProductCollection(
+            product.with_known_product_ids(
+                known_product_ids_by_smiles.get(product.smiles, ())
+            )
+            for product in self
+        )
+
+    def to_dataframe(self, library="pandas", molecules=False):
         """Return generated products as a pandas or polars dataframe.
 
         Dependencies are imported only when this method is called.
 
         :param library: Dataframe library to use, either ``"pandas"`` or
             ``"polars"``.
+        :param molecules: When ``True``, convert product and transform columns
+            to OpenEye molecule columns for notebook depiction.
         :returns: Dataframe object created by the requested library.
         :raises ValueError: If ``library`` is unsupported.
         """
-        if library not in {"pandas", "polars"}:
-            raise ValueError(f"unsupported dataframe library: {library}")
-
-        module = importlib.import_module(library)
-        return module.DataFrame(self.to_dicts())
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=PRODUCT_SMILES_COLUMNS,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )

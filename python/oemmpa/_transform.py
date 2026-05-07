@@ -108,7 +108,7 @@ def apply_pair_transform(pair):
 def generate_products(
     source,
     transforms,
-    min_support=1,
+    min_evidence=1,
     skip_unsupported=True,
     statistics=None,
 ):
@@ -118,23 +118,23 @@ def generate_products(
         molecule object.
     :param transforms: Iterable of :class:`TransformResult` or raw
         ``_oemmpa.Transform`` objects.
-    :param min_support: Minimum transform support count. Use ``0`` to disable
-        support filtering.
+    :param min_evidence: Minimum transform evidence count. Use ``0`` to
+        disable evidence filtering.
     :param skip_unsupported: Whether malformed or unsupported observed
         transforms should be ignored. When ``False``, those errors raise
         :class:`ValueError`.
     :param statistics: Optional transform statistics used to attach prediction
         metadata to generated products.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
-    :raises ValueError: If the source molecule is invalid, ``min_support`` is
+    :raises ValueError: If the source molecule is invalid, ``min_evidence`` is
         negative, or unsupported transforms are not skipped.
     """
-    min_support = int(min_support)
-    if min_support < 0:
-        raise ValueError("min_support must be greater than or equal to zero")
+    min_evidence = int(min_evidence)
+    if min_evidence < 0:
+        raise ValueError("min_evidence must be greater than or equal to zero")
 
     options = _oemmpa.GenerationOptions()
-    options.SetMinSupport(min_support)
+    options.SetMinEvidence(min_evidence)
     options.SetSkipUnsupportedTransforms(bool(skip_unsupported))
 
     try:
@@ -164,7 +164,7 @@ def generate_products_from_rule_environments(
     *,
     transform=None,
     selection=None,
-    min_support=None,
+    min_evidence=None,
     skip_unsupported=True,
     statistics=None,
     **filters,
@@ -181,7 +181,7 @@ def generate_products_from_rule_environments(
     :param transform: Optional transform SMILES to select when a store is
         provided.
     :param selection: Optional structured rule selection options.
-    :param min_support: Optional product-generation support threshold. When
+    :param min_evidence: Optional product-generation evidence threshold. When
         omitted, the selected rule environment's ``min_pairs`` setting is used.
     :param skip_unsupported: Whether unsupported observed transforms should be
         skipped.
@@ -202,15 +202,15 @@ def generate_products_from_rule_environments(
             selection=options,
         )
 
-    if min_support is None:
-        min_support = options.min_pairs
+    if min_evidence is None:
+        min_evidence = options.min_pairs
     if statistics is None and hasattr(matches, "statistics"):
         statistics = matches.statistics()
 
     return generate_products(
         source,
         matches.to_transforms(),
-        min_support=min_support,
+        min_evidence=min_evidence,
         skip_unsupported=skip_unsupported,
         statistics=statistics,
     )
