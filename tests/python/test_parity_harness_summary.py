@@ -42,4 +42,29 @@ def test_phase7_harness_keeps_cli_output_as_deferred_followup():
 
     assert cli_rows
     assert {row["status"] for row in cli_rows} == {"deferred"}
-    assert all("CLI" in row["notes"] or "output" in row["notes"] for row in cli_rows)
+    assert all(
+        "CLI" in row["notes"]
+        or "output" in row["notes"]
+        or "command" in row["notes"]
+        for row in cli_rows
+    )
+
+
+def test_deferred_matrix_rows_have_current_roadmap_reasons():
+    rows = _read_matrix()
+    deferred_rows = [row for row in rows if row["status"] == "deferred"]
+
+    assert deferred_rows
+    for row in deferred_rows:
+        assert "Phase 9 will" not in row["notes"], row
+        assert "Phase 10 will" not in row["notes"], row
+        assert any(
+            marker in row["notes"]
+            for marker in (
+                "Phase 14",
+                "Phase 15",
+                "future compatibility",
+                "separate workflow",
+                "deferred",
+            )
+        ), row
