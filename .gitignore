@@ -288,6 +288,7 @@ cython_debug/
 # Custom
 docs/plans/
 docs/superpowers/
+CMakeUserPresets.json
 .claude
 build-debug/
 python/oemmpa/_build_info.py
