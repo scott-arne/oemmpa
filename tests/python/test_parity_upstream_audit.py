@@ -32,6 +32,10 @@ REQUIRED_SURFACES = {
     ("mmpdb", "tests/test_analysis.py", "TestPredictCommand"),
     ("mmpdb", "tests/test_rgroup2smarts.py", "TestSmilesOnCommandline"),
     ("mmpdb", "tests/test_rgroup2smarts.py", "TestSmilesFromFile"),
+    ("mmpdb", "tests/test_rgroup2smarts.py", "TestSmilesFromStdin"),
+    ("mmpdb", "tests/test_rgroup2smarts.py", "TestCommandlineFailures"),
+    ("mmpdb", "tests/test_rgroup2smarts.py", "TestFilenameFailures"),
+    ("mmpdb", "tests/test_rgroup2smarts.py", "TestOtherErrors"),
     ("mmpdb", "mmpdblib/cli/generate.py", "generate"),
     ("rdkit", "Code/GraphMol/MMPA/Wrap/testMMPA.py", "TestCase"),
 }

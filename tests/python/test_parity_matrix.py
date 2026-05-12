@@ -48,6 +48,74 @@ REQUIRED_RDKIT_TESTS = {
     "TestCase.test9",
 }
 
+REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
+    (
+        "mmpdb",
+        "test_fragment.py",
+        "TestOptions.test_cache",
+    ),
+    (
+        "mmpdb",
+        "test_fragment.py",
+        "TestSmilesParser.test_space_as_to_eol",
+    ),
+    (
+        "mmpdb",
+        "test_fragment.py",
+        "TestFragmentCutRGroups.test_two_cut_rgroups",
+    ),
+    (
+        "mmpdb",
+        "test_fragment.py",
+        "TestFragmentCutRGroups.test_cut_rgroup_filename",
+    ),
+    (
+        "mmpdb",
+        "test_fragment.py",
+        "TestFragmentCutRGroups.test_missing_rgroup_filename",
+    ),
+    (
+        "mmpdb",
+        "test_rgroup2smarts.py",
+        "TestSmilesFromFile.test_different_whitespace",
+    ),
+    (
+        "mmpdb",
+        "test_rgroup2smarts.py",
+        "TestCommandlineFailures.test_bad_smiles",
+    ),
+    (
+        "mmpdb",
+        "test_rgroup2smarts.py",
+        "TestFilenameFailures.test_blank_line_not_allowed",
+    ),
+    (
+        "mmpdb",
+        "test_rgroup2smarts.py",
+        "TestFilenameFailures.test_file_does_not_exist",
+    ),
+    (
+        "mmpdb",
+        "test_rgroup2smarts.py",
+        "TestOtherErrors.test_both_cut_rgroup_and_filename",
+    ),
+    (
+        "mmpdb",
+        "mmpdblib/cli/generate.py",
+        "generate_constant_query_modes",
+    ),
+    (
+        "mmpdb",
+        "mmpdblib/cli/generate.py",
+        "generate_subqueries",
+    ),
+    (
+        "mmpdb",
+        "mmpdblib/cli/generate.py",
+        "generate_output_columns_and_files",
+    ),
+}
+
 
 def _read_matrix():
     with MATRIX_PATH.open(newline="", encoding="utf-8") as handle:
@@ -100,6 +168,21 @@ def test_parity_matrix_covers_rdkit_fragmentmol_tests():
     }
 
     assert REQUIRED_RDKIT_TESTS <= observed
+
+
+def test_parity_matrix_records_source_level_audit_surfaces():
+    rows = _read_matrix()
+
+    observed = {
+        (
+            row["upstream_project"],
+            row["upstream_file"],
+            row["upstream_test"],
+        )
+        for row in rows
+    }
+
+    assert REQUIRED_SOURCE_LEVEL_TRACEABILITY <= observed
 
 
 def test_active_parity_rows_reference_existing_oemmpa_tests():
