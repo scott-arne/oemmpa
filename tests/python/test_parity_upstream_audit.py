@@ -84,6 +84,8 @@ def test_upstream_audit_manifest_values_are_current_and_actionable():
     _, rows = _read_tsv(AUDIT_PATH)
 
     for row in rows:
+        assert None not in row, row
+        assert all(value is not None for value in row.values()), row
         assert row["upstream_project"] in {"mmpdb", "rdkit"}
         assert row["upstream_path"]
         assert row["upstream_surface"]
@@ -123,3 +125,34 @@ def test_upstream_audit_matrix_linkage_uses_known_statuses():
             upstream_file,
             row["matrix_status"],
         ) in matrix_statuses
+
+
+def test_matrix_updated_audit_surfaces_have_matrix_rows():
+    _, audit_rows = _read_tsv(AUDIT_PATH)
+    _, matrix_rows = _read_tsv(MATRIX_PATH)
+
+    matrix_tests = {
+        (
+            row["upstream_project"],
+            row["upstream_file"],
+            row["upstream_test"],
+        )
+        for row in matrix_rows
+    }
+
+    for row in audit_rows:
+        if row["action"] != "matrix updated":
+            continue
+        upstream_path = row["upstream_path"]
+        upstream_file = Path(row["upstream_path"]).name
+        surface_prefix = row["upstream_surface"]
+        assert any(
+            project == row["upstream_project"]
+            and matrix_file in {upstream_path, upstream_file}
+            and (
+                upstream_test == surface_prefix
+                or upstream_test.startswith(f"{surface_prefix}.")
+                or upstream_test.startswith(f"{surface_prefix}_")
+            )
+            for project, matrix_file, upstream_test in matrix_tests
+        ), row

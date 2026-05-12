@@ -49,70 +49,95 @@ REQUIRED_RDKIT_TESTS = {
 }
 
 REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
-    (
-        "mmpdb",
-        "test_fragment.py",
-        "TestOptions.test_cache",
+    ("mmpdb", "test_fragment.py", "TestOptions.test_cache"): (
+        "-",
+        "-",
+        "deferred",
     ),
-    (
-        "mmpdb",
-        "test_fragment.py",
-        "TestSmilesParser.test_space_as_to_eol",
+    ("mmpdb", "test_fragment.py", "TestSmilesParser.test_space_as_to_eol"): (
+        "tests/python/test_loading.py",
+        "test_add_molecules_from_file_supports_to_eol_delimiter",
+        "matched",
     ),
-    (
-        "mmpdb",
-        "test_fragment.py",
-        "TestFragmentCutRGroups.test_two_cut_rgroups",
+    ("mmpdb", "test_fragment.py", "TestFragmentCutRGroups.test_two_cut_rgroups"): (
+        "tests/python/test_rgroup.py",
+        "test_cut_rgroups_fragment_mmpdb_space_fixture_variables",
+        "matched",
     ),
-    (
-        "mmpdb",
-        "test_fragment.py",
-        "TestFragmentCutRGroups.test_cut_rgroup_filename",
+    ("mmpdb", "test_fragment.py", "TestFragmentCutRGroups.test_cut_rgroup_filename"): (
+        "tests/python/test_rgroup.py",
+        "test_analyzer_cut_rgroup_file_matches_equivalent_cut_smarts",
+        "matched",
     ),
-    (
-        "mmpdb",
-        "test_fragment.py",
-        "TestFragmentCutRGroups.test_missing_rgroup_filename",
+    ("mmpdb", "test_fragment.py", "TestFragmentCutRGroups.test_missing_rgroup_filename"): (
+        "-",
+        "-",
+        "deferred",
     ),
-    (
-        "mmpdb",
-        "test_rgroup2smarts.py",
-        "TestSmilesFromFile.test_different_whitespace",
+    ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_one_cut_rgroup"): (
+        "tests/python/test_rgroup.py",
+        "test_cut_rgroups_fragment_mmpdb_space_fixture_variables",
+        "accepted divergence",
     ),
-    (
-        "mmpdb",
-        "test_rgroup2smarts.py",
-        "TestCommandlineFailures.test_bad_smiles",
+    ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_two_cut_rgroups"): (
+        "tests/python/test_rgroup.py",
+        "test_cut_rgroups_fragment_mmpdb_space_fixture_variables",
+        "accepted divergence",
     ),
-    (
-        "mmpdb",
-        "test_rgroup2smarts.py",
-        "TestFilenameFailures.test_blank_line_not_allowed",
+    ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_invalid_cut_rgroup"): (
+        "tests/python/test_rgroup.py",
+        "test_rgroup_smiles_to_smarts_rejects_mmpdb_bad_inputs",
+        "accepted divergence",
     ),
-    (
-        "mmpdb",
-        "test_rgroup2smarts.py",
-        "TestFilenameFailures.test_file_does_not_exist",
+    ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_cut_rgroup_filename"): (
+        "tests/python/test_rgroup.py",
+        "test_analyzer_cut_rgroup_file_matches_equivalent_cut_smarts",
+        "accepted divergence",
     ),
-    (
-        "mmpdb",
-        "test_rgroup2smarts.py",
-        "TestOtherErrors.test_both_cut_rgroup_and_filename",
+    ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_missing_rgroup_filename"): (
+        "-",
+        "-",
+        "deferred",
     ),
-    (
-        "mmpdb",
-        "mmpdblib/cli/generate.py",
-        "generate_constant_query_modes",
+    ("mmpdb", "test_rgroup2smarts.py", "TestSmilesFromFile.test_different_whitespace"): (
+        "tests/python/test_rgroup.py",
+        "test_read_rgroup_file_matches_mmpdb_whitespace_behavior",
+        "matched",
     ),
-    (
-        "mmpdb",
-        "mmpdblib/cli/generate.py",
-        "generate_subqueries",
+    ("mmpdb", "test_rgroup2smarts.py", "TestCommandlineFailures.test_bad_smiles"): (
+        "tests/python/test_rgroup.py",
+        "test_rgroup_smiles_to_smarts_rejects_mmpdb_bad_inputs",
+        "accepted divergence",
     ),
-    (
-        "mmpdb",
-        "mmpdblib/cli/generate.py",
-        "generate_output_columns_and_files",
+    ("mmpdb", "test_rgroup2smarts.py", "TestFilenameFailures.test_blank_line_not_allowed"): (
+        "tests/python/test_rgroup.py",
+        "test_read_rgroup_file_rejects_mmpdb_parse_failures",
+        "matched",
+    ),
+    ("mmpdb", "test_rgroup2smarts.py", "TestFilenameFailures.test_file_does_not_exist"): (
+        "-",
+        "-",
+        "deferred",
+    ),
+    ("mmpdb", "test_rgroup2smarts.py", "TestOtherErrors.test_both_cut_rgroup_and_filename"): (
+        "tests/python/test_rgroup.py",
+        "test_analyzer_cut_strategy_sources_are_mutually_exclusive",
+        "accepted divergence",
+    ),
+    ("mmpdb", "mmpdblib/cli/generate.py", "generate_constant_query_modes"): (
+        "-",
+        "-",
+        "deferred",
+    ),
+    ("mmpdb", "mmpdblib/cli/generate.py", "generate_subqueries"): (
+        "-",
+        "-",
+        "deferred",
+    ),
+    ("mmpdb", "mmpdblib/cli/generate.py", "generate_output_columns_and_files"): (
+        "-",
+        "-",
+        "deferred",
     ),
 }
 
@@ -130,6 +155,8 @@ def test_parity_matrix_exists_and_has_valid_rows():
     assert rows
     seen = set()
     for row in rows:
+        assert None not in row, row
+        assert all(value is not None for value in row.values()), row
         key = (
             row["phase"],
             row["upstream_project"],
@@ -178,11 +205,12 @@ def test_parity_matrix_records_source_level_audit_surfaces():
             row["upstream_project"],
             row["upstream_file"],
             row["upstream_test"],
-        )
+        ): (row["oemmpa_file"], row["oemmpa_test"], row["status"])
         for row in rows
     }
 
-    assert REQUIRED_SOURCE_LEVEL_TRACEABILITY <= observed
+    for key, expected in REQUIRED_SOURCE_LEVEL_TRACEABILITY.items():
+        assert observed.get(key) == expected, key
 
 
 def test_active_parity_rows_reference_existing_oemmpa_tests():
