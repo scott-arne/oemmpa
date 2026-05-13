@@ -53,6 +53,43 @@ PERSISTED_GENERATION_HEADER = [
     "p_value",
 ]
 
+DETAIL_RULE_HEADER = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "radius",
+    "smarts",
+    "pseudosmiles",
+    "parent_smarts",
+    "count",
+    "avg",
+    "std",
+    "kurtosis",
+    "skewness",
+    "min",
+    "q1",
+    "median",
+    "q3",
+    "max",
+    "paired_t",
+    "p_value",
+]
+
+DETAIL_PAIR_HEADER = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "property_delta",
+    "source_id",
+    "target_id",
+    "constant",
+    "source_variable",
+    "target_variable",
+    "cut_count",
+    "heavy_atom_delta",
+    "heavy_bond_delta",
+]
+
 EXPECTED_PERSISTED_GENERATION_ROWS = [
     {
         "smiles": "c1ccc(cc1)N",
@@ -448,6 +485,179 @@ def test_cli_persisted_generate_refuses_to_write_report_over_database(tmp_path):
     assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def test_cli_persisted_predict_writes_detail_reports(tmp_path):
+    database = _build_cli_store(tmp_path)
+    detail_prefix = tmp_path / "prediction_details"
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--details-prefix",
+        str(detail_prefix),
+    )
+
+    rules_path = tmp_path / "prediction_details.rules.tsv"
+    pairs_path = tmp_path / "prediction_details.pairs.tsv"
+    assert result.returncode == 0
+    assert _tsv_header(rules_path.read_text(encoding="utf-8")) == DETAIL_RULE_HEADER
+    assert _tsv_header(pairs_path.read_text(encoding="utf-8")) == DETAIL_PAIR_HEADER
+
+    rules = _tsv_rows(rules_path.read_text(encoding="utf-8"))
+    pairs = _tsv_rows(pairs_path.read_text(encoding="utf-8"))
+    assert [row["rule_environment_id"] for row in rules] == ["6"]
+    assert [row["rule_environment_id"] for row in pairs] == ["6"]
+    assert pairs[0]["property_delta"] == "1"
+
+
+def test_cli_persisted_predict_details_skip_pairs_without_selected_property(tmp_path):
+    smiles = tmp_path / "partial_properties.smi"
+    properties = tmp_path / "partial_properties.csv"
+    smiles.write_text(
+        "\n".join(
+            [
+                "Cc1ccccc1 tol1",
+                "Oc1ccccc1 phenol1",
+                "Cc1ccccc1 tol2",
+                "Oc1ccccc1 phenol2",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    properties.write_text(
+        "\n".join(
+            [
+                "id,pIC50",
+                "tol1,0",
+                "phenol1,1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = _build_cli_store(tmp_path, smiles=smiles, properties=properties)
+    detail_prefix = tmp_path / "partial_details"
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--details-prefix",
+        str(detail_prefix),
+    )
+
+    pairs_path = tmp_path / "partial_details.pairs.tsv"
+    pairs = _tsv_rows(pairs_path.read_text(encoding="utf-8"))
+    assert result.returncode == 0
+    assert len(pairs) == 1
+    assert pairs[0]["source_id"] == "tol1"
+    assert pairs[0]["target_id"] == "phenol1"
+    assert pairs[0]["property_delta"] == "1"
+
+
+def test_cli_persisted_predict_refuses_detail_report_over_database(tmp_path):
+    database = _build_cli_store(tmp_path)
+    detail_database = tmp_path / "prediction_details.rules.tsv"
+    database.replace(detail_database)
+
+    result = _run_cli(
+        "predict",
+        str(detail_database),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--details-prefix",
+        str(tmp_path / "prediction_details"),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "output path must differ from database" in result.stderr
+
+
+@pytest.mark.parametrize("suffix", ["rules", "pairs"])
+def test_cli_persisted_predict_rejects_output_detail_path_collision(
+    tmp_path,
+    suffix,
+):
+    database = _build_cli_store(tmp_path)
+    detail_prefix = tmp_path / "prediction_details"
+    output = tmp_path / f"prediction_details.{suffix}.tsv"
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--output",
+        str(output),
+        "--details-prefix",
+        str(detail_prefix),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "report output paths must be distinct" in result.stderr
+
+
+def test_cli_persisted_generate_writes_detail_reports(tmp_path):
+    database = _build_cli_store(tmp_path)
+    detail_prefix = tmp_path / "generation_details"
+
+    _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--details-prefix",
+        str(detail_prefix),
+    )
+
+    rules_path = tmp_path / "generation_details.rules.tsv"
+    pairs_path = tmp_path / "generation_details.pairs.tsv"
+    rules = _tsv_rows(rules_path.read_text(encoding="utf-8"))
+    pairs = _tsv_rows(pairs_path.read_text(encoding="utf-8"))
+
+    assert {row["rule_environment_id"] for row in rules} == {"6", "12"}
+    assert {row["rule_environment_id"] for row in pairs} == {"6", "12"}
+    assert {row["property_delta"] for row in pairs} == {"0.5", "1"}
+
+
+def test_cli_persisted_generate_rejects_output_detail_path_collision(tmp_path):
+    database = _build_cli_store(tmp_path)
+    detail_prefix = tmp_path / "generation_details"
+    output = tmp_path / "generation_details.rules.tsv"
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--output",
+        str(output),
+        "--details-prefix",
+        str(detail_prefix),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "report output paths must be distinct" in result.stderr
+
+
 def test_cli_persisted_generate_rejects_stateless_min_evidence(tmp_path):
     database = _build_cli_store(tmp_path)
 
@@ -710,6 +920,36 @@ def test_cli_stateless_generate_rejects_persisted_selection_options(
 
     assert result.returncode == 2
     assert f"generate {option} requires a database path" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("command", "extra_args"),
+    [
+        ("predict", ["--transform", "[*:1]C>>[*:1]O"]),
+        ("generate", ["--source", "Cc1ccccc1"]),
+    ],
+)
+def test_cli_stateless_detail_reports_require_database_path(
+    tmp_path,
+    command,
+    extra_args,
+):
+    result = _run_cli(
+        command,
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        *extra_args,
+        "--details-prefix",
+        str(tmp_path / "details"),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"{command} detail reports require a database path" in result.stderr
 
 
 def test_cli_refresh_stats_writes_gzip_output(tmp_path):

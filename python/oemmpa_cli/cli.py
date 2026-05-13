@@ -11,11 +11,11 @@ import tempfile
 from oemmpa import (
     Analyzer,
     DuckDBStore,
+    RuleEnvironmentPredictionResult,
     compute_transform_statistics,
     find_transform_environments,
     generate_products,
     generate_products_from_rule_environments,
-    predict_property_delta,
     predict_transform_delta,
 )
 
@@ -87,6 +87,43 @@ PERSISTED_GENERATION_COLUMNS = [
     "pseudosmiles",
     "std",
     "p_value",
+]
+
+DETAIL_RULE_COLUMNS = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "radius",
+    "smarts",
+    "pseudosmiles",
+    "parent_smarts",
+    "count",
+    "avg",
+    "std",
+    "kurtosis",
+    "skewness",
+    "min",
+    "q1",
+    "median",
+    "q3",
+    "max",
+    "paired_t",
+    "p_value",
+]
+
+DETAIL_PAIR_COLUMNS = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "property_delta",
+    "source_id",
+    "target_id",
+    "constant",
+    "source_variable",
+    "target_variable",
+    "cut_count",
+    "heavy_atom_delta",
+    "heavy_bond_delta",
 ]
 
 LIST_COLUMNS = ["metric", "value"]
@@ -186,6 +223,73 @@ def _ensure_report_output_is_not_database(database_path, output_path):
     output = Path(output_path).expanduser().resolve(strict=False)
     if output == database:
         raise ValueError(f"output path must differ from database: {output_path}")
+
+
+def _detail_paths(prefix):
+    if prefix is None:
+        return None, None
+    prefix_path = Path(prefix)
+    return (
+        prefix_path.with_name(f"{prefix_path.name}.rules.tsv"),
+        prefix_path.with_name(f"{prefix_path.name}.pairs.tsv"),
+    )
+
+
+def _ensure_report_outputs_are_distinct(*paths):
+    seen = set()
+    for path in paths:
+        if path is None:
+            continue
+        resolved = Path(path).expanduser().resolve(strict=False)
+        if resolved in seen:
+            raise ValueError(f"report output paths must be distinct: {path}")
+        seen.add(resolved)
+
+
+def _ensure_persisted_report_outputs(database_path, output_path, detail_prefix):
+    rules_path, pairs_path = _detail_paths(detail_prefix)
+    for path in (output_path, rules_path, pairs_path):
+        _ensure_report_output_is_not_database(database_path, path)
+    _ensure_report_outputs_are_distinct(output_path, rules_path, pairs_path)
+
+
+def _detail_rule_rows(matches):
+    return [match.statistics.to_dict() for match in matches]
+
+
+def _pair_has_property(pair, property_name):
+    raw_pair = getattr(pair, "_raw_pair", pair)
+    return bool(raw_pair.HasProperty(str(property_name)))
+
+
+def _detail_pair_rows(matches, property_name):
+    rows = []
+    for match in matches:
+        for pair in match.supporting_pairs():
+            if not _pair_has_property(pair, property_name):
+                continue
+            row = pair.to_dict()
+            row.update(
+                {
+                    "rule_environment_id": match.rule_environment_id,
+                    "property": property_name,
+                    "property_delta": pair.property_delta(property_name),
+                }
+            )
+            rows.append(row)
+    return rows
+
+
+def _write_detail_reports(matches, property_name, prefix):
+    rules_path, pairs_path = _detail_paths(prefix)
+    if rules_path is None or pairs_path is None:
+        return
+    _write_tsv_output(_detail_rule_rows(matches), DETAIL_RULE_COLUMNS, rules_path)
+    _write_tsv_output(
+        _detail_pair_rows(matches, property_name),
+        DETAIL_PAIR_COLUMNS,
+        pairs_path,
+    )
 
 
 def _property_csv_dialect(handle):
@@ -334,7 +438,13 @@ def _require_file_inputs(args, command):
         )
 
 
+def _reject_stateless_details(args, command):
+    if getattr(args, "details_prefix", None) is not None:
+        raise ValueError(f"{command} detail reports require a database path")
+
+
 def _predict_stateless(args):
+    _reject_stateless_details(args, "predict")
     _require_file_inputs(args, "predict")
     _, statistics = _compute_statistics(args)
     prediction = predict_transform_delta(
@@ -346,23 +456,40 @@ def _predict_stateless(args):
     return 0
 
 
-def _predict_persisted(args):
-    _ensure_report_output_is_not_database(args.database, args.output)
+def _find_persisted_matches(args):
     store = _open_store(args.database)
-    prediction = predict_property_delta(
+    matches = find_transform_environments(
         store,
-        args.transform,
+        transform=getattr(args, "transform", None),
         property_name=args.property,
-        aggregation=args.aggregation,
         min_pairs=args.min_pairs,
         where=args.where,
         score=args.score,
+        aggregation=args.aggregation,
+    )
+    return store, matches
+
+
+def _predict_persisted(args):
+    _ensure_persisted_report_outputs(
+        args.database,
+        args.output,
+        args.details_prefix,
+    )
+    _, matches = _find_persisted_matches(args)
+    if not matches:
+        raise KeyError(args.transform)
+    match = matches[0]
+    prediction = RuleEnvironmentPredictionResult.from_statistics(
+        match.statistics,
+        args.aggregation,
     )
     _write_tsv_output(
         [prediction.to_dict()],
         PERSISTED_PREDICTION_COLUMNS,
         args.output,
     )
+    _write_detail_reports([match], args.property, args.details_prefix)
     return 0
 
 
@@ -440,6 +567,7 @@ def _stateless_generation_rows(products, aggregation):
 
 def _generate_stateless(args):
     _reject_persisted_generate_options(args)
+    _reject_stateless_details(args, "generate")
     _require_file_inputs(args, "generate")
     min_evidence = 1 if args.min_evidence is None else args.min_evidence
     args.min_evidence = min_evidence
@@ -461,19 +589,16 @@ def _generate_stateless(args):
 
 def _generate_persisted(args):
     _reject_stateless_generate_options(args)
-    _ensure_report_output_is_not_database(args.database, args.output)
-    store = _open_store(args.database)
+    _ensure_persisted_report_outputs(
+        args.database,
+        args.output,
+        args.details_prefix,
+    )
     min_pairs = 1 if args.min_pairs is None else args.min_pairs
     score = "largest-radius" if args.score is None else args.score
-    matches = find_transform_environments(
-        store,
-        transform=args.transform,
-        property_name=args.property,
-        min_pairs=min_pairs,
-        where=args.where,
-        score=score,
-        aggregation=args.aggregation,
-    )
+    args.min_pairs = min_pairs
+    args.score = score
+    _, matches = _find_persisted_matches(args)
     products = generate_products_from_rule_environments(
         args.source,
         matches,
@@ -482,6 +607,12 @@ def _generate_persisted(args):
     )
     rows = _persisted_generation_rows(products, matches, args.aggregation)
     _write_tsv_output(rows, PERSISTED_GENERATION_COLUMNS, args.output)
+    generated_transforms = {product.transform for product in products}
+    detail_matches = [
+        match for match in matches
+        if match.transform in generated_transforms
+    ]
+    _write_detail_reports(detail_matches, args.property, args.details_prefix)
     return 0
 
 
@@ -597,6 +728,11 @@ def _build_parser():
         default=None,
         help="Optional TSV output path. Use .gz for gzip output.",
     )
+    predict_parser.add_argument(
+        "--details-prefix",
+        default=None,
+        help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
+    )
     predict_parser.set_defaults(func=_predict)
 
     generate_parser = subparsers.add_parser(
@@ -658,6 +794,11 @@ def _build_parser():
         "--output",
         default=None,
         help="Optional TSV output path. Use .gz for gzip output.",
+    )
+    generate_parser.add_argument(
+        "--details-prefix",
+        default=None,
+        help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
     )
     generate_parser.set_defaults(func=_generate)
 
