@@ -20,6 +20,21 @@ EXPECTED_PERSISTED_SUMMARY = [
     {"metric": "rule_environment_statistics", "value": "18"},
 ]
 
+PERSISTED_PREDICTION_HEADER = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "aggregation",
+    "predicted_delta",
+    "predicted_value",
+    "count",
+    "radius",
+    "smarts",
+    "pseudosmiles",
+    "std",
+    "p_value",
+]
+
 
 def _run_cli(*args, check=True):
     env = os.environ.copy()
@@ -182,6 +197,57 @@ def test_cli_build_accepts_gzip_inputs_and_list_writes_gzip_output(tmp_path):
     _run_cli("list", str(database), "--output", str(summary))
 
     assert _gzip_tsv_rows(summary) == EXPECTED_PERSISTED_SUMMARY
+
+
+def test_cli_persisted_predict_outputs_selected_rule_environment_schema(tmp_path):
+    database_path = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "predict",
+        str(database_path),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+    )
+
+    assert _tsv_header(result.stdout) == PERSISTED_PREDICTION_HEADER
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["rule_environment_id"] == "6"
+    assert rows[0]["transform"] == "[*:1]C>>[*:1]O"
+    assert rows[0]["property"] == "pIC50"
+    assert rows[0]["aggregation"] == "avg"
+    assert rows[0]["predicted_delta"] == "1"
+    assert rows[0]["predicted_value"] == ""
+    assert rows[0]["count"] == "1"
+    assert rows[0]["radius"] == "5"
+    assert rows[0]["smarts"]
+    assert rows[0]["pseudosmiles"]
+    assert rows[0]["std"] == ""
+    assert rows[0]["p_value"] == ""
+
+
+def test_cli_persisted_predict_writes_gzip_output(tmp_path):
+    database_path = _build_cli_store(tmp_path)
+    output_path = tmp_path / "prediction.tsv.gz"
+
+    result = _run_cli(
+        "predict",
+        str(database_path),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.stdout == ""
+    with gzip.open(output_path, "rt", encoding="utf-8") as handle:
+        output = handle.read()
+    assert _tsv_header(output) == PERSISTED_PREDICTION_HEADER
+    assert _tsv_rows(output)[0]["rule_environment_id"] == "6"
 
 
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):

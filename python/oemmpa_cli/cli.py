@@ -12,6 +12,7 @@ from oemmpa import (
     DuckDBStore,
     compute_transform_statistics,
     generate_products,
+    predict_property_delta,
     predict_transform_delta,
 )
 
@@ -43,6 +44,21 @@ PREDICTION_COLUMNS = [
     "p_value",
 ]
 
+PERSISTED_PREDICTION_COLUMNS = [
+    "rule_environment_id",
+    "transform",
+    "property",
+    "aggregation",
+    "predicted_delta",
+    "predicted_value",
+    "count",
+    "radius",
+    "smarts",
+    "pseudosmiles",
+    "std",
+    "p_value",
+]
+
 GENERATION_COLUMNS = [
     "smiles",
     "transform",
@@ -65,12 +81,20 @@ LIST_METRICS = [
 ]
 
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
-INTEGER_COLUMNS = {"count", "evidence_count"}
+INTEGER_COLUMNS = {"count", "evidence_count", "radius", "rule_environment_id"}
 
 
-def _add_input_arguments(parser):
-    parser.add_argument("--smiles", required=True, help="Whitespace SMILES file.")
-    parser.add_argument("--properties", required=True, help="Property CSV file.")
+def _add_input_arguments(parser, *, require_files=True):
+    parser.add_argument(
+        "--smiles",
+        required=require_files,
+        help="Whitespace SMILES file.",
+    )
+    parser.add_argument(
+        "--properties",
+        required=require_files,
+        help="Property CSV file.",
+    )
     parser.add_argument("--property", required=True, help="Property column to use.")
     parser.add_argument(
         "--id-column",
@@ -259,19 +283,61 @@ def _compute_statistics(args):
 
 def _refresh_stats(args):
     _, statistics = _compute_statistics(args)
-    _write_tsv([row.to_dict() for row in statistics], STAT_COLUMNS, sys.stdout)
+    _write_tsv_output([row.to_dict() for row in statistics], STAT_COLUMNS, None)
     return 0
 
 
-def _predict(args):
+def _require_stateless_inputs(args):
+    missing = [
+        option
+        for option, value in (
+            ("--smiles", args.smiles),
+            ("--properties", args.properties),
+        )
+        if value is None
+    ]
+    if missing:
+        raise ValueError(
+            "predict requires a database path or stateless inputs: "
+            + ", ".join(missing)
+        )
+
+
+def _predict_stateless(args):
+    _require_stateless_inputs(args)
     _, statistics = _compute_statistics(args)
     prediction = predict_transform_delta(
         statistics,
         args.transform,
         aggregation=args.aggregation,
     )
-    _write_tsv([prediction.to_dict()], PREDICTION_COLUMNS, sys.stdout)
+    _write_tsv_output([prediction.to_dict()], PREDICTION_COLUMNS, args.output)
     return 0
+
+
+def _predict_persisted(args):
+    store = _open_store(args.database)
+    prediction = predict_property_delta(
+        store,
+        args.transform,
+        property_name=args.property,
+        aggregation=args.aggregation,
+        min_pairs=args.min_pairs,
+        where=args.where,
+        score=args.score,
+    )
+    _write_tsv_output(
+        [prediction.to_dict()],
+        PERSISTED_PREDICTION_COLUMNS,
+        args.output,
+    )
+    return 0
+
+
+def _predict(args):
+    if args.database is not None:
+        return _predict_persisted(args)
+    return _predict_stateless(args)
 
 
 def _generate(args):
@@ -342,7 +408,12 @@ def _build_parser():
         "predict",
         help="Predict a property delta for one transform.",
     )
-    _add_input_arguments(predict_parser)
+    predict_parser.add_argument(
+        "database",
+        nargs="?",
+        help="Optional DuckDB database path for persisted prediction.",
+    )
+    _add_input_arguments(predict_parser, require_files=False)
     predict_parser.add_argument("--transform", required=True, help="Transform SMILES.")
     predict_parser.add_argument(
         "--aggregation",
@@ -355,6 +426,33 @@ def _build_parser():
         type=int,
         default=1,
         help="Minimum property-bearing pairs per transform.",
+    )
+    predict_parser.add_argument(
+        "--min-pairs",
+        type=int,
+        default=1,
+        help="Minimum persisted rule-environment pair count.",
+    )
+    predict_parser.add_argument(
+        "--score",
+        choices=[
+            "largest-radius",
+            "smallest-radius",
+            "largest-count",
+            "smallest-count",
+        ],
+        default="largest-radius",
+        help="Persisted rule-environment selection score.",
+    )
+    predict_parser.add_argument(
+        "--where",
+        default=None,
+        help="Persisted rule-environment where expression.",
+    )
+    predict_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional TSV output path. Use .gz for gzip output.",
     )
     predict_parser.set_defaults(func=_predict)
 
