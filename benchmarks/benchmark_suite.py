@@ -19,6 +19,57 @@ from .rdkit_compare import compare, run_oemmpa
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "python"
 
+BENCHMARK_SCHEMAS = {
+    "rdkit_report": [
+        "benchmark",
+        "dataset",
+        "molecule_count",
+        "oemmpa_pair_count",
+        "oemmpa_transform_count",
+        "oemmpa_seconds",
+        "rdkit_available",
+        "rdkit_pair_count",
+        "rdkit_fragment_count",
+        "rdkit_seconds",
+        "common_molecule_pairs",
+        "common_chemistry_pairs",
+        "oemmpa_only",
+        "rdkit_only",
+    ],
+    "thread_scaling": [
+        "benchmark",
+        "dataset",
+        "workers",
+        "jobs_completed",
+        "wall_seconds",
+        "jobs_per_second",
+        "molecule_count",
+        "pair_count",
+        "transform_count",
+    ],
+    "storage": [
+        "benchmark",
+        "dataset",
+        "duckdb_available",
+        "total_seconds",
+        "molecule_count",
+        "compound_rows",
+        "property_rows",
+        "property_accepted_count",
+        "property_rejected_count",
+    ],
+    "cli_workflow": [
+        "benchmark",
+        "command",
+        "dataset",
+        "returncode",
+        "seconds",
+        "stdout_lines",
+        "output_rows",
+        "stderr",
+    ],
+}
+
 
 def rdkit_report_rows(smiles_paths, repeats=3):
     """Return RDKit comparison benchmark rows.
@@ -169,6 +220,20 @@ def storage_rows(smiles_path, properties_path=None, property_columns=None, repea
     ]
 
 
+def _line_count(text):
+    stripped = text.rstrip("\n")
+    if not stripped:
+        return 0
+    return len(stripped.splitlines())
+
+
+def _tsv_data_row_count(text):
+    lines = _line_count(text)
+    if lines == 0:
+        return 0
+    return max(0, lines - 1)
+
+
 def cli_workflow_rows(
     smiles_path,
     properties_path,
@@ -241,11 +306,23 @@ def cli_workflow_rows(
                 "dataset": Path(smiles_path).name,
                 "returncode": last.returncode,
                 "seconds": _mean(item.elapsed_seconds for item in results),
-                "stdout_lines": len(last.stdout.rstrip("\n").splitlines()),
+                "stdout_lines": _line_count(last.stdout),
+                "output_rows": _tsv_data_row_count(last.stdout),
                 "stderr": last.stderr.strip(),
             }
         )
     return rows
+
+
+def _schema_for_rows(rows):
+    benchmarks = {row.get("benchmark") for row in rows}
+    if len(benchmarks) == 1:
+        benchmark = next(iter(benchmarks))
+        schema = BENCHMARK_SCHEMAS.get(benchmark)
+        if schema is not None:
+            extras = sorted({column for row in rows for column in row} - set(schema))
+            return [*schema, *extras]
+    return sorted({column for row in rows for column in row})
 
 
 def write_csv(rows, output_path=None):
@@ -253,7 +330,7 @@ def write_csv(rows, output_path=None):
     rows = list(rows)
     if not rows:
         return
-    columns = sorted({column for row in rows for column in row})
+    columns = _schema_for_rows(rows)
     context = (
         open(output_path, "w", newline="", encoding="utf-8")
         if output_path

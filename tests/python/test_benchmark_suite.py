@@ -7,6 +7,30 @@ from pathlib import Path
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
+CLI_WORKFLOW_COLUMNS = [
+    "benchmark",
+    "command",
+    "dataset",
+    "returncode",
+    "seconds",
+    "stdout_lines",
+    "output_rows",
+    "stderr",
+]
+
+STORAGE_COLUMNS = [
+    "benchmark",
+    "dataset",
+    "duckdb_available",
+    "total_seconds",
+    "molecule_count",
+    "compound_rows",
+    "property_rows",
+    "property_accepted_count",
+    "property_rejected_count",
+]
+
+
 def test_rdkit_report_rows_include_pair_overlap_metrics():
     from benchmarks.benchmark_suite import rdkit_report_rows
 
@@ -80,6 +104,26 @@ def test_cli_workflow_benchmark_runs_phase5_commands():
     assert all(row["benchmark"] == "cli_workflow" for row in rows)
     assert all(row["returncode"] == 0 for row in rows)
     assert all(row["stdout_lines"] >= 1 for row in rows)
+    assert [row["output_rows"] for row in rows] == [6, 1, 2]
+
+
+def test_write_csv_uses_stable_schema_order(tmp_path):
+    from benchmarks.benchmark_suite import cli_workflow_rows, write_csv
+
+    output_path = tmp_path / "cli-workflow.csv"
+    rows = cli_workflow_rows(
+        DATA_DIR / "mmpa_smiles.smi",
+        DATA_DIR / "mmpa_properties.csv",
+        property_name="pIC50",
+        source_smiles="Cc1ccccc1",
+        repeats=1,
+    )
+
+    write_csv(rows, output_path)
+
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        header = next(csv.reader(handle))
+    assert header == CLI_WORKFLOW_COLUMNS
 
 
 def test_benchmark_cli_accepts_subcommand_options(tmp_path):
@@ -104,6 +148,9 @@ def test_benchmark_cli_accepts_subcommand_options(tmp_path):
 
     assert result == 0
     rows = list(csv.DictReader(output_path.open(newline="", encoding="utf-8")))
+    with output_path.open(newline="", encoding="utf-8") as handle:
+        header = next(csv.reader(handle))
+    assert header == STORAGE_COLUMNS
     assert len(rows) == 1
     if duckdb_available():
         assert rows[0]["property_rows"] == "6"
