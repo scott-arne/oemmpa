@@ -23,15 +23,26 @@ def test_phase7_harness_records_current_matches_and_future_work():
     assert counts["deferred"] > 0
 
 
-def test_phase7_harness_keeps_cli_output_as_deferred_followup():
+def test_phase7_harness_tracks_cli_reporting_active_and_deferred_rows():
     rows = _read_matrix()
     cli_rows = [
         row for row in rows
-        if row["phase"] == "7"
-        and (
+        if (
             (
                 row["upstream_file"] == "test_analysis.py"
-                and "output" in row["upstream_test"].lower()
+                and (
+                    "output" in row["upstream_test"].lower()
+                    or "detail" in row["upstream_test"].lower()
+                )
+            )
+            or (
+                row["upstream_file"] == "mmpdblib/cli/generate.py"
+                and row["upstream_test"]
+                in {
+                    "generate_output_columns_and_files",
+                    "generate_constant_query_modes",
+                    "generate_subqueries",
+                }
             )
             or (
                 row["upstream_file"] == "test_list.py"
@@ -40,14 +51,72 @@ def test_phase7_harness_keeps_cli_output_as_deferred_followup():
         )
     ]
 
-    assert cli_rows
-    assert {row["status"] for row in cli_rows} == {"deferred"}
-    assert all(
-        "CLI" in row["notes"]
-        or "output" in row["notes"]
-        or "command" in row["notes"]
+    expected_statuses = {
+        (
+            "test_analysis.py",
+            "TestTransformCommand.test_output",
+        ): "accepted divergence",
+        (
+            "test_analysis.py",
+            "TestTransformCommand.test_output_gz",
+        ): "accepted divergence",
+        (
+            "test_analysis.py",
+            "TestPredictCommand.test_save_details",
+        ): "accepted divergence",
+        (
+            "mmpdblib/cli/generate.py",
+            "generate_output_columns_and_files",
+        ): "accepted divergence",
+        (
+            "mmpdblib/cli/generate.py",
+            "generate_constant_query_modes",
+        ): "deferred",
+        (
+            "mmpdblib/cli/generate.py",
+            "generate_subqueries",
+        ): "deferred",
+        ("test_list.py", "TestList.test_all"): "accepted divergence",
+    }
+    observed_statuses = {
+        (row["upstream_file"], row["upstream_test"]): row["status"]
         for row in cli_rows
-    )
+    }
+    active_rows = [
+        row for row in cli_rows if row["status"] == "accepted divergence"
+    ]
+    deferred_rows = [row for row in cli_rows if row["status"] == "deferred"]
+
+    assert cli_rows
+    for key, expected_status in expected_statuses.items():
+        assert observed_statuses.get(key) == expected_status, key
+    assert {
+        row["status"] for row in cli_rows
+    } <= {"accepted divergence", "deferred"}
+    assert active_rows
+    assert deferred_rows
+
+    for row in active_rows:
+        assert row["oemmpa_file"] == "tests/python/test_cli.py", row
+        test_file = REPO_ROOT / row["oemmpa_file"]
+        assert test_file.exists(), row
+        assert f"def {row['oemmpa_test']}(" in test_file.read_text(
+            encoding="utf-8"
+        ), row
+
+    for row in deferred_rows:
+        assert row["oemmpa_file"] == "-", row
+        assert row["oemmpa_test"] == "-", row
+        assert any(
+            marker in row["notes"]
+            for marker in (
+                "Phase 14",
+                "Phase 14b",
+                "post-14",
+                "deferred",
+                "future compatibility",
+            )
+        ), row
 
 
 def test_deferred_matrix_rows_have_current_roadmap_reasons():

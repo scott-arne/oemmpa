@@ -135,9 +135,9 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
         "deferred",
     ),
     ("mmpdb", "mmpdblib/cli/generate.py", "generate_output_columns_and_files"): (
-        "-",
-        "-",
-        "deferred",
+        "tests/python/test_cli.py",
+        "test_cli_persisted_generate_writes_gzip_output",
+        "accepted divergence",
     ),
 }
 

@@ -1,8 +1,9 @@
 # CLI
 
 The `oemmpa-cli` command runs file-based MMPA workflows without writing a
-Python script. The primary Phase 14 workflow builds a persistent OEMMPA DuckDB
-store, then reads that store for reports and predictions.
+Python script. The Phase 14 workflow builds a persistent OEMMPA DuckDB store,
+then reads that store for reports, predictions, generated products, and detail
+reports.
 
 ## Build A Store
 
@@ -61,9 +62,61 @@ Selection options include `--aggregation`, `--min-pairs`, `--score`, and
 Use `--output prediction.tsv` to write a report file, or `--output
 prediction.tsv.gz` for gzip-compressed TSV.
 
-## Compatibility Commands
+## Generate From Stored Statistics
 
-The previous stateless commands remain available in Phase 14a:
+```bash
+oemmpa-cli generate analysis.oemmpa.duckdb \
+  --source Cc1ccccc1 \
+  --property pIC50
+```
+
+Persisted `generate` applies selected stored rule environments to the source
+SMILES and emits generated products with the selected prediction statistics:
+
+```text
+smiles	transform	property	aggregation	predicted_delta	evidence_count	rule_environment_id	count	radius	smarts	pseudosmiles	std	p_value
+```
+
+Selection options include `--transform`, `--aggregation`, `--min-pairs`,
+`--score`, and `--where`.
+
+Use `--output generated.tsv` to write a report file, or `--output
+generated.tsv.gz` for gzip-compressed TSV.
+
+## Detail Reports
+
+Persisted `predict` and persisted `generate` can also write rule-environment
+and supporting-pair detail reports with `--details-prefix`:
+
+```bash
+oemmpa-cli predict analysis.oemmpa.duckdb \
+  --property pIC50 \
+  --transform '[*:1]C>>[*:1]O' \
+  --details-prefix prediction_details
+```
+
+This writes:
+
+```text
+prediction_details.rules.tsv
+prediction_details.pairs.tsv
+```
+
+Persisted `generate` uses the same prefix convention:
+
+```bash
+oemmpa-cli generate analysis.oemmpa.duckdb \
+  --source Cc1ccccc1 \
+  --property pIC50 \
+  --details-prefix generation_details
+```
+
+Detail reports are persisted-only. Stateless `predict` and `generate` reject
+`--details-prefix` because they do not select stored rule-environment rows.
+
+## Stateless Reports
+
+The stateless commands remain available for single-command workflows:
 
 ```bash
 oemmpa-cli refresh-stats --smiles molecules.smi --properties properties.csv --property pIC50
@@ -71,5 +124,17 @@ oemmpa-cli predict --smiles molecules.smi --properties properties.csv --property
 oemmpa-cli generate --smiles molecules.smi --properties properties.csv --property pIC50 --source Cc1ccccc1
 ```
 
-Product generation in the persisted workflow and detail-file reports are Phase
-14b follow-ups.
+`refresh-stats`, stateless `predict`, and stateless `generate` write TSV to
+standard output by default. Use `--output stats.tsv`, `--output
+prediction.tsv`, or `--output products.tsv` to write a report file; when the
+output path ends in `.gz`, OEMMPA writes gzip-compressed TSV.
+
+Stateless `generate` keeps source generation explicit around `--source`,
+`--property`, and optional `--transform`. MMPDB-only generation modes such as
+subquery expansion and deriving missing constant/query pieces remain deferred.
+
+## Roadmap Boundaries
+
+Phase 14b defines the current CLI reporting surface. Phase 15 is reserved for
+post-14 workflow decisions and explicitly excludes performance, scale,
+benchmarking, timing comparisons, memory profiling, and large-dataset fixtures.
