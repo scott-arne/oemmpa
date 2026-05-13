@@ -292,7 +292,11 @@ def _compute_statistics(args):
 
 def _refresh_stats(args):
     _, statistics = _compute_statistics(args)
-    _write_tsv_output([row.to_dict() for row in statistics], STAT_COLUMNS, None)
+    _write_tsv_output(
+        [row.to_dict() for row in statistics],
+        STAT_COLUMNS,
+        args.output,
+    )
     return 0
 
 
@@ -359,7 +363,7 @@ def _generate(args):
         skip_unsupported=not args.strict,
         statistics=statistics,
     )
-    _write_tsv(products.to_dicts(), GENERATION_COLUMNS, sys.stdout)
+    _write_tsv_output(products.to_dicts(), GENERATION_COLUMNS, args.output)
     return 0
 
 
@@ -411,6 +415,11 @@ def _build_parser():
         type=int,
         default=1,
         help="Minimum property-bearing pairs per transform.",
+    )
+    stats_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional TSV output path. Use .gz for gzip output.",
     )
     stats_parser.set_defaults(func=_refresh_stats)
 
@@ -482,6 +491,11 @@ def _build_parser():
         "--strict",
         action="store_true",
         help="Fail on unsupported observed transforms.",
+    )
+    generate_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional TSV output path. Use .gz for gzip output.",
     )
     generate_parser.set_defaults(func=_generate)
 

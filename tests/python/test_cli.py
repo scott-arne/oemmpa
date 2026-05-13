@@ -411,3 +411,67 @@ def test_cli_generate_outputs_statistics_annotated_products():
     assert phenol_row["smiles"] == "c1ccc(cc1)O"
     assert phenol_row["predicted_delta"] == "1"
     assert phenol_row["count"] == "1"
+
+
+def test_cli_refresh_stats_writes_gzip_output(tmp_path):
+    output_path = tmp_path / "stats.tsv.gz"
+
+    result = _run_cli(
+        "refresh-stats",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.stdout == ""
+    rows = _gzip_tsv_rows(output_path)
+    assert next(
+        row for row in rows if row["transform"] == "[*:1]C>>[*:1]O"
+    )["avg"] == "1"
+
+
+def test_cli_stateless_generate_writes_gzip_output(tmp_path):
+    output_path = tmp_path / "products.tsv.gz"
+
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--source",
+        "Cc1ccccc1",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.stdout == ""
+    assert _gzip_tsv_rows(output_path) == [
+        {
+            "smiles": "c1ccc(cc1)N",
+            "transform": "[*:1]C>>[*:1]N",
+            "evidence_count": "1",
+            "property": "pIC50",
+            "predicted_delta": "0.5",
+            "count": "1",
+            "std": "",
+            "p_value": "",
+        },
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "evidence_count": "1",
+            "property": "pIC50",
+            "predicted_delta": "1",
+            "count": "1",
+            "std": "",
+            "p_value": "",
+        },
+    ]
