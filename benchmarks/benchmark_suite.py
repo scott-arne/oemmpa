@@ -68,6 +68,20 @@ BENCHMARK_SCHEMAS = {
         "output_rows",
         "stderr",
     ],
+    "persisted_cli_workflow": [
+        "benchmark",
+        "command",
+        "dataset",
+        "returncode",
+        "seconds",
+        "stdout_lines",
+        "output_rows",
+        "output_bytes",
+        "database_bytes",
+        "detail_rule_rows",
+        "detail_pair_rows",
+        "stderr",
+    ],
 }
 
 
@@ -234,6 +248,20 @@ def _tsv_data_row_count(text):
     return max(0, lines - 1)
 
 
+def _file_size(path):
+    path = Path(path)
+    if not path.exists():
+        return 0
+    return path.stat().st_size
+
+
+def _tsv_file_data_row_count(path):
+    path = Path(path)
+    if not path.exists():
+        return 0
+    return _tsv_data_row_count(path.read_text(encoding="utf-8"))
+
+
 def cli_workflow_rows(
     smiles_path,
     properties_path,
@@ -311,6 +339,129 @@ def cli_workflow_rows(
                 "stderr": last.stderr.strip(),
             }
         )
+    return rows
+
+
+def persisted_cli_workflow_rows(
+    smiles_path,
+    properties_path,
+    property_name,
+    source_smiles,
+    transform="[*:1]C>>[*:1]O",
+    repeats=3,
+):
+    """Benchmark Phase 14 persisted CLI workflows.
+
+    :param smiles_path: Whitespace ``SMILES id`` file.
+    :param properties_path: Property CSV/TSV file.
+    :param property_name: Property column to use.
+    :param source_smiles: Source SMILES for generation.
+    :param transform: Transform SMILES for prediction.
+    :param repeats: Number of end-to-end workflow repeats.
+    :returns: List of CSV-ready dictionaries.
+    """
+    rows_by_command = {
+        "build": [],
+        "list": [],
+        "predict": [],
+        "generate": [],
+    }
+    final_rows = {}
+
+    for _ in range(int(repeats)):
+        with TemporaryDirectory(prefix="oemmpa-persisted-cli-bench-") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            database_path = tmp_path / "analysis.oemmpa.duckdb"
+            summary_path = tmp_path / "summary.tsv"
+            prediction_path = tmp_path / "prediction.tsv"
+            generation_path = tmp_path / "generation.tsv"
+            prediction_details = tmp_path / "prediction-details"
+            generation_details = tmp_path / "generation-details"
+
+            commands = [
+                (
+                    "build",
+                    [
+                        "build",
+                        "--smiles",
+                        str(smiles_path),
+                        "--properties",
+                        str(properties_path),
+                        "--property",
+                        property_name,
+                        "--output",
+                        str(database_path),
+                    ],
+                    None,
+                    None,
+                ),
+                (
+                    "list",
+                    ["list", str(database_path), "--output", str(summary_path)],
+                    summary_path,
+                    None,
+                ),
+                (
+                    "predict",
+                    [
+                        "predict",
+                        str(database_path),
+                        "--property",
+                        property_name,
+                        "--transform",
+                        transform,
+                        "--output",
+                        str(prediction_path),
+                        "--details-prefix",
+                        str(prediction_details),
+                    ],
+                    prediction_path,
+                    prediction_details,
+                ),
+                (
+                    "generate",
+                    [
+                        "generate",
+                        str(database_path),
+                        "--source",
+                        source_smiles,
+                        "--property",
+                        property_name,
+                        "--output",
+                        str(generation_path),
+                        "--details-prefix",
+                        str(generation_details),
+                    ],
+                    generation_path,
+                    generation_details,
+                ),
+            ]
+
+            for command_name, command_args, output_path, details_prefix in commands:
+                result = _run_cli(command_args)
+                row = _cli_benchmark_row(
+                    command_name,
+                    smiles_path,
+                    result,
+                    output_path=output_path,
+                    database_path=database_path,
+                )
+                if details_prefix is not None:
+                    row["detail_rule_rows"] = _tsv_file_data_row_count(
+                        Path(f"{details_prefix}.rules.tsv")
+                    )
+                    row["detail_pair_rows"] = _tsv_file_data_row_count(
+                        Path(f"{details_prefix}.pairs.tsv")
+                    )
+                rows_by_command[command_name].append(row)
+                final_rows[command_name] = row
+
+    rows = []
+    for command_name in ("build", "list", "predict", "generate"):
+        command_rows = rows_by_command[command_name]
+        row = dict(final_rows[command_name])
+        row["seconds"] = _mean(item["seconds"] for item in command_rows)
+        rows.append(row)
     return rows
 
 
@@ -393,6 +544,16 @@ def main(argv=None):
     cli_parser.add_argument("--source", required=True)
     cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
 
+    persisted_cli_parser = subparsers.add_parser(
+        "persisted-cli-workflow",
+        parents=[command_options],
+    )
+    persisted_cli_parser.add_argument("smiles", type=Path)
+    persisted_cli_parser.add_argument("--properties", type=Path, required=True)
+    persisted_cli_parser.add_argument("--property", required=True)
+    persisted_cli_parser.add_argument("--source", required=True)
+    persisted_cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
+
     args = parser.parse_args(argv)
     if args.command == "rdkit-report":
         rows = rdkit_report_rows(args.smiles, repeats=args.repeats)
@@ -409,8 +570,17 @@ def main(argv=None):
             property_columns=_split_csv_option(args.property_columns),
             repeats=args.repeats,
         )
-    else:
+    elif args.command == "cli-workflow":
         rows = cli_workflow_rows(
+            args.smiles,
+            args.properties,
+            property_name=args.property,
+            source_smiles=args.source,
+            transform=args.transform,
+            repeats=args.repeats,
+        )
+    else:
+        rows = persisted_cli_workflow_rows(
             args.smiles,
             args.properties,
             property_name=args.property,
@@ -445,6 +615,27 @@ def _run_cli(command_args):
     )
     elapsed = perf_counter() - start
     return _CliResult(completed, elapsed)
+
+
+def _cli_benchmark_row(command_name, dataset, result, output_path=None, database_path=None):
+    return {
+        "benchmark": "persisted_cli_workflow",
+        "command": command_name,
+        "dataset": Path(dataset).name,
+        "returncode": result.returncode,
+        "seconds": result.elapsed_seconds,
+        "stdout_lines": _line_count(result.stdout),
+        "output_rows": (
+            _tsv_file_data_row_count(output_path)
+            if output_path is not None
+            else _tsv_data_row_count(result.stdout)
+        ),
+        "output_bytes": _file_size(output_path) if output_path is not None else 0,
+        "database_bytes": _file_size(database_path) if database_path is not None else 0,
+        "detail_rule_rows": 0,
+        "detail_pair_rows": 0,
+        "stderr": result.stderr.strip(),
+    }
 
 
 def _mean(values):
