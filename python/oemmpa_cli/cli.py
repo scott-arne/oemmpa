@@ -1,11 +1,15 @@
 """Small command-line workflows built on the Python OEMMPA facade."""
 
 import argparse
+from contextlib import contextmanager
 import csv
+import gzip
+from pathlib import Path
 import sys
 
 from oemmpa import (
     Analyzer,
+    DuckDBStore,
     compute_transform_statistics,
     generate_products,
     predict_transform_delta,
@@ -48,6 +52,16 @@ GENERATION_COLUMNS = [
     "count",
     "std",
     "p_value",
+]
+
+LIST_COLUMNS = ["metric", "value"]
+
+LIST_METRICS = [
+    "compounds",
+    "rules",
+    "pairs",
+    "rule_environments",
+    "rule_environment_statistics",
 ]
 
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
@@ -93,6 +107,34 @@ def _write_tsv(rows, columns, stream):
         )
 
 
+@contextmanager
+def _open_text_output(path):
+    if path is None:
+        yield sys.stdout
+        return
+
+    output_path = Path(path)
+    if output_path.suffix == ".gz":
+        with gzip.open(output_path, "wt", encoding="utf-8", newline="") as handle:
+            yield handle
+        return
+
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        yield handle
+
+
+def _open_text_input(path):
+    input_path = Path(path)
+    if input_path.suffix == ".gz":
+        return gzip.open(input_path, "rt", encoding="utf-8", newline="")
+    return input_path.open(encoding="utf-8", newline="")
+
+
+def _write_tsv_output(rows, columns, output_path):
+    with _open_text_output(output_path) as stream:
+        _write_tsv(rows, columns, stream)
+
+
 def _property_csv_dialect(handle):
     sample = handle.read(4096)
     handle.seek(0)
@@ -120,7 +162,7 @@ def _resolve_id_column(fieldnames, requested_id_column):
 
 
 def _load_properties(analyzer, path, id_column, property_name):
-    with open(path, newline="", encoding="utf-8") as handle:
+    with _open_text_input(path) as handle:
         reader = csv.DictReader(handle, dialect=_property_csv_dialect(handle))
         if reader.fieldnames is None:
             raise ValueError(f"property file has no header: {path}")
@@ -158,6 +200,52 @@ def _build_analyzer(args):
     )
     analyzer.analyze()
     return analyzer
+
+
+def _open_store(path):
+    database_path = Path(path)
+    if not database_path.exists():
+        raise ValueError(f"missing database: {database_path}")
+    return DuckDBStore(database_path)
+
+
+def _build_store(args):
+    output_path = Path(args.output)
+    if output_path.is_dir():
+        raise ValueError(f"output path is a directory: {output_path}")
+    if output_path.exists():
+        if not args.force:
+            raise ValueError(f"output already exists: {output_path}")
+
+    temporary_path = output_path.with_name(f"{output_path.name}.tmp")
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    try:
+        analyzer = _build_analyzer(args)
+        # Build beside the target so force replacement never destroys a valid
+        # store unless the replacement has been fully written.
+        DuckDBStore(temporary_path).save_analyzer(analyzer)
+        temporary_path.replace(output_path)
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise
+    return 0
+
+
+def _list_store(args):
+    store = _open_store(args.database)
+    summary = store.summary(recount=args.recount)
+    rows = [
+        {
+            "metric": metric,
+            "value": str(summary[metric]),
+        }
+        for metric in LIST_METRICS
+    ]
+    _write_tsv_output(rows, LIST_COLUMNS, args.output)
+    return 0
 
 
 def _compute_statistics(args):
@@ -202,6 +290,40 @@ def _generate(args):
 def _build_parser():
     parser = argparse.ArgumentParser(prog="oemmpa-cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    build_parser = subparsers.add_parser(
+        "build",
+        help="Build a persistent DuckDB analysis store.",
+    )
+    _add_input_arguments(build_parser)
+    build_parser.add_argument(
+        "--output",
+        required=True,
+        help="Output DuckDB database path.",
+    )
+    build_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing output file.",
+    )
+    build_parser.set_defaults(func=_build_store)
+
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List summary metrics from a persistent DuckDB store.",
+    )
+    list_parser.add_argument("database", help="DuckDB database path.")
+    list_parser.add_argument(
+        "--recount",
+        action="store_true",
+        help="Recount rows directly from persisted tables.",
+    )
+    list_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional TSV output path. Use .gz for gzip output.",
+    )
+    list_parser.set_defaults(func=_list_store)
 
     stats_parser = subparsers.add_parser(
         "refresh-stats",
