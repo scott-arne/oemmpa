@@ -27,6 +27,7 @@ EXPECTED_TEXT_LINE_COUNTS = {
     "tests/data/mmpdb/fragment/tab.smi": 2,
     "tests/data/mmpdb/fragment/two_tabs.smi": 2,
     "tests/data/mmpdb/fragment/comma.smi": 3,
+    "tests/data/mmpdb/phase13_6_multicut_hydrogen_cases.tsv": 6,
 }
 
 

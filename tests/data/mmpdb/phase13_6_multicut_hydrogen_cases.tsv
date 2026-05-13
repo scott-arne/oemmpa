@@ -1,0 +1,6 @@
+case_id	component	reference_api	constant_smiles	target_variable_smiles	mmpdb_result	oemmpa_current_result	decision	notes
+one_cut_hydrogen_delete	generate	cli_generate	*c1ccccn1	[*:1][H]	c1ccncc1	supported	already_supported	MMPDB generate emits the one-cut hydrogen deletion product from test_data_2019.mmpdb.
+two_cut_disconnected_constant_h_delete	weld	lower_level_weld_fragments	*C.*N	[*:1][H].O[*:2]	C.NO	strict_error_permissive_skip	keep_unsupported	MMPDB generate is one-cut only; lower-level weld_fragments can weld this disconnected target variable.
+two_cut_connected_constant_h_delete	weld	lower_level_weld_fragments	*C(*)N	[*:1][H].O[*:2]	NCO	strict_error_permissive_skip	keep_unsupported	Connected constants can collapse the lower-level weld result into one molecule, but the parity source is not generate.
+two_cut_second_label_h_delete	weld	lower_level_weld_fragments	*C.*N	[*:1]O.[*:2][H]	CO.N	strict_error_permissive_skip	keep_unsupported	Attachment order changes the welded lower-level product; OEMMPA keeps disconnected variables unsupported.
+two_cut_no_hydrogen_disconnected_control	weld	lower_level_weld_fragments	*C.*N	[*:1]O.O[*:2]	CO.NO	strict_error_permissive_skip	keep_existing_connected_boundary	This control proves the existing connected-variable guard is broader than hydrogen deletion.

@@ -9,3 +9,4 @@ mmpdb	tests/space.smi.gz	tests/data/mmpdb/fragment/space.smi.gz	8	Gzip input par
 mmpdb	tests/tab.smi	tests/data/mmpdb/fragment/tab.smi	8	Tab-delimited input parity fixture.
 mmpdb	tests/two_tabs.smi	tests/data/mmpdb/fragment/two_tabs.smi	8	Ambiguous tab-delimited input parity fixture.
 mmpdb	tests/comma.smi	tests/data/mmpdb/fragment/comma.smi	8	Comma-delimited input parity fixture.
+oemmpa	tests/data/mmpdb/phase13_6_multicut_hydrogen_cases.tsv	tests/data/mmpdb/phase13_6_multicut_hydrogen_cases.tsv	13	Phase 13.6 decision table for MMPDB generate one-cut parity versus lower-level weld behavior.
