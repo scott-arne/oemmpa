@@ -103,6 +103,23 @@ def test_cli_list_reports_persistent_store_summary(tmp_path):
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def test_cli_list_refuses_to_write_report_over_database(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "list",
+        str(database),
+        "--output",
+        str(database),
+        check=False,
+    )
+    list_result = _run_cli("list", str(database))
+
+    assert result.returncode == 2
+    assert "output path must differ from database" in result.stderr
+    assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
 def test_cli_build_refuses_to_overwrite_without_force(tmp_path):
     database = _build_cli_store(tmp_path)
 
@@ -186,6 +203,26 @@ def test_cli_build_force_preserves_existing_store_when_rebuild_fails(tmp_path):
     assert not list(tmp_path.glob("*.tmp*"))
 
 
+def test_cli_build_does_not_remove_unrelated_tmp_sibling(tmp_path):
+    database = tmp_path / "analysis.oemmpa.duckdb"
+    unrelated_tmp = tmp_path / "analysis.oemmpa.duckdb.tmp"
+    unrelated_tmp.write_text("unrelated", encoding="utf-8")
+
+    _run_cli(
+        "build",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--output",
+        str(database),
+    )
+
+    assert unrelated_tmp.read_text(encoding="utf-8") == "unrelated"
+
+
 def test_cli_build_accepts_gzip_inputs_and_list_writes_gzip_output(tmp_path):
     smiles = tmp_path / "mmpa_smiles.smi.gz"
     properties = tmp_path / "mmpa_properties.csv.gz"
@@ -248,6 +285,27 @@ def test_cli_persisted_predict_writes_gzip_output(tmp_path):
         output = handle.read()
     assert _tsv_header(output) == PERSISTED_PREDICTION_HEADER
     assert _tsv_rows(output)[0]["rule_environment_id"] == "6"
+
+
+def test_cli_persisted_predict_refuses_to_write_report_over_database(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--output",
+        str(database),
+        check=False,
+    )
+    list_result = _run_cli("list", str(database))
+
+    assert result.returncode == 2
+    assert "output path must differ from database" in result.stderr
+    assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):

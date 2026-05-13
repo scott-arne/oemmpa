@@ -6,6 +6,7 @@ import csv
 import gzip
 from pathlib import Path
 import sys
+import tempfile
 
 from oemmpa import (
     Analyzer,
@@ -159,6 +160,16 @@ def _write_tsv_output(rows, columns, output_path):
         _write_tsv(rows, columns, stream)
 
 
+def _ensure_report_output_is_not_database(database_path, output_path):
+    if output_path is None:
+        return
+
+    database = Path(database_path).expanduser().resolve(strict=False)
+    output = Path(output_path).expanduser().resolve(strict=False)
+    if output == database:
+        raise ValueError(f"output path must differ from database: {output_path}")
+
+
 def _property_csv_dialect(handle):
     sample = handle.read(4096)
     handle.seek(0)
@@ -241,24 +252,22 @@ def _build_store(args):
         if not args.force:
             raise ValueError(f"output already exists: {output_path}")
 
-    temporary_path = output_path.with_name(f"{output_path.name}.tmp")
-    if temporary_path.exists():
-        temporary_path.unlink()
-
-    try:
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output_path.name}.",
+        suffix=".tmp",
+        dir=output_path.parent,
+    ) as temporary_directory:
+        temporary_path = Path(temporary_directory) / output_path.name
         analyzer = _build_analyzer(args)
         # Build beside the target so force replacement never destroys a valid
         # store unless the replacement has been fully written.
         DuckDBStore(temporary_path).save_analyzer(analyzer)
         temporary_path.replace(output_path)
-    except Exception:
-        if temporary_path.exists():
-            temporary_path.unlink()
-        raise
     return 0
 
 
 def _list_store(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
     store = _open_store(args.database)
     summary = store.summary(recount=args.recount)
     rows = [
@@ -316,6 +325,7 @@ def _predict_stateless(args):
 
 
 def _predict_persisted(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
     store = _open_store(args.database)
     prediction = predict_property_delta(
         store,
