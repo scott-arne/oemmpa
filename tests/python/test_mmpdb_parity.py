@@ -3,6 +3,7 @@
 import csv
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -11,6 +12,28 @@ import pytest
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "mmpdb"
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
+MMPDB_ROOT = Path(
+    os.environ.get("OEMMPA_MMPDB_ROOT", "/Users/johnss51/Development/python/mmpdb")
+)
+MMPDB_2019_DATABASE = MMPDB_ROOT / "tests" / "test_data_2019.mmpdb"
+MMPDB_SUBPROCESS_TIMEOUT_SECONDS = 30
+PHASE13_6_CASES_PATH = DATA_DIR / "phase13_6_multicut_hydrogen_cases.tsv"
+PHASE13_6_COLUMNS = [
+    "case_id",
+    "component",
+    "reference_api",
+    "constant_smiles",
+    "target_variable_smiles",
+    "mmpdb_result",
+    "oemmpa_current_result",
+    "decision",
+    "notes",
+]
+PHASE13_6_ALLOWED_DECISIONS = {
+    "already_supported",
+    "keep_unsupported",
+    "keep_existing_connected_boundary",
+}
 
 EXPECTED_IDS = [
     "phenol",
@@ -119,10 +142,59 @@ def _read_mmpdb_generate_rows():
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
+def _read_phase13_6_cases():
+    with PHASE13_6_CASES_PATH.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        assert reader.fieldnames == PHASE13_6_COLUMNS
+        return list(reader)
+
+
+def _phase13_6_case(case_id):
+    for row in _read_phase13_6_cases():
+        if row["case_id"] == case_id:
+            return row
+    raise AssertionError(f"missing Phase 13.6 case {case_id!r}")
+
+
 def _tsv_rows(output):
     lines = output.rstrip("\n").splitlines()
     header = lines[0].split("\t")
     return [dict(zip(header, line.split("\t"))) for line in lines[1:]]
+
+
+def _run_mmpdb_python(script, *args):
+    if not (MMPDB_ROOT / "mmpdblib").exists():
+        pytest.skip(f"MMPDB checkout not found: {MMPDB_ROOT}")
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(MMPDB_ROOT), env.get("PYTHONPATH", "")]
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script, *args],
+        check=True,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=MMPDB_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+
+
+def _run_mmpdb_cli(*args):
+    return _run_mmpdb_python("from mmpdblib.cli import main; main()", *args)
+
+
+def _mmpdb_weld_smiles(constant_smiles, target_variable_smiles):
+    result = _run_mmpdb_python(
+        (
+            "import sys\n"
+            "from mmpdblib.analysis_algorithms import weld_fragments\n"
+            "print(weld_fragments(sys.argv[1], sys.argv[2])[0])\n"
+        ),
+        constant_smiles,
+        target_variable_smiles,
+    )
+    return result.stdout.strip()
 
 
 def _run_oemmpa_cli(*args):
@@ -205,6 +277,11 @@ def _pair_between(pairs, source_id, target_id):
         if pair.source_id == source_id and pair.target_id == target_id:
             return pair
     raise AssertionError(f"missing pair {source_id!r} -> {target_id!r}")
+
+
+def _phase13_6_transform_for_case(row):
+    source_variable = "C([*:1])[*:2]"
+    return f"{source_variable}>>{row['target_variable_smiles']}"
 
 
 def test_mmpdb_reference_data_loads_expected_ids():
@@ -305,28 +382,98 @@ def test_mmpdb_generate_min_pairs_matches_collection_generation_evidence_filter(
     assert observed == expected
 
 
+def test_phase13_6_multicut_hydrogen_case_table_has_required_decisions():
+    rows = _read_phase13_6_cases()
+
+    assert [row["case_id"] for row in rows] == [
+        "one_cut_hydrogen_delete",
+        "two_cut_disconnected_constant_h_delete",
+        "two_cut_connected_constant_h_delete",
+        "two_cut_second_label_h_delete",
+        "two_cut_no_hydrogen_disconnected_control",
+    ]
+    for row in rows:
+        assert row["decision"] in PHASE13_6_ALLOWED_DECISIONS, row
+        assert row["mmpdb_result"], row
+        assert row["oemmpa_current_result"], row
+        assert row["notes"].endswith("."), row
+
+
+def test_phase13_6_mmpdb_generate_confirms_one_cut_hydrogen_control():
+    if not MMPDB_2019_DATABASE.exists():
+        pytest.skip(f"MMPDB 2019 test database not found: {MMPDB_2019_DATABASE}")
+
+    result = _run_mmpdb_cli(
+        "--quiet",
+        "generate",
+        "--smiles",
+        "c1cccnc1O",
+        str(MMPDB_2019_DATABASE),
+    )
+    rows = _tsv_rows(result.stdout)
+    hydrogen_row = next(
+        row
+        for row in rows
+        if row["from_smiles"] == "[*:1]O" and row["to_smiles"] == "[*:1][H]"
+    )
+    case = _phase13_6_case("one_cut_hydrogen_delete")
+
+    assert hydrogen_row["constant"] == case["constant_smiles"]
+    assert hydrogen_row["final"] == case["mmpdb_result"]
+    assert hydrogen_row["#pairs"] == "4"
+
+
+def test_phase13_6_mmpdb_lower_level_weld_cases_match_decision_table():
+    weld_rows = [
+        row
+        for row in _read_phase13_6_cases()
+        if row["component"] == "weld"
+    ]
+    assert [row["case_id"] for row in weld_rows] == [
+        "two_cut_disconnected_constant_h_delete",
+        "two_cut_connected_constant_h_delete",
+        "two_cut_second_label_h_delete",
+        "two_cut_no_hydrogen_disconnected_control",
+    ]
+
+    for row in weld_rows:
+        assert (
+            _mmpdb_weld_smiles(
+                row["constant_smiles"],
+                row["target_variable_smiles"],
+            )
+            == row["mmpdb_result"]
+        )
+
+
 def test_mmpdb_generate_multi_cut_hydrogen_boundary_is_explicitly_unsupported():
     from oemmpa import _oemmpa, build_variable_transform_smirks, generate_products
 
-    transform = "C([*:1])[*:2]>>[*:1][H].O[*:2]"
-    error = (
-        r"variable transform components must be connected: "
-        r"\[\*:1\]\[H\]\.O\[\*:2\]"
-    )
+    unsupported_rows = [
+        row
+        for row in _read_phase13_6_cases()
+        if row["oemmpa_current_result"] == "strict_error_permissive_skip"
+    ]
+    assert unsupported_rows
 
-    with pytest.raises(ValueError, match=error):
-        build_variable_transform_smirks(transform)
+    for row in unsupported_rows:
+        transform = _phase13_6_transform_for_case(row)
+        escaped_target = re.escape(row["target_variable_smiles"])
+        error = rf"variable transform components must be connected: {escaped_target}"
 
-    unsupported = _oemmpa.Transform(transform)
-    assert generate_products("CCO", [unsupported], min_evidence=0) == []
+        with pytest.raises(ValueError, match=error):
+            build_variable_transform_smirks(transform)
 
-    with pytest.raises(ValueError, match=error):
-        generate_products(
-            "CCO",
-            [unsupported],
-            min_evidence=0,
-            skip_unsupported=False,
-        )
+        unsupported = _oemmpa.Transform(transform)
+        assert generate_products("CCO", [unsupported], min_evidence=0) == []
+
+        with pytest.raises(ValueError, match=error):
+            generate_products(
+                "CCO",
+                [unsupported],
+                min_evidence=0,
+                skip_unsupported=False,
+            )
 
 
 def test_mmpdb_reference_mw_statistics_match_supported_transform_rows():
