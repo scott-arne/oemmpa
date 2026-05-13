@@ -12,7 +12,9 @@ from oemmpa import (
     Analyzer,
     DuckDBStore,
     compute_transform_statistics,
+    find_transform_environments,
     generate_products,
+    generate_products_from_rule_environments,
     predict_property_delta,
     predict_transform_delta,
 )
@@ -67,6 +69,22 @@ GENERATION_COLUMNS = [
     "property",
     "predicted_delta",
     "count",
+    "std",
+    "p_value",
+]
+
+PERSISTED_GENERATION_COLUMNS = [
+    "smiles",
+    "transform",
+    "property",
+    "aggregation",
+    "predicted_delta",
+    "evidence_count",
+    "rule_environment_id",
+    "count",
+    "radius",
+    "smarts",
+    "pseudosmiles",
     "std",
     "p_value",
 ]
@@ -300,7 +318,7 @@ def _refresh_stats(args):
     return 0
 
 
-def _require_stateless_inputs(args):
+def _require_file_inputs(args, command):
     missing = [
         option
         for option, value in (
@@ -311,13 +329,13 @@ def _require_stateless_inputs(args):
     ]
     if missing:
         raise ValueError(
-            "predict requires a database path or stateless inputs: "
+            f"{command} requires a database path or stateless inputs: "
             + ", ".join(missing)
         )
 
 
 def _predict_stateless(args):
-    _require_stateless_inputs(args)
+    _require_file_inputs(args, "predict")
     _, statistics = _compute_statistics(args)
     prediction = predict_transform_delta(
         statistics,
@@ -354,17 +372,123 @@ def _predict(args):
     return _predict_stateless(args)
 
 
-def _generate(args):
+def _matches_by_transform(matches):
+    return {match.transform: match for match in matches}
+
+
+def _persisted_generation_rows(products, matches, aggregation):
+    matches_by_transform = _matches_by_transform(matches)
+    rows = []
+    for product in products:
+        row = product.to_dict()
+        match = matches_by_transform[product.transform]
+        statistics = match.statistics
+        row.update(
+            {
+                "property": statistics.property_name,
+                "aggregation": "avg" if aggregation == "mean" else aggregation,
+                "predicted_delta": statistics.predicted_delta(aggregation),
+                "rule_environment_id": statistics.rule_environment_id,
+                "count": statistics.count,
+                "radius": statistics.radius,
+                "smarts": statistics.smarts,
+                "pseudosmiles": statistics.pseudosmiles,
+                "std": statistics.std,
+                "p_value": statistics.p_value,
+            }
+        )
+        rows.append(row)
+    return rows
+
+
+def _reject_persisted_generate_options(args):
+    for option, value in (
+        ("--min-pairs", args.min_pairs),
+        ("--score", args.score),
+        ("--where", args.where),
+    ):
+        if value is not None:
+            raise ValueError(f"generate {option} requires a database path")
+
+
+def _reject_stateless_generate_options(args):
+    for option, value in (
+        ("--smiles", args.smiles),
+        ("--properties", args.properties),
+        ("--id-column", args.id_column),
+        ("--min-evidence", args.min_evidence),
+    ):
+        if value is not None:
+            raise ValueError(f"generate {option} requires stateless inputs")
+
+
+def _stateless_generation_transforms(transforms, transform):
+    if transform is None:
+        return transforms
+    return [row for row in transforms if row.transform == transform]
+
+
+def _stateless_generation_rows(products, aggregation):
+    rows = []
+    for product in products:
+        row = product.to_dict()
+        if product.statistics is not None:
+            row["predicted_delta"] = product.predicted_delta(aggregation)
+        rows.append(row)
+    return rows
+
+
+def _generate_stateless(args):
+    _reject_persisted_generate_options(args)
+    _require_file_inputs(args, "generate")
+    min_evidence = 1 if args.min_evidence is None else args.min_evidence
+    args.min_evidence = min_evidence
     analyzer, statistics = _compute_statistics(args)
     products = generate_products(
         args.source,
-        analyzer.transforms(),
-        min_evidence=args.min_evidence,
+        _stateless_generation_transforms(analyzer.transforms(), args.transform),
+        min_evidence=min_evidence,
         skip_unsupported=not args.strict,
         statistics=statistics,
     )
-    _write_tsv_output(products.to_dicts(), GENERATION_COLUMNS, args.output)
+    _write_tsv_output(
+        _stateless_generation_rows(products, args.aggregation),
+        GENERATION_COLUMNS,
+        args.output,
+    )
     return 0
+
+
+def _generate_persisted(args):
+    _reject_stateless_generate_options(args)
+    _ensure_report_output_is_not_database(args.database, args.output)
+    store = _open_store(args.database)
+    min_pairs = 1 if args.min_pairs is None else args.min_pairs
+    score = "largest-radius" if args.score is None else args.score
+    matches = find_transform_environments(
+        store,
+        transform=args.transform,
+        property_name=args.property,
+        min_pairs=min_pairs,
+        where=args.where,
+        score=score,
+        aggregation=args.aggregation,
+    )
+    products = generate_products_from_rule_environments(
+        args.source,
+        matches,
+        min_evidence=min_pairs,
+        skip_unsupported=not args.strict,
+    )
+    rows = _persisted_generation_rows(products, matches, args.aggregation)
+    _write_tsv_output(rows, PERSISTED_GENERATION_COLUMNS, args.output)
+    return 0
+
+
+def _generate(args):
+    if args.database is not None:
+        return _generate_persisted(args)
+    return _generate_stateless(args)
 
 
 def _build_parser():
@@ -479,13 +603,51 @@ def _build_parser():
         "generate",
         help="Generate products and annotate them with transform statistics.",
     )
-    _add_input_arguments(generate_parser)
+    generate_parser.add_argument(
+        "database",
+        nargs="?",
+        help="Optional DuckDB database path for persisted generation.",
+    )
+    _add_input_arguments(generate_parser, require_files=False)
     generate_parser.add_argument("--source", required=True, help="Source SMILES.")
+    generate_parser.add_argument(
+        "--transform",
+        default=None,
+        help="Optional transform SMILES to generate from.",
+    )
+    generate_parser.add_argument(
+        "--aggregation",
+        default="avg",
+        choices=["avg", "mean", "median"],
+        help="Statistic used as the predicted delta.",
+    )
     generate_parser.add_argument(
         "--min-evidence",
         type=int,
-        default=1,
-        help="Minimum transform evidence count and statistics count.",
+        default=None,
+        help="Minimum transform evidence count for stateless generation.",
+    )
+    generate_parser.add_argument(
+        "--min-pairs",
+        type=int,
+        default=None,
+        help="Minimum supporting pairs per rule environment for persisted generation.",
+    )
+    generate_parser.add_argument(
+        "--score",
+        choices=[
+            "largest-radius",
+            "smallest-radius",
+            "largest-count",
+            "smallest-count",
+        ],
+        default=None,
+        help="Persisted rule-environment selection score.",
+    )
+    generate_parser.add_argument(
+        "--where",
+        default=None,
+        help="Persisted rule-environment where expression.",
     )
     generate_parser.add_argument(
         "--strict",

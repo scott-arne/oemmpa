@@ -7,6 +7,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
@@ -33,6 +35,51 @@ PERSISTED_PREDICTION_HEADER = [
     "pseudosmiles",
     "std",
     "p_value",
+]
+
+PERSISTED_GENERATION_HEADER = [
+    "smiles",
+    "transform",
+    "property",
+    "aggregation",
+    "predicted_delta",
+    "evidence_count",
+    "rule_environment_id",
+    "count",
+    "radius",
+    "smarts",
+    "pseudosmiles",
+    "std",
+    "p_value",
+]
+
+EXPECTED_PERSISTED_GENERATION_ROWS = [
+    {
+        "smiles": "c1ccc(cc1)N",
+        "transform": "[*:1]C>>[*:1]N",
+        "property": "pIC50",
+        "aggregation": "avg",
+        "predicted_delta": "0.5",
+        "evidence_count": "1",
+        "rule_environment_id": "12",
+        "count": "1",
+        "radius": "5",
+        "std": "",
+        "p_value": "",
+    },
+    {
+        "smiles": "c1ccc(cc1)O",
+        "transform": "[*:1]C>>[*:1]O",
+        "property": "pIC50",
+        "aggregation": "avg",
+        "predicted_delta": "1",
+        "evidence_count": "1",
+        "rule_environment_id": "6",
+        "count": "1",
+        "radius": "5",
+        "std": "",
+        "p_value": "",
+    },
 ]
 
 
@@ -69,6 +116,19 @@ def _gzip_copy(source, target):
 def _gzip_tsv_rows(path):
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         return _tsv_rows(handle.read())
+
+
+def _assert_generation_rows(rows):
+    comparable_rows = [
+        {
+            key: row[key]
+            for key in EXPECTED_PERSISTED_GENERATION_ROWS[index]
+        }
+        for index, row in enumerate(rows)
+    ]
+    assert comparable_rows == EXPECTED_PERSISTED_GENERATION_ROWS
+    assert all(row["smarts"] for row in rows)
+    assert all(row["pseudosmiles"] for row in rows)
 
 
 def _build_cli_store(tmp_path, *, smiles=None, properties=None):
@@ -308,6 +368,136 @@ def test_cli_persisted_predict_refuses_to_write_report_over_database(tmp_path):
     assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def test_cli_persisted_generate_outputs_rule_environment_schema(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+    )
+
+    assert _tsv_header(result.stdout) == PERSISTED_GENERATION_HEADER
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) == 2
+    _assert_generation_rows(rows)
+
+
+def test_cli_persisted_generate_can_filter_transform(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["smiles"] == "c1ccc(cc1)O"
+    assert rows[0]["rule_environment_id"] == "6"
+
+
+def test_cli_persisted_generate_writes_gzip_output(tmp_path):
+    database = _build_cli_store(tmp_path)
+    output_path = tmp_path / "generated.tsv.gz"
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--output",
+        str(output_path),
+    )
+
+    assert result.stdout == ""
+    rows = _gzip_tsv_rows(output_path)
+    assert len(rows) == 2
+    _assert_generation_rows(rows)
+
+
+def test_cli_persisted_generate_refuses_to_write_report_over_database(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--output",
+        str(database),
+        check=False,
+    )
+    list_result = _run_cli("list", str(database))
+
+    assert result.returncode == 2
+    assert "output path must differ from database" in result.stderr
+    assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
+def test_cli_persisted_generate_rejects_stateless_min_evidence(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        "--min-evidence",
+        "999",
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "generate --min-evidence requires stateless inputs" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--smiles", "missing.smi"),
+        ("--properties", "missing.csv"),
+        ("--id-column", "compound_id"),
+    ],
+)
+def test_cli_persisted_generate_rejects_stateless_file_options(
+    tmp_path,
+    option,
+    value,
+):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--property",
+        "pIC50",
+        option,
+        value,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"generate {option} requires stateless inputs" in result.stderr
+
+
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(PYTHON_ROOT))
     from oemmpa_cli import cli as cli_module
@@ -411,6 +601,115 @@ def test_cli_generate_outputs_statistics_annotated_products():
     assert phenol_row["smiles"] == "c1ccc(cc1)O"
     assert phenol_row["predicted_delta"] == "1"
     assert phenol_row["count"] == "1"
+
+
+def test_cli_stateless_generate_can_filter_transform():
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--source",
+        "Cc1ccccc1",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["smiles"] == "c1ccc(cc1)O"
+    assert rows[0]["transform"] == "[*:1]C>>[*:1]O"
+    assert rows[0]["predicted_delta"] == "1"
+
+
+def test_cli_stateless_generate_uses_selected_aggregation(tmp_path):
+    smiles = tmp_path / "aggregation.smi"
+    properties = tmp_path / "aggregation.csv"
+    smiles.write_text(
+        "\n".join(
+            [
+                "Cc1ccccc1 t1",
+                "Oc1ccccc1 p1",
+                "Cc1ccc(F)cc1 t2",
+                "Oc1ccc(F)cc1 p2",
+                "Cc1ccc(Cl)cc1 t3",
+                "Oc1ccc(Cl)cc1 p3",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    properties.write_text(
+        "\n".join(
+            [
+                "id,smiles,pIC50",
+                "t1,Cc1ccccc1,0",
+                "p1,Oc1ccccc1,1",
+                "t2,Cc1ccc(F)cc1,0",
+                "p2,Oc1ccc(F)cc1,3",
+                "t3,Cc1ccc(Cl)cc1,0",
+                "p3,Oc1ccc(Cl)cc1,10",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--source",
+        "Cc1ccccc1",
+        "--transform",
+        "[*:1]C>>[*:1]O",
+        "--aggregation",
+        "median",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["smiles"] == "c1ccc(cc1)O"
+    assert rows[0]["predicted_delta"] == "3"
+    assert rows[0]["count"] == "3"
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--min-pairs", "2"),
+        ("--score", "smallest-radius"),
+        ("--where", "radius >= 2"),
+    ],
+)
+def test_cli_stateless_generate_rejects_persisted_selection_options(
+    option,
+    value,
+):
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--source",
+        "Cc1ccccc1",
+        option,
+        value,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"generate {option} requires a database path" in result.stderr
 
 
 def test_cli_refresh_stats_writes_gzip_output(tmp_path):
