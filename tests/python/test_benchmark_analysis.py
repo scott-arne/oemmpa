@@ -276,3 +276,20 @@ def test_analyze_baseline_delta_missing_row_emits_regression():
         if s.severity == "regression" and s.metrics.get("metric") == "row"
     ]
     assert missing
+
+
+def test_build_signals_fans_out_to_all_analyzers():
+    rows = [
+        _rdkit_row(),
+        _scaling_row(1, 10.0),
+        _scaling_row(2, 11.0),
+        _workflow_row("cli_workflow", "refresh-stats", 0.1),
+        _workflow_row("cli_workflow", "predict", 0.4),
+    ]
+    baseline_rows = [
+        _workflow_row("cli_workflow", "predict", 0.2),
+    ]
+    skipped = [{"benchmark": "mmpdb-workflow", "reason": "missing"}]
+    signals = build_signals(rows, baseline_rows=baseline_rows, skipped=skipped)
+    kinds = {s.kind for s in signals}
+    assert {"availability", "vs_reference", "scaling", "workflow", "regression"} <= kinds

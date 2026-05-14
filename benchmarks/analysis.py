@@ -564,4 +564,9 @@ def build_signals(
                 metrics={"reason": reason},
             )
         )
+    signals.extend(analyze_rdkit(rows))
+    signals.extend(analyze_thread_scaling(rows))
+    signals.extend(analyze_workflow(rows))
+    if baseline_rows is not None:
+        signals.extend(analyze_baseline_delta(rows, list(baseline_rows)))
     return signals
