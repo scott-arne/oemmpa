@@ -80,6 +80,27 @@ available, the command writes a single `available=False` row rather than
 failing. It is intentionally not part of default CI thresholds, large-dataset
 comparisons, or automated performance gates.
 
+## Regression Checks
+
+```bash
+python -m benchmarks.benchmark_suite regression-check \
+  baseline-benchmarks.csv \
+  current-benchmarks.csv \
+  --max-seconds-ratio 1.25 \
+  --output benchmark-regressions.csv
+```
+
+The regression checker compares previously saved benchmark CSV files. It does
+not run benchmarks itself, so it can be used after local or scheduled benchmark
+runs without making the normal pytest suite slower.
+
+Timing columns ending in `seconds` are reported as regressions when the current
+value is greater than the baseline multiplied by `--max-seconds-ratio`.
+Throughput columns ending in `per_second` are reported as regressions when the
+current value falls below the inverse of that same ratio. Integer-like count
+and size columns ending in `count`, `_rows`, or `_bytes` are reported as
+`changed` when the value differs from the baseline.
+
 ## Regression Policy
 
 Benchmark CSV rows include counts as well as timings. Treat timing changes as
@@ -89,3 +110,11 @@ database-size, and report-row counts are stable or intentionally changed.
 Fixture-sized benchmark tests protect schemas and representative counts. Large
 MMPDB/RDKit comparisons remain opt-in Phase 15 work and should not be added to
 the default pytest suite.
+
+Default pytest coverage should fail on schema or representative-count
+regressions, not on wall-clock timing. Timing thresholds belong in explicit
+benchmark jobs where the machine, dataset, repeats, and baseline CSV are known.
+Use the regression checker output as a review queue: investigate `changed`
+count rows before interpreting any `regression` timing rows, then decide
+whether the timing threshold, benchmark fixture, or implementation needs to
+change.
