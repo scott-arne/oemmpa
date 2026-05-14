@@ -140,6 +140,90 @@ def analyze_rdkit(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
     return signals
 
 
+def analyze_thread_scaling(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
+    """Return scaling-efficiency signals grouped by dataset.
+
+    :param rows: Benchmark rows; only ``thread_scaling`` rows are considered.
+    :returns: One ``Signal`` per non-baseline worker count per dataset, or a
+              single availability signal when the 1-worker baseline is missing.
+    """
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if row.get("benchmark") != "thread_scaling":
+            continue
+        dataset = str(row.get("dataset", "dataset"))
+        grouped.setdefault(dataset, []).append(row)
+
+    signals: list[Signal] = []
+    for dataset, group in grouped.items():
+        baseline = next(
+            (row for row in group if _as_float(row.get("workers")) == 1),
+            None,
+        )
+        baseline_jps = _as_float(baseline.get("jobs_per_second")) if baseline else None
+        if baseline is None or not baseline_jps:
+            signals.append(
+                Signal(
+                    kind="availability",
+                    benchmark="thread_scaling",
+                    subject=dataset,
+                    headline="thread scaling baseline unavailable",
+                    detail=(
+                        "No valid 1-worker baseline was available for "
+                        f"{dataset}; cannot compute scaling efficiency."
+                    ),
+                    severity="warning",
+                    magnitude=AVAILABILITY_MAGNITUDE,
+                    metrics={"dataset": dataset},
+                )
+            )
+            continue
+
+        sorted_group = sorted(
+            group,
+            key=lambda item: _as_float(item.get("workers")) or 0.0,
+        )
+        for row in sorted_group:
+            workers = _as_float(row.get("workers"))
+            throughput = _as_float(row.get("jobs_per_second"))
+            if workers is None or workers == 1 or throughput is None:
+                continue
+            speedup = throughput / baseline_jps
+            efficiency = speedup / workers
+            if efficiency >= 0.8:
+                severity = "good"
+            elif efficiency < 0.6:
+                severity = "warning"
+            else:
+                severity = "neutral"
+            signals.append(
+                Signal(
+                    kind="scaling",
+                    benchmark="thread_scaling",
+                    subject=f"{int(workers)} workers",
+                    headline=(
+                        f"{int(workers)} workers: {efficiency * 100:.0f}% "
+                        f"efficient ({speedup:.2f}x)"
+                    ),
+                    detail=(
+                        f"{dataset}: {throughput:.2f} jobs/s vs "
+                        f"{baseline_jps:.2f} jobs/s baseline."
+                    ),
+                    severity=severity,
+                    magnitude=abs(1.0 - efficiency),
+                    metrics={
+                        "dataset": dataset,
+                        "workers": int(workers),
+                        "speedup": speedup,
+                        "efficiency": efficiency,
+                        "baseline_jobs_per_second": baseline_jps,
+                        "jobs_per_second": throughput,
+                    },
+                )
+            )
+    return signals
+
+
 def build_signals(
     rows: Iterable[Mapping[str, Any]],
     baseline_rows: Iterable[Mapping[str, Any]] | None = None,

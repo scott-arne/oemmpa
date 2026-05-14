@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from benchmarks.analysis import Signal, analyze_rdkit, build_signals
+from benchmarks.analysis import (
+    Signal,
+    analyze_rdkit,
+    analyze_thread_scaling,
+    build_signals,
+)
 
 
 def test_signal_is_frozen_dataclass():
@@ -95,3 +100,54 @@ def test_analyze_rdkit_unavailable_emits_availability_warning():
 
 def test_analyze_rdkit_ignores_unrelated_rows():
     assert analyze_rdkit([{"benchmark": "thread_scaling"}]) == []
+
+
+def _scaling_row(workers, jobs_per_second, dataset="mmpa_smiles.smi"):
+    return {
+        "benchmark": "thread_scaling",
+        "dataset": dataset,
+        "workers": workers,
+        "jobs_completed": workers * 3,
+        "wall_seconds": workers * 3 / jobs_per_second if jobs_per_second else 0.0,
+        "jobs_per_second": jobs_per_second,
+        "molecule_count": 20,
+        "pair_count": 10,
+        "transform_count": 8,
+    }
+
+
+def test_analyze_thread_scaling_flags_low_efficiency_as_warning():
+    rows = [
+        _scaling_row(1, 10.0),
+        _scaling_row(2, 11.0),
+        _scaling_row(4, 15.0),
+    ]
+    signals = {(s.subject): s for s in analyze_thread_scaling(rows)}
+    assert signals["2 workers"].severity == "warning"
+    assert signals["4 workers"].severity == "warning"
+    assert "55%" in signals["2 workers"].headline
+    assert "38%" in signals["4 workers"].headline
+
+
+def test_analyze_thread_scaling_marks_good_when_efficient():
+    rows = [
+        _scaling_row(1, 10.0),
+        _scaling_row(2, 19.0),
+        _scaling_row(4, 35.0),
+    ]
+    signals = {(s.subject): s for s in analyze_thread_scaling(rows)}
+    assert signals["2 workers"].severity == "good"
+    assert signals["4 workers"].severity == "good"
+    assert signals["2 workers"].metrics["efficiency"] == 19.0 / 10.0 / 2.0
+
+
+def test_analyze_thread_scaling_missing_baseline_yields_availability():
+    rows = [_scaling_row(2, 5.0)]
+    signals = analyze_thread_scaling(rows)
+    assert len(signals) == 1
+    assert signals[0].kind == "availability"
+    assert signals[0].severity == "warning"
+
+
+def test_analyze_thread_scaling_ignores_other_benchmarks():
+    assert analyze_thread_scaling([{"benchmark": "storage"}]) == []
