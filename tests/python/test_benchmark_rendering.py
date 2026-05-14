@@ -10,6 +10,7 @@ from benchmarks.rendering import (
     format_seconds,
     render_benchmark_table,
     render_leaderboard,
+    render_report,
 )
 
 
@@ -150,3 +151,71 @@ def test_render_benchmark_table_shows_stderr_when_any_nonempty():
     text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
     assert "stderr" in text.lower()
     assert "oops" in text
+
+
+def test_render_report_includes_title_leaderboard_and_table():
+    rows = [
+        {
+            "benchmark": "cli_workflow",
+            "command": "refresh-stats",
+            "dataset": "mmpa_smiles.smi",
+            "returncode": 0,
+            "seconds": 0.11,
+            "stdout_lines": 1,
+            "output_rows": 1,
+            "stderr": "",
+        },
+        {
+            "benchmark": "cli_workflow",
+            "command": "predict",
+            "dataset": "mmpa_smiles.smi",
+            "returncode": 0,
+            "seconds": 0.50,
+            "stdout_lines": 1,
+            "output_rows": 1,
+            "stderr": "",
+        },
+    ]
+    signals = [
+        Signal(
+            kind="workflow",
+            benchmark="cli_workflow",
+            subject="cli",
+            headline="slowest: predict (0.500s, 4.5x fastest)",
+            detail="fastest refresh-stats 0.110s",
+            severity="neutral",
+            magnitude=1.5,
+            metrics={},
+        )
+    ]
+    console = Console(record=True, width=120, color_system=None)
+    render_report(rows, signals, console=console)
+    text = console.export_text()
+    assert "OEMMPA Benchmark Suite" in text
+    assert "Benchmark Leaderboard" in text
+    assert "cli_workflow" in text
+    assert "Baseline: none" in text
+
+
+def test_render_report_shows_baseline_badge_when_provided(tmp_path):
+    baseline = tmp_path / "baseline.csv"
+    baseline.write_text("benchmark\n")
+    console = Console(record=True, width=120, color_system=None)
+    render_report([], [], console=console, baseline_path=baseline)
+    text = console.export_text()
+    assert "Baseline:" in text
+    assert "aseline.csv" in text
+    assert "2026-05-14" in text
+
+
+def test_render_report_shows_skipped_panel():
+    console = Console(record=True, width=120, color_system=None)
+    render_report(
+        [],
+        [],
+        console=console,
+        skipped=[{"benchmark": "mmpdb-workflow", "reason": "missing"}],
+    )
+    text = console.export_text()
+    assert "Skipped mmpdb-workflow" in text
+    assert "missing" in text

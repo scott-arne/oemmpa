@@ -7,12 +7,13 @@ analysis layer remains pure.
 
 from __future__ import annotations
 
-from pathlib import Path  # noqa: F401
-from typing import Any, Literal, Mapping, Sequence
+import datetime
+from pathlib import Path
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from rich.console import Console, Group  # noqa: F401
-from rich.panel import Panel  # noqa: F401
-from rich.rule import Rule  # noqa: F401
+from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
@@ -264,3 +265,50 @@ def render_benchmark_table(
     for row in rows:
         table.add_row(*(_format_cell(column, row.get(column, "")) for column in columns))
     return table
+
+
+def render_report(
+    rows: Sequence[Mapping[str, Any]],
+    signals: Sequence[Signal],
+    *,
+    console: Console,
+    skipped: Iterable[Mapping[str, Any]] = (),
+    baseline_path: Path | None = None,
+    verbose: bool = False,
+) -> None:
+    """Render the full benchmark report to ``console``.
+
+    :param rows: Benchmark rows.
+    :param signals: Analysis signals.
+    :param console: Rich console to print to.
+    :param skipped: Optional skipped benchmark dictionaries.
+    :param baseline_path: Path to the active baseline CSV, if any.
+    :param verbose: Passes through to leaderboard and table rendering.
+    """
+    console.print(Rule("[bold]OEMMPA Benchmark Suite"))
+    if baseline_path is not None:
+        try:
+            mtime = baseline_path.stat().st_mtime
+            stamp = datetime.datetime.fromtimestamp(mtime).date().isoformat()
+            badge = f"Baseline: {baseline_path} ({stamp})"
+        except FileNotFoundError:
+            badge = f"Baseline: {baseline_path} (missing)"
+    else:
+        badge = "Baseline: none"
+    console.print(Text(badge, style="dim"))
+
+    for skipped_entry in skipped:
+        console.print(
+            Panel(
+                str(skipped_entry.get("reason", "")),
+                title=f"Skipped {skipped_entry.get('benchmark', 'benchmark')}",
+                border_style="yellow",
+            )
+        )
+
+    console.print(render_leaderboard(signals, verbose=verbose))
+
+    benchmarks = sorted({str(row.get("benchmark", "")) for row in rows if row.get("benchmark")})
+    for benchmark in benchmarks:
+        benchmark_rows = [row for row in rows if row.get("benchmark") == benchmark]
+        console.print(render_benchmark_table(benchmark, benchmark_rows, verbose=verbose))
