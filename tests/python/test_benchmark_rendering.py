@@ -5,7 +5,12 @@ from __future__ import annotations
 from rich.console import Console
 
 from benchmarks.analysis import Signal
-from benchmarks.rendering import format_bytes, format_seconds, render_leaderboard
+from benchmarks.rendering import (
+    format_bytes,
+    format_seconds,
+    render_benchmark_table,
+    render_leaderboard,
+)
 
 
 def test_format_seconds_uses_ms_below_threshold():
@@ -93,3 +98,55 @@ def test_render_leaderboard_includes_detail_when_verbose():
     default_text = _render(render_leaderboard(signals, verbose=False))
     assert "detail for ref.smi" in verbose_text
     assert "detail for ref.smi" not in default_text
+
+
+def _cli_row(command, seconds, returncode=0, stderr=""):
+    return {
+        "benchmark": "cli_workflow",
+        "command": command,
+        "dataset": "mmpa_smiles.smi",
+        "returncode": returncode,
+        "seconds": seconds,
+        "stdout_lines": 1,
+        "output_rows": 1,
+        "stderr": stderr,
+    }
+
+
+def test_render_benchmark_table_drops_constant_dataset_column():
+    rows = [_cli_row("refresh-stats", 0.11), _cli_row("predict", 0.22)]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "mmpa_smiles.smi" in text
+    assert "dataset" not in text.lower().splitlines()[2]
+
+
+def test_render_benchmark_table_hides_returncode_column_when_all_zero():
+    rows = [_cli_row("refresh-stats", 0.11)]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "returncode" not in text.lower()
+
+
+def test_render_benchmark_table_shows_returncode_column_when_any_nonzero():
+    rows = [_cli_row("refresh-stats", 0.11), _cli_row("predict", 0.12, returncode=2)]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "returncode" in text.lower()
+
+
+def test_render_benchmark_table_formats_seconds_with_ms_threshold():
+    rows = [_cli_row("refresh-stats", 0.004), _cli_row("predict", 0.500)]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "4.0ms" in text
+    assert "0.500s" in text
+
+
+def test_render_benchmark_table_hides_stderr_when_all_empty_default():
+    rows = [_cli_row("refresh-stats", 0.11)]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "stderr" not in text.lower()
+
+
+def test_render_benchmark_table_shows_stderr_when_any_nonempty():
+    rows = [_cli_row("refresh-stats", 0.11, stderr="oops")]
+    text = _render(render_benchmark_table("cli_workflow", rows, verbose=False))
+    assert "stderr" in text.lower()
+    assert "oops" in text

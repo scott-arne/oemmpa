@@ -8,8 +8,7 @@ analysis layer remains pure.
 from __future__ import annotations
 
 from pathlib import Path  # noqa: F401
-from typing import Any, Iterable, Mapping  # noqa: F401
-from typing import Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from rich.console import Console, Group  # noqa: F401
 from rich.panel import Panel  # noqa: F401
@@ -99,4 +98,169 @@ def render_leaderboard(signals: Sequence[Signal], *, verbose: bool = False) -> T
         table.add_row(glyph, benchmark_text, headline_text, score)
         if verbose and signal.detail:
             table.add_row("", Text(""), Text(signal.detail, style="dim"), "")
+    return table
+
+
+_IDENTIFIER_COLUMNS = ("command", "workers")
+_KEY_METRIC_COLUMNS = (
+    "seconds",
+    "wall_seconds",
+    "total_seconds",
+    "oemmpa_seconds",
+    "rdkit_seconds",
+    "jobs_per_second",
+)
+_VOLUME_COLUMNS = (
+    "jobs_completed",
+    "molecule_count",
+    "pair_count",
+    "transform_count",
+    "output_rows",
+    "compound_rows",
+    "property_rows",
+    "property_accepted_count",
+    "property_rejected_count",
+    "detail_rule_rows",
+    "detail_pair_rows",
+    "oemmpa_pair_count",
+    "oemmpa_transform_count",
+    "rdkit_pair_count",
+    "rdkit_fragment_count",
+    "common_molecule_pairs",
+    "common_chemistry_pairs",
+    "oemmpa_only",
+    "rdkit_only",
+    "output_bytes",
+    "database_bytes",
+)
+_NOISE_COLUMNS = ("stdout_lines", "stderr")
+_HIDE_WHEN_ZERO = {"returncode"}
+_HIDE_WHEN_EMPTY = {"stderr"}
+
+_NUMERIC_RIGHT_ALIGN = {
+    "seconds",
+    "wall_seconds",
+    "total_seconds",
+    "oemmpa_seconds",
+    "rdkit_seconds",
+    "jobs_per_second",
+    "jobs_completed",
+    "workers",
+    "molecule_count",
+    "pair_count",
+    "transform_count",
+    "output_rows",
+    "compound_rows",
+    "property_rows",
+    "property_accepted_count",
+    "property_rejected_count",
+    "detail_rule_rows",
+    "detail_pair_rows",
+    "oemmpa_pair_count",
+    "oemmpa_transform_count",
+    "rdkit_pair_count",
+    "rdkit_fragment_count",
+    "common_molecule_pairs",
+    "common_chemistry_pairs",
+    "oemmpa_only",
+    "rdkit_only",
+    "output_bytes",
+    "database_bytes",
+    "returncode",
+    "stdout_lines",
+}
+
+
+def _format_cell(column: str, value: Any) -> str:
+    if value in ("", None):
+        return ""
+    if column.endswith("seconds"):
+        try:
+            return format_seconds(float(value))
+        except (TypeError, ValueError):
+            return str(value)
+    if column.endswith("_bytes"):
+        try:
+            return format_bytes(int(float(value)))
+        except (TypeError, ValueError):
+            return str(value)
+    if column.endswith("per_second"):
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
+def _is_zero(value: Any) -> bool:
+    if value in ("", None):
+        return True
+    try:
+        return float(value) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _ordered_columns(rows: Sequence[Mapping[str, Any]], verbose: bool) -> list[str]:
+    present: set[str] = set().union(*({str(k) for k in row} for row in rows))
+    present.discard("benchmark")
+    datasets = {str(row.get("dataset", "")) for row in rows}
+    if len(datasets) == 1:
+        present.discard("dataset")
+    for column in _HIDE_WHEN_ZERO:
+        if column not in present:
+            continue
+        if all(_is_zero(row.get(column)) for row in rows):
+            present.discard(column)
+    for column in _HIDE_WHEN_EMPTY:
+        if column not in present:
+            continue
+        if all(not str(row.get(column, "")).strip() for row in rows):
+            present.discard(column)
+    if not verbose:
+        for column in ("stdout_lines",):
+            present.discard(column)
+
+    ordered: list[str] = []
+    for column in _IDENTIFIER_COLUMNS + _KEY_METRIC_COLUMNS + _VOLUME_COLUMNS + _NOISE_COLUMNS:
+        if column in present:
+            ordered.append(column)
+            present.discard(column)
+    ordered.extend(sorted(present))
+    return ordered
+
+
+def render_benchmark_table(
+    benchmark: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    verbose: bool = False,
+) -> Table:
+    """Return a tightened Rich table for a single benchmark.
+
+    :param benchmark: Internal benchmark name, used as the table title.
+    :param rows: Benchmark rows for this benchmark.
+    :param verbose: When ``True``, include noise columns such as ``stdout_lines``.
+    :returns: A Rich :class:`Table`.
+    """
+    rows = list(rows)
+    if not rows:
+        return Table(title=benchmark)
+
+    datasets = {str(row.get("dataset", "")) for row in rows}
+    caption_parts: list[str] = []
+    if len(datasets) == 1:
+        dataset = next(iter(datasets))
+        if dataset:
+            caption_parts.append(dataset)
+    caption_parts.append(f"{len(rows)} row(s)")
+    caption = " . ".join(caption_parts)
+
+    columns = _ordered_columns(rows, verbose=verbose)
+    table = Table(title=benchmark, caption=caption, show_lines=False, expand=False)
+    for column in columns:
+        justify: Literal["left", "right"] = "right" if column in _NUMERIC_RIGHT_ALIGN else "left"
+        table.add_column(column, justify=justify, overflow="fold")
+    for row in rows:
+        table.add_row(*(_format_cell(column, row.get(column, "")) for column in columns))
     return table
