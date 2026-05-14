@@ -55,6 +55,18 @@ MMPDB_WORKFLOW_COLUMNS = [
     "stderr",
 ]
 
+REGRESSION_CHECK_COLUMNS = [
+    "benchmark",
+    "dataset",
+    "command",
+    "metric",
+    "baseline",
+    "current",
+    "threshold",
+    "status",
+    "message",
+]
+
 STORAGE_COLUMNS = [
     "benchmark",
     "dataset",
@@ -71,6 +83,13 @@ STORAGE_COLUMNS = [
 def _csv_header(path):
     with path.open(newline="", encoding="utf-8") as handle:
         return next(csv.reader(handle))
+
+
+def _write_csv(path, rows):
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=PERSISTED_CLI_WORKFLOW_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def test_rdkit_report_rows_include_pair_overlap_metrics():
@@ -325,3 +344,130 @@ def test_benchmark_cli_accepts_mmpdb_workflow_options(tmp_path):
     ]
     assert rows[2]["detail_rule_rows"] == "2"
     assert rows[2]["detail_pair_rows"] == "8"
+
+
+def test_regression_check_rows_reports_timing_regressions_and_count_changes(
+    tmp_path,
+):
+    from benchmarks.benchmark_suite import regression_check_rows
+
+    baseline_path = tmp_path / "baseline.csv"
+    current_path = tmp_path / "current.csv"
+    baseline_rows = [
+        {
+            "benchmark": "persisted_cli_workflow",
+            "command": "predict",
+            "dataset": "fixture.smi",
+            "returncode": "0",
+            "seconds": "1.0",
+            "stdout_lines": "2",
+            "output_rows": "1",
+            "output_bytes": "42",
+            "database_bytes": "100",
+            "detail_rule_rows": "1",
+            "detail_pair_rows": "1",
+            "stderr": "",
+        },
+        {
+            "benchmark": "persisted_cli_workflow",
+            "command": "generate",
+            "dataset": "fixture.smi",
+            "returncode": "0",
+            "seconds": "0.8",
+            "stdout_lines": "3",
+            "output_rows": "2",
+            "output_bytes": "84",
+            "database_bytes": "100",
+            "detail_rule_rows": "2",
+            "detail_pair_rows": "2",
+            "stderr": "",
+        },
+    ]
+    current_rows = [
+        {
+            **baseline_rows[0],
+            "seconds": "1.4",
+            "output_rows": "2",
+        },
+        {
+            **baseline_rows[1],
+            "seconds": "0.82",
+        },
+    ]
+    _write_csv(baseline_path, baseline_rows)
+    _write_csv(current_path, current_rows)
+
+    rows = regression_check_rows(
+        baseline_path,
+        current_path,
+        max_seconds_ratio=1.25,
+    )
+
+    seconds_row = next(
+        row
+        for row in rows
+        if row["command"] == "predict" and row["metric"] == "seconds"
+    )
+    assert seconds_row["status"] == "regression"
+    assert seconds_row["baseline"] == 1.0
+    assert seconds_row["current"] == 1.4
+    assert seconds_row["threshold"] == 1.25
+
+    output_row = next(
+        row
+        for row in rows
+        if row["command"] == "predict" and row["metric"] == "output_rows"
+    )
+    assert output_row["status"] == "changed"
+    assert output_row["baseline"] == 1
+    assert output_row["current"] == 2
+
+    assert not any(
+        row["command"] == "generate" and row["metric"] == "output_rows"
+        for row in rows
+    )
+
+
+def test_benchmark_cli_accepts_regression_check_options(tmp_path):
+    from benchmarks.benchmark_suite import main
+
+    baseline_path = tmp_path / "baseline.csv"
+    current_path = tmp_path / "current.csv"
+    baseline_rows = [
+        {
+            "benchmark": "persisted_cli_workflow",
+            "command": "predict",
+            "dataset": "fixture.smi",
+            "returncode": "0",
+            "seconds": "1.0",
+            "stdout_lines": "2",
+            "output_rows": "1",
+            "output_bytes": "42",
+            "database_bytes": "100",
+            "detail_rule_rows": "1",
+            "detail_pair_rows": "1",
+            "stderr": "",
+        }
+    ]
+    current_rows = [{**baseline_rows[0], "seconds": "1.2"}]
+    output_path = tmp_path / "regression-check.csv"
+    _write_csv(baseline_path, baseline_rows)
+    _write_csv(current_path, current_rows)
+
+    result = main(
+        [
+            "regression-check",
+            str(baseline_path),
+            str(current_path),
+            "--max-seconds-ratio",
+            "1.1",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert result == 0
+    assert _csv_header(output_path) == REGRESSION_CHECK_COLUMNS
+    rows = list(csv.DictReader(output_path.open(newline="", encoding="utf-8")))
+    assert rows[0]["status"] == "regression"
+    assert rows[0]["threshold"] == "1.1"

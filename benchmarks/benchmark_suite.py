@@ -100,6 +100,17 @@ BENCHMARK_SCHEMAS = {
         "detail_pair_rows",
         "stderr",
     ],
+    "regression_check": [
+        "benchmark",
+        "dataset",
+        "command",
+        "metric",
+        "baseline",
+        "current",
+        "threshold",
+        "status",
+        "message",
+    ],
 }
 
 
@@ -603,7 +614,106 @@ def mmpdb_workflow_rows(
     return rows
 
 
+def regression_check_rows(baseline_path, current_path, max_seconds_ratio=1.25):
+    """Compare saved benchmark CSV files against a baseline.
+
+    :param baseline_path: Baseline benchmark CSV path.
+    :param current_path: Current benchmark CSV path.
+    :param max_seconds_ratio: Maximum allowed timing slowdown ratio.
+    :returns: List of CSV-ready regression report dictionaries.
+    """
+    baseline_rows = _read_csv_rows(baseline_path)
+    current_rows = _read_csv_rows(current_path)
+    current_by_key = {
+        _regression_row_key(row): row
+        for row in current_rows
+    }
+    rows = []
+    for baseline_row in baseline_rows:
+        key = _regression_row_key(baseline_row)
+        current_row = current_by_key.get(key)
+        if current_row is None:
+            rows.append(
+                _regression_report_row(
+                    baseline_row,
+                    metric="row",
+                    baseline="present",
+                    current="missing",
+                    threshold="present",
+                    status="missing",
+                    message="Current benchmark CSV is missing this baseline row.",
+                )
+            )
+            continue
+
+        for metric in _regression_metric_columns(baseline_row, current_row):
+            baseline_value = _numeric_value(baseline_row[metric])
+            current_value = _numeric_value(current_row[metric])
+            if baseline_value is None or current_value is None:
+                continue
+
+            if _is_seconds_metric(metric):
+                threshold = baseline_value * float(max_seconds_ratio)
+                status = "regression" if current_value > threshold else "pass"
+                rows.append(
+                    _regression_report_row(
+                        baseline_row,
+                        metric=metric,
+                        baseline=baseline_value,
+                        current=current_value,
+                        threshold=float(max_seconds_ratio),
+                        status=status,
+                        message=(
+                            f"{metric} {current_value:g} exceeds "
+                            f"{max_seconds_ratio:g}x baseline {baseline_value:g}."
+                            if status == "regression"
+                            else f"{metric} is within threshold."
+                        ),
+                    )
+                )
+            elif _is_throughput_metric(metric):
+                threshold = baseline_value / float(max_seconds_ratio)
+                status = "regression" if current_value < threshold else "pass"
+                rows.append(
+                    _regression_report_row(
+                        baseline_row,
+                        metric=metric,
+                        baseline=baseline_value,
+                        current=current_value,
+                        threshold=float(max_seconds_ratio),
+                        status=status,
+                        message=(
+                            f"{metric} {current_value:g} is below "
+                            f"baseline/{max_seconds_ratio:g} {threshold:g}."
+                            if status == "regression"
+                            else f"{metric} is within threshold."
+                        ),
+                    )
+                )
+            elif _is_count_metric(metric) and current_value != baseline_value:
+                rows.append(
+                    _regression_report_row(
+                        baseline_row,
+                        metric=metric,
+                        baseline=baseline_value,
+                        current=current_value,
+                        threshold="exact",
+                        status="changed",
+                        message=(
+                            f"{metric} changed from "
+                            f"{baseline_value:g} to {current_value:g}."
+                        ),
+                    )
+                )
+    return rows
+
+
 def _schema_for_rows(rows):
+    if rows and all(
+        {"metric", "status", "message"}.issubset(row)
+        for row in rows
+    ):
+        return BENCHMARK_SCHEMAS["regression_check"]
     benchmarks = {row.get("benchmark") for row in rows}
     if len(benchmarks) == 1:
         benchmark = next(iter(benchmarks))
@@ -701,6 +811,14 @@ def main(argv=None):
     mmpdb_parser.add_argument("--predict-reference", default="c1cccnc1O")
     mmpdb_parser.add_argument("--generate-smiles", default="c1cccnc1O")
 
+    regression_parser = subparsers.add_parser(
+        "regression-check",
+        parents=[command_options],
+    )
+    regression_parser.add_argument("baseline", type=Path)
+    regression_parser.add_argument("current", type=Path)
+    regression_parser.add_argument("--max-seconds-ratio", type=float, default=1.25)
+
     args = parser.parse_args(argv)
     if args.command == "rdkit-report":
         rows = rdkit_report_rows(args.smiles, repeats=args.repeats)
@@ -735,7 +853,7 @@ def main(argv=None):
             transform=args.transform,
             repeats=args.repeats,
         )
-    else:
+    elif args.command == "mmpdb-workflow":
         rows = mmpdb_workflow_rows(
             args.mmpdb_root,
             database_path=args.database,
@@ -745,6 +863,12 @@ def main(argv=None):
             predict_reference=args.predict_reference,
             generate_smiles=args.generate_smiles,
             repeats=args.repeats,
+        )
+    else:
+        rows = regression_check_rows(
+            args.baseline,
+            args.current,
+            max_seconds_ratio=args.max_seconds_ratio,
         )
 
     write_csv(rows, args.output)
@@ -852,6 +976,76 @@ def _mmpdb_benchmark_row(command_name, database_path, result, output_kind):
         "detail_rule_rows": 0,
         "detail_pair_rows": 0,
         "stderr": result.stderr.strip(),
+    }
+
+
+def _read_csv_rows(path):
+    with open(path, newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _regression_row_key(row):
+    return tuple(row.get(column, "") for column in ("benchmark", "dataset", "command", "workers"))
+
+
+def _regression_metric_columns(baseline_row, current_row):
+    columns = set(baseline_row) & set(current_row)
+    return sorted(
+        column
+        for column in columns
+        if _is_seconds_metric(column)
+        or _is_throughput_metric(column)
+        or _is_count_metric(column)
+    )
+
+
+def _is_seconds_metric(column):
+    return column.endswith("seconds")
+
+
+def _is_throughput_metric(column):
+    return column.endswith("per_second")
+
+
+def _is_count_metric(column):
+    return column.endswith("count") or column.endswith("_rows") or column.endswith("_bytes")
+
+
+def _numeric_value(value):
+    if value in ("", None):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number.is_integer():
+        return int(number)
+    return number
+
+
+def _regression_report_row(
+    source_row,
+    *,
+    metric,
+    baseline,
+    current,
+    threshold,
+    status,
+    message,
+):
+    command = source_row.get("command", "")
+    if not command and source_row.get("workers"):
+        command = f"workers={source_row['workers']}"
+    return {
+        "benchmark": source_row.get("benchmark", ""),
+        "dataset": source_row.get("dataset", ""),
+        "command": command,
+        "metric": metric,
+        "baseline": baseline,
+        "current": current,
+        "threshold": threshold,
+        "status": status,
+        "message": message,
     }
 
 
