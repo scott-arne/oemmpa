@@ -6,6 +6,7 @@ from benchmarks.analysis import (
     Signal,
     analyze_rdkit,
     analyze_thread_scaling,
+    analyze_workflow,
     build_signals,
 )
 
@@ -151,3 +152,70 @@ def test_analyze_thread_scaling_missing_baseline_yields_availability():
 
 def test_analyze_thread_scaling_ignores_other_benchmarks():
     assert analyze_thread_scaling([{"benchmark": "storage"}]) == []
+
+
+def _workflow_row(benchmark, command, seconds, returncode=0, **extra):
+    row = {
+        "benchmark": benchmark,
+        "command": command,
+        "dataset": "mmpa_smiles.smi",
+        "returncode": returncode,
+        "seconds": seconds,
+        "stdout_lines": 1,
+        "output_rows": 1,
+        "stderr": "",
+    }
+    row.update(extra)
+    return row
+
+
+def test_analyze_workflow_emits_slowest_signal_per_benchmark():
+    rows = [
+        _workflow_row("cli_workflow", "refresh-stats", 0.10),
+        _workflow_row("cli_workflow", "predict", 0.25),
+        _workflow_row("cli_workflow", "generate", 0.40),
+        _workflow_row("persisted_cli_workflow", "build", 0.30),
+        _workflow_row("persisted_cli_workflow", "list", 0.05),
+    ]
+    signals = analyze_workflow(rows)
+    benchmarks = {s.benchmark: s for s in signals if s.kind == "workflow"}
+    assert "cli_workflow" in benchmarks
+    assert "persisted_cli_workflow" in benchmarks
+    assert benchmarks["cli_workflow"].severity == "neutral"
+    assert "generate" in benchmarks["cli_workflow"].headline
+    assert "4.0x" in benchmarks["cli_workflow"].headline
+    assert benchmarks["cli_workflow"].metrics["slowest_seconds"] == 0.40
+
+
+def test_analyze_workflow_emits_regression_for_nonzero_returncode():
+    rows = [
+        _workflow_row("cli_workflow", "refresh-stats", 0.10),
+        _workflow_row("cli_workflow", "predict", 0.20, returncode=2, stderr="boom"),
+    ]
+    signals = analyze_workflow(rows)
+    regression = [s for s in signals if s.severity == "regression"]
+    assert len(regression) == 1
+    assert "predict" in regression[0].subject
+    assert "boom" in regression[0].detail
+
+
+def test_analyze_workflow_handles_mmpdb_unavailable():
+    rows = [
+        {
+            "benchmark": "mmpdb_workflow",
+            "command": "unavailable",
+            "dataset": "test_data_2019.mmpdb",
+            "available": False,
+            "returncode": 0,
+            "seconds": 0.0,
+            "stderr": "MMPDB checkout not found: /tmp",
+        }
+    ]
+    signals = analyze_workflow(rows)
+    assert len(signals) == 1
+    assert signals[0].kind == "availability"
+    assert signals[0].severity == "warning"
+
+
+def test_analyze_workflow_ignores_unrelated_benchmarks():
+    assert analyze_workflow([{"benchmark": "rdkit_report"}]) == []

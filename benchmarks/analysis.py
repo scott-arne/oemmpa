@@ -224,6 +224,128 @@ def analyze_thread_scaling(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
     return signals
 
 
+_WORKFLOW_BENCHMARKS = ("cli_workflow", "persisted_cli_workflow", "mmpdb_workflow")
+
+
+def analyze_workflow(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
+    """Return profile + failure signals for workflow-style benchmarks.
+
+    :param rows: Benchmark rows; only CLI / persisted / MMPDB workflow rows are considered.
+    :returns: One "slowest command" ``Signal`` per benchmark, plus one
+              regression signal per failed row and one availability signal per
+              ``mmpdb_workflow`` row flagged ``available=False``.
+    """
+    signals: list[Signal] = []
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        benchmark = row.get("benchmark")
+        if benchmark not in _WORKFLOW_BENCHMARKS:
+            continue
+        grouped.setdefault(str(benchmark), []).append(row)
+
+    for benchmark, group in grouped.items():
+        for row in group:
+            if benchmark == "mmpdb_workflow" and not _as_truthy(row.get("available", True)):
+                dataset = str(row.get("dataset", "mmpdb_workflow"))
+                stderr = str(row.get("stderr", "MMPDB unavailable")).strip() or "unavailable"
+                signals.append(
+                    Signal(
+                        kind="availability",
+                        benchmark=benchmark,
+                        subject=benchmark,
+                        headline=f"unavailable: {stderr.splitlines()[0]}",
+                        detail=f"{benchmark} row for {dataset} reported available=False.",
+                        severity="warning",
+                        magnitude=AVAILABILITY_MAGNITUDE,
+                        metrics={"dataset": dataset, "reason": stderr},
+                    )
+                )
+                continue
+            returncode = _as_float(row.get("returncode"))
+            # Explicit "is not None and != 0" allows mypy to narrow returncode to float,
+            # avoiding multiple int() calls and satisfying type checker narrowing.
+            if returncode is not None and returncode != 0:
+                command = str(row.get("command", "command"))
+                stderr = str(row.get("stderr", "")).strip()
+                returncode_int = int(returncode)
+                detail = f"{command} exited with return code {returncode_int}."
+                if stderr:
+                    detail = f"{detail} stderr: {stderr}"
+                signals.append(
+                    Signal(
+                        kind="regression",
+                        benchmark=benchmark,
+                        subject=f"{benchmark_short_name(benchmark)} {command}",
+                        headline=f"{command} failed (rc={returncode_int})",
+                        detail=detail,
+                        severity="regression",
+                        magnitude=AVAILABILITY_MAGNITUDE,
+                        metrics={"command": command, "returncode": returncode_int},
+                    )
+                )
+
+        profile_rows = [
+            row
+            for row in group
+            if _as_float(row.get("returncode")) in (None, 0)
+            and _as_truthy(row.get("available", True))
+            and _as_float(row.get("seconds")) is not None
+            and str(row.get("command", "")) not in ("", "unavailable")
+        ]
+        if len(profile_rows) < 2:
+            continue
+        fastest = min(profile_rows, key=lambda r: float(_as_float(r.get("seconds")) or 0.0))
+        slowest = max(profile_rows, key=lambda r: float(_as_float(r.get("seconds")) or 0.0))
+        fastest_seconds = float(_as_float(fastest.get("seconds")) or 0.0)
+        slowest_seconds = float(_as_float(slowest.get("seconds")) or 0.0)
+        if fastest_seconds <= 0.0:
+            continue
+        ratio = slowest_seconds / fastest_seconds
+        signals.append(
+            Signal(
+                kind="workflow",
+                benchmark=benchmark,
+                subject=benchmark_short_name(benchmark),
+                headline=(
+                    f"slowest: {slowest.get('command', 'command')} "
+                    f"({slowest_seconds:.3f}s, {ratio:.1f}x fastest)"
+                ),
+                detail=(
+                    f"fastest {fastest.get('command', 'command')} "
+                    f"{fastest_seconds:.3f}s; {len(profile_rows)} commands profiled."
+                ),
+                severity="neutral",
+                magnitude=math.log(ratio) if ratio > 1.0 else 0.0,
+                metrics={
+                    "fastest_command": str(fastest.get("command", "")),
+                    "fastest_seconds": fastest_seconds,
+                    "slowest_command": str(slowest.get("command", "")),
+                    "slowest_seconds": slowest_seconds,
+                    "ratio": ratio,
+                },
+            )
+        )
+    return signals
+
+
+def benchmark_short_name(benchmark: str) -> str:
+    """Return a compact display form for a benchmark identifier.
+
+    :param benchmark: Internal benchmark name (underscored).
+    :returns: Short human-oriented label.
+    """
+    mapping = {
+        "cli_workflow": "cli",
+        "persisted_cli_workflow": "persisted",
+        "mmpdb_workflow": "mmpdb",
+        "thread_scaling": "thread",
+        "rdkit_report": "rdkit",
+        "storage": "storage",
+        "regression_check": "regression",
+    }
+    return mapping.get(benchmark, benchmark)
+
+
 def build_signals(
     rows: Iterable[Mapping[str, Any]],
     baseline_rows: Iterable[Mapping[str, Any]] | None = None,
