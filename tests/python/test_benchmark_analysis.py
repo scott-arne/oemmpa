@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from benchmarks.analysis import (
     Signal,
+    analyze_baseline_delta,
     analyze_rdkit,
     analyze_thread_scaling,
     analyze_workflow,
@@ -219,3 +220,59 @@ def test_analyze_workflow_handles_mmpdb_unavailable():
 
 def test_analyze_workflow_ignores_unrelated_benchmarks():
     assert analyze_workflow([{"benchmark": "rdkit_report"}]) == []
+
+
+def _baseline_row(benchmark="thread_scaling", **overrides):
+    row = {
+        "benchmark": benchmark,
+        "dataset": "mmpa_smiles.smi",
+        "command": "",
+        "workers": 2,
+        "wall_seconds": 1.0,
+        "jobs_per_second": 4.0,
+        "molecule_count": 20,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_analyze_baseline_delta_marks_slowdown_as_regression():
+    baseline = [_baseline_row(wall_seconds=1.0)]
+    current = [_baseline_row(wall_seconds=1.5)]
+    signals = [s for s in analyze_baseline_delta(current, baseline) if s.severity == "regression"]
+    assert signals, "expected a regression signal"
+    assert any(s.metrics.get("metric") == "wall_seconds" for s in signals)
+
+
+def test_analyze_baseline_delta_marks_speedup_as_good():
+    baseline = [_baseline_row(wall_seconds=1.0)]
+    current = [_baseline_row(wall_seconds=0.5)]
+    signals = [s for s in analyze_baseline_delta(current, baseline) if s.severity == "good"]
+    assert signals, "expected a good signal for speedup"
+
+
+def test_analyze_baseline_delta_emits_single_info_per_key_when_within_threshold():
+    baseline = [_baseline_row(wall_seconds=1.0, jobs_per_second=4.0)]
+    current = [_baseline_row(wall_seconds=1.05, jobs_per_second=3.95)]
+    signals = analyze_baseline_delta(current, baseline)
+    info = [s for s in signals if s.severity == "info"]
+    assert len(info) == 1
+    assert "within threshold" in info[0].headline
+
+
+def test_analyze_baseline_delta_marks_count_change_as_warning():
+    baseline = [_baseline_row(molecule_count=20)]
+    current = [_baseline_row(molecule_count=25)]
+    signals = [s for s in analyze_baseline_delta(current, baseline) if s.severity == "warning"]
+    assert any(s.metrics.get("metric") == "molecule_count" for s in signals)
+
+
+def test_analyze_baseline_delta_missing_row_emits_regression():
+    baseline = [_baseline_row(workers=2), _baseline_row(workers=4)]
+    current = [_baseline_row(workers=2)]
+    missing = [
+        s
+        for s in analyze_baseline_delta(current, baseline)
+        if s.severity == "regression" and s.metrics.get("metric") == "row"
+    ]
+    assert missing

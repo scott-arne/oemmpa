@@ -346,6 +346,195 @@ def benchmark_short_name(benchmark: str) -> str:
     return mapping.get(benchmark, benchmark)
 
 
+_REGRESSION_SECONDS_RATIO = 1.25
+_IMPROVEMENT_SECONDS_RATIO = 0.8
+
+
+def _baseline_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("benchmark", "")),
+        str(row.get("dataset", "")),
+        str(row.get("command", "")),
+        str(row.get("workers", "")),
+    )
+
+
+def _is_seconds_metric(column: str) -> bool:
+    return column.endswith("seconds")
+
+
+def _is_throughput_metric(column: str) -> bool:
+    return column.endswith("per_second")
+
+
+def _is_count_metric(column: str) -> bool:
+    return (
+        column.endswith("count")
+        or column.endswith("_rows")
+        or column.endswith("_bytes")
+    )
+
+
+def analyze_baseline_delta(
+    rows: Iterable[Mapping[str, Any]],
+    baseline_rows: Iterable[Mapping[str, Any]],
+) -> list[Signal]:
+    """Return signals comparing current rows to a baseline.
+
+    :param rows: Current benchmark rows.
+    :param baseline_rows: Baseline benchmark rows.
+    :returns: Regression, warning, good, and info signals keyed by
+              ``(benchmark, dataset, command, workers)``. Info signals are
+              collapsed to one per key summarizing within-threshold metrics.
+    """
+    current_by_key = {_baseline_key(row): row for row in rows}
+    signals: list[Signal] = []
+    for baseline_row in baseline_rows:
+        key = _baseline_key(baseline_row)
+        current = current_by_key.get(key)
+        subject_parts = [part for part in key[1:] if part]
+        subject = " ".join(subject_parts) or key[0]
+        benchmark_name = str(baseline_row.get("benchmark", ""))
+        if current is None:
+            signals.append(
+                Signal(
+                    kind="regression",
+                    benchmark=benchmark_name,
+                    subject=subject,
+                    headline="missing in current run",
+                    detail=(
+                        "Baseline row ("
+                        + ", ".join(
+                            f"{k}={v}"
+                            for k, v in zip(
+                                ("benchmark", "dataset", "command", "workers"), key
+                            )
+                            if v
+                        )
+                        + ") was not present in the current CSV."
+                    ),
+                    severity="regression",
+                    magnitude=AVAILABILITY_MAGNITUDE,
+                    metrics={"metric": "row", "status": "missing"},
+                )
+            )
+            continue
+
+        info_metrics: list[str] = []
+        for metric in sorted(set(baseline_row) & set(current)):
+            baseline_value = _as_float(baseline_row[metric])
+            current_value = _as_float(current[metric])
+            if baseline_value is None or current_value is None:
+                continue
+
+            if _is_seconds_metric(metric):
+                if baseline_value == 0:
+                    continue
+                ratio = current_value / baseline_value
+                if ratio > _REGRESSION_SECONDS_RATIO:
+                    severity = "regression"
+                    headline = f"{metric} {ratio:.2f}x slower vs baseline"
+                elif ratio < _IMPROVEMENT_SECONDS_RATIO:
+                    severity = "good"
+                    headline = f"{metric} {1.0 / ratio:.2f}x faster vs baseline"
+                else:
+                    info_metrics.append(metric)
+                    continue
+                signals.append(
+                    Signal(
+                        kind="regression",
+                        benchmark=benchmark_name,
+                        subject=subject,
+                        headline=headline,
+                        detail=(
+                            f"{metric}: {current_value:g}s vs "
+                            f"{baseline_value:g}s baseline ({ratio:.2f}x)."
+                        ),
+                        severity=severity,
+                        magnitude=abs(math.log(ratio)),
+                        metrics={
+                            "metric": metric,
+                            "baseline": baseline_value,
+                            "current": current_value,
+                            "ratio": ratio,
+                        },
+                    )
+                )
+            elif _is_throughput_metric(metric):
+                if baseline_value == 0:
+                    continue
+                ratio = current_value / baseline_value
+                if ratio < 1.0 / _REGRESSION_SECONDS_RATIO:
+                    severity = "regression"
+                    headline = (
+                        f"{metric} {baseline_value / current_value:.2f}x lower vs baseline"
+                    )
+                elif ratio > 1.0 / _IMPROVEMENT_SECONDS_RATIO:
+                    severity = "good"
+                    headline = f"{metric} {ratio:.2f}x higher vs baseline"
+                else:
+                    info_metrics.append(metric)
+                    continue
+                signals.append(
+                    Signal(
+                        kind="regression",
+                        benchmark=benchmark_name,
+                        subject=subject,
+                        headline=headline,
+                        detail=(
+                            f"{metric}: {current_value:g} vs "
+                            f"{baseline_value:g} baseline ({ratio:.2f}x)."
+                        ),
+                        severity=severity,
+                        magnitude=abs(math.log(ratio)),
+                        metrics={
+                            "metric": metric,
+                            "baseline": baseline_value,
+                            "current": current_value,
+                            "ratio": ratio,
+                        },
+                    )
+                )
+            elif _is_count_metric(metric):
+                if current_value == baseline_value:
+                    info_metrics.append(metric)
+                    continue
+                signals.append(
+                    Signal(
+                        kind="regression",
+                        benchmark=benchmark_name,
+                        subject=subject,
+                        headline=f"{metric} {baseline_value:g}->{current_value:g}",
+                        detail=(
+                            f"{metric} changed from {baseline_value:g} to "
+                            f"{current_value:g} for {subject}."
+                        ),
+                        severity="warning",
+                        magnitude=abs(current_value - baseline_value)
+                        / max(1.0, abs(baseline_value)),
+                        metrics={
+                            "metric": metric,
+                            "baseline": baseline_value,
+                            "current": current_value,
+                        },
+                    )
+                )
+        if info_metrics:
+            signals.append(
+                Signal(
+                    kind="regression",
+                    benchmark=benchmark_name,
+                    subject=subject,
+                    headline=f"{len(info_metrics)} metrics within threshold vs baseline",
+                    detail="Within-threshold metrics: " + ", ".join(info_metrics),
+                    severity="info",
+                    magnitude=0.0,
+                    metrics={"metric": "summary", "metrics": info_metrics},
+                )
+            )
+    return signals
+
+
 def build_signals(
     rows: Iterable[Mapping[str, Any]],
     baseline_rows: Iterable[Mapping[str, Any]] | None = None,
