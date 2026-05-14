@@ -60,6 +60,7 @@ def _runtime_shared_library_names(lib_names):
         if ".so" in lib_name
         or lib_name.endswith(".dylib")
         or lib_name.endswith(".dll")
+        or (lib_name.startswith("liboe") and lib_name.endswith(".a"))
     ]
 
 
