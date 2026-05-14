@@ -60,6 +60,26 @@ This benchmark exercises the Phase 14 persisted CLI surface: `build`, `list`,
 counts, and detail report row counts for the prediction and generation
 commands.
 
+## MMPDB Baseline Workflow
+
+```bash
+python -m benchmarks.benchmark_suite mmpdb-workflow \
+  --mmpdb-root /Users/johnss51/Development/python/mmpdb \
+  --output mmpdb-workflow.csv
+```
+
+This opt-in baseline runs MMPDB `list`, `transform`, `predict`, and `generate`
+against the upstream `tests/test_data_2019.mmpdb` fixture by default. The
+MMPDB checkout defaults to `OEMMPA_MMPDB_ROOT` when that environment variable
+is set, otherwise `/Users/johnss51/Development/python/mmpdb`; `--mmpdb-root`
+and `--database` can override those paths for a local run.
+
+The benchmark reports command timing, output row counts, database size, and
+prediction detail row counts. If the MMPDB checkout or fixture database is not
+available, the command writes a single `available=False` row rather than
+failing. It is intentionally not part of default CI thresholds, large-dataset
+comparisons, or automated performance gates.
+
 ## Regression Policy
 
 Benchmark CSV rows include counts as well as timings. Treat timing changes as
