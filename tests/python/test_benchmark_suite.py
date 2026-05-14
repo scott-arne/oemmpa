@@ -3,8 +3,15 @@
 import csv
 from pathlib import Path
 
+import pytest
+
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+
+@pytest.fixture(autouse=True)
+def _benchmark_cache_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
 
 CLI_WORKFLOW_COLUMNS = [
@@ -27,6 +34,21 @@ PERSISTED_CLI_WORKFLOW_COLUMNS = [
     "stdout_lines",
     "output_rows",
     "output_bytes",
+    "database_bytes",
+    "detail_rule_rows",
+    "detail_pair_rows",
+    "stderr",
+]
+
+MMPDB_WORKFLOW_COLUMNS = [
+    "benchmark",
+    "command",
+    "dataset",
+    "available",
+    "returncode",
+    "seconds",
+    "stdout_lines",
+    "output_rows",
     "database_bytes",
     "detail_rule_rows",
     "detail_pair_rows",
@@ -233,3 +255,73 @@ def test_benchmark_cli_accepts_persisted_cli_workflow_options(tmp_path):
         "generate",
     ]
     assert rows[-1]["output_rows"] == "2"
+
+
+def test_mmpdb_workflow_rows_report_fixture_counts_when_available():
+    from benchmarks.benchmark_suite import DEFAULT_MMPDB_ROOT, mmpdb_workflow_rows
+
+    if not (DEFAULT_MMPDB_ROOT / "mmpdblib").exists():
+        pytest.skip(f"MMPDB checkout not found: {DEFAULT_MMPDB_ROOT}")
+
+    rows = mmpdb_workflow_rows(DEFAULT_MMPDB_ROOT, repeats=1)
+
+    assert [row["command"] for row in rows] == [
+        "list",
+        "transform",
+        "predict",
+        "generate",
+    ]
+    assert all(row["benchmark"] == "mmpdb_workflow" for row in rows)
+    assert all(row["available"] is True for row in rows)
+    assert all(row["returncode"] == 0 for row in rows)
+    assert all(row["database_bytes"] > 0 for row in rows)
+    assert [row["output_rows"] for row in rows] == [1, 3, 1, 3]
+
+    predict_row = next(row for row in rows if row["command"] == "predict")
+    assert predict_row["detail_rule_rows"] == 2
+    assert predict_row["detail_pair_rows"] == 8
+
+
+def test_mmpdb_workflow_rows_report_unavailable_checkout(tmp_path):
+    from benchmarks.benchmark_suite import mmpdb_workflow_rows
+
+    rows = mmpdb_workflow_rows(tmp_path / "missing-mmpdb", repeats=1)
+
+    assert len(rows) == 1
+    assert rows[0]["benchmark"] == "mmpdb_workflow"
+    assert rows[0]["command"] == "unavailable"
+    assert rows[0]["available"] is False
+    assert rows[0]["returncode"] == 0
+    assert "MMPDB checkout not found" in rows[0]["stderr"]
+
+
+def test_benchmark_cli_accepts_mmpdb_workflow_options(tmp_path):
+    from benchmarks.benchmark_suite import DEFAULT_MMPDB_ROOT, main
+
+    if not (DEFAULT_MMPDB_ROOT / "mmpdblib").exists():
+        pytest.skip(f"MMPDB checkout not found: {DEFAULT_MMPDB_ROOT}")
+
+    output_path = tmp_path / "mmpdb-workflow.csv"
+    result = main(
+        [
+            "mmpdb-workflow",
+            "--mmpdb-root",
+            str(DEFAULT_MMPDB_ROOT),
+            "--repeats",
+            "1",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    assert result == 0
+    assert _csv_header(output_path) == MMPDB_WORKFLOW_COLUMNS
+    rows = list(csv.DictReader(output_path.open(newline="", encoding="utf-8")))
+    assert [row["command"] for row in rows] == [
+        "list",
+        "transform",
+        "predict",
+        "generate",
+    ]
+    assert rows[2]["detail_rule_rows"] == "2"
+    assert rows[2]["detail_pair_rows"] == "8"

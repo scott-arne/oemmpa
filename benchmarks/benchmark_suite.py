@@ -18,6 +18,10 @@ from .rdkit_compare import compare, run_oemmpa
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "python"
+DEFAULT_MMPDB_ROOT = Path(
+    os.environ.get("OEMMPA_MMPDB_ROOT", "/Users/johnss51/Development/python/mmpdb")
+)
+MMPDB_CLI_CODE = "from mmpdblib.cli import main; main()"
 
 BENCHMARK_SCHEMAS = {
     "rdkit_report": [
@@ -77,6 +81,20 @@ BENCHMARK_SCHEMAS = {
         "stdout_lines",
         "output_rows",
         "output_bytes",
+        "database_bytes",
+        "detail_rule_rows",
+        "detail_pair_rows",
+        "stderr",
+    ],
+    "mmpdb_workflow": [
+        "benchmark",
+        "command",
+        "dataset",
+        "available",
+        "returncode",
+        "seconds",
+        "stdout_lines",
+        "output_rows",
         "database_bytes",
         "detail_rule_rows",
         "detail_pair_rows",
@@ -465,6 +483,126 @@ def persisted_cli_workflow_rows(
     return rows
 
 
+def mmpdb_workflow_rows(
+    mmpdb_root=DEFAULT_MMPDB_ROOT,
+    database_path=None,
+    property_name="MW",
+    transform_smiles="c1cccnc1O",
+    predict_smiles="c1cccnc1",
+    predict_reference="c1cccnc1O",
+    generate_smiles="c1cccnc1O",
+    repeats=3,
+):
+    """Benchmark MMPDB baseline workflows on the upstream fixture database.
+
+    :param mmpdb_root: Local MMPDB checkout containing ``mmpdblib``.
+    :param database_path: Optional MMPDB database path.
+    :param property_name: Property column to use for transform and prediction.
+    :param transform_smiles: Input SMILES for ``mmpdb transform``.
+    :param predict_smiles: Product SMILES for ``mmpdb predict``.
+    :param predict_reference: Reference SMILES for ``mmpdb predict``.
+    :param generate_smiles: Input SMILES for ``mmpdb generate``.
+    :param repeats: Number of workflow repeats.
+    :returns: List of CSV-ready dictionaries.
+    """
+    mmpdb_root = Path(mmpdb_root)
+    database_path = (
+        Path(database_path)
+        if database_path is not None
+        else mmpdb_root / "tests" / "test_data_2019.mmpdb"
+    )
+    if not _mmpdb_available(mmpdb_root):
+        return [_unavailable_mmpdb_row("MMPDB checkout not found", mmpdb_root, database_path)]
+    if not database_path.exists():
+        return [_unavailable_mmpdb_row("MMPDB database not found", mmpdb_root, database_path)]
+
+    rows_by_command = {
+        "list": [],
+        "transform": [],
+        "predict": [],
+        "generate": [],
+    }
+    final_rows = {}
+
+    for _ in range(int(repeats)):
+        with TemporaryDirectory(prefix="oemmpa-mmpdb-bench-") as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            predict_details = tmp_path / "predict-details"
+            commands = [
+                (
+                    "list",
+                    ["--quiet", "list", str(database_path)],
+                    "tsv",
+                    None,
+                ),
+                (
+                    "transform",
+                    [
+                        "--quiet",
+                        "transform",
+                        str(database_path),
+                        "--smiles",
+                        transform_smiles,
+                        "--property",
+                        property_name,
+                    ],
+                    "tsv",
+                    None,
+                ),
+                (
+                    "predict",
+                    [
+                        "--quiet",
+                        "predict",
+                        str(database_path),
+                        "--smiles",
+                        predict_smiles,
+                        "--reference",
+                        predict_reference,
+                        "--property",
+                        property_name,
+                        "--save-details",
+                        "--prefix",
+                        str(predict_details),
+                    ],
+                    "lines",
+                    predict_details,
+                ),
+                (
+                    "generate",
+                    ["--quiet", "generate", str(database_path), "--smiles", generate_smiles],
+                    "tsv",
+                    None,
+                ),
+            ]
+
+            for command_name, command_args, output_kind, details_prefix in commands:
+                result = _run_mmpdb(command_args, mmpdb_root)
+                row = _mmpdb_benchmark_row(
+                    command_name,
+                    database_path,
+                    result,
+                    output_kind=output_kind,
+                )
+                if details_prefix is not None:
+                    row["detail_rule_rows"] = _tsv_file_data_row_count(
+                        Path(f"{details_prefix}_rules.txt")
+                    )
+                    row["detail_pair_rows"] = _tsv_file_data_row_count(
+                        Path(f"{details_prefix}_pairs.txt")
+                    )
+                rows_by_command[command_name].append(row)
+                final_rows[command_name] = row
+
+    rows = []
+    for command_name in ("list", "transform", "predict", "generate"):
+        command_rows = rows_by_command[command_name]
+        row = dict(final_rows[command_name])
+        row["seconds"] = _mean(item["seconds"] for item in command_rows)
+        rows.append(row)
+    return rows
+
+
 def _schema_for_rows(rows):
     benchmarks = {row.get("benchmark") for row in rows}
     if len(benchmarks) == 1:
@@ -554,6 +692,15 @@ def main(argv=None):
     persisted_cli_parser.add_argument("--source", required=True)
     persisted_cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
 
+    mmpdb_parser = subparsers.add_parser("mmpdb-workflow", parents=[command_options])
+    mmpdb_parser.add_argument("--mmpdb-root", type=Path, default=DEFAULT_MMPDB_ROOT)
+    mmpdb_parser.add_argument("--database", type=Path)
+    mmpdb_parser.add_argument("--property", default="MW")
+    mmpdb_parser.add_argument("--transform-smiles", default="c1cccnc1O")
+    mmpdb_parser.add_argument("--predict-smiles", default="c1cccnc1")
+    mmpdb_parser.add_argument("--predict-reference", default="c1cccnc1O")
+    mmpdb_parser.add_argument("--generate-smiles", default="c1cccnc1O")
+
     args = parser.parse_args(argv)
     if args.command == "rdkit-report":
         rows = rdkit_report_rows(args.smiles, repeats=args.repeats)
@@ -579,13 +726,24 @@ def main(argv=None):
             transform=args.transform,
             repeats=args.repeats,
         )
-    else:
+    elif args.command == "persisted-cli-workflow":
         rows = persisted_cli_workflow_rows(
             args.smiles,
             args.properties,
             property_name=args.property,
             source_smiles=args.source,
             transform=args.transform,
+            repeats=args.repeats,
+        )
+    else:
+        rows = mmpdb_workflow_rows(
+            args.mmpdb_root,
+            database_path=args.database,
+            property_name=args.property,
+            transform_smiles=args.transform_smiles,
+            predict_smiles=args.predict_smiles,
+            predict_reference=args.predict_reference,
+            generate_smiles=args.generate_smiles,
             repeats=args.repeats,
         )
 
@@ -617,6 +775,22 @@ def _run_cli(command_args):
     return _CliResult(completed, elapsed)
 
 
+def _run_mmpdb(command_args, mmpdb_root):
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(mmpdb_root), env.get("PYTHONPATH", "")]
+    )
+    start = perf_counter()
+    completed = subprocess.run(
+        [sys.executable, "-c", MMPDB_CLI_CODE, *command_args],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    elapsed = perf_counter() - start
+    return _CliResult(completed, elapsed)
+
+
 def _cli_benchmark_row(command_name, dataset, result, output_path=None, database_path=None):
     return {
         "benchmark": "persisted_cli_workflow",
@@ -632,6 +806,49 @@ def _cli_benchmark_row(command_name, dataset, result, output_path=None, database
         ),
         "output_bytes": _file_size(output_path) if output_path is not None else 0,
         "database_bytes": _file_size(database_path) if database_path is not None else 0,
+        "detail_rule_rows": 0,
+        "detail_pair_rows": 0,
+        "stderr": result.stderr.strip(),
+    }
+
+
+def _mmpdb_available(mmpdb_root):
+    return (Path(mmpdb_root) / "mmpdblib").exists()
+
+
+def _unavailable_mmpdb_row(reason, mmpdb_root, database_path):
+    return {
+        "benchmark": "mmpdb_workflow",
+        "command": "unavailable",
+        "dataset": Path(database_path).name,
+        "available": False,
+        "returncode": 0,
+        "seconds": 0.0,
+        "stdout_lines": 0,
+        "output_rows": 0,
+        "database_bytes": _file_size(database_path),
+        "detail_rule_rows": 0,
+        "detail_pair_rows": 0,
+        "stderr": f"{reason}: {mmpdb_root}",
+    }
+
+
+def _mmpdb_benchmark_row(command_name, database_path, result, output_kind):
+    output_rows = (
+        _tsv_data_row_count(result.stdout)
+        if output_kind == "tsv"
+        else _line_count(result.stdout)
+    )
+    return {
+        "benchmark": "mmpdb_workflow",
+        "command": command_name,
+        "dataset": Path(database_path).name,
+        "available": True,
+        "returncode": result.returncode,
+        "seconds": result.elapsed_seconds,
+        "stdout_lines": _line_count(result.stdout),
+        "output_rows": output_rows,
+        "database_bytes": _file_size(database_path),
         "detail_rule_rows": 0,
         "detail_pair_rows": 0,
         "stderr": result.stderr.strip(),
