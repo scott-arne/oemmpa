@@ -7,9 +7,13 @@ import sys
 import pytest
 
 WORKTREE_PACKAGE_ROOT = Path(__file__).resolve().parents[2] / "python"
+WORKTREE_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 if str(WORKTREE_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKTREE_PACKAGE_ROOT))
+
+if str(WORKTREE_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKTREE_PROJECT_ROOT))
 
 # An installed scikit-build-core editable finder can otherwise win over
 # sys.path and import an older oemmpa package during local test runs.
