@@ -3,6 +3,7 @@
 import csv
 from pathlib import Path
 
+from click.testing import CliRunner
 import pytest
 
 
@@ -471,3 +472,37 @@ def test_benchmark_cli_accepts_regression_check_options(tmp_path):
     rows = list(csv.DictReader(output_path.open(newline="", encoding="utf-8")))
     assert rows[0]["status"] == "regression"
     assert rows[0]["threshold"] == "1.1"
+
+
+def test_benchmark_cli_writes_csv_and_prints_leaderboard(tmp_path):
+    """Run the suite end-to-end with a baseline fixture.
+
+    Confirms that the click group writes the requested CSV, prints the
+    leaderboard title, and surfaces the active baseline path in the report
+    header. Uses ``--benchmarks storage --repeats 1`` to keep runtime small.
+    """
+    from benchmarks.benchmark_suite import benchmark_cli
+
+    output_path = tmp_path / "out.csv"
+    baseline_path = DATA_DIR / "benchmark_baseline_fixture.csv"
+    runner = CliRunner()
+    result = runner.invoke(
+        benchmark_cli,
+        [
+            "--benchmarks",
+            "storage",
+            "--repeats",
+            "1",
+            "--output",
+            str(output_path),
+            "--baseline",
+            str(baseline_path),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Benchmark Leaderboard" in result.output
+    assert "Baseline:" in result.output
+    assert output_path.exists()
+    with output_path.open(newline="") as handle:
+        header = next(csv.reader(handle))
+    assert header[0] == "benchmark"

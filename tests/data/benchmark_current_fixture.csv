@@ -1,0 +1,3 @@
+benchmark,dataset,command,workers,seconds,molecule_count
+cli_workflow,mmpa_smiles.smi,refresh-stats,,0.110,20
+cli_workflow,mmpa_smiles.smi,predict,,0.500,22
