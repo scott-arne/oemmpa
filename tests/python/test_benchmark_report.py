@@ -9,6 +9,7 @@ from benchmarks.report import (
     Report,
     RdkitSection,
     Section,
+    StorageSection,
     ThreadScalingSection,
     format_bytes,
     format_seconds,
@@ -410,3 +411,45 @@ class TestThreadScalingSection:
         assert "Thread scaling" in text
         for marker in ("1", "2", "4"):
             assert marker in text
+
+
+def _storage_row(*, available=True, total_seconds=0.04, molecule_count=3, compound_rows=3, property_rows=6):
+    return {
+        "benchmark": "storage",
+        "dataset": "fixture",
+        "duckdb_available": available,
+        "total_seconds": total_seconds,
+        "molecule_count": molecule_count,
+        "compound_rows": compound_rows,
+        "property_rows": property_rows,
+        "property_accepted_count": property_rows,
+        "property_rejected_count": 0,
+    }
+
+
+class TestStorageSection:
+    def test_returns_none_when_no_storage_rows(self):
+        assert StorageSection.from_rows([{"benchmark": "rdkit_report"}]) is None
+
+    def test_unavailable_renders_dim_line_and_neutral_glance(self):
+        section = StorageSection.from_rows([_storage_row(available=False)])
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert "DuckDB" in entry.headline
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "DuckDB" in text
+
+    def test_available_renders_table_and_headline(self):
+        section = StorageSection.from_rows([_storage_row()])
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert "3 molecules" in entry.headline
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "Storage" in text
+        assert "Molecules" in text

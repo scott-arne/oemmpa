@@ -535,3 +535,64 @@ class ThreadScalingSection(Section):
             verdict=self.glance_verdict,
             headline=self.headline,
         )
+
+
+class StorageSection(Section):
+    """DuckDB persistence-load report.
+
+    DuckDB persistence load: how long it takes and how many molecules
+    and properties land in the database.
+    """
+
+    title = "Storage"
+    description = (
+        "DuckDB persistence load: how long it takes and how many molecules "
+        "and properties land in the database."
+    )
+
+    def __init__(self, *, available: bool, total_seconds: float | None, molecule_count: int, compound_rows: int, property_rows: int) -> None:
+        self.available = available
+        self.total_seconds = total_seconds
+        self.molecule_count = molecule_count
+        self.compound_rows = compound_rows
+        self.property_rows = property_rows
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        storage = [r for r in rows if r.get("benchmark") == "storage"]
+        if not storage:
+            return None
+        row = storage[0]
+        return cls(
+            available=_as_truthy(row.get("duckdb_available")),
+            total_seconds=_as_float(row.get("total_seconds")),
+            molecule_count=int(_as_float(row.get("molecule_count")) or 0),
+            compound_rows=int(_as_float(row.get("compound_rows")) or 0),
+            property_rows=int(_as_float(row.get("property_rows")) or 0),
+        )
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        if not self.available:
+            console.print("[dim]DuckDB is not available in this environment.[/dim]")
+            return
+        table = Table()
+        table.add_column("Total", justify="right")
+        table.add_column("Molecules", justify="right")
+        table.add_column("Compound rows", justify="right")
+        table.add_column("Property rows", justify="right")
+        table.add_row(
+            format_seconds(self.total_seconds),
+            str(self.molecule_count),
+            str(self.compound_rows),
+            str(self.property_rows),
+        )
+        console.print(table)
+
+    def glance_entry(self):
+        if not self.available:
+            headline = "DuckDB unavailable"
+        else:
+            headline = f"{format_seconds(self.total_seconds)} for {self.molecule_count} molecules"
+        return GlanceEntry(name=self.title, severity="neutral", verdict="-", headline=headline)
