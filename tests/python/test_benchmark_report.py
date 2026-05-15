@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from rich.console import Console
+
 from benchmarks.report import (
+    GlanceEntry,
+    Report,
+    Section,
     verdict_for_count_change,
     verdict_for_efficiency,
     verdict_for_seconds_ratio,
@@ -101,3 +106,88 @@ class TestVerdictForCountChange:
         assert severity == "warning"
         assert "-10" in label
         assert "%" in label
+
+
+class _StubSection(Section):
+    title = "Stub"
+    description = "Stub description for tests."
+
+    def __init__(self, *, severity: str = "neutral", headline: str = "stub headline") -> None:
+        self._severity = severity
+        self._headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):  # pragma: no cover - unused
+        return None
+
+    def render(self, console, *, verbose=False):
+        console.print(f"\\[stub-section {self.title}]")
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self._severity,
+            verdict="-",
+            headline=self._headline,
+        )
+
+
+def _render_text(report: Report) -> str:
+    console = Console(record=True, color_system=None, width=120)
+    report.render(console)
+    return console.export_text()
+
+
+class TestReportRender:
+    def test_renders_header_rule(self):
+        report = Report(sections=[], skipped=[], baseline_path=None)
+        text = _render_text(report)
+        assert "OEMMPA Benchmark Suite" in text
+
+    def test_baseline_badge_says_none_when_absent(self):
+        report = Report(sections=[], skipped=[], baseline_path=None)
+        text = _render_text(report)
+        assert "Baseline: none" in text
+
+    def test_baseline_badge_shows_path_when_present(self, tmp_path):
+        baseline = tmp_path / "baseline.csv"
+        baseline.write_text("benchmark\n", encoding="utf-8")
+        report = Report(sections=[], skipped=[], baseline_path=baseline)
+        text = _render_text(report)
+        normalized = "".join(text.split())
+        assert "Baseline:" in text
+        assert "baseline.csv" in normalized
+
+    def test_renders_skipped_panel_per_entry(self):
+        report = Report(
+            sections=[],
+            skipped=[
+                {"benchmark": "mmpdb_workflow", "reason": "MMPDB not installed"},
+                {"benchmark": "rdkit_report", "reason": "RDKit not installed"},
+            ],
+            baseline_path=None,
+        )
+        text = _render_text(report)
+        assert "MMPDB not installed" in text
+        assert "RDKit not installed" in text
+
+    def test_glance_table_appears_when_two_or_more_sections(self):
+        report = Report(
+            sections=[_StubSection(headline="alpha"), _StubSection(headline="beta")],
+            skipped=[],
+            baseline_path=None,
+        )
+        text = _render_text(report)
+        assert "At a glance" in text
+        assert "alpha" in text
+        assert "beta" in text
+
+    def test_glance_table_suppressed_for_single_section(self):
+        report = Report(
+            sections=[_StubSection(headline="alpha")],
+            skipped=[],
+            baseline_path=None,
+        )
+        text = _render_text(report)
+        assert "At a glance" not in text
+        assert "alpha" in text or "Stub" in text

@@ -17,7 +17,15 @@ consumes already-collected row dictionaries.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 
 SEVERITY_GLYPH = {"good": "v", "neutral": ".", "warning": "!"}
 SEVERITY_COLOR = {"good": "green", "neutral": "white", "warning": "yellow"}
@@ -99,3 +107,111 @@ class GlanceEntry:
     severity: str
     verdict: str
     headline: str
+
+
+class Section:
+    """Base class for one benchmark area's data + rendering.
+
+    Subclasses declare a class-level ``title`` and ``description``, override
+    :meth:`from_rows` to filter and shape the row stream, and override
+    :meth:`render` and :meth:`glance_entry` to draw the table and produce
+    the at-a-glance chip. ``from_rows`` returns ``None`` when the row stream
+    contains nothing relevant to this section.
+    """
+
+    title: str = ""
+    description: str = ""
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: Sequence[Mapping[str, Any]],
+        baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> "Section | None":
+        """Construct a populated section from the row stream.
+
+        :param rows: Benchmark rows already collected by the suite.
+        :param baseline_rows: Optional baseline rows for delta sections.
+        :returns: A populated section, or ``None`` when this section's rows
+                  are absent from the stream.
+        """
+        raise NotImplementedError
+
+    def render(self, console: Console, *, verbose: bool = False) -> None:
+        """Print this section's title rule, description, and table.
+
+        :param console: Rich console to print into.
+        :param verbose: When ``True``, include extra detail rows where the
+                        section supports it.
+        """
+        raise NotImplementedError
+
+    def glance_entry(self) -> GlanceEntry:
+        """Return this section's row in the at-a-glance summary table.
+
+        :returns: A :class:`GlanceEntry`.
+        """
+        raise NotImplementedError
+
+
+@dataclass
+class Report:
+    """Aggregate of populated sections, skipped benchmarks, and baseline path.
+
+    Sections are rendered in the order supplied. The ``At a glance`` table is
+    suppressed when fewer than two sections are populated; a single section
+    needs no summary because the section itself is the only verdict.
+
+    :param sections: Already-populated section instances, in display order.
+    :param skipped: Skipped-benchmark dictionaries from the suite runner.
+    :param baseline_path: Active baseline CSV path, or ``None``.
+    """
+
+    sections: list[Section]
+    skipped: list[Mapping[str, Any]]
+    baseline_path: Path | None
+
+    def render(self, console: Console, *, verbose: bool = False) -> None:
+        """Render the full report into ``console``.
+
+        Order: header rule, baseline badge, skipped panels, each section,
+        ``At a glance`` summary (when more than one section).
+
+        :param console: Rich console to print into.
+        :param verbose: Forwarded to each section's :meth:`Section.render`.
+        """
+        console.print(Rule("OEMMPA Benchmark Suite"))
+        console.print(self._baseline_badge())
+        for skipped in self.skipped:
+            console.print(
+                Panel(
+                    str(skipped.get("reason", "")),
+                    title=f"Skipped: {skipped.get('benchmark', '')}",
+                    border_style="yellow",
+                )
+            )
+        for section in self.sections:
+            section.render(console, verbose=verbose)
+        if len(self.sections) >= 2:
+            console.print(self._glance_table())
+
+    def _baseline_badge(self) -> str:
+        if self.baseline_path is None:
+            return "[dim]Baseline: none[/dim]"
+        return f"[dim]Baseline: {self.baseline_path}[/dim]"
+
+    def _glance_table(self) -> Table:
+        table = Table(title="At a glance", title_justify="left")
+        table.add_column("Section")
+        table.add_column("Verdict")
+        table.add_column("Headline")
+        for section in self.sections:
+            entry = section.glance_entry()
+            color = SEVERITY_COLOR[entry.severity]
+            glyph = SEVERITY_GLYPH[entry.severity]
+            table.add_row(
+                entry.name,
+                f"[{color}]{glyph}  {entry.verdict}[/{color}]",
+                f"[dim]{entry.headline}[/dim]",
+            )
+        return table
