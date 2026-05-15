@@ -5,6 +5,48 @@ tracking. Normal tests exercise small fixtures to protect schemas and
 representative counts; larger timing runs should be launched explicitly from a
 developer machine or benchmark job.
 
+## Full Suite
+
+```bash
+python benchmarks/benchmark_suite.py
+```
+
+Running the script directly executes the fixture-sized benchmark suite:
+RDKit comparison, thread scaling, storage loading, stateless CLI workflows,
+persisted CLI workflows, and the MMPDB baseline when a local MMPDB checkout
+is available. The report opens with a severity-ranked **leaderboard** that
+orders findings by `regression -> warning -> good -> neutral -> info` and by
+magnitude within each bucket. Tightened per-benchmark tables follow; columns
+that contain no information (constant dataset, all-zero return codes, empty
+stderr) are dropped automatically.
+
+Flags:
+
+- `--benchmarks NAME,NAME,...` - run a subset of the default suite.
+- `--baseline PATH` - compare against a baseline CSV and fold regressions,
+  improvements, and count deltas into the leaderboard.
+- `--no-baseline` - disable baseline auto-detect. Without either flag the
+  suite uses `benchmarks/baseline.csv` if it exists.
+- `--output PATH`, `--report PATH` - write CSV and rich-text report artifacts.
+- `--verbose` / `-v` - show signal detail text under each leaderboard row and
+  include noise columns (`stdout_lines`) in benchmark tables.
+
+Example:
+
+```bash
+python benchmarks/benchmark_suite.py \
+  --benchmarks thread-scaling,storage,persisted-cli-workflow \
+  --repeats 1 \
+  --baseline benchmarks/baseline.csv \
+  --output benchmark-suite.csv \
+  --report benchmark-suite.txt
+```
+
+The same benchmarks remain available as subcommands when you need custom
+input files or command-specific options; shared flags (`--baseline`,
+`--output`, `--report`, `--verbose`, `--repeats`) are inherited from the
+top-level group.
+
 ## Parallel Analyzer Throughput
 
 ```bash
@@ -100,6 +142,12 @@ Throughput columns ending in `per_second` are reported as regressions when the
 current value falls below the inverse of that same ratio. Integer-like count
 and size columns ending in `count`, `_rows`, or `_bytes` are reported as
 `changed` when the value differs from the baseline.
+
+The `--max-seconds-ratio` flag controls the timing tolerance used by the
+`regression-check` subcommand. The suite's `--baseline` mode uses the same
+direction of comparison via the rendering layer's leaderboard, with the
+default thresholds defined in `benchmarks/analysis.py` (`1.25x` timing
+regression, `0.8x` improvement, count/byte deltas always flagged).
 
 ## Regression Policy
 
