@@ -101,12 +101,15 @@ def analyze_rdkit(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
             continue
 
         ratio = rdkit_seconds / oemmpa_seconds
-        if ratio >= 1.0:
+        if ratio > 1.0:
             severity = "good"
             headline = f"{ratio:.2f}x faster than RDKit"
-        else:
+        elif ratio < 1.0:
             severity = "warning"
             headline = f"{1.0 / ratio:.2f}x slower than RDKit"
+        else:
+            severity = "neutral"
+            headline = "parity with RDKit"
 
         oemmpa_pairs = int(_as_float(row.get("oemmpa_pair_count")) or 0)
         rdkit_pairs = int(_as_float(row.get("rdkit_pair_count")) or 0)

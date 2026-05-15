@@ -850,6 +850,13 @@ def suite_rows(
 
 
 def _normalize_benchmark_names(names):
+    """Return the resolved list of benchmark names to run.
+
+    :param names: Iterable of names or comma-joined strings, or ``None`` for
+                  the full default suite.
+    :returns: List of benchmark names; falls back to the default suite when
+              ``names`` is empty.
+    """
     if names is None:
         return list(DEFAULT_SUITE_BENCHMARKS)
     selected = []
@@ -895,6 +902,12 @@ def _finish_cli(
 
 
 def _csv_output_rows(rows, skipped):
+    """Return benchmark rows plus one ``status=skipped`` row per skip reason.
+
+    :param rows: Benchmark result rows.
+    :param skipped: Skipped benchmark reason dictionaries.
+    :returns: List of rows for CSV serialization.
+    """
     csv_rows = list(rows)
     csv_rows.extend(
         {
@@ -908,12 +921,27 @@ def _csv_output_rows(rows, skipped):
 
 
 def _load_baseline_rows(baseline_path):
+    """Read baseline rows from a CSV path, or return ``None`` when absent.
+
+    :param baseline_path: Optional baseline CSV path.
+    :returns: List of baseline row dictionaries, or ``None`` when no path.
+    """
     if baseline_path is None:
         return None
     return _read_csv_rows(baseline_path)
 
 
 def _resolve_baseline(baseline, no_baseline):
+    """Resolve the active baseline CSV path from CLI options.
+
+    Auto-detects ``benchmarks/baseline.csv`` when neither flag is set.
+
+    :param baseline: Explicit baseline CSV path from ``--baseline``, or ``None``.
+    :param no_baseline: ``True`` when ``--no-baseline`` was passed.
+    :returns: Resolved baseline ``Path`` or ``None`` to skip comparison.
+    :raises click.ClickException: When ``--baseline`` was supplied with a
+                                  missing path.
+    """
     if no_baseline:
         return None
     if baseline is not None:
