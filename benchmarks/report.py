@@ -193,6 +193,164 @@ class Section:
         raise NotImplementedError
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return False
+
+
+class RdkitSection(Section):
+    """RDKit pair-extraction comparison.
+
+    Pair extraction on a shared molecule set, OEMMPA's pair-only
+    non-symmetric path against RDKit's matched-molecular-pair pipeline.
+    """
+
+    title = "RDKit comparison"
+    description = (
+        "Pair extraction on a shared molecule set, OEMMPA's pair-only "
+        "non-symmetric path against RDKit's matched-molecular-pair pipeline."
+    )
+
+    def __init__(
+        self,
+        *,
+        oemmpa_pair_count: int,
+        oemmpa_pair_seconds: float,
+        oemmpa_cold_pair_seconds: float | None,
+        rdkit_pair_count: int,
+        rdkit_seconds: float,
+        rdkit_cold_seconds: float | None,
+        hydrogen_only: int,
+        severity: str,
+        verdict_label: str,
+    ) -> None:
+        self.oemmpa_pair_count = oemmpa_pair_count
+        self.oemmpa_pair_seconds = oemmpa_pair_seconds
+        self.oemmpa_cold_pair_seconds = oemmpa_cold_pair_seconds
+        self.rdkit_pair_count = rdkit_pair_count
+        self.rdkit_seconds = rdkit_seconds
+        self.rdkit_cold_seconds = rdkit_cold_seconds
+        self.hydrogen_only = hydrogen_only
+        self.severity = severity
+        self.verdict_label = verdict_label
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: Sequence[Mapping[str, Any]],
+        baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+    ) -> "RdkitSection | None":
+        """Construct from row stream, filtering for rdkit_report rows.
+
+        :param rows: Benchmark rows already collected by the suite.
+        :param baseline_rows: Optional baseline rows (unused).
+        :returns: A populated section, or ``None`` when RDKit rows are absent
+                  or RDKit is unavailable.
+        """
+        candidates = [r for r in rows if r.get("benchmark") == "rdkit_report" and _as_truthy(r.get("rdkit_available"))]
+        if not candidates:
+            return None
+        chosen = max(candidates, key=lambda r: _as_float(r.get("molecule_count")) or 0.0)
+        oemmpa_seconds = _as_float(chosen.get("oemmpa_pair_seconds"))
+        if oemmpa_seconds is None:
+            oemmpa_seconds = _as_float(chosen.get("oemmpa_workflow_seconds"))
+        rdkit_seconds = _as_float(chosen.get("rdkit_seconds"))
+        if oemmpa_seconds is None or rdkit_seconds is None or rdkit_seconds == 0:
+            return None
+        ratio = oemmpa_seconds / rdkit_seconds
+        severity, verdict_label = verdict_for_seconds_ratio(ratio)
+        return cls(
+            oemmpa_pair_count=int(_as_float(chosen.get("oemmpa_pair_count")) or 0),
+            oemmpa_pair_seconds=oemmpa_seconds,
+            oemmpa_cold_pair_seconds=_as_float(chosen.get("oemmpa_cold_pair_seconds")),
+            rdkit_pair_count=int(_as_float(chosen.get("rdkit_pair_count")) or 0),
+            rdkit_seconds=rdkit_seconds,
+            rdkit_cold_seconds=_as_float(chosen.get("rdkit_cold_seconds")),
+            hydrogen_only=int(_as_float(chosen.get("oemmpa_hydrogen_expansion_only")) or 0),
+            severity=severity,
+            verdict_label=verdict_label,
+        )
+
+    def render(self, console: Console, *, verbose: bool = False) -> None:
+        """Print this section's title rule, description, and table.
+
+        :param console: Rich console to print into.
+        :param verbose: When ``True``, include cold-start rows and hydrogen
+                        note when applicable.
+        """
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("Tool")
+        table.add_column("Pairs", justify="right")
+        table.add_column("Wall", justify="right")
+        table.add_column("vs RDKit")
+        color = SEVERITY_COLOR[self.severity]
+        table.add_row(
+            "OEMMPA",
+            str(self.oemmpa_pair_count),
+            format_seconds(self.oemmpa_pair_seconds),
+            f"[{color}]{self.verdict_label}[/{color}]",
+        )
+        table.add_row(
+            "RDKit",
+            str(self.rdkit_pair_count),
+            format_seconds(self.rdkit_seconds),
+            "baseline",
+        )
+        if verbose:
+            table.add_row(
+                "OEMMPA (cold)",
+                "-",
+                format_seconds(self.oemmpa_cold_pair_seconds),
+                "-",
+            )
+            table.add_row(
+                "RDKit (cold)",
+                "-",
+                format_seconds(self.rdkit_cold_seconds),
+                "-",
+            )
+        console.print(table)
+        if verbose and self.hydrogen_only:
+            console.print(
+                f"[dim]OEMMPA also reported {self.hydrogen_only} hydrogen-only "
+                "chemistry pair(s) that RDKit does not enumerate.[/dim]"
+            )
+
+    def glance_entry(self) -> GlanceEntry:
+        """Return this section's row in the at-a-glance summary table.
+
+        :returns: A :class:`GlanceEntry`.
+        """
+        if self.severity == "good":
+            verdict = "faster"
+        elif self.severity == "warning":
+            verdict = "slower"
+        else:
+            verdict = "parity"
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=verdict,
+            headline=f"{self.verdict_label} vs RDKit",
+        )
+
+
 @dataclass
 class Report:
     """Aggregate of populated sections, skipped benchmarks, and baseline path.

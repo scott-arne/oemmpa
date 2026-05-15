@@ -7,6 +7,7 @@ from rich.console import Console
 from benchmarks.report import (
     GlanceEntry,
     Report,
+    RdkitSection,
     Section,
     format_bytes,
     format_seconds,
@@ -230,3 +231,107 @@ class TestFormatBytes:
 
     def test_exactly_one_megabyte_uses_mb(self) -> None:
         assert format_bytes(1024 * 1024) == "1.0 MB"
+
+
+def _rdkit_row(*, oemmpa_pair_seconds=0.001, rdkit_seconds=0.0014, oemmpa_pair_count=12, rdkit_pair_count=11, available=True, molecule_count=10):
+    return {
+        "benchmark": "rdkit_report",
+        "dataset": "fixture",
+        "molecule_count": molecule_count,
+        "oemmpa_pair_count": oemmpa_pair_count,
+        "oemmpa_pair_seconds": oemmpa_pair_seconds,
+        "oemmpa_workflow_seconds": oemmpa_pair_seconds,
+        "oemmpa_cold_pair_seconds": oemmpa_pair_seconds * 4,
+        "oemmpa_cold_workflow_seconds": oemmpa_pair_seconds * 4,
+        "rdkit_available": available,
+        "rdkit_pair_count": rdkit_pair_count,
+        "rdkit_seconds": rdkit_seconds,
+        "rdkit_cold_seconds": rdkit_seconds * 4,
+        "common_molecule_pairs": min(oemmpa_pair_count, rdkit_pair_count),
+        "common_chemistry_pairs": min(oemmpa_pair_count, rdkit_pair_count),
+        "oemmpa_only": 0,
+        "oemmpa_hydrogen_expansion_only": 0,
+        "rdkit_only": 0,
+    }
+
+
+class TestRdkitSection:
+    def test_faster_run_is_good(self):
+        section = RdkitSection.from_rows([_rdkit_row(oemmpa_pair_seconds=0.001, rdkit_seconds=0.0014)])
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "good"
+        assert entry.verdict == "faster"
+        assert "vs RDKit" in entry.headline
+
+    def test_slower_run_is_warning(self):
+        section = RdkitSection.from_rows([_rdkit_row(oemmpa_pair_seconds=0.003, rdkit_seconds=0.001)])
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "warning"
+        assert entry.verdict == "slower"
+
+    def test_parity_run_is_neutral(self):
+        section = RdkitSection.from_rows([_rdkit_row(oemmpa_pair_seconds=0.0010, rdkit_seconds=0.0010)])
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert entry.verdict == "parity"
+
+    def test_returns_none_when_rdkit_unavailable(self):
+        section = RdkitSection.from_rows([_rdkit_row(available=False)])
+        assert section is None
+
+    def test_returns_none_when_no_rdkit_rows(self):
+        section = RdkitSection.from_rows([{"benchmark": "storage", "dataset": "fixture"}])
+        assert section is None
+
+    def test_picks_largest_molecule_count_when_multiple_rows(self):
+        rows = [
+            _rdkit_row(molecule_count=5, oemmpa_pair_seconds=0.005, rdkit_seconds=0.001),
+            _rdkit_row(molecule_count=20, oemmpa_pair_seconds=0.001, rdkit_seconds=0.005),
+        ]
+        section = RdkitSection.from_rows(rows)
+        assert section is not None
+        assert section.glance_entry().severity == "good"
+
+    def test_render_includes_title_and_both_tools(self):
+        section = RdkitSection.from_rows([_rdkit_row()])
+        assert section is not None
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "RDKit comparison" in text
+        assert "OEMMPA" in text
+        assert "RDKit" in text
+        assert "vs RDKit" in text
+
+    def test_falls_back_to_workflow_seconds_when_pair_seconds_missing(self) -> None:
+        row = _rdkit_row(oemmpa_pair_seconds=0.001)
+        row["oemmpa_pair_seconds"] = None
+        section = RdkitSection.from_rows([row])
+        assert section is not None
+        assert section.oemmpa_pair_seconds == 0.001
+
+    def test_returns_none_when_rdkit_seconds_is_zero(self) -> None:
+        section = RdkitSection.from_rows([_rdkit_row(rdkit_seconds=0.0)])
+        assert section is None
+
+    def test_returns_none_when_both_oemmpa_timing_keys_missing(self) -> None:
+        row = _rdkit_row()
+        row["oemmpa_pair_seconds"] = None
+        row["oemmpa_workflow_seconds"] = None
+        section = RdkitSection.from_rows([row])
+        assert section is None
+
+    def test_verbose_render_adds_cold_rows_and_hydrogen_note(self) -> None:
+        row = _rdkit_row()
+        row["oemmpa_hydrogen_expansion_only"] = 3
+        section = RdkitSection.from_rows([row])
+        assert section is not None
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console, verbose=True)
+        text = console.export_text()
+        assert "OEMMPA (cold)" in text
+        assert "RDKit (cold)" in text
+        assert "3 hydrogen-only" in text
