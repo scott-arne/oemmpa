@@ -1,8 +1,7 @@
-"""Phase 6 benchmark suite for OEMMPA workflows."""
+"""Benchmark suite for OEMMPA workflows."""
 
 from __future__ import annotations
 
-import argparse
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -13,7 +12,18 @@ import sys
 from tempfile import TemporaryDirectory
 from time import perf_counter
 
-from .rdkit_compare import compare, run_oemmpa
+import rich_click as click
+from rich.console import Console
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from benchmarks.analysis import build_signals
+    from benchmarks.rdkit_compare import compare, run_oemmpa
+    from benchmarks.rendering import render_report
+else:
+    from .analysis import build_signals
+    from .rdkit_compare import compare, run_oemmpa
+    from .rendering import render_report
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +122,22 @@ BENCHMARK_SCHEMAS = {
         "message",
     ],
 }
+
+DEFAULT_SUITE_BENCHMARKS = (
+    "rdkit-report",
+    "thread-scaling",
+    "storage",
+    "cli-workflow",
+    "persisted-cli-workflow",
+    "mmpdb-workflow",
+)
+DEFAULT_SMILES = REPO_ROOT / "tests" / "data" / "mmpa_smiles.smi"
+DEFAULT_PROPERTIES = REPO_ROOT / "tests" / "data" / "mmpa_properties.csv"
+DEFAULT_RDKIT_SMILES = REPO_ROOT / "benchmarks" / "data" / "rdkit_reference.smi"
+DEFAULT_PROPERTY = "pIC50"
+DEFAULT_SOURCE_SMILES = "Cc1ccccc1"
+DEFAULT_TRANSFORM = "[*:1]C>>[*:1]O"
+DEFAULT_WORKERS = (1, 2, 4)
 
 
 def rdkit_report_rows(smiles_paths, repeats=3):
@@ -741,138 +767,518 @@ def write_csv(rows, output_path=None):
         writer.writerows(rows)
 
 
-def main(argv=None):
+def suite_rows(
+    benchmark_names=None,
+    *,
+    repeats=3,
+    smiles_path=DEFAULT_SMILES,
+    properties_path=DEFAULT_PROPERTIES,
+    property_name=DEFAULT_PROPERTY,
+    source_smiles=DEFAULT_SOURCE_SMILES,
+    transform=DEFAULT_TRANSFORM,
+    workers=DEFAULT_WORKERS,
+    rdkit_smiles_path=DEFAULT_RDKIT_SMILES,
+    mmpdb_root=DEFAULT_MMPDB_ROOT,
+):
+    """Run selected fixture-sized benchmarks and return (rows, skipped).
+
+    :param benchmark_names: Iterable of benchmark names to run.
+    :param repeats: Number of runs per benchmark.
+    :param smiles_path: SMILES file path for most benchmarks.
+    :param properties_path: Properties CSV path for workflow benchmarks.
+    :param property_name: Property column name for workflow benchmarks.
+    :param source_smiles: Source SMILES for generation workflow.
+    :param transform: Transform SMILES for prediction workflow.
+    :param workers: Worker counts for thread scaling benchmark.
+    :param rdkit_smiles_path: SMILES file for RDKit comparison.
+    :param mmpdb_root: MMPDB checkout root directory.
+    :returns: ``(rows, skipped)`` where skipped contains reason dictionaries.
+    """
+    selected = _normalize_benchmark_names(benchmark_names)
+    rows = []
+    skipped = []
+    for name in selected:
+        if name == "rdkit-report":
+            rows.extend(rdkit_report_rows([rdkit_smiles_path], repeats=repeats))
+        elif name == "thread-scaling":
+            rows.extend(thread_scaling_rows(smiles_path, workers=workers, repeats=repeats))
+        elif name == "storage":
+            rows.extend(
+                storage_rows(
+                    smiles_path,
+                    properties_path,
+                    property_columns=["pIC50", "logD"],
+                    repeats=repeats,
+                )
+            )
+        elif name == "cli-workflow":
+            rows.extend(
+                cli_workflow_rows(
+                    smiles_path,
+                    properties_path,
+                    property_name=property_name,
+                    source_smiles=source_smiles,
+                    transform=transform,
+                    repeats=repeats,
+                )
+            )
+        elif name == "persisted-cli-workflow":
+            rows.extend(
+                persisted_cli_workflow_rows(
+                    smiles_path,
+                    properties_path,
+                    property_name=property_name,
+                    source_smiles=source_smiles,
+                    transform=transform,
+                    repeats=repeats,
+                )
+            )
+        elif name == "mmpdb-workflow":
+            mmpdb_root_path = Path(mmpdb_root)
+            if not _mmpdb_available(mmpdb_root_path):
+                skipped.append(
+                    {
+                        "benchmark": "mmpdb-workflow",
+                        "reason": f"MMPDB checkout not found: {mmpdb_root_path}",
+                    }
+                )
+            else:
+                rows.extend(mmpdb_workflow_rows(mmpdb_root_path, repeats=repeats))
+        else:
+            raise click.ClickException(f"unknown benchmark: {name}")
+    return rows, skipped
+
+
+def _normalize_benchmark_names(names):
+    if names is None:
+        return list(DEFAULT_SUITE_BENCHMARKS)
+    selected = []
+    for name in names:
+        selected.extend(_split_csv_option(str(name)) or [])
+    return selected or list(DEFAULT_SUITE_BENCHMARKS)
+
+
+def _finish_cli(
+    rows,
+    output=None,
+    report=None,
+    skipped=(),
+    baseline_path=None,
+    verbose=False,
+):
+    """Write CSV output and render Rich report.
+
+    :param rows: Benchmark result rows.
+    :param output: Optional CSV output path.
+    :param report: Optional text report output path.
+    :param skipped: Skipped benchmark reason dictionaries.
+    :param baseline_path: Optional baseline CSV path for delta analysis.
+    :param verbose: Show verbose output.
+    """
+    rows = list(rows)
+    skipped = list(skipped)
+    if output is not None:
+        write_csv(_csv_output_rows(rows, skipped), output)
+    baseline_rows = _load_baseline_rows(baseline_path)
+    signals = build_signals(rows, baseline_rows=baseline_rows, skipped=skipped)
+    console = Console(record=bool(report))
+    render_report(
+        rows,
+        signals,
+        console=console,
+        skipped=skipped,
+        baseline_path=baseline_path,
+        verbose=verbose,
+    )
+    if report is not None:
+        Path(report).write_text(console.export_text(), encoding="utf-8")
+
+
+def _csv_output_rows(rows, skipped):
+    csv_rows = list(rows)
+    csv_rows.extend(
+        {
+            "benchmark": skipped_row["benchmark"],
+            "status": "skipped",
+            "reason": skipped_row["reason"],
+        }
+        for skipped_row in skipped
+    )
+    return csv_rows
+
+
+def _load_baseline_rows(baseline_path):
+    if baseline_path is None:
+        return None
+    return _read_csv_rows(baseline_path)
+
+
+def _resolve_baseline(baseline, no_baseline):
+    if no_baseline:
+        return None
+    if baseline is not None:
+        baseline_path = Path(baseline)
+        if not baseline_path.exists():
+            raise click.ClickException(f"baseline CSV not found: {baseline_path}")
+        return baseline_path
+    default_baseline = REPO_ROOT / "benchmarks" / "baseline.csv"
+    return default_baseline if default_baseline.exists() else None
+
+
+@click.group(invoke_without_command=True)
+@click.option(
+    "--benchmarks",
+    default=",".join(DEFAULT_SUITE_BENCHMARKS),
+    show_default=True,
+    help="Comma-separated benchmark names to run.",
+)
+@click.option(
+    "--baseline",
+    type=click.Path(path_type=Path),
+    help="Baseline CSV path for delta analysis.",
+)
+@click.option(
+    "--no-baseline",
+    is_flag=True,
+    help="Disable automatic baseline detection.",
+)
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    help="Optional CSV output path.",
+)
+@click.option(
+    "--report",
+    type=click.Path(path_type=Path),
+    help="Optional text report output path.",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show verbose output.",
+)
+@click.option(
+    "--repeats",
+    type=int,
+    default=3,
+    show_default=True,
+    help="Number of repeated runs.",
+)
+@click.option(
+    "--mmpdb-root",
+    type=click.Path(path_type=Path),
+    default=DEFAULT_MMPDB_ROOT,
+    show_default=True,
+    help="MMPDB checkout root directory.",
+)
+@click.pass_context
+def benchmark_cli(
+    ctx,
+    benchmarks,
+    baseline,
+    no_baseline,
+    output,
+    report,
+    verbose,
+    repeats,
+    mmpdb_root,
+):
+    """Run OEMMPA benchmark commands."""
+    ctx.ensure_object(dict)
+    resolved_baseline = _resolve_baseline(baseline, no_baseline)
+    ctx.obj.update(
+        {
+            "baseline": resolved_baseline,
+            "output": output,
+            "report": report,
+            "verbose": verbose,
+            "repeats": repeats,
+            "mmpdb_root": mmpdb_root,
+        }
+    )
+    if ctx.invoked_subcommand is not None:
+        return
+    rows, skipped = suite_rows(
+        _split_csv_option(benchmarks),
+        repeats=repeats,
+        mmpdb_root=mmpdb_root,
+    )
+    _finish_cli(
+        rows,
+        output=output,
+        report=report,
+        skipped=skipped,
+        baseline_path=resolved_baseline,
+        verbose=verbose,
+    )
+
+
+@benchmark_cli.command("rdkit-report")
+@click.argument("smiles", nargs=-1, type=click.Path(path_type=Path), required=True)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def rdkit_report_command(ctx, smiles, output, repeats):
+    """Run RDKit comparison benchmark."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    rows = rdkit_report_rows(smiles, repeats=repeats)
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("thread-scaling")
+@click.argument("smiles", type=click.Path(path_type=Path))
+@click.option(
+    "--workers",
+    default="1,2,4",
+    show_default=True,
+    help="Comma-separated worker counts.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def thread_scaling_command(ctx, smiles, workers, output, repeats):
+    """Benchmark independent analyzer throughput across worker counts."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    worker_list = [int(value) for value in workers.split(",") if value]
+    rows = thread_scaling_rows(smiles, workers=worker_list, repeats=repeats)
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("storage")
+@click.argument("smiles", type=click.Path(path_type=Path))
+@click.option("--properties", type=click.Path(path_type=Path))
+@click.option(
+    "--property-columns",
+    help="Comma-separated numeric property columns to load from --properties.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def storage_command(ctx, smiles, properties, property_columns, output, repeats):
+    """Benchmark DuckDB storage loading and analyzer persistence."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    rows = storage_rows(
+        smiles,
+        properties_path=properties,
+        property_columns=_split_csv_option(property_columns),
+        repeats=repeats,
+    )
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("cli-workflow")
+@click.argument("smiles", type=click.Path(path_type=Path))
+@click.option("--properties", type=click.Path(path_type=Path), required=True)
+@click.option("--property", "property_name", required=True)
+@click.option("--source", "source_smiles", required=True)
+@click.option(
+    "--transform",
+    default=DEFAULT_TRANSFORM,
+    show_default=True,
+    help="Transform SMILES for prediction.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def cli_workflow_command(ctx, smiles, properties, property_name, source_smiles, transform, output, repeats):
+    """Benchmark Phase 5 CLI analytics workflows."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    rows = cli_workflow_rows(
+        smiles,
+        properties,
+        property_name=property_name,
+        source_smiles=source_smiles,
+        transform=transform,
+        repeats=repeats,
+    )
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("persisted-cli-workflow")
+@click.argument("smiles", type=click.Path(path_type=Path))
+@click.option("--properties", type=click.Path(path_type=Path), required=True)
+@click.option("--property", "property_name", required=True)
+@click.option("--source", "source_smiles", required=True)
+@click.option(
+    "--transform",
+    default=DEFAULT_TRANSFORM,
+    show_default=True,
+    help="Transform SMILES for prediction.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def persisted_cli_workflow_command(
+    ctx, smiles, properties, property_name, source_smiles, transform, output, repeats
+):
+    """Benchmark Phase 14 persisted CLI workflows."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    rows = persisted_cli_workflow_rows(
+        smiles,
+        properties,
+        property_name=property_name,
+        source_smiles=source_smiles,
+        transform=transform,
+        repeats=repeats,
+    )
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("mmpdb-workflow")
+@click.option(
+    "--mmpdb-root",
+    type=click.Path(path_type=Path),
+    help="MMPDB checkout root directory.",
+)
+@click.option(
+    "--database",
+    "database_path",
+    type=click.Path(path_type=Path),
+    help="MMPDB database path.",
+)
+@click.option(
+    "--property",
+    "property_name",
+    default="MW",
+    show_default=True,
+    help="Property column for transform and prediction.",
+)
+@click.option(
+    "--transform-smiles",
+    default="c1cccnc1O",
+    show_default=True,
+    help="Input SMILES for mmpdb transform.",
+)
+@click.option(
+    "--predict-smiles",
+    default="c1cccnc1",
+    show_default=True,
+    help="Product SMILES for mmpdb predict.",
+)
+@click.option(
+    "--predict-reference",
+    default="c1cccnc1O",
+    show_default=True,
+    help="Reference SMILES for mmpdb predict.",
+)
+@click.option(
+    "--generate-smiles",
+    default="c1cccnc1O",
+    show_default=True,
+    help="Input SMILES for mmpdb generate.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def mmpdb_workflow_command(
+    ctx,
+    mmpdb_root,
+    database_path,
+    property_name,
+    transform_smiles,
+    predict_smiles,
+    predict_reference,
+    generate_smiles,
+    output,
+    repeats,
+):
+    """Benchmark MMPDB baseline workflows on the upstream fixture database."""
+    mmpdb_root = mmpdb_root if mmpdb_root is not None else ctx.obj["mmpdb_root"]
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    rows = mmpdb_workflow_rows(
+        mmpdb_root,
+        database_path=database_path,
+        property_name=property_name,
+        transform_smiles=transform_smiles,
+        predict_smiles=predict_smiles,
+        predict_reference=predict_reference,
+        generate_smiles=generate_smiles,
+        repeats=repeats,
+    )
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+@benchmark_cli.command("regression-check")
+@click.argument("baseline", type=click.Path(path_type=Path))
+@click.argument("current", type=click.Path(path_type=Path))
+@click.option(
+    "--max-seconds-ratio",
+    type=float,
+    default=1.25,
+    show_default=True,
+    help="Maximum allowed timing slowdown ratio.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of repeated runs.")
+@click.pass_context
+def regression_check_command(ctx, baseline, current, max_seconds_ratio, output, repeats):
+    """Compare saved benchmark CSV files against a baseline."""
+    output = output if output is not None else ctx.obj["output"]
+    rows = regression_check_rows(baseline, current, max_seconds_ratio=max_seconds_ratio)
+    _finish_cli(
+        rows,
+        output=output,
+        report=ctx.obj["report"],
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
+    )
+
+
+def main(argv=None, *, standalone_mode=True):
     """Run benchmark suite commands."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="Optional CSV output path.")
-    parser.add_argument("--repeats", type=int, default=3)
-    command_options = argparse.ArgumentParser(add_help=False)
-    command_options.add_argument(
-        "--output",
-        type=Path,
-        default=argparse.SUPPRESS,
-        help="Optional CSV output path.",
-    )
-    command_options.add_argument(
-        "--repeats",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="Number of repeated runs.",
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    rdkit_parser = subparsers.add_parser(
-        "rdkit-report",
-        parents=[command_options],
-    )
-    rdkit_parser.add_argument("smiles", nargs="+", type=Path)
-
-    thread_parser = subparsers.add_parser(
-        "thread-scaling",
-        parents=[command_options],
-    )
-    thread_parser.add_argument("smiles", type=Path)
-    thread_parser.add_argument("--workers", default="1,2,4")
-
-    storage_parser = subparsers.add_parser("storage", parents=[command_options])
-    storage_parser.add_argument("smiles", type=Path)
-    storage_parser.add_argument("--properties", type=Path)
-    storage_parser.add_argument(
-        "--property-columns",
-        help="Comma-separated numeric property columns to load from --properties.",
-    )
-
-    cli_parser = subparsers.add_parser(
-        "cli-workflow",
-        parents=[command_options],
-    )
-    cli_parser.add_argument("smiles", type=Path)
-    cli_parser.add_argument("--properties", type=Path, required=True)
-    cli_parser.add_argument("--property", required=True)
-    cli_parser.add_argument("--source", required=True)
-    cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
-
-    persisted_cli_parser = subparsers.add_parser(
-        "persisted-cli-workflow",
-        parents=[command_options],
-    )
-    persisted_cli_parser.add_argument("smiles", type=Path)
-    persisted_cli_parser.add_argument("--properties", type=Path, required=True)
-    persisted_cli_parser.add_argument("--property", required=True)
-    persisted_cli_parser.add_argument("--source", required=True)
-    persisted_cli_parser.add_argument("--transform", default="[*:1]C>>[*:1]O")
-
-    mmpdb_parser = subparsers.add_parser("mmpdb-workflow", parents=[command_options])
-    mmpdb_parser.add_argument("--mmpdb-root", type=Path, default=DEFAULT_MMPDB_ROOT)
-    mmpdb_parser.add_argument("--database", type=Path)
-    mmpdb_parser.add_argument("--property", default="MW")
-    mmpdb_parser.add_argument("--transform-smiles", default="c1cccnc1O")
-    mmpdb_parser.add_argument("--predict-smiles", default="c1cccnc1")
-    mmpdb_parser.add_argument("--predict-reference", default="c1cccnc1O")
-    mmpdb_parser.add_argument("--generate-smiles", default="c1cccnc1O")
-
-    regression_parser = subparsers.add_parser(
-        "regression-check",
-        parents=[command_options],
-    )
-    regression_parser.add_argument("baseline", type=Path)
-    regression_parser.add_argument("current", type=Path)
-    regression_parser.add_argument("--max-seconds-ratio", type=float, default=1.25)
-
-    args = parser.parse_args(argv)
-    if args.command == "rdkit-report":
-        rows = rdkit_report_rows(args.smiles, repeats=args.repeats)
-    elif args.command == "thread-scaling":
-        rows = thread_scaling_rows(
-            args.smiles,
-            workers=[int(value) for value in args.workers.split(",") if value],
-            repeats=args.repeats,
+    try:
+        benchmark_cli.main(
+            args=list(argv) if argv is not None else None,
+            standalone_mode=False,
         )
-    elif args.command == "storage":
-        rows = storage_rows(
-            args.smiles,
-            properties_path=args.properties,
-            property_columns=_split_csv_option(args.property_columns),
-            repeats=args.repeats,
-        )
-    elif args.command == "cli-workflow":
-        rows = cli_workflow_rows(
-            args.smiles,
-            args.properties,
-            property_name=args.property,
-            source_smiles=args.source,
-            transform=args.transform,
-            repeats=args.repeats,
-        )
-    elif args.command == "persisted-cli-workflow":
-        rows = persisted_cli_workflow_rows(
-            args.smiles,
-            args.properties,
-            property_name=args.property,
-            source_smiles=args.source,
-            transform=args.transform,
-            repeats=args.repeats,
-        )
-    elif args.command == "mmpdb-workflow":
-        rows = mmpdb_workflow_rows(
-            args.mmpdb_root,
-            database_path=args.database,
-            property_name=args.property,
-            transform_smiles=args.transform_smiles,
-            predict_smiles=args.predict_smiles,
-            predict_reference=args.predict_reference,
-            generate_smiles=args.generate_smiles,
-            repeats=args.repeats,
-        )
-    else:
-        rows = regression_check_rows(
-            args.baseline,
-            args.current,
-            max_seconds_ratio=args.max_seconds_ratio,
-        )
-
-    write_csv(rows, args.output)
-    return 0
+        return 0
+    except SystemExit as exc:
+        if standalone_mode:
+            raise
+        return exc.code if exc.code is not None else 0
 
 
 class _CliResult:
