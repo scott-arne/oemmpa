@@ -58,15 +58,21 @@ def _rdkit_row(**overrides):
         "dataset": "rdkit_reference.smi",
         "molecule_count": 20,
         "oemmpa_pair_count": 10,
+        "oemmpa_symmetric_pair_count": 20,
         "oemmpa_transform_count": 8,
-        "oemmpa_seconds": 0.05,
+        "oemmpa_pair_seconds": 0.05,
+        "oemmpa_workflow_seconds": 0.08,
+        "oemmpa_cold_pair_seconds": 0.07,
+        "oemmpa_cold_workflow_seconds": 0.1,
         "rdkit_available": True,
         "rdkit_pair_count": 9,
         "rdkit_fragment_count": 12,
         "rdkit_seconds": 0.15,
+        "rdkit_cold_seconds": 0.2,
         "common_molecule_pairs": 7,
         "common_chemistry_pairs": 6,
         "oemmpa_only": 3,
+        "oemmpa_hydrogen_expansion_only": 1,
         "rdkit_only": 2,
     }
     row.update(overrides)
@@ -80,14 +86,19 @@ def test_analyze_rdkit_marks_oemmpa_faster_as_good():
     assert signal.severity == "good"
     assert signal.kind == "vs_reference"
     assert "3.00x faster" in signal.headline
+    assert "pair-only" in signal.detail
+    assert "full OEMMPA workflow" in signal.detail
+    assert "hydrogen-variable" in signal.detail
     assert abs(signal.metrics["ratio"] - 3.0) < 1e-9
     assert signal.metrics["oemmpa_pairs"] == 10
+    assert signal.metrics["oemmpa_symmetric_pairs"] == 20
+    assert signal.metrics["oemmpa_hydrogen_expansion_only"] == 1
     assert signal.metrics["rdkit_pairs"] == 9
 
 
 def test_analyze_rdkit_marks_rdkit_faster_as_warning():
     signals = analyze_rdkit(
-        [_rdkit_row(oemmpa_seconds=0.2, rdkit_seconds=0.1)]
+        [_rdkit_row(oemmpa_pair_seconds=0.2, rdkit_seconds=0.1)]
     )
     assert signals[0].severity == "warning"
     assert "2.00x slower" in signals[0].headline

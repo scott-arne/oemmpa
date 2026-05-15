@@ -39,15 +39,21 @@ BENCHMARK_SCHEMAS = {
         "dataset",
         "molecule_count",
         "oemmpa_pair_count",
+        "oemmpa_symmetric_pair_count",
         "oemmpa_transform_count",
-        "oemmpa_seconds",
+        "oemmpa_pair_seconds",
+        "oemmpa_workflow_seconds",
+        "oemmpa_cold_pair_seconds",
+        "oemmpa_cold_workflow_seconds",
         "rdkit_available",
         "rdkit_pair_count",
         "rdkit_fragment_count",
         "rdkit_seconds",
+        "rdkit_cold_seconds",
         "common_molecule_pairs",
         "common_chemistry_pairs",
         "oemmpa_only",
+        "oemmpa_hydrogen_expansion_only",
         "rdkit_only",
     ],
     "thread_scaling": [
@@ -144,13 +150,16 @@ def rdkit_report_rows(smiles_paths, repeats=3):
     """Return RDKit comparison benchmark rows.
 
     :param smiles_paths: Iterable of whitespace ``SMILES id`` files.
-    :param repeats: Number of comparison runs per input file.
+    :param repeats: Number of warmed comparison runs per input file after one
+        cold-start probe.
     :returns: List of CSV-ready dictionaries.
     """
     rows = []
     for smiles_path in smiles_paths:
         smiles_path = Path(smiles_path)
-        results = [compare(smiles_path) for _ in range(int(repeats))]
+        measurement_count = max(1, int(repeats))
+        cold_result = compare(smiles_path)
+        results = [compare(smiles_path) for _ in range(measurement_count)]
         result = results[-1]
         rows.append(
             {
@@ -158,19 +167,37 @@ def rdkit_report_rows(smiles_paths, repeats=3):
                 "dataset": smiles_path.name,
                 "molecule_count": result["oemmpa"]["molecule_count"],
                 "oemmpa_pair_count": result["oemmpa"]["pair_count"],
-                "oemmpa_transform_count": result["oemmpa"]["transform_count"],
-                "oemmpa_seconds": _mean(
+                "oemmpa_symmetric_pair_count": result["oemmpa_workflow"][
+                    "pair_count"
+                ],
+                "oemmpa_transform_count": result["oemmpa_workflow"][
+                    "transform_count"
+                ],
+                "oemmpa_pair_seconds": _mean(
                     item["oemmpa"]["elapsed_seconds"] for item in results
                 ),
+                "oemmpa_workflow_seconds": _mean(
+                    item["oemmpa_workflow"]["elapsed_seconds"] for item in results
+                ),
+                "oemmpa_cold_pair_seconds": cold_result["oemmpa"][
+                    "elapsed_seconds"
+                ],
+                "oemmpa_cold_workflow_seconds": cold_result["oemmpa_workflow"][
+                    "elapsed_seconds"
+                ],
                 "rdkit_available": result["rdkit"]["available"],
                 "rdkit_pair_count": result["rdkit"]["pair_count"],
                 "rdkit_fragment_count": result["rdkit"].get("fragment_count", 0),
                 "rdkit_seconds": _mean(
                     item["rdkit"]["elapsed_seconds"] for item in results
                 ),
+                "rdkit_cold_seconds": cold_result["rdkit"]["elapsed_seconds"],
                 "common_molecule_pairs": len(result["common_molecule_pairs"]),
                 "common_chemistry_pairs": len(result["common_chemistry_pairs"]),
                 "oemmpa_only": len(result["oemmpa_only"]),
+                "oemmpa_hydrogen_expansion_only": len(
+                    result["oemmpa_hydrogen_expansion_only"]
+                ),
                 "rdkit_only": len(result["rdkit_only"]),
             }
         )

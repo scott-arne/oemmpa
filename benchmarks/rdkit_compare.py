@@ -36,7 +36,7 @@ def read_smiles(path):
 
 
 def run_oemmpa(path):
-    """Run the local OEMMPA facade on benchmark data.
+    """Run the full local OEMMPA facade workflow on benchmark data.
 
     :param path: SMILES file path.
     :returns: Benchmark result dictionary.
@@ -62,6 +62,43 @@ def run_oemmpa(path):
         "molecule_count": report.accepted_count,
         "pair_count": len(pairs),
         "transform_count": len(transforms),
+        "elapsed_seconds": elapsed,
+        "pairs": pairs,
+    }
+
+
+def run_oemmpa_pair_equivalent(path):
+    """Run OEMMPA in the pair-only mode used for RDKit comparison.
+
+    RDKit's ``rdMMPA`` harness emits one orientation per molecule pair and does
+    not build OEMMPA transform summaries. This path keeps the timing and pair
+    surface aligned with that reference by querying non-symmetric pairs only.
+
+    :param path: SMILES file path.
+    :returns: Benchmark result dictionary.
+    """
+    oemmpa = _import_worktree_package()
+
+    rows = read_smiles(path)
+    analyzer = oemmpa.Analyzer()
+    options = oemmpa._oemmpa.QueryOptions()
+    options.SetSymmetric(False)
+
+    start = perf_counter()
+    report = analyzer.add_molecules(rows)
+    if report.rejected_count:
+        messages = "; ".join(error.message for error in report.errors)
+        raise RuntimeError(f"OEMMPA rejected benchmark rows: {messages}")
+    analyzer.analyze()
+    pairs = analyzer.pairs(options).to_dicts()
+    elapsed = perf_counter() - start
+
+    return {
+        "engine": "oemmpa_pair_equivalent",
+        "available": True,
+        "molecule_count": report.accepted_count,
+        "pair_count": len(pairs),
+        "transform_count": 0,
         "elapsed_seconds": elapsed,
         "pairs": pairs,
     }
@@ -126,20 +163,26 @@ def compare(path):
     :param path: SMILES file path.
     :returns: Dictionary with engine results and pair-surface differences.
     """
-    oemmpa_result = run_oemmpa(path)
+    oemmpa_workflow_result = run_oemmpa(path)
+    oemmpa_result = run_oemmpa_pair_equivalent(path)
     rdkit_result = run_rdkit(path)
     oemmpa_keys = {_normalized_pair_key(pair) for pair in oemmpa_result["pairs"]}
     rdkit_keys = {_normalized_pair_key(pair) for pair in rdkit_result["pairs"]}
     oemmpa_molecule_keys = {_molecule_pair_key(pair) for pair in oemmpa_result["pairs"]}
     rdkit_molecule_keys = {_molecule_pair_key(pair) for pair in rdkit_result["pairs"]}
+    oemmpa_only = sorted(oemmpa_keys - rdkit_keys)
     return {
         "oemmpa": oemmpa_result,
+        "oemmpa_workflow": oemmpa_workflow_result,
         "rdkit": rdkit_result,
         "common_molecule_pairs": sorted(oemmpa_molecule_keys & rdkit_molecule_keys),
         "oemmpa_molecule_only": sorted(oemmpa_molecule_keys - rdkit_molecule_keys),
         "rdkit_molecule_only": sorted(rdkit_molecule_keys - oemmpa_molecule_keys),
         "common_chemistry_pairs": sorted(oemmpa_keys & rdkit_keys),
-        "oemmpa_only": sorted(oemmpa_keys - rdkit_keys),
+        "oemmpa_only": oemmpa_only,
+        "oemmpa_hydrogen_expansion_only": [
+            pair_key for pair_key in oemmpa_only if _is_hydrogen_variable_key(pair_key)
+        ],
         "rdkit_only": sorted(rdkit_keys - oemmpa_keys),
     }
 
@@ -152,14 +195,21 @@ def main(argv=None):
 
     result = compare(args.smiles)
     oemmpa_result = result["oemmpa"]
+    oemmpa_workflow_result = result["oemmpa_workflow"]
     rdkit_result = result["rdkit"]
 
     print(
-        "OEMMPA: "
+        "OEMMPA pair-equivalent: "
         f"{oemmpa_result['molecule_count']} molecules, "
         f"{oemmpa_result['pair_count']} pairs, "
-        f"{oemmpa_result['transform_count']} transforms, "
         f"{oemmpa_result['elapsed_seconds']:.6f}s"
+    )
+    print(
+        "OEMMPA full workflow: "
+        f"{oemmpa_workflow_result['molecule_count']} molecules, "
+        f"{oemmpa_workflow_result['pair_count']} pairs, "
+        f"{oemmpa_workflow_result['transform_count']} transforms, "
+        f"{oemmpa_workflow_result['elapsed_seconds']:.6f}s"
     )
     if rdkit_result["available"]:
         print(
@@ -178,6 +228,10 @@ def main(argv=None):
 
 
 def _import_worktree_analyzer():
+    return _import_worktree_package().Analyzer
+
+
+def _import_worktree_package():
     if PYTHON_ROOT.is_dir() and str(PYTHON_ROOT) not in sys.path:
         sys.path.insert(0, str(PYTHON_ROOT))
 
@@ -194,14 +248,14 @@ def _import_worktree_analyzer():
         if type(finder).__module__ != "_oemmpa_editable"
     ]
     try:
-        from oemmpa import Analyzer
+        module = importlib.import_module("oemmpa")
     finally:
         sys.meta_path[:] = original_meta_path
 
     imported = sys.modules.get("oemmpa")
     if imported is not None and not _is_worktree_package(imported):
         raise ImportError(f"benchmark imported non-worktree oemmpa: {imported.__file__}")
-    return Analyzer
+    return module
 
 
 def _is_worktree_package(module):
@@ -278,6 +332,13 @@ def _normalized_pair_key(pair):
     )
 
 
+def _is_hydrogen_variable_key(pair_key):
+    variable_components = pair_key[-1]
+    if not isinstance(variable_components, tuple):
+        return False
+    return any("[H]" in component for component in variable_components)
+
+
 def _pair_key(pair):
     return (
         pair["source_id"],
@@ -294,10 +355,25 @@ def _canonical_smiles(smiles):
     except ImportError:
         return smiles
 
-    molecule = chem.MolFromSmiles(smiles)
+    log_blocker = _rdkit_log_blocker()
+    if log_blocker is None:
+        molecule = chem.MolFromSmiles(smiles)
+    else:
+        # Dummy-hydrogen fragments are expected in MMP comparisons; RDKit logs
+        # them as warnings during canonicalization, which obscures the report.
+        with log_blocker():
+            molecule = chem.MolFromSmiles(smiles)
     if molecule is None:
         return smiles
     return chem.MolToSmiles(molecule, canonical=True)
+
+
+def _rdkit_log_blocker():
+    try:
+        rd_base = importlib.import_module("rdkit.rdBase")
+    except ImportError:
+        return None
+    return getattr(rd_base, "BlockLogs", None)
 
 
 if __name__ == "__main__":

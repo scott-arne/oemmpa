@@ -47,6 +47,31 @@ input files or command-specific options; shared flags (`--baseline`,
 `--output`, `--report`, `--verbose`, `--repeats`) are inherited from the
 top-level group.
 
+## Reference Pair Baseline
+
+```bash
+python -m benchmarks.benchmark_suite rdkit-report \
+  benchmarks/data/rdkit_reference.smi
+```
+
+The RDKit comparison uses OEMMPA's pair-only, non-symmetric query mode for the
+RDKit-equivalent timing and pair surface. This avoids comparing RDKit's
+one-direction pair extraction against OEMMPA's fuller workflow, which also
+builds default symmetric pairs and transform summaries.
+
+The `oemmpa_pair_seconds` and `rdkit_seconds` columns are warmed, comparable
+pair-extraction timings. The suite also records one cold probe in
+`oemmpa_cold_pair_seconds`, `oemmpa_cold_workflow_seconds`, and
+`rdkit_cold_seconds` so startup or lazy-initialization effects are visible
+without dominating the main comparison. `oemmpa_workflow_seconds` remains the
+full OEMMPA workflow cost.
+
+Pair counts use the same distinction: `oemmpa_pair_count` is the non-symmetric
+RDKit-equivalent count, while `oemmpa_symmetric_pair_count` is the default
+OEMMPA workflow count. OEMMPA may still report chemistry pairs that RDKit does
+not, especially hydrogen-variable expansions; those are counted separately in
+`oemmpa_hydrogen_expansion_only`.
+
 ## Parallel Analyzer Throughput
 
 ```bash

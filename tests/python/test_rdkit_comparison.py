@@ -2,6 +2,7 @@
 
 import itertools
 import re
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -119,6 +120,21 @@ def test_run_oemmpa_returns_pairs_and_timing_metadata():
     assert len(result["pairs"]) == result["pair_count"]
 
 
+def test_run_oemmpa_pair_equivalent_uses_asymmetric_pair_only_surface():
+    from benchmarks.rdkit_compare import run_oemmpa, run_oemmpa_pair_equivalent
+
+    workflow_result = run_oemmpa(BENCHMARK_DATA)
+    pair_result = run_oemmpa_pair_equivalent(BENCHMARK_DATA)
+
+    assert pair_result["engine"] == "oemmpa_pair_equivalent"
+    assert pair_result["molecule_count"] == 5
+    assert pair_result["pair_count"] == 12
+    assert pair_result["transform_count"] == 0
+    assert pair_result["pair_count"] < workflow_result["pair_count"]
+    assert pair_result["elapsed_seconds"] >= 0.0
+    assert len(pair_result["pairs"]) == pair_result["pair_count"]
+
+
 def test_importing_benchmark_does_not_mutate_meta_path():
     import importlib
 
@@ -173,14 +189,18 @@ def test_compare_returns_expected_top_level_keys():
 
     assert set(result) == {
         "oemmpa",
+        "oemmpa_workflow",
         "rdkit",
         "common_molecule_pairs",
         "oemmpa_molecule_only",
         "rdkit_molecule_only",
         "common_chemistry_pairs",
         "oemmpa_only",
+        "oemmpa_hydrogen_expansion_only",
         "rdkit_only",
     }
+    assert result["oemmpa"]["engine"] == "oemmpa_pair_equivalent"
+    assert result["oemmpa_workflow"]["engine"] == "oemmpa"
 
 
 def test_compare_reports_normalized_overlap_when_rdkit_is_available():
@@ -195,6 +215,42 @@ def test_compare_reports_normalized_overlap_when_rdkit_is_available():
 
     assert len(result["common_molecule_pairs"]) > 0
     assert len(result["common_chemistry_pairs"]) > 0
+
+
+def test_compare_classifies_oemmpa_hydrogen_variable_expansion():
+    try:
+        import rdkit  # noqa: F401
+    except ImportError:
+        pytest.skip("RDKit is not installed")
+
+    from benchmarks.rdkit_compare import compare
+
+    result = compare(BENCHMARK_DATA)
+
+    assert len(result["oemmpa_only"]) == 1
+    assert result["oemmpa_hydrogen_expansion_only"] == result["oemmpa_only"]
+
+
+def test_canonicalizing_dummy_hydrogen_fragments_does_not_warn():
+    pytest.importorskip("rdkit")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from benchmarks.rdkit_compare import _canonical_smiles; "
+                "print(_canonical_smiles('[H][*:1]'))"
+            ),
+        ],
+        cwd=BENCHMARK_DATA.parents[2],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "[H][*:1]"
+    assert "not removing hydrogen atom with dummy atom neighbors" not in result.stderr
 
 
 def test_rdkit_test4_three_cut_core_transform_application_is_supported():

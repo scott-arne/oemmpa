@@ -104,9 +104,15 @@ def test_rdkit_report_rows_include_pair_overlap_metrics():
     assert row["dataset"] == "mmpa_smiles.smi"
     assert row["molecule_count"] == 3
     assert row["oemmpa_pair_count"] >= 1
+    assert row["oemmpa_symmetric_pair_count"] >= row["oemmpa_pair_count"]
+    assert "oemmpa_pair_seconds" in row
+    assert "oemmpa_workflow_seconds" in row
+    assert "oemmpa_cold_pair_seconds" in row
+    assert "oemmpa_cold_workflow_seconds" in row
+    assert "rdkit_cold_seconds" in row
     assert "common_molecule_pairs" in row
-    assert "oemmpa_seconds" in row
     assert "rdkit_seconds" in row
+    assert "oemmpa_hydrogen_expansion_only" in row
 
 
 def test_thread_scaling_rows_measure_independent_analyzer_jobs():

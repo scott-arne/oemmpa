@@ -83,7 +83,9 @@ def analyze_rdkit(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
             )
             continue
 
-        oemmpa_seconds = _as_float(row.get("oemmpa_seconds"))
+        oemmpa_seconds = _as_float(row.get("oemmpa_pair_seconds"))
+        if oemmpa_seconds is None:
+            oemmpa_seconds = _as_float(row.get("oemmpa_seconds"))
         rdkit_seconds = _as_float(row.get("rdkit_seconds"))
         if not oemmpa_seconds or not rdkit_seconds:
             signals.append(
@@ -103,37 +105,76 @@ def analyze_rdkit(rows: Iterable[Mapping[str, Any]]) -> list[Signal]:
         ratio = rdkit_seconds / oemmpa_seconds
         if ratio > 1.0:
             severity = "good"
-            headline = f"{ratio:.2f}x faster than RDKit"
+            headline = f"pair path {ratio:.2f}x faster than RDKit"
         elif ratio < 1.0:
             severity = "warning"
-            headline = f"{1.0 / ratio:.2f}x slower than RDKit"
+            headline = f"pair path {1.0 / ratio:.2f}x slower than RDKit"
         else:
             severity = "neutral"
-            headline = "parity with RDKit"
+            headline = "pair path parity with RDKit"
 
         oemmpa_pairs = int(_as_float(row.get("oemmpa_pair_count")) or 0)
+        oemmpa_symmetric_pairs = int(
+            _as_float(row.get("oemmpa_symmetric_pair_count")) or oemmpa_pairs
+        )
         rdkit_pairs = int(_as_float(row.get("rdkit_pair_count")) or 0)
         common_mol = int(_as_float(row.get("common_molecule_pairs")) or 0)
         common_chem = int(_as_float(row.get("common_chemistry_pairs")) or 0)
+        workflow_seconds = _as_float(row.get("oemmpa_workflow_seconds"))
+        cold_pair_seconds = _as_float(row.get("oemmpa_cold_pair_seconds"))
+        rdkit_cold_seconds = _as_float(row.get("rdkit_cold_seconds"))
+        hydrogen_expansion = int(
+            _as_float(row.get("oemmpa_hydrogen_expansion_only")) or 0
+        )
+        detail_parts = [
+            (
+                f"OEMMPA pair-only non-symmetric {oemmpa_seconds:.3f}s vs "
+                f"RDKit {rdkit_seconds:.3f}s on {dataset}; "
+                f"{oemmpa_pairs} pair-equivalent OEMMPA pairs, "
+                f"{rdkit_pairs} RDKit pairs, {common_mol} molecule-pair "
+                f"overlaps, {common_chem} chemistry-pair overlaps."
+            )
+        ]
+        if workflow_seconds is not None:
+            detail_parts.append(
+                f"The full OEMMPA workflow was {workflow_seconds:.3f}s, "
+                "including default symmetric pairs and transform summaries."
+            )
+        if oemmpa_symmetric_pairs != oemmpa_pairs:
+            detail_parts.append(
+                f"Default symmetric output would report "
+                f"{oemmpa_symmetric_pairs} OEMMPA pairs."
+            )
+        if hydrogen_expansion:
+            detail_parts.append(
+                f"{hydrogen_expansion} OEMMPA-only chemistry pair(s) were "
+                "hydrogen-variable expansions."
+            )
+        if cold_pair_seconds is not None and rdkit_cold_seconds is not None:
+            detail_parts.append(
+                f"Cold probe timings were OEMMPA pair-only "
+                f"{cold_pair_seconds:.3f}s and RDKit {rdkit_cold_seconds:.3f}s."
+            )
         signals.append(
             Signal(
                 kind="vs_reference",
                 benchmark="rdkit_report",
                 subject=dataset,
                 headline=headline,
-                detail=(
-                    f"OEMMPA {oemmpa_seconds:.3f}s vs RDKit {rdkit_seconds:.3f}s "
-                    f"on {dataset}; {oemmpa_pairs} OEMMPA pairs, "
-                    f"{rdkit_pairs} RDKit pairs, {common_mol} molecule-pair "
-                    f"overlaps, {common_chem} chemistry-pair overlaps."
-                ),
+                detail=" ".join(detail_parts),
                 severity=severity,
                 magnitude=abs(math.log(ratio)),
                 metrics={
                     "oemmpa_seconds": oemmpa_seconds,
+                    "oemmpa_pair_seconds": oemmpa_seconds,
+                    "oemmpa_workflow_seconds": workflow_seconds,
+                    "oemmpa_cold_pair_seconds": cold_pair_seconds,
                     "rdkit_seconds": rdkit_seconds,
+                    "rdkit_cold_seconds": rdkit_cold_seconds,
                     "ratio": ratio,
                     "oemmpa_pairs": oemmpa_pairs,
+                    "oemmpa_symmetric_pairs": oemmpa_symmetric_pairs,
+                    "oemmpa_hydrogen_expansion_only": hydrogen_expansion,
                     "rdkit_pairs": rdkit_pairs,
                     "common_molecule_pairs": common_mol,
                     "common_chemistry_pairs": common_chem,

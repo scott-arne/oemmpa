@@ -107,8 +107,12 @@ _KEY_METRIC_COLUMNS = (
     "seconds",
     "wall_seconds",
     "total_seconds",
-    "oemmpa_seconds",
+    "oemmpa_pair_seconds",
+    "oemmpa_workflow_seconds",
+    "oemmpa_cold_pair_seconds",
+    "oemmpa_cold_workflow_seconds",
     "rdkit_seconds",
+    "rdkit_cold_seconds",
     "jobs_per_second",
 )
 _VOLUME_COLUMNS = (
@@ -124,26 +128,64 @@ _VOLUME_COLUMNS = (
     "detail_rule_rows",
     "detail_pair_rows",
     "oemmpa_pair_count",
+    "oemmpa_symmetric_pair_count",
     "oemmpa_transform_count",
     "rdkit_pair_count",
     "rdkit_fragment_count",
     "common_molecule_pairs",
     "common_chemistry_pairs",
     "oemmpa_only",
+    "oemmpa_hydrogen_expansion_only",
     "rdkit_only",
     "output_bytes",
     "database_bytes",
 )
 _NOISE_COLUMNS = ("stdout_lines", "stderr")
+_VERBOSE_ONLY_COLUMNS = (
+    "stdout_lines",
+    "oemmpa_cold_pair_seconds",
+    "oemmpa_cold_workflow_seconds",
+    "rdkit_cold_seconds",
+)
+_RDKIT_DEFAULT_VERBOSE_ONLY_COLUMNS = (
+    "molecule_count",
+    "oemmpa_transform_count",
+    "rdkit_fragment_count",
+)
 _HIDE_WHEN_ZERO = {"returncode"}
 _HIDE_WHEN_EMPTY = {"stderr"}
+_HIDE_WHEN_TRUE = {"available", "duckdb_available", "rdkit_available"}
+
+_COLUMN_LABELS = {
+    "oemmpa_pair_seconds": "oe pair s",
+    "oemmpa_workflow_seconds": "oe workflow s",
+    "oemmpa_cold_pair_seconds": "oe cold pair",
+    "oemmpa_cold_workflow_seconds": "oe cold workflow",
+    "rdkit_seconds": "rdkit s",
+    "rdkit_cold_seconds": "rdkit cold",
+    "molecule_count": "mols",
+    "oemmpa_pair_count": "oe pairs",
+    "oemmpa_symmetric_pair_count": "oe sym pairs",
+    "oemmpa_transform_count": "oe transforms",
+    "rdkit_pair_count": "rdkit pairs",
+    "rdkit_fragment_count": "rdkit frags",
+    "common_molecule_pairs": "common mol",
+    "common_chemistry_pairs": "common chem",
+    "oemmpa_only": "oe only",
+    "oemmpa_hydrogen_expansion_only": "oe H-only",
+    "rdkit_only": "rdkit only",
+}
 
 _NUMERIC_RIGHT_ALIGN = {
     "seconds",
     "wall_seconds",
     "total_seconds",
-    "oemmpa_seconds",
+    "oemmpa_pair_seconds",
+    "oemmpa_workflow_seconds",
+    "oemmpa_cold_pair_seconds",
+    "oemmpa_cold_workflow_seconds",
     "rdkit_seconds",
+    "rdkit_cold_seconds",
     "jobs_per_second",
     "jobs_completed",
     "workers",
@@ -158,12 +200,14 @@ _NUMERIC_RIGHT_ALIGN = {
     "detail_rule_rows",
     "detail_pair_rows",
     "oemmpa_pair_count",
+    "oemmpa_symmetric_pair_count",
     "oemmpa_transform_count",
     "rdkit_pair_count",
     "rdkit_fragment_count",
     "common_molecule_pairs",
     "common_chemistry_pairs",
     "oemmpa_only",
+    "oemmpa_hydrogen_expansion_only",
     "rdkit_only",
     "output_bytes",
     "database_bytes",
@@ -202,8 +246,15 @@ def _is_zero(value: Any) -> bool:
         return False
 
 
+def _is_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def _ordered_columns(rows: Sequence[Mapping[str, Any]], verbose: bool) -> list[str]:
     present: set[str] = set().union(*({str(k) for k in row} for row in rows))
+    benchmarks = {str(row.get("benchmark", "")) for row in rows}
     present.discard("benchmark")
     datasets = {str(row.get("dataset", "")) for row in rows}
     if len(datasets) == 1:
@@ -218,9 +269,17 @@ def _ordered_columns(rows: Sequence[Mapping[str, Any]], verbose: bool) -> list[s
             continue
         if all(not str(row.get(column, "")).strip() for row in rows):
             present.discard(column)
-    if not verbose:
-        for column in ("stdout_lines",):
+    for column in _HIDE_WHEN_TRUE:
+        if column not in present:
+            continue
+        if all(_is_truthy(row.get(column)) for row in rows):
             present.discard(column)
+    if not verbose:
+        for column in _VERBOSE_ONLY_COLUMNS:
+            present.discard(column)
+        if benchmarks == {"rdkit_report"}:
+            for column in _RDKIT_DEFAULT_VERBOSE_ONLY_COLUMNS:
+                present.discard(column)
 
     ordered: list[str] = []
     for column in _IDENTIFIER_COLUMNS + _KEY_METRIC_COLUMNS + _VOLUME_COLUMNS + _NOISE_COLUMNS:
@@ -261,7 +320,7 @@ def render_benchmark_table(
     table = Table(title=benchmark, caption=caption, show_lines=False, expand=False)
     for column in columns:
         justify: Literal["left", "right"] = "right" if column in _NUMERIC_RIGHT_ALIGN else "left"
-        table.add_column(column, justify=justify, overflow="fold")
+        table.add_column(_COLUMN_LABELS.get(column, column), justify=justify, overflow="fold")
     for row in rows:
         table.add_row(*(_format_cell(column, row.get(column, "")) for column in columns))
     return table

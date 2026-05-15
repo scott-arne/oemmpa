@@ -153,6 +153,48 @@ def test_render_benchmark_table_shows_stderr_when_any_nonempty():
     assert "oops" in text
 
 
+def test_render_benchmark_table_compacts_rdkit_report_columns():
+    rows = [
+        {
+            "benchmark": "rdkit_report",
+            "dataset": "rdkit_reference.smi",
+            "molecule_count": 5,
+            "oemmpa_pair_count": 12,
+            "oemmpa_symmetric_pair_count": 24,
+            "oemmpa_transform_count": 24,
+            "oemmpa_pair_seconds": 0.001,
+            "oemmpa_workflow_seconds": 0.002,
+            "oemmpa_cold_pair_seconds": 0.004,
+            "oemmpa_cold_workflow_seconds": 0.005,
+            "rdkit_available": True,
+            "rdkit_pair_count": 11,
+            "rdkit_fragment_count": 7,
+            "rdkit_seconds": 0.003,
+            "rdkit_cold_seconds": 0.006,
+            "common_molecule_pairs": 10,
+            "common_chemistry_pairs": 11,
+            "oemmpa_only": 1,
+            "oemmpa_hydrogen_expansion_only": 1,
+            "rdkit_only": 0,
+        }
+    ]
+
+    default_table = render_benchmark_table("rdkit_report", rows, verbose=False)
+    verbose_table = render_benchmark_table("rdkit_report", rows, verbose=True)
+    default_headers = [column.header for column in default_table.columns]
+    verbose_headers = [column.header for column in verbose_table.columns]
+    default_text = _render(default_table)
+
+    assert "oe pair s" in default_headers
+    assert "oemmpa_pair_seconds" not in default_text
+    assert "oe cold pair" not in default_headers
+    assert "oe cold pair" in verbose_headers
+    assert "mols" not in default_headers
+    assert "rdkit frags" not in default_headers
+    assert "mols" in verbose_headers
+    assert "rdkit frags" in verbose_headers
+
+
 def test_render_report_includes_title_leaderboard_and_table():
     rows = [
         {

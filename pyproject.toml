@@ -28,7 +28,12 @@ dependencies = [
 oemmpa-cli = "oemmpa_cli.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "vrzn>=0.1.0"]
+dev = [
+    "pytest>=7.0",
+    "rich>=13.0",
+    "rich-click>=1.8",
+    "vrzn>=0.1.0",
+]
 docs = [
     "breathe>=4.35",
     "exhale>=0.3",
