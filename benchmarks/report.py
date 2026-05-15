@@ -29,6 +29,7 @@ from rich.table import Table
 
 SEVERITY_GLYPH = {"good": "v", "neutral": ".", "warning": "!"}
 SEVERITY_COLOR = {"good": "green", "neutral": "white", "warning": "yellow"}
+_SEVERITY_RANK = {"good": 0, "neutral": 1, "warning": 2}
 
 # Magnitude tiers: green when current is at least 10% better than the
 # reference, yellow within +/-10%, red when at least 10% worse.
@@ -412,3 +413,125 @@ class Report:
                 f"[dim]{entry.headline}[/dim]",
             )
         return table
+
+
+class ThreadScalingSection(Section):
+    """Parallel-efficiency report for the OEMMPA analyzer.
+
+    Independent OEMMPA analyzer jobs run concurrently. Speedup is
+    throughput vs the 1-worker baseline; efficiency is speedup divided
+    by worker count.
+    """
+
+    title = "Thread scaling"
+    description = (
+        "Independent OEMMPA analyzer jobs run concurrently. Speedup is "
+        "throughput vs the 1-worker baseline; efficiency is speedup divided "
+        "by worker count."
+    )
+
+    def __init__(self, *, rows: list[dict[str, Any]], severity: str, has_warmup_overrun: bool, glance_verdict: str, headline: str) -> None:
+        self.rows = rows
+        self.severity = severity
+        self.has_warmup_overrun = has_warmup_overrun
+        self.glance_verdict = glance_verdict
+        self.headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        scaling = [r for r in rows if r.get("benchmark") == "thread_scaling"]
+        if not scaling:
+            return None
+        # Largest dataset only.
+        target_count = max((_as_float(r.get("molecule_count")) or 0.0) for r in scaling)
+        scaling = [r for r in scaling if (_as_float(r.get("molecule_count")) or 0.0) == target_count]
+        baseline = next((r for r in scaling if int(_as_float(r.get("workers")) or 0) == 1), None)
+        if baseline is None:
+            return None
+        baseline_jps = _as_float(baseline.get("jobs_per_second"))
+        if not baseline_jps:
+            return None
+        worst_severity = "good"
+        worst_efficiency = 1.0
+        worst_workers = 1
+        best_efficiency = 0.0
+        best_workers = 1
+        has_overrun = False
+        rendered: list[dict[str, Any]] = []
+        for row in sorted(scaling, key=lambda r: _as_float(r.get("workers")) or 0.0):
+            workers = int(_as_float(row.get("workers")) or 0)
+            jps = _as_float(row.get("jobs_per_second")) or 0.0
+            speedup = jps / baseline_jps if baseline_jps else 0.0
+            efficiency = speedup / workers if workers else 0.0
+            if efficiency > 1.0:
+                has_overrun = True
+                row_severity = "neutral"
+            elif workers == 1:
+                row_severity = "neutral"
+            else:
+                row_severity, _ = verdict_for_efficiency(efficiency)
+            if workers != 1:
+                if _SEVERITY_RANK[row_severity] > _SEVERITY_RANK[worst_severity]:
+                    worst_severity = row_severity
+                    worst_efficiency = efficiency
+                    worst_workers = workers
+                if efficiency > best_efficiency:
+                    best_efficiency = efficiency
+                    best_workers = workers
+            rendered.append(
+                {
+                    "workers": workers,
+                    "wall_seconds": _as_float(row.get("wall_seconds")),
+                    "speedup": speedup,
+                    "efficiency": efficiency,
+                    "severity": row_severity,
+                }
+            )
+        if worst_severity == "warning":
+            verdict = "low efficiency"
+            headline = f"{worst_efficiency * 100:.0f}% at {worst_workers} workers"
+        elif worst_severity == "good":
+            verdict = "good scaling"
+            headline = f"{best_efficiency * 100:.0f}% at {best_workers} workers"
+        else:
+            verdict = "-"
+            largest_workers = max((row["workers"] for row in rendered), default=1)
+            headline = f"{largest_workers} workers measured"
+        return cls(
+            rows=rendered,
+            severity=worst_severity,
+            has_warmup_overrun=has_overrun,
+            glance_verdict=verdict,
+            headline=headline,
+        )
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("Workers", justify="right")
+        table.add_column("Wall", justify="right")
+        table.add_column("Speedup", justify="right")
+        table.add_column("Efficiency", justify="right")
+        for row in self.rows:
+            color = SEVERITY_COLOR[row["severity"]]
+            table.add_row(
+                str(row["workers"]),
+                format_seconds(row["wall_seconds"]),
+                f"{row['speedup']:.2f}x",
+                f"[{color}]{row['efficiency'] * 100:.0f}%[/{color}]",
+            )
+        console.print(table)
+        if self.has_warmup_overrun:
+            console.print(
+                "[dim]Note: efficiencies above 100% indicate the 1-worker "
+                "baseline includes warmup overhead.[/dim]"
+            )
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=self.glance_verdict,
+            headline=self.headline,
+        )

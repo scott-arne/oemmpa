@@ -9,6 +9,7 @@ from benchmarks.report import (
     Report,
     RdkitSection,
     Section,
+    ThreadScalingSection,
     format_bytes,
     format_seconds,
     verdict_for_count_change,
@@ -335,3 +336,77 @@ class TestRdkitSection:
         assert "OEMMPA (cold)" in text
         assert "RDKit (cold)" in text
         assert "3 hydrogen-only" in text
+
+
+def _scaling_row(*, workers, jobs_per_second, molecule_count=10):
+    return {
+        "benchmark": "thread_scaling",
+        "dataset": "fixture",
+        "workers": workers,
+        "jobs_completed": workers,
+        "wall_seconds": 1.0 / jobs_per_second if jobs_per_second else 0,
+        "jobs_per_second": jobs_per_second,
+        "molecule_count": molecule_count,
+        "pair_count": 0,
+        "transform_count": 0,
+    }
+
+
+class TestThreadScalingSection:
+    def test_low_efficiency_warning(self):
+        rows = [
+            _scaling_row(workers=1, jobs_per_second=100),
+            _scaling_row(workers=4, jobs_per_second=156),
+        ]
+        section = ThreadScalingSection.from_rows(rows)
+        assert section is not None
+        assert section.glance_entry().severity == "warning"
+        assert "39%" in section.glance_entry().headline
+
+    def test_good_scaling(self):
+        rows = [
+            _scaling_row(workers=1, jobs_per_second=100),
+            _scaling_row(workers=2, jobs_per_second=170),
+            _scaling_row(workers=4, jobs_per_second=320),
+        ]
+        section = ThreadScalingSection.from_rows(rows)
+        assert section is not None
+        assert section.glance_entry().severity == "good"
+        assert "good scaling" in section.glance_entry().verdict
+
+    def test_efficiency_above_one_hundred_percent_is_neutral_with_caption(self):
+        rows = [
+            _scaling_row(workers=1, jobs_per_second=100),
+            _scaling_row(workers=2, jobs_per_second=271),
+        ]
+        section = ThreadScalingSection.from_rows(rows)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert "2 workers measured" in entry.headline
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "warmup" in text.lower()
+
+    def test_returns_none_without_baseline_worker_one(self):
+        rows = [_scaling_row(workers=4, jobs_per_second=200)]
+        assert ThreadScalingSection.from_rows(rows) is None
+
+    def test_returns_none_when_no_thread_scaling_rows(self):
+        assert ThreadScalingSection.from_rows([{"benchmark": "storage"}]) is None
+
+    def test_render_lists_all_worker_counts(self):
+        rows = [
+            _scaling_row(workers=1, jobs_per_second=100),
+            _scaling_row(workers=2, jobs_per_second=170),
+            _scaling_row(workers=4, jobs_per_second=156),
+        ]
+        section = ThreadScalingSection.from_rows(rows)
+        assert section is not None
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "Thread scaling" in text
+        for marker in ("1", "2", "4"):
+            assert marker in text
