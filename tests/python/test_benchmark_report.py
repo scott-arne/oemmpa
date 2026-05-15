@@ -8,6 +8,8 @@ from benchmarks.report import (
     GlanceEntry,
     Report,
     Section,
+    format_bytes,
+    format_seconds,
     verdict_for_count_change,
     verdict_for_efficiency,
     verdict_for_seconds_ratio,
@@ -191,3 +193,40 @@ class TestReportRender:
         text = _render_text(report)
         assert "At a glance" not in text
         assert "alpha" in text or "Stub" in text
+
+
+class TestFormatSeconds:
+    def test_sub_second_rendered_in_milliseconds(self):
+        assert format_seconds(0.0012) == "1.2 ms"
+
+    def test_one_second_or_more_rendered_in_seconds(self):
+        assert format_seconds(2.5) == "2.50 s"
+
+    def test_zero_rendered_as_zero_milliseconds(self):
+        assert format_seconds(0.0) == "0.0 ms"
+
+    def test_none_or_missing_renders_dash(self):
+        assert format_seconds(None) == "-"
+
+    def test_exactly_one_second_uses_seconds_format(self) -> None:
+        assert format_seconds(1.0) == "1.00 s"
+
+
+class TestFormatBytes:
+    def test_under_kilobyte_uses_b(self):
+        assert format_bytes(512) == "512 B"
+
+    def test_kilobyte_uses_kb(self):
+        assert format_bytes(2048) == "2.0 kB"
+
+    def test_megabyte_uses_mb(self):
+        assert format_bytes(5_242_880) == "5.0 MB"
+
+    def test_none_renders_dash(self):
+        assert format_bytes(None) == "-"
+
+    def test_exactly_one_kilobyte_uses_kb(self) -> None:
+        assert format_bytes(1024) == "1.0 kB"
+
+    def test_exactly_one_megabyte_uses_mb(self) -> None:
+        assert format_bytes(1024 * 1024) == "1.0 MB"

@@ -109,6 +109,45 @@ class GlanceEntry:
     headline: str
 
 
+def format_seconds(value: float | int | None) -> str:
+    """Format a duration in seconds with a 1ms threshold.
+
+    Sub-second values are shown as ``"<X> ms"`` with one decimal; values at
+    or above one second are shown as ``"<X> s"`` with two decimals.
+
+    :param value: Duration in seconds, or ``None`` / non-numeric for ``"-"``.
+    :returns: Display string.
+    """
+    if value is None:
+        return "-"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if seconds < 1.0:
+        return f"{seconds * 1000:.1f} ms"
+    return f"{seconds:.2f} s"
+
+
+def format_bytes(value: float | int | None) -> str:
+    """Format a byte count in B / kB / MB.
+
+    :param value: Byte count, or ``None`` / non-numeric for ``"-"``.
+    :returns: Display string.
+    """
+    if value is None:
+        return "-"
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if amount < 1024:
+        return f"{amount:.0f} B"
+    if amount < 1024 * 1024:
+        return f"{amount / 1024:.1f} kB"
+    return f"{amount / (1024 * 1024):.1f} MB"
+
+
 class Section:
     """Base class for one benchmark area's data + rendering.
 
