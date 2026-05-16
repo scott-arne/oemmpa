@@ -512,3 +512,23 @@ def test_benchmark_cli_writes_csv_and_prints_leaderboard(tmp_path):
     with output_path.open(newline="") as handle:
         header = next(csv.reader(handle))
     assert header[0] == "benchmark"
+
+
+def test_subcommand_run_omits_at_a_glance():
+    """Subcommand runs render a single section and skip the glance table."""
+    from benchmarks.benchmark_suite import benchmark_cli
+
+    runner = CliRunner()
+    result = runner.invoke(
+        benchmark_cli,
+        [
+            "--no-baseline",
+            "storage",
+            str(DATA_DIR / "mmpa_smiles.smi"),
+            "--repeats",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Storage" in result.output
+    assert "At a glance" not in result.output
