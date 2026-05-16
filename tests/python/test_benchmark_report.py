@@ -651,3 +651,44 @@ class TestBaselineDeltaSection:
             row["metric"] == "jobs_per_second" and row["severity"] == "warning"
             for row in section.moved_rows
         )
+
+
+class TestReportFromRows:
+    def test_orders_sections_canonical_when_all_present(self):
+        rows = [
+            _rdkit_row(),
+            _scaling_row(workers=1, jobs_per_second=100),
+            _scaling_row(workers=2, jobs_per_second=170),
+            _storage_row(),
+            _cli_row(command="predict", seconds=0.2),
+            _cli_row(benchmark="persisted_cli_workflow", command="build", seconds=0.3, database_size_bytes=2048),
+        ]
+        report = Report.from_rows(rows, baseline_rows=None, skipped=[], baseline_path=None)
+        titles = [section.title for section in report.sections]
+        assert titles == [
+            "RDKit comparison",
+            "Thread scaling",
+            "Storage",
+            "CLI workflow",
+            "Persisted CLI",
+        ]
+
+    def test_drops_sections_that_return_none(self):
+        rows = [_storage_row()]
+        report = Report.from_rows(rows, baseline_rows=None, skipped=[], baseline_path=None)
+        assert [s.title for s in report.sections] == ["Storage"]
+
+    def test_includes_baseline_section_when_baseline_rows_present(self):
+        rows = [_cli_row(command="predict", seconds=0.5)]
+        baseline = [_cli_row(command="predict", seconds=0.2)]
+        report = Report.from_rows(rows, baseline_rows=baseline, skipped=[], baseline_path=None)
+        assert "Baseline comparison" in [s.title for s in report.sections]
+
+    def test_baseline_section_appended_last(self) -> None:
+        rows = [
+            _storage_row(),
+            _cli_row(command="predict", seconds=0.5),
+        ]
+        baseline = [_cli_row(command="predict", seconds=0.2)]
+        report = Report.from_rows(rows, baseline_rows=baseline, skipped=[], baseline_path=None)
+        assert report.sections[-1].title == "Baseline comparison"

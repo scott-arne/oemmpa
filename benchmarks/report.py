@@ -17,7 +17,7 @@ consumes already-collected row dictionaries.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -368,6 +368,44 @@ class Report:
     sections: list[Section]
     skipped: list[Mapping[str, Any]]
     baseline_path: Path | None
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: Sequence[Mapping[str, Any]],
+        baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+        skipped: Iterable[Mapping[str, Any]] = (),
+        baseline_path: Path | None = None,
+    ) -> "Report":
+        """Construct a populated report from already-collected rows.
+
+        :param rows: Benchmark rows from the suite producers.
+        :param baseline_rows: Optional baseline rows (enables baseline section).
+        :param skipped: Skipped-benchmark dictionaries.
+        :param baseline_path: Active baseline CSV path, or ``None``.
+        :returns: A :class:`Report` with sections in canonical order.
+        """
+        ordered_classes: list[type[Section]] = [
+            RdkitSection,
+            ThreadScalingSection,
+            StorageSection,
+            CliWorkflowSection,
+            PersistedCliSection,
+            MmpdbSection,
+        ]
+        sections: list[Section] = []
+        for section_cls in ordered_classes:
+            section = section_cls.from_rows(rows)
+            if section is not None:
+                sections.append(section)
+        # BaselineDeltaSection takes extra `baseline_path` arg, so it's called
+        # separately and always appended last.
+        baseline_section = BaselineDeltaSection.from_rows(
+            rows, baseline_rows=baseline_rows, baseline_path=baseline_path
+        )
+        if baseline_section is not None:
+            sections.append(baseline_section)
+        return cls(sections=sections, skipped=list(skipped), baseline_path=baseline_path)
 
     def render(self, console: Console, *, verbose: bool = False) -> None:
         """Render the full report into ``console``.
