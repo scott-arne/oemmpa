@@ -17,13 +17,11 @@ from rich.console import Console
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from benchmarks.analysis import build_signals
     from benchmarks.rdkit_compare import compare, run_oemmpa
-    from benchmarks.rendering import render_report
+    from benchmarks.report import Report
 else:
-    from .analysis import build_signals
     from .rdkit_compare import compare, run_oemmpa
-    from .rendering import render_report
+    from .report import Report
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -895,37 +893,31 @@ def _normalize_benchmark_names(names):
 def _finish_cli(
     rows,
     output=None,
-    report=None,
     skipped=(),
     baseline_path=None,
     verbose=False,
 ):
-    """Write CSV output and render Rich report.
+    """Write CSV output and render the section-oriented Rich report.
 
     :param rows: Benchmark result rows.
     :param output: Optional CSV output path.
-    :param report: Optional text report output path.
-    :param skipped: Skipped benchmark reason dictionaries.
+    :param skipped: Skipped-benchmark reason dictionaries.
     :param baseline_path: Optional baseline CSV path for delta analysis.
-    :param verbose: Show verbose output.
+    :param verbose: Show extra detail rows where supported.
     """
     rows = list(rows)
     skipped = list(skipped)
     if output is not None:
         write_csv(_csv_output_rows(rows, skipped), output)
     baseline_rows = _load_baseline_rows(baseline_path)
-    signals = build_signals(rows, baseline_rows=baseline_rows, skipped=skipped)
-    console = Console(record=bool(report))
-    render_report(
+    report = Report.from_rows(
         rows,
-        signals,
-        console=console,
+        baseline_rows=baseline_rows,
         skipped=skipped,
         baseline_path=baseline_path,
-        verbose=verbose,
     )
-    if report is not None:
-        Path(report).write_text(console.export_text(), encoding="utf-8")
+    console = Console()
+    report.render(console, verbose=verbose)
 
 
 def _csv_output_rows(rows, skipped):
@@ -1003,11 +995,6 @@ def _resolve_baseline(baseline, no_baseline):
     help="Optional CSV output path.",
 )
 @click.option(
-    "--report",
-    type=click.Path(path_type=Path),
-    help="Optional text report output path.",
-)
-@click.option(
     "--verbose",
     "-v",
     is_flag=True,
@@ -1034,7 +1021,6 @@ def benchmark_cli(
     baseline,
     no_baseline,
     output,
-    report,
     verbose,
     repeats,
     mmpdb_root,
@@ -1046,7 +1032,6 @@ def benchmark_cli(
         {
             "baseline": resolved_baseline,
             "output": output,
-            "report": report,
             "verbose": verbose,
             "repeats": repeats,
             "mmpdb_root": mmpdb_root,
@@ -1062,7 +1047,6 @@ def benchmark_cli(
     _finish_cli(
         rows,
         output=output,
-        report=report,
         skipped=skipped,
         baseline_path=resolved_baseline,
         verbose=verbose,
@@ -1082,7 +1066,6 @@ def rdkit_report_command(ctx, smiles, output, repeats):
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1108,7 +1091,6 @@ def thread_scaling_command(ctx, smiles, workers, output, repeats):
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1137,7 +1119,6 @@ def storage_command(ctx, smiles, properties, property_columns, output, repeats):
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1172,7 +1153,6 @@ def cli_workflow_command(ctx, smiles, properties, property_name, source_smiles, 
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1209,7 +1189,6 @@ def persisted_cli_workflow_command(
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1290,7 +1269,6 @@ def mmpdb_workflow_command(
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
@@ -1316,7 +1294,6 @@ def regression_check_command(ctx, baseline, current, max_seconds_ratio, output, 
     _finish_cli(
         rows,
         output=output,
-        report=ctx.obj["report"],
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )

@@ -506,7 +506,7 @@ def test_benchmark_cli_writes_csv_and_prints_leaderboard(tmp_path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "Benchmark Leaderboard" in result.output
+    assert "At a glance" in result.output
     assert "Baseline:" in result.output
     assert output_path.exists()
     with output_path.open(newline="") as handle:
