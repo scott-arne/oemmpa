@@ -14,22 +14,25 @@ python benchmarks/benchmark_suite.py
 Running the script directly executes the fixture-sized benchmark suite:
 RDKit comparison, thread scaling, storage loading, stateless CLI workflows,
 persisted CLI workflows, and the MMPDB baseline when a local MMPDB checkout
-is available. The report opens with a severity-ranked **leaderboard** that
-orders findings by `regression -> warning -> good -> neutral -> info` and by
-magnitude within each bucket. Tightened per-benchmark tables follow; columns
-that contain no information (constant dataset, all-zero return codes, empty
-stderr) are dropped automatically.
+is available. The report is organized as one section per benchmark — title
+rule, short description, focused table — and ends with an **At a glance**
+summary that lists the verdict and headline number for each section.
+
+Verdict colors use a magnitude tier: green when the current run is at least
+10% better than its reference, yellow within +/-10%, red when 10% or more
+worse. The same threshold drives the RDKit comparison, MMPDB comparison, and
+the optional baseline-CSV delta.
 
 Flags:
 
 - `--benchmarks NAME,NAME,...` - run a subset of the default suite.
-- `--baseline PATH` - compare against a baseline CSV and fold regressions,
-  improvements, and count deltas into the leaderboard.
+- `--baseline PATH` - compare against a baseline CSV and add a "Baseline
+  comparison" section listing only the metrics outside the +/-10% band.
 - `--no-baseline` - disable baseline auto-detect. Without either flag the
-  suite uses `benchmarks/baseline.csv` if it exists.
-- `--output PATH`, `--report PATH` - write CSV and rich-text report artifacts.
-- `--verbose` / `-v` - show signal detail text under each leaderboard row and
-  include noise columns (`stdout_lines`) in benchmark tables.
+  suite uses `benchmarks/baseline.csv` when it exists.
+- `--output PATH` - write benchmark rows to a CSV.
+- `--verbose` / `-v` - include extra detail rows where the section supports
+  them (cold timings on RDKit, hydrogen-only chemistry-pair counts).
 
 Example:
 
@@ -38,13 +41,12 @@ python benchmarks/benchmark_suite.py \
   --benchmarks thread-scaling,storage,persisted-cli-workflow \
   --repeats 1 \
   --baseline benchmarks/baseline.csv \
-  --output benchmark-suite.csv \
-  --report benchmark-suite.txt
+  --output benchmark-suite.csv
 ```
 
 The same benchmarks remain available as subcommands when you need custom
 input files or command-specific options; shared flags (`--baseline`,
-`--output`, `--report`, `--verbose`, `--repeats`) are inherited from the
+`--output`, `--verbose`, `--repeats`) are inherited from the
 top-level group.
 
 ## Reference Pair Baseline
@@ -169,10 +171,11 @@ and size columns ending in `count`, `_rows`, or `_bytes` are reported as
 `changed` when the value differs from the baseline.
 
 The `--max-seconds-ratio` flag controls the timing tolerance used by the
-`regression-check` subcommand. The suite's `--baseline` mode uses the same
-direction of comparison via the rendering layer's leaderboard, with the
-default thresholds defined in `benchmarks/analysis.py` (`1.25x` timing
-regression, `0.8x` improvement, count/byte deltas always flagged).
+`regression-check` subcommand. The suite's `--baseline` mode uses a tighter
++/-10% magnitude tier (defined as `TIER_BETTER` and `TIER_WORSE` in
+`benchmarks/report.py`) and surfaces drift through the **Baseline
+comparison** section. `regression-check` retains the looser 1.25x threshold
+for explicit pass/fail comparisons of saved CSVs.
 
 ## Regression Policy
 
