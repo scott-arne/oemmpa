@@ -5,7 +5,9 @@ from __future__ import annotations
 from rich.console import Console
 
 from benchmarks.report import (
+    CliWorkflowSection,
     GlanceEntry,
+    PersistedCliSection,
     Report,
     RdkitSection,
     Section,
@@ -453,3 +455,70 @@ class TestStorageSection:
         text = console.export_text()
         assert "Storage" in text
         assert "Molecules" in text
+
+
+def _cli_row(*, command, seconds=0.1, returncode=0, output_rows=10, benchmark="cli_workflow", database_size_bytes=None):
+    row = {
+        "benchmark": benchmark,
+        "dataset": "fixture",
+        "command": command,
+        "seconds": seconds,
+        "returncode": returncode,
+        "output_rows": output_rows,
+        "stdout_lines": 0,
+        "stderr": "",
+    }
+    if database_size_bytes is not None:
+        row["database_size_bytes"] = database_size_bytes
+    return row
+
+
+class TestCliWorkflowSection:
+    def test_all_passing_is_neutral_with_slowest_headline(self):
+        rows = [
+            _cli_row(command="refresh-stats", seconds=0.1),
+            _cli_row(command="predict", seconds=0.4),
+            _cli_row(command="generate", seconds=0.3),
+        ]
+        section = CliWorkflowSection.from_rows(rows)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert "predict" in entry.headline
+
+    def test_failing_command_is_warning(self):
+        rows = [
+            _cli_row(command="refresh-stats", seconds=0.1, returncode=0),
+            _cli_row(command="predict", seconds=0.4, returncode=2),
+        ]
+        section = CliWorkflowSection.from_rows(rows)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "warning"
+        assert "predict" in entry.headline
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "(failed)" in text
+
+    def test_returns_none_without_cli_rows(self):
+        assert CliWorkflowSection.from_rows([{"benchmark": "storage"}]) is None
+
+
+class TestPersistedCliSection:
+    def test_includes_database_column(self):
+        rows = [
+            _cli_row(benchmark="persisted_cli_workflow", command="build", seconds=0.2, database_size_bytes=2048),
+            _cli_row(benchmark="persisted_cli_workflow", command="list", seconds=0.05, database_size_bytes=2048),
+        ]
+        section = PersistedCliSection.from_rows(rows)
+        assert section is not None
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "Persisted CLI" in text
+        assert "build" in text
+        assert "Database" in text
+
+    def test_returns_none_without_persisted_rows(self):
+        assert PersistedCliSection.from_rows([{"benchmark": "cli_workflow"}]) is None

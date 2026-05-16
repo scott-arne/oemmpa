@@ -596,3 +596,109 @@ class StorageSection(Section):
         else:
             headline = f"{format_seconds(self.total_seconds)} for {self.molecule_count} molecules"
         return GlanceEntry(name=self.title, severity="neutral", verdict="-", headline=headline)
+
+
+class _CliSectionBase(Section):
+    """Shared rendering for CLI command tables.
+
+    Subclasses set ``benchmark_name``, ``title``, ``description``, and
+    ``include_database_column``.
+    """
+
+    benchmark_name: str = ""
+    include_database_column: bool = False
+
+    def __init__(self, *, rows: list[dict[str, Any]], severity: str, glance_verdict: str, headline: str) -> None:
+        self.rows = rows
+        self.severity = severity
+        self.glance_verdict = glance_verdict
+        self.headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        cli_rows = [r for r in rows if r.get("benchmark") == cls.benchmark_name]
+        if not cli_rows:
+            return None
+        rendered: list[dict[str, Any]] = []
+        failing: list[str] = []
+        slowest_command = ""
+        slowest_seconds = -1.0
+        for row in cli_rows:
+            command = str(row.get("command", ""))
+            seconds = _as_float(row.get("seconds"))
+            returncode = int(_as_float(row.get("returncode")) or 0)
+            output_rows = int(_as_float(row.get("output_rows")) or 0)
+            database_bytes = _as_float(row.get("database_size_bytes")) if cls.include_database_column else None
+            rendered.append(
+                {
+                    "command": command,
+                    "seconds": seconds,
+                    "returncode": returncode,
+                    "output_rows": output_rows,
+                    "database_bytes": database_bytes,
+                }
+            )
+            if returncode != 0:
+                failing.append(command)
+            if seconds is not None and seconds > slowest_seconds:
+                slowest_seconds = seconds
+                slowest_command = command
+        if failing:
+            severity = "warning"
+            verdict = "failed"
+            headline = f"failed: {', '.join(failing)}"
+        else:
+            severity = "neutral"
+            verdict = "-"
+            headline = f"slowest: {slowest_command} at {format_seconds(slowest_seconds if slowest_seconds >= 0 else None)}"
+        return cls(rows=rendered, severity=severity, glance_verdict=verdict, headline=headline)
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("Command")
+        table.add_column("Wall", justify="right")
+        table.add_column("Output rows", justify="right")
+        if self.include_database_column:
+            table.add_column("Database", justify="right")
+        for row in self.rows:
+            wall = format_seconds(row["seconds"])
+            if row["returncode"] != 0:
+                wall = f"[yellow]{wall} (failed)[/yellow]"
+            cells = [row["command"], wall, str(row["output_rows"])]
+            if self.include_database_column:
+                cells.append(format_bytes(row["database_bytes"]))
+            table.add_row(*cells)
+        console.print(table)
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=self.glance_verdict,
+            headline=self.headline,
+        )
+
+
+class CliWorkflowSection(_CliSectionBase):
+    """Stateless ``oemmpa-cli`` end-to-end workflow."""
+
+    benchmark_name = "cli_workflow"
+    include_database_column = False
+    title = "CLI workflow"
+    description = (
+        "Stateless `oemmpa-cli` commands run end-to-end on the fixture dataset."
+    )
+
+
+class PersistedCliSection(_CliSectionBase):
+    """Stateful persisted-database ``oemmpa-cli`` workflow."""
+
+    benchmark_name = "persisted_cli_workflow"
+    include_database_column = True
+    title = "Persisted CLI"
+    description = (
+        "Stateful `oemmpa-cli` workflow building, listing, predicting, and "
+        "generating against a persisted DuckDB database."
+    )
