@@ -702,3 +702,98 @@ class PersistedCliSection(_CliSectionBase):
         "Stateful `oemmpa-cli` workflow building, listing, predicting, and "
         "generating against a persisted DuckDB database."
     )
+
+
+class MmpdbSection(Section):
+    """OEMMPA-vs-MMPDB per-command timing comparison."""
+
+    title = "MMPDB baseline"
+    description = (
+        "Upstream MMPDB workflows on the same fixture, used as a reference "
+        "for the persisted CLI."
+    )
+
+    def __init__(self, *, rows: list[dict[str, Any]], severity: str, glance_verdict: str, headline: str) -> None:
+        self.rows = rows
+        self.severity = severity
+        self.glance_verdict = glance_verdict
+        self.headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        mmpdb = [
+            r for r in rows
+            if r.get("benchmark") == "mmpdb_workflow" and _as_truthy(r.get("available"))
+        ]
+        if not mmpdb:
+            return None
+        oemmpa_by_command = {
+            r.get("command"): r for r in rows if r.get("benchmark") == "persisted_cli_workflow"
+        }
+        worst_severity = "good"
+        worst_label = ""
+        worst_command = ""
+        rendered: list[dict[str, Any]] = []
+        for row in mmpdb:
+            command = str(row.get("command", ""))
+            mmpdb_seconds = _as_float(row.get("seconds"))
+            oemmpa_seconds = _as_float(oemmpa_by_command.get(command, {}).get("seconds"))
+            if mmpdb_seconds is None or oemmpa_seconds is None or mmpdb_seconds == 0:
+                severity = "neutral"
+                verdict_label = "-"
+            else:
+                severity, verdict_label = verdict_for_seconds_ratio(oemmpa_seconds / mmpdb_seconds)
+            rendered.append(
+                {
+                    "command": command,
+                    "oemmpa_seconds": oemmpa_seconds,
+                    "mmpdb_seconds": mmpdb_seconds,
+                    "severity": severity,
+                    "verdict_label": verdict_label,
+                }
+            )
+            if _SEVERITY_RANK[severity] > _SEVERITY_RANK[worst_severity]:
+                worst_severity = severity
+                worst_label = verdict_label
+                worst_command = command
+        if worst_severity == "warning":
+            verdict = "slower"
+            headline = f"{worst_label} on {worst_command}"
+        elif worst_severity == "good":
+            verdict = "faster"
+            best = max(
+                (r for r in rendered if r["severity"] == "good"),
+                key=lambda r: 1 / r["oemmpa_seconds"] if r["oemmpa_seconds"] else 0,
+                default=None,
+            )
+            headline = f"{best['verdict_label']} on {best['command']}" if best else "-"
+        else:
+            verdict = "parity"
+            headline = "within +/-10% of MMPDB"
+        return cls(rows=rendered, severity=worst_severity, glance_verdict=verdict, headline=headline)
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("Command")
+        table.add_column("OEMMPA", justify="right")
+        table.add_column("MMPDB", justify="right")
+        table.add_column("vs MMPDB")
+        for row in self.rows:
+            color = SEVERITY_COLOR[row["severity"]]
+            table.add_row(
+                row["command"],
+                format_seconds(row["oemmpa_seconds"]),
+                format_seconds(row["mmpdb_seconds"]),
+                f"[{color}]{row['verdict_label']}[/{color}]",
+            )
+        console.print(table)
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=self.glance_verdict,
+            headline=self.headline,
+        )

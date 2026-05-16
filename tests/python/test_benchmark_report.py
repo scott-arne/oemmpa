@@ -7,6 +7,7 @@ from rich.console import Console
 from benchmarks.report import (
     CliWorkflowSection,
     GlanceEntry,
+    MmpdbSection,
     PersistedCliSection,
     Report,
     RdkitSection,
@@ -522,3 +523,71 @@ class TestPersistedCliSection:
 
     def test_returns_none_without_persisted_rows(self):
         assert PersistedCliSection.from_rows([{"benchmark": "cli_workflow"}]) is None
+
+
+def _mmpdb_row(*, command, seconds, available=True):
+    return {
+        "benchmark": "mmpdb_workflow",
+        "dataset": "fixture",
+        "command": command,
+        "seconds": seconds,
+        "returncode": 0,
+        "output_rows": 0,
+        "available": available,
+    }
+
+
+class TestMmpdbSection:
+    def test_returns_none_without_mmpdb_rows(self):
+        assert MmpdbSection.from_rows([{"benchmark": "storage"}]) is None
+
+    def test_returns_none_when_unavailable(self):
+        assert MmpdbSection.from_rows([_mmpdb_row(command="list", seconds=0.1, available=False)]) is None
+
+    def test_faster_than_persisted_is_good(self):
+        rows = [
+            _cli_row(benchmark="persisted_cli_workflow", command="list", seconds=0.5),
+            _mmpdb_row(command="list", seconds=2.0),
+        ]
+        section = MmpdbSection.from_rows(rows)
+        assert section is not None
+        assert section.glance_entry().severity == "good"
+
+    def test_slower_than_persisted_is_warning(self):
+        rows = [
+            _cli_row(benchmark="persisted_cli_workflow", command="list", seconds=2.0),
+            _mmpdb_row(command="list", seconds=0.5),
+        ]
+        section = MmpdbSection.from_rows(rows)
+        assert section is not None
+        assert section.glance_entry().severity == "warning"
+
+    def test_parity_when_all_rows_neutral(self) -> None:
+        rows = [
+            _cli_row(benchmark="persisted_cli_workflow", command="list", seconds=1.0),
+            _mmpdb_row(command="list", seconds=1.0),
+        ]
+        section = MmpdbSection.from_rows(rows)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert entry.verdict == "parity"
+        assert "MMPDB" in entry.headline
+
+    def test_mmpdb_command_without_persisted_match_is_neutral(self) -> None:
+        rows = [_mmpdb_row(command="orphan", seconds=1.0)]
+        section = MmpdbSection.from_rows(rows)
+        assert section is not None
+        assert section.rows[0]["command"] == "orphan"
+        assert section.rows[0]["oemmpa_seconds"] is None
+        assert section.rows[0]["severity"] == "neutral"
+
+    def test_zero_mmpdb_seconds_is_neutral(self) -> None:
+        rows = [
+            _cli_row(benchmark="persisted_cli_workflow", command="fast", seconds=0.1),
+            _mmpdb_row(command="fast", seconds=0.0),
+        ]
+        section = MmpdbSection.from_rows(rows)
+        assert section is not None
+        assert section.rows[0]["severity"] == "neutral"
+        assert section.rows[0]["verdict_label"] == "-"
