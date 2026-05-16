@@ -797,3 +797,186 @@ class MmpdbSection(Section):
             verdict=self.glance_verdict,
             headline=self.headline,
         )
+
+
+def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("benchmark", "")),
+        str(row.get("dataset", "")),
+        str(row.get("command", "")),
+        str(row.get("workers", "")),
+    )
+
+
+def _is_seconds_metric(column: str) -> bool:
+    return column.endswith("seconds")
+
+
+def _is_throughput_metric(column: str) -> bool:
+    return column.endswith("per_second")
+
+
+def _is_count_metric(column: str) -> bool:
+    return (
+        column.endswith("_count")
+        or column.endswith("_rows")
+        or column.endswith("_bytes")
+    )
+
+
+class BaselineDeltaSection(Section):
+    """Compares this run's metrics against a saved baseline CSV."""
+
+    title = "Baseline comparison"
+
+    def __init__(
+        self,
+        *,
+        moved_rows: list[dict[str, Any]],
+        missing_keys: list[tuple[str, ...]],
+        severity: str,
+        baseline_path: Path | None,
+    ) -> None:
+        self.moved_rows = moved_rows
+        self.missing_keys = missing_keys
+        self.severity = severity
+        self.baseline_path = baseline_path
+
+    @property
+    def description(self) -> str:  # type: ignore[override]
+        if self.baseline_path is None:
+            return "Compares this run's timing and counts against the saved baseline."
+        return f"Compares this run's timing and counts against `{self.baseline_path.name}`."
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None, baseline_path=None):
+        """Construct a populated section from current and baseline rows.
+
+        Joins on ``(benchmark, dataset, command, workers)``. Each baseline
+        metric column is classified by name (seconds / throughput / count)
+        and compared via the corresponding verdict helper. Neutral rows are
+        omitted from the rendered table; baseline rows with no matching
+        current row become a synthesized ``"missing"`` warning.
+
+        :param rows: Current benchmark rows.
+        :param baseline_rows: Baseline rows; when ``None`` this section is
+                              skipped (returns ``None``).
+        :param baseline_path: Active baseline CSV path, used only by the
+                              section's dynamic description.
+        :returns: A populated :class:`BaselineDeltaSection`, or ``None``
+                  when ``baseline_rows`` is ``None``.
+        """
+        if baseline_rows is None:
+            return None
+        current_by_key = {_baseline_join_key(r): r for r in rows}
+        moved_rows: list[dict[str, Any]] = []
+        missing_keys: list[tuple[str, ...]] = []
+        worst = "neutral"
+        for baseline_row in baseline_rows:
+            key = _baseline_join_key(baseline_row)
+            current_row = current_by_key.get(key)
+            if current_row is None:
+                missing_keys.append(key)
+                worst = _worst(worst, "warning")
+                moved_rows.append(
+                    {
+                        "where": _format_where(key),
+                        "metric": "(row)",
+                        "baseline": "present",
+                        "current": "missing",
+                        "severity": "warning",
+                        "verdict_label": "missing",
+                    }
+                )
+                continue
+            for column, baseline_value in baseline_row.items():
+                if column in {"benchmark", "dataset", "command", "workers", "status", "reason"}:
+                    continue
+                current_value = current_row.get(column)
+                baseline_num = _as_float(baseline_value)
+                current_num = _as_float(current_value)
+                if baseline_num is None or current_num is None:
+                    continue
+                if _is_seconds_metric(column) and baseline_num > 0:
+                    severity, label = verdict_for_seconds_ratio(current_num / baseline_num)
+                elif _is_throughput_metric(column) and current_num > 0:
+                    severity, label = verdict_for_seconds_ratio(baseline_num / current_num)
+                elif _is_count_metric(column):
+                    severity, label = verdict_for_count_change(baseline_num, current_num)
+                else:
+                    continue
+                if severity == "neutral":
+                    continue
+                worst = _worst(worst, severity)
+                moved_rows.append(
+                    {
+                        "where": f"{_format_where(key)} / {column}",
+                        "metric": column,
+                        "baseline": _format_metric(column, baseline_num),
+                        "current": _format_metric(column, current_num),
+                        "severity": severity,
+                        "verdict_label": label,
+                    }
+                )
+        return cls(
+            moved_rows=moved_rows,
+            missing_keys=missing_keys,
+            severity=worst,
+            baseline_path=baseline_path,
+        )
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        if not self.moved_rows:
+            console.print("[dim]All metrics within +/-10% of baseline.[/dim]")
+            return
+        table = Table()
+        table.add_column("Where")
+        table.add_column("Baseline")
+        table.add_column("Current")
+        table.add_column("Verdict")
+        for row in self.moved_rows:
+            color = SEVERITY_COLOR[row["severity"]]
+            table.add_row(
+                row["where"],
+                str(row["baseline"]),
+                str(row["current"]),
+                f"[{color}]{row['verdict_label']}[/{color}]",
+            )
+        console.print(table)
+
+    def glance_entry(self):
+        if not self.moved_rows:
+            return GlanceEntry(
+                name=self.title,
+                severity="neutral",
+                verdict="stable",
+                headline="all within +/-10%",
+            )
+        moved = sum(1 for row in self.moved_rows if row["severity"] == "warning")
+        return GlanceEntry(
+            name=self.title,
+            severity="warning",
+            verdict="drift",
+            headline=f"{moved} metrics outside +/-10%",
+        )
+
+
+def _worst(current: str, candidate: str) -> str:
+    return current if _SEVERITY_RANK[current] >= _SEVERITY_RANK[candidate] else candidate
+
+
+def _format_where(key: tuple[str, str, str, str]) -> str:
+    parts = [p for p in key if p]
+    return " / ".join(parts) if parts else "(unknown)"
+
+
+def _format_metric(column: str, value: float) -> str:
+    if _is_seconds_metric(column):
+        return format_seconds(value)
+    if column.endswith("_bytes"):
+        return format_bytes(value)
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"

@@ -591,3 +591,63 @@ class TestMmpdbSection:
         assert section is not None
         assert section.rows[0]["severity"] == "neutral"
         assert section.rows[0]["verdict_label"] == "-"
+
+
+class TestBaselineDeltaSection:
+    def test_returns_none_when_baseline_rows_none(self):
+        from benchmarks.report import BaselineDeltaSection
+        assert BaselineDeltaSection.from_rows([_storage_row()], baseline_rows=None) is None
+
+    def test_seconds_2_5x_slower_is_warning(self):
+        from benchmarks.report import BaselineDeltaSection
+        baseline = [
+            _cli_row(command="predict", seconds=0.2),
+        ]
+        current = [
+            _cli_row(command="predict", seconds=0.5),
+        ]
+        section = BaselineDeltaSection.from_rows(current, baseline_rows=baseline)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "warning"
+        assert entry.verdict == "drift"
+        assert "outside" in entry.headline or "metric" in entry.headline
+
+    def test_all_within_ten_percent_is_neutral(self):
+        from benchmarks.report import BaselineDeltaSection
+        baseline = [_cli_row(command="predict", seconds=0.20, output_rows=10)]
+        current = [_cli_row(command="predict", seconds=0.21, output_rows=10)]
+        section = BaselineDeltaSection.from_rows(current, baseline_rows=baseline)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "neutral"
+        assert entry.verdict == "stable"
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "within" in text.lower()
+
+    def test_missing_current_row_flagged_as_warning(self):
+        from benchmarks.report import BaselineDeltaSection
+        baseline = [_cli_row(command="generate", seconds=0.3, output_rows=10)]
+        current = [_cli_row(command="predict", seconds=0.2)]
+        section = BaselineDeltaSection.from_rows(current, baseline_rows=baseline)
+        assert section is not None
+        console = Console(record=True, color_system=None, width=120)
+        section.render(console)
+        text = console.export_text()
+        assert "missing" in text.lower()
+        assert section.glance_entry().severity == "warning"
+
+    def test_throughput_drop_is_warning(self) -> None:
+        from benchmarks.report import BaselineDeltaSection
+        baseline = [_scaling_row(workers=2, jobs_per_second=200)]
+        current = [_scaling_row(workers=2, jobs_per_second=100)]
+        section = BaselineDeltaSection.from_rows(current, baseline_rows=baseline)
+        assert section is not None
+        entry = section.glance_entry()
+        assert entry.severity == "warning"
+        assert any(
+            row["metric"] == "jobs_per_second" and row["severity"] == "warning"
+            for row in section.moved_rows
+        )
