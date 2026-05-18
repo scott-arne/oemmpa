@@ -47,3 +47,16 @@ ctest --test-dir build-debug --output-on-failure
 /Users/johnss51/Applications/miniforge3/envs/main/bin/python -m pytest tests/python
 git diff --check
 ```
+
+## Persistent Fragment Storage
+
+OEMMPA currently persists the post-analysis model: compounds, properties,
+rules, rule environments, constants, pairs, and rule-environment statistics.
+Raw fragmentation rows remain analysis-stage artifacts. This keeps the database
+focused on query, prediction, and reporting workflows that are already exposed
+through the Python and CLI surfaces.
+
+Reopen fragment persistence only when a concrete workflow needs queryable raw
+fragment rows, such as indexing reuse, fragment explainability, audit trails,
+debugging, or CLI reports that cannot be served from the existing
+pair/rule/environment tables.

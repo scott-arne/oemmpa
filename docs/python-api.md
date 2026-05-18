@@ -514,6 +514,11 @@ table layout follows the main MMPDB matched-pair database, including
 `environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
 Raw fragmentations are not exposed as a stable database table yet.
 
+The storage API does not expose raw fragment tables. `DuckDBStore` is intended
+for persisted analysis results and rule-environment statistics. Fragment-cache
+reuse remains deferred until a workflow requires queryable pre-pair
+fragmentation records.
+
 ```python
 store.load_molecules_from_file("molecules.smi")
 store.load_properties_from_csv("properties.csv", id_column="id")
