@@ -1,5 +1,6 @@
 """Rule-environment statistics helpers."""
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from dataclasses import fields
 import re
@@ -43,6 +44,7 @@ _SCORE_ALIASES = {
     "-min-radius": "smallest-radius",
 }
 _AGGREGATIONS = {"avg", "mean", "median"}
+_SMILES_MOL_CACHE_MAXSIZE = 4096
 
 
 def _optional(raw_row, has_name, getter_name):
@@ -66,6 +68,58 @@ def _normalize_aggregation(aggregation):
     return normalized
 
 
+def _compile_smarts(smarts):
+    from openeye import oechem  # type: ignore[import-untyped]
+
+    smarts = str(smarts)
+    subsearch = oechem.OESubSearch()
+    if not subsearch.Init(smarts):
+        raise ValueError(f"invalid SMARTS: {smarts}")
+    return subsearch
+
+
+def _parse_smiles_mol(smiles):
+    from openeye import oechem  # type: ignore[import-untyped]
+
+    mol = oechem.OEGraphMol()
+    if not oechem.OESmilesToMol(mol, str(smiles)):
+        return None
+    return mol
+
+
+class _ParsedSmilesCache:
+    """Small LRU cache for per-filter-call variable molecule parsing."""
+
+    def __init__(self, maxsize=_SMILES_MOL_CACHE_MAXSIZE):
+        self._maxsize = max(1, int(maxsize))
+        self._mols = OrderedDict()
+
+    def __len__(self):
+        return len(self._mols)
+
+    def get(self, smiles):
+        smiles = str(smiles)
+        try:
+            mol = self._mols.pop(smiles)
+        except KeyError:
+            mol = _parse_smiles_mol(smiles)
+        self._mols[smiles] = mol
+        while len(self._mols) > self._maxsize:
+            self._mols.popitem(last=False)
+        return mol
+
+
+def _smiles_matches_smarts(smiles, subsearch, mol_cache=None):
+    mol = (
+        _parse_smiles_mol(smiles)
+        if mol_cache is None
+        else mol_cache.get(smiles)
+    )
+    if mol is None:
+        return False
+    return bool(subsearch.SingleMatch(mol))
+
+
 @dataclass(frozen=True)
 class RuleSelectionOptions:
     """Structured filters for rule-environment queries.
@@ -74,7 +128,7 @@ class RuleSelectionOptions:
     :param min_radius: Minimum environment radius, inclusive.
     :param max_radius: Maximum environment radius, inclusive.
     :param min_pairs: Minimum supporting pair count.
-    :param substructure: Optional source/target variable text filter.
+    :param substructure: Optional source/target variable SMARTS filter.
     :param substructure_smarts: Alias for ``substructure`` kept for the public
         query API shape.
     :param where: Optional safe where expression over ``count`` or ``radius``.
@@ -316,11 +370,13 @@ class RuleEnvironmentStatisticsCollection(list):
         rows = [row for row in rows if row.radius <= options.max_radius]
         rows = [row for row in rows if row.count >= options.min_pairs]
         if options.substructure is not None:
+            subsearch = _compile_smarts(options.substructure)
+            mol_cache = _ParsedSmilesCache()
             rows = [
                 row
                 for row in rows
-                if options.substructure in row.from_smiles
-                or options.substructure in row.to_smiles
+                if _smiles_matches_smarts(row.from_smiles, subsearch, mol_cache)
+                or _smiles_matches_smarts(row.to_smiles, subsearch, mol_cache)
             ]
         if options.where is not None:
             rows = _filter_where(rows, options.where)
@@ -695,7 +751,7 @@ def predict_rule_environment_delta(
     :param min_radius: Minimum environment radius to consider.
     :param max_radius: Maximum environment radius to consider.
     :param min_pairs: Minimum supporting pair count.
-    :param substructure: Optional source/target variable text filter.
+    :param substructure: Optional source/target variable SMARTS filter.
     :param where: Optional safe where expression.
     :param score: Row selection mode.
     :param rule_view: Rule identity view, either ``"mmpdb-compatible"`` or

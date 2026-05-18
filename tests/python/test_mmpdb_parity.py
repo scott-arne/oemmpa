@@ -197,13 +197,13 @@ def _mmpdb_weld_smiles(constant_smiles, target_variable_smiles):
     return result.stdout.strip()
 
 
-def _run_oemmpa_cli(*args):
+def _run_oemmpa(*args):
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [str(PYTHON_ROOT), env.get("PYTHONPATH", "")]
     )
     return subprocess.run(
-        [sys.executable, "-m", "oemmpa_cli", *args],
+        [sys.executable, "-m", "oemmpa", *args],
         check=True,
         env=env,
         text=True,
@@ -679,7 +679,7 @@ def test_mmpdb_hydrogen_deletion_transform_is_supported():
 
 
 def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():
-    result = _run_oemmpa_cli(
+    result = _run_oemmpa(
         "refresh-stats",
         "--smiles",
         str(DATA_DIR / "test_data.smi"),
@@ -700,7 +700,7 @@ def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():
 
 
 def test_cli_predict_matches_mmpdb_predict_basic_examples():
-    mw_result = _run_oemmpa_cli(
+    mw_result = _run_oemmpa(
         "predict",
         "--smiles",
         str(DATA_DIR / "test_data.smi"),
@@ -711,7 +711,7 @@ def test_cli_predict_matches_mmpdb_predict_basic_examples():
         "--transform",
         "[*:1]Cl>>[*:1]O",
     )
-    mp_result = _run_oemmpa_cli(
+    mp_result = _run_oemmpa(
         "predict",
         "--smiles",
         str(DATA_DIR / "test_data.smi"),

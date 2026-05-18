@@ -39,6 +39,21 @@ def _store_with_openeye_native_toluene_phenol_statistics():
     return store
 
 
+def _store_with_toluene_aniline_statistics():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Nc1ccccc1", id="aniline")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("aniline", "pIC50", 7.0)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    return store
+
+
 def _store_with_multicut_ring_environment_statistics():
     from oemmpa import Analyzer, DuckDBStore, _oemmpa
 
@@ -118,6 +133,42 @@ def test_rule_environment_statistics_collection_filters_rows():
     assert rows.filter(min_pairs=2) == []
     assert len(rows.filter(substructure="O")) == len(rows)
     assert rows.filter(substructure="N") == []
+
+
+def test_rule_environment_statistics_collection_uses_smarts_substructure_matching():
+    store = _store_with_toluene_aniline_statistics()
+    rows = store.rule_environment_statistics("pIC50")
+
+    mapped_symbol = rows.filter(substructure_smarts="[*:1][N]")
+    mapped_atomic_number = rows.filter(substructure_smarts="[*:1][#7]")
+
+    assert mapped_symbol
+    assert [row.rule_environment_id for row in mapped_atomic_number] == [
+        row.rule_environment_id for row in mapped_symbol
+    ]
+    assert rows.filter(substructure_smarts="[*:1][#8]") == []
+
+
+def test_rule_environment_statistics_collection_reports_invalid_smarts_filter():
+    store = _store_with_toluene_phenol_statistics()
+    rows = store.rule_environment_statistics("pIC50")
+
+    with pytest.raises(ValueError, match="invalid SMARTS"):
+        rows.filter(substructure_smarts="[")
+
+
+def test_rule_environment_smiles_molecule_cache_is_bounded():
+    from oemmpa import _rule_environment
+
+    cache = _rule_environment._ParsedSmilesCache(maxsize=2)
+    first = cache.get("[*:1]N")
+
+    cache.get("[*:1]O")
+    cache.get("[*:1]Cl")
+
+    assert len(cache) == 2
+    assert cache.get("[*:1]N") is not first
+    assert len(cache) == 2
 
 
 def test_rule_selection_options_compose_with_filtering_and_prediction():

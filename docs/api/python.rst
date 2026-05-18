@@ -45,9 +45,16 @@ Transform Helpers
    :members:
    :undoc-members:
 
+R-Group Helpers
+---------------
+
+.. automodule:: oemmpa._rgroup
+   :members:
+   :undoc-members:
+
 CLI
 ---
 
-.. automodule:: oemmpa_cli.cli
+.. automodule:: oemmpa.cli
    :members:
    :undoc-members:

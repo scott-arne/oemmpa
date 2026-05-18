@@ -218,6 +218,8 @@ The helper functions `rgroup_smiles_to_smarts()`,
 `rgroups_to_recursive_smarts()`, and `read_rgroup_file()` expose the conversion
 step directly for users who want to inspect or reuse the generated SMARTS.
 These helpers use RDKit when called; importing `oemmpa` does not require RDKit.
+The CLI exposes the same conversion as `oemmpa rgroup2smarts` for file-based
+workflows.
 
 Use `clear_max_heavy_atoms=True` or `clear_max_rotatable_bonds=True` to remove
 those optional molecule-size guards. Invalid settings raise `ValueError` and
@@ -420,7 +422,8 @@ when those packages are available.
 
 Rule-environment statistics can be used directly when a DuckDB-backed store is
 available. This lets you select transformations by property, environment
-radius, evidence count, and rule view before generating products.
+radius, evidence count, source/target variable SMARTS, and rule view before
+generating products.
 
 ```python
 from oemmpa import (
@@ -437,6 +440,7 @@ selection = RuleSelectionOptions(
     property_name="pIC50",
     min_radius=2,
     min_pairs=1,
+    substructure_smarts="[*:1][#8]",
 )
 matches = find_transform_environments(
     store,
@@ -454,22 +458,22 @@ print(matches[0].supporting_pairs()[0].to_dict())
 
 ## CLI
 
-The separate `oemmpa_cli` package provides the `oemmpa-cli` console script and
-also supports module execution:
+The `oemmpa` package provides the `oemmpa` console script and also supports
+module execution:
 
 ```bash
-python -m oemmpa_cli refresh-stats \
+python -m oemmpa refresh-stats \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50
 
-python -m oemmpa_cli predict \
+python -m oemmpa predict \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \
   --transform '[*:1]C>>[*:1]O'
 
-python -m oemmpa_cli generate \
+python -m oemmpa generate \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \
@@ -527,6 +531,21 @@ pairs = store.pairs()
 transforms = store.transforms()
 print(store.row_count("compound"))
 print(store.row_count("pair"))
+```
+
+By default, `save_analyzer()` stores the MMPDB-compatible non-symmetric pair
+orientation. Use `index_mode="openeye-native"` to persist the symmetric
+OpenEye-native pair set, or pass raw `QueryOptions` when you need direct
+control over the stored pairs:
+
+```python
+from oemmpa import _oemmpa
+
+options = _oemmpa.QueryOptions()
+options.SetSymmetric(True)
+options.SetMaxHeavyAtomChange(25)
+
+store.save_analyzer(analyzer, query_options=options)
 ```
 
 `load_properties_from_csv()` expects one row per molecule ID and one column per

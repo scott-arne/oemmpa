@@ -720,24 +720,24 @@ class _CliSectionBase(Section):
 
 
 class CliWorkflowSection(_CliSectionBase):
-    """Stateless ``oemmpa-cli`` end-to-end workflow."""
+    """Stateless ``oemmpa`` end-to-end workflow."""
 
     benchmark_name = "cli_workflow"
     include_database_column = False
     title = "CLI workflow"
     description = (
-        "Stateless `oemmpa-cli` commands run end-to-end on the fixture dataset."
+        "Stateless `oemmpa` commands run end-to-end on the fixture dataset."
     )
 
 
 class PersistedCliSection(_CliSectionBase):
-    """Stateful persisted-database ``oemmpa-cli`` workflow."""
+    """Stateful persisted-database ``oemmpa`` workflow."""
 
     benchmark_name = "persisted_cli_workflow"
     include_database_column = True
     title = "Persisted CLI"
     description = (
-        "Stateful `oemmpa-cli` workflow building, listing, predicting, and "
+        "Stateful `oemmpa` workflow building, listing, predicting, and "
         "generating against a persisted DuckDB database."
     )
 

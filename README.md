@@ -95,22 +95,24 @@ print(products.to_dicts())
 The command-line tool runs common file-based analyses:
 
 ```bash
-oemmpa-cli refresh-stats \
+oemmpa refresh-stats \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50
 
-oemmpa-cli predict \
+oemmpa predict \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \
   --transform '[*:1]C>>[*:1]O'
 
-oemmpa-cli generate \
+oemmpa generate \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \
   --source Cc1ccccc1
+
+oemmpa rgroup2smarts '*c1ccccc1O' '*F'
 ```
 
 See [docs/quickstart.md](docs/quickstart.md) for loading examples and
@@ -299,8 +301,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for the benchmark commands.
 include/oemmpa/      Public C++ headers.
 src/                 C++ implementation.
 swig/                SWIG interface and CMake build rules.
-python/oemmpa/       Python package, loading helpers, and result objects.
-python/oemmpa_cli/   Command-line tools for file-based analyses.
+python/oemmpa/       Python package, CLI, loading helpers, and result objects.
 tests/cpp/           C++ unit tests.
 tests/python/        Python tests.
 benchmarks/          Benchmark tools and reference data.

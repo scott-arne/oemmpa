@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-oemmpa-cli = "oemmpa_cli.cli:main"
+oemmpa = "oemmpa.cli:main"
 
 [tool.setuptools]
-packages = ["oemmpa", "oemmpa_cli"]
+packages = ["oemmpa"]

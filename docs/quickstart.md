@@ -312,6 +312,14 @@ cut_smarts = rgroups_to_recursive_smarts(["Oc1ccccc1*"])
 MMPDB's `rgroup2smarts`. The helper functions use RDKit when called, while
 normal OEMMPA imports and default fragmentation do not require RDKit.
 
+The same conversion is available at the command line when you want to inspect
+or save the generated cut SMARTS before running an analysis:
+
+```bash
+oemmpa rgroup2smarts '*c1ccccc1O' '*F'
+oemmpa rgroup2smarts --input rgroups.txt --output cut_smarts.txt
+```
+
 ## Transform Statistics And Prediction
 
 `compute_transform_statistics()` summarizes property changes for each observed
@@ -352,7 +360,9 @@ print(products.to_dicts())
 
 DuckDB-backed analyses can also generate products from selected local
 environments. This is useful when you want the selected radius, property, and
-supporting pairs to travel with the generated product.
+supporting pairs to travel with the generated product. Selection can also use
+source/target variable SMARTS, such as `[*:1][#8]`, before products are
+generated.
 
 ```python
 from oemmpa import (
@@ -368,6 +378,7 @@ store.save_analyzer(analyzer)
 selection = RuleSelectionOptions(
     property_name="pIC50",
     min_radius=2,
+    substructure_smarts="[*:1][#8]",
 )
 matches = find_transform_environments(
     store,
@@ -384,19 +395,19 @@ print(matches[0].supporting_pairs()[0].to_dict())
 
 ## Command-Line Use
 
-The `oemmpa-cli` command works with the same SMILES and property files shown
+The `oemmpa` command works with the same SMILES and property files shown
 above. It is useful for quick file-based analyses without writing a Python
 script.
 
 ```bash
-oemmpa-cli refresh-stats \
+oemmpa refresh-stats \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50
 ```
 
 ```bash
-oemmpa-cli predict \
+oemmpa predict \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \
@@ -404,7 +415,7 @@ oemmpa-cli predict \
 ```
 
 ```bash
-oemmpa-cli generate \
+oemmpa generate \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50 \

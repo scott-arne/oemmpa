@@ -12,11 +12,14 @@ from oemmpa import (
     Analyzer,
     DuckDBStore,
     RuleEnvironmentPredictionResult,
+    _oemmpa,
     compute_transform_statistics,
     find_transform_environments,
     generate_products,
     generate_products_from_rule_environments,
     predict_transform_delta,
+    read_rgroup_file,
+    rgroups_to_recursive_smarts,
 )
 
 
@@ -89,6 +92,12 @@ PERSISTED_GENERATION_COLUMNS = [
     "p_value",
 ]
 
+NO_PROPERTY_GENERATION_COLUMNS = [
+    "smiles",
+    "transform",
+    "evidence_count",
+]
+
 DETAIL_RULE_COLUMNS = [
     "rule_environment_id",
     "transform",
@@ -140,7 +149,7 @@ ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
 INTEGER_COLUMNS = {"count", "evidence_count", "radius", "rule_environment_id"}
 
 
-def _add_input_arguments(parser, *, require_files=True):
+def _add_input_arguments(parser, *, require_files=True, require_property=True):
     parser.add_argument(
         "--smiles",
         required=require_files,
@@ -151,7 +160,11 @@ def _add_input_arguments(parser, *, require_files=True):
         required=require_files,
         help="Property CSV file.",
     )
-    parser.add_argument("--property", required=True, help="Property column to use.")
+    parser.add_argument(
+        "--property",
+        required=require_property,
+        help="Property column to use.",
+    )
     parser.add_argument(
         "--id-column",
         default=None,
@@ -169,6 +182,57 @@ def _add_input_arguments(parser, *, require_files=True):
         default=None,
         help="File containing R-group SMILES used to derive cut SMARTS.",
     )
+
+
+def _nonnegative_int(value):
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected non-negative integer: {value}"
+        ) from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"expected non-negative integer: {value}")
+    return parsed
+
+
+def _nonnegative_float(value):
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected non-negative number: {value}"
+        ) from exc
+    if parsed < 0.0:
+        raise argparse.ArgumentTypeError(f"expected non-negative number: {value}")
+    return parsed
+
+
+def _positive_float(value):
+    parsed = _nonnegative_float(value)
+    if parsed <= 0.0:
+        raise argparse.ArgumentTypeError(f"expected positive number: {value}")
+    return parsed
+
+
+def _variable_ratio(value):
+    parsed = _nonnegative_float(value)
+    if parsed > 1.0:
+        raise argparse.ArgumentTypeError(f"expected ratio in 0..1: {value}")
+    return parsed
+
+
+def _positive_variable_ratio(value):
+    parsed = _positive_float(value)
+    if parsed > 1.0:
+        raise argparse.ArgumentTypeError(f"expected ratio in 0..1: {value}")
+    return parsed
+
+
+def _optional_nonnegative_int(value):
+    if str(value).lower() == "none":
+        return None
+    return _nonnegative_int(value)
 
 
 def _format_value(value, column):
@@ -201,7 +265,7 @@ def _write_tsv(rows, columns, stream):
 
 @contextmanager
 def _open_text_output(path):
-    if path is None:
+    if path is None or str(path) == "-":
         yield sys.stdout
         return
 
@@ -227,8 +291,25 @@ def _write_tsv_output(rows, columns, output_path):
         _write_tsv(rows, columns, stream)
 
 
+def _read_rgroups_from_stream(stream, source_name):
+    rgroups = []
+    for line_number, line in enumerate(stream, start=1):
+        if line[:1] in "\r\v\t ":
+            raise ValueError(
+                f"expected SMILES at start of line at {source_name}, line {line_number}"
+            )
+        terms = line.split(None, 1)
+        if not terms:
+            raise ValueError(f"no SMILES found at {source_name}, line {line_number}")
+        rgroups.append(terms[0])
+
+    if not rgroups:
+        raise ValueError(f"Cannot make a SMARTS: no SMILES strings found in {source_name}")
+    return rgroups
+
+
 def _ensure_report_output_is_not_database(database_path, output_path):
-    if output_path is None:
+    if output_path is None or str(output_path) == "-":
         return
 
     database = Path(database_path).expanduser().resolve(strict=False)
@@ -368,7 +449,7 @@ def _configure_fragmentation(analyzer, args):
         raise ValueError(f"missing cut R-group file: {cut_rgroup_file}") from exc
 
 
-def _build_analyzer(args):
+def _build_analyzer(args, *, load_properties=True):
     analyzer = Analyzer()
     _configure_fragmentation(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
@@ -377,14 +458,52 @@ def _build_analyzer(args):
         raise ValueError(
             f"failed to load molecule row {first_error.row}: {first_error.message}"
         )
-    _load_properties(
-        analyzer,
-        args.properties,
-        args.id_column,
-        args.property,
-    )
+    if load_properties:
+        _load_properties(
+            analyzer,
+            args.properties,
+            args.id_column,
+            args.property,
+        )
     analyzer.analyze()
     return analyzer
+
+
+def _validate_build_index_options(args):
+    min_variable_heavies = args.min_variable_heavies
+    max_variable_heavies = args.max_variable_heavies
+    if (
+        min_variable_heavies is not None
+        and max_variable_heavies is not None
+        and min_variable_heavies > max_variable_heavies
+    ):
+        raise ValueError(
+            "min-variable-heavies must be less than or equal to "
+            "max-variable-heavies"
+        )
+
+    min_variable_ratio = args.min_variable_ratio
+    max_variable_ratio = args.max_variable_ratio
+    if (
+        min_variable_ratio is not None
+        and max_variable_ratio is not None
+        and min_variable_ratio > max_variable_ratio
+    ):
+        raise ValueError(
+            "min-variable-ratio must be less than or equal to "
+            "max-variable-ratio"
+        )
+
+
+def _build_query_options(args):
+    _validate_build_index_options(args)
+    options = _oemmpa.QueryOptions()
+    options.SetSymmetric(bool(args.symmetric))
+    if args.max_heavies_transf is not None:
+        options.SetMaxHeavyAtomChange(args.max_heavies_transf)
+    if args.max_frac_trans is not None:
+        options.SetMaxRelativeHeavyAtomChange(args.max_frac_trans)
+    return options
 
 
 def _open_store(path):
@@ -411,8 +530,35 @@ def _build_store(args):
         analyzer = _build_analyzer(args)
         # Build beside the target so force replacement never destroys a valid
         # store unless the replacement has been fully written.
-        DuckDBStore(temporary_path).save_analyzer(analyzer)
+        DuckDBStore(temporary_path).save_analyzer(
+            analyzer,
+            query_options=_build_query_options(args),
+        )
         temporary_path.replace(output_path)
+    return 0
+
+
+def _rgroup2smarts(args):
+    if args.input is not None and args.rgroups:
+        raise ValueError(
+            "rgroup2smarts accepts either positional R-group SMILES or --input, not both"
+        )
+
+    if args.input is None:
+        if not args.rgroups:
+            raise ValueError("rgroup2smarts requires R-group SMILES or --input")
+        rgroups = args.rgroups
+    elif args.input == "-":
+        rgroups = _read_rgroups_from_stream(sys.stdin, "<stdin>")
+    else:
+        try:
+            rgroups = read_rgroup_file(args.input)
+        except FileNotFoundError as exc:
+            raise ValueError(f"missing R-group file: {args.input}") from exc
+
+    smarts = rgroups_to_recursive_smarts(rgroups)
+    with _open_text_output(args.output) as stream:
+        stream.write(f"{smarts}\n")
     return 0
 
 
@@ -463,6 +609,13 @@ def _require_file_inputs(args, command):
         raise ValueError(
             f"{command} requires a database path or stateless inputs: "
             + ", ".join(missing)
+        )
+
+
+def _require_smiles_input(args, command):
+    if args.smiles is None:
+        raise ValueError(
+            f"{command} requires a database path or stateless inputs: --smiles"
         )
 
 
@@ -606,6 +759,57 @@ def _stateless_generation_rows(products, aggregation):
     return rows
 
 
+def _no_property_generation_rows(products):
+    return [
+        {
+            "smiles": product.smiles,
+            "transform": product.transform,
+            "evidence_count": product.evidence_count,
+        }
+        for product in products
+    ]
+
+
+def _reject_no_property_generate_options(args):
+    for option, value in (
+        ("--properties", args.properties),
+        ("--property", args.property),
+        ("--id-column", args.id_column),
+        ("--min-pairs", args.min_pairs),
+        ("--score", args.score),
+        ("--where", args.where),
+        ("--details-prefix", args.details_prefix),
+    ):
+        if value is not None:
+            raise ValueError(f"generate {option} requires property reporting")
+
+
+def _generate_no_properties(args):
+    _reject_no_property_generate_options(args)
+    min_evidence = 1 if args.min_evidence is None else args.min_evidence
+    if args.database is not None:
+        _reject_persisted_fragmentation_options(args, "generate")
+        _ensure_report_output_is_not_database(args.database, args.output)
+        transforms = _open_store(args.database).transforms()
+    else:
+        _require_smiles_input(args, "generate")
+        analyzer = _build_analyzer(args, load_properties=False)
+        transforms = analyzer.transforms()
+
+    products = generate_products(
+        args.source,
+        _stateless_generation_transforms(transforms, args.transform),
+        min_evidence=min_evidence,
+        skip_unsupported=not args.strict,
+    )
+    _write_tsv_output(
+        _no_property_generation_rows(products),
+        NO_PROPERTY_GENERATION_COLUMNS,
+        args.output,
+    )
+    return 0
+
+
 def _generate_stateless(args):
     _reject_persisted_generate_options(args)
     _reject_stateless_details(args, "generate")
@@ -659,13 +863,17 @@ def _generate_persisted(args):
 
 
 def _generate(args):
+    if args.no_properties:
+        return _generate_no_properties(args)
+    if args.property is None:
+        raise ValueError("generate requires --property unless --no-properties is used")
     if args.database is not None:
         return _generate_persisted(args)
     return _generate_stateless(args)
 
 
 def _build_parser():
-    parser = argparse.ArgumentParser(prog="oemmpa-cli")
+    parser = argparse.ArgumentParser(prog="oemmpa")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build_parser = subparsers.add_parser(
@@ -683,7 +891,72 @@ def _build_parser():
         action="store_true",
         help="Replace an existing output file.",
     )
+    build_parser.add_argument(
+        "--symmetric",
+        action="store_true",
+        help="Persist both transform orientations instead of the MMPDB-compatible one.",
+    )
+    build_parser.add_argument(
+        "--min-variable-heavies",
+        type=_nonnegative_int,
+        default=None,
+        help="Compatibility parser for MMPDB minimum variable heavy atoms.",
+    )
+    build_parser.add_argument(
+        "--max-variable-heavies",
+        type=_optional_nonnegative_int,
+        default=None,
+        help="Compatibility parser for MMPDB maximum variable heavy atoms; use 'none' for no limit.",
+    )
+    build_parser.add_argument(
+        "--min-variable-ratio",
+        type=_positive_variable_ratio,
+        default=None,
+        help="Compatibility parser for MMPDB minimum variable heavy-atom ratio.",
+    )
+    build_parser.add_argument(
+        "--max-variable-ratio",
+        type=_variable_ratio,
+        default=None,
+        help="Compatibility parser for MMPDB maximum variable heavy-atom ratio.",
+    )
+    build_parser.add_argument(
+        "--max-heavies-transf",
+        type=_nonnegative_int,
+        default=None,
+        help="Maximum absolute heavy-atom change for persisted pairs.",
+    )
+    build_parser.add_argument(
+        "--max-frac-trans",
+        type=_nonnegative_float,
+        default=None,
+        help="Maximum relative heavy-atom change for persisted pairs.",
+    )
     build_parser.set_defaults(func=_build_store)
+
+    rgroup_parser = subparsers.add_parser(
+        "rgroup2smarts",
+        help="Convert MMPDB-style R-group SMILES to recursive cut SMARTS.",
+    )
+    rgroup_parser.add_argument(
+        "rgroups",
+        nargs="*",
+        help="R-group SMILES containing one wildcard atom.",
+    )
+    rgroup_parser.add_argument(
+        "--input",
+        default=None,
+        help="R-group file path, or '-' to read from standard input.",
+    )
+    rgroup_parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Optional output path, or '-' for standard output. "
+            "Use .gz for gzip output."
+        ),
+    )
+    rgroup_parser.set_defaults(func=_rgroup2smarts)
 
     list_parser = subparsers.add_parser(
         "list",
@@ -698,7 +971,10 @@ def _build_parser():
     list_parser.add_argument(
         "--output",
         default=None,
-        help="Optional TSV output path. Use .gz for gzip output.",
+        help=(
+            "Optional TSV output path, or '-' for standard output. "
+            "Use .gz for gzip output."
+        ),
     )
     list_parser.set_defaults(func=_list_store)
 
@@ -716,7 +992,10 @@ def _build_parser():
     stats_parser.add_argument(
         "--output",
         default=None,
-        help="Optional TSV output path. Use .gz for gzip output.",
+        help=(
+            "Optional TSV output path, or '-' for standard output. "
+            "Use .gz for gzip output."
+        ),
     )
     stats_parser.set_defaults(func=_refresh_stats)
 
@@ -768,7 +1047,10 @@ def _build_parser():
     predict_parser.add_argument(
         "--output",
         default=None,
-        help="Optional TSV output path. Use .gz for gzip output.",
+        help=(
+            "Optional TSV output path, or '-' for standard output. "
+            "Use .gz for gzip output."
+        ),
     )
     predict_parser.add_argument(
         "--details-prefix",
@@ -786,12 +1068,21 @@ def _build_parser():
         nargs="?",
         help="Optional DuckDB database path for persisted generation.",
     )
-    _add_input_arguments(generate_parser, require_files=False)
+    _add_input_arguments(
+        generate_parser,
+        require_files=False,
+        require_property=False,
+    )
     generate_parser.add_argument("--source", required=True, help="Source SMILES.")
     generate_parser.add_argument(
         "--transform",
         default=None,
         help="Optional transform SMILES to generate from.",
+    )
+    generate_parser.add_argument(
+        "--no-properties",
+        action="store_true",
+        help="Generate products from observed transforms without property statistics.",
     )
     generate_parser.add_argument(
         "--aggregation",
@@ -835,7 +1126,10 @@ def _build_parser():
     generate_parser.add_argument(
         "--output",
         default=None,
-        help="Optional TSV output path. Use .gz for gzip output.",
+        help=(
+            "Optional TSV output path, or '-' for standard output. "
+            "Use .gz for gzip output."
+        ),
     )
     generate_parser.add_argument(
         "--details-prefix",
@@ -848,7 +1142,7 @@ def _build_parser():
 
 
 def main(argv=None):
-    """Run ``oemmpa-cli``.
+    """Run ``oemmpa``.
 
     :param argv: Optional argument vector without the program name.
     :returns: Process exit code.
@@ -858,4 +1152,4 @@ def main(argv=None):
     try:
         return args.func(args)
     except Exception as exc:
-        parser.exit(2, f"oemmpa-cli: error: {exc}\n")
+        parser.exit(2, f"oemmpa: error: {exc}\n")

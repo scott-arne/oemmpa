@@ -99,9 +99,19 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
         "test_cli_build_reports_missing_cut_rgroup_file",
         "accepted divergence",
     ),
+    ("mmpdb", "test_rgroup2smarts.py", "TestSmilesOnCommandline.test_one_smiles"): (
+        "tests/python/test_cli.py",
+        "test_cli_rgroup2smarts_writes_recursive_smarts_for_arguments",
+        "matched",
+    ),
     ("mmpdb", "test_rgroup2smarts.py", "TestSmilesFromFile.test_different_whitespace"): (
-        "tests/python/test_rgroup.py",
-        "test_read_rgroup_file_matches_mmpdb_whitespace_behavior",
+        "tests/python/test_cli.py",
+        "test_cli_rgroup2smarts_reads_file_and_writes_output",
+        "matched",
+    ),
+    ("mmpdb", "test_rgroup2smarts.py", "TestSmilesFromStdin.test_merged"): (
+        "tests/python/test_cli.py",
+        "test_cli_rgroup2smarts_reads_stdin",
         "matched",
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestCommandlineFailures.test_bad_smiles"): (
@@ -116,7 +126,7 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestFilenameFailures.test_file_does_not_exist"): (
         "tests/python/test_cli.py",
-        "test_cli_build_reports_missing_cut_rgroup_file",
+        "test_cli_rgroup2smarts_reports_missing_input_file",
         "accepted divergence",
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestOtherErrors.test_both_cut_rgroup_and_filename"): (

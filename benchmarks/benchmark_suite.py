@@ -1328,7 +1328,7 @@ def _run_cli(command_args):
     )
     start = perf_counter()
     completed = subprocess.run(
-        [sys.executable, "-m", "oemmpa_cli", *command_args],
+        [sys.executable, "-m", "oemmpa", *command_args],
         env=env,
         text=True,
         capture_output=True,

@@ -1,4 +1,4 @@
-"""Tests for the first oemmpa-cli command surface."""
+"""Tests for the oemmpa command surface."""
 
 import gzip
 import os
@@ -51,6 +51,12 @@ PERSISTED_GENERATION_HEADER = [
     "pseudosmiles",
     "std",
     "p_value",
+]
+
+NO_PROPERTY_GENERATION_HEADER = [
+    "smiles",
+    "transform",
+    "evidence_count",
 ]
 
 DETAIL_RULE_HEADER = [
@@ -120,15 +126,16 @@ EXPECTED_PERSISTED_GENERATION_ROWS = [
 ]
 
 
-def _run_cli(*args, check=True):
+def _run_cli(*args, check=True, input_text=None):
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join(
         [str(PYTHON_ROOT), env.get("PYTHONPATH", "")]
     )
     return subprocess.run(
-        [sys.executable, "-m", "oemmpa_cli", *args],
+        [sys.executable, "-m", "oemmpa", *args],
         check=check,
         env=env,
+        input=input_text,
         text=True,
         capture_output=True,
     )
@@ -178,6 +185,23 @@ def _build_cli_store(tmp_path, *, smiles=None, properties=None):
         str(properties or DATA_DIR / "mmpa_properties.csv"),
         "--property",
         "pIC50",
+        "--output",
+        str(output),
+    )
+    return output
+
+
+def _build_cli_store_with_args(tmp_path, *args):
+    output = tmp_path / "analysis.oemmpa.duckdb"
+    _run_cli(
+        "build",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        *args,
         "--output",
         str(output),
     )
@@ -287,6 +311,61 @@ def test_cli_build_accepts_cut_rgroup_file(tmp_path):
     _assert_rgroup_store_summary(database)
 
 
+def test_cli_build_accepts_symmetric_index_option(tmp_path):
+    database = _build_cli_store_with_args(tmp_path, "--symmetric")
+
+    result = _run_cli("list", str(database), "--recount")
+
+    assert _tsv_rows(result.stdout) == [
+        {"metric": "compounds", "value": "3"},
+        {"metric": "rules", "value": "6"},
+        {"metric": "pairs", "value": "36"},
+        {"metric": "rule_environments", "value": "36"},
+        {"metric": "rule_environment_statistics", "value": "36"},
+    ]
+
+
+def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
+    database = _build_cli_store_with_args(
+        tmp_path,
+        "--min-variable-heavies",
+        "1",
+        "--max-variable-heavies",
+        "29",
+        "--min-variable-ratio",
+        "0.1",
+        "--max-variable-ratio",
+        "0.99",
+        "--max-heavies-transf",
+        "25",
+        "--symmetric",
+        "--max-frac-trans",
+        "3",
+    )
+
+    result = _run_cli("list", str(database), "--recount")
+
+    assert _tsv_rows(result.stdout) == [
+        {"metric": "compounds", "value": "3"},
+        {"metric": "rules", "value": "6"},
+        {"metric": "pairs", "value": "36"},
+        {"metric": "rule_environments", "value": "36"},
+        {"metric": "rule_environment_statistics", "value": "36"},
+    ]
+
+
+def test_cli_build_accepts_max_variable_heavies_none(tmp_path):
+    database = _build_cli_store_with_args(
+        tmp_path,
+        "--max-variable-heavies",
+        "none",
+    )
+
+    result = _run_cli("list", str(database), "--recount")
+
+    assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
 def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
     smiles, properties = _write_rgroup_cli_inputs(tmp_path)
     database = tmp_path / "analysis.oemmpa.duckdb"
@@ -312,6 +391,78 @@ def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
     assert not database.exists()
 
 
+def test_cli_rgroup2smarts_writes_recursive_smarts_for_arguments():
+    result = _run_cli("rgroup2smarts", "*c1ccccc1O", "*F")
+
+    assert result.stdout == (
+        "*-!@[$([cH0v4]1:[cHv4]:[cHv4]:[cHv4]:[cHv4]:[cH0v4]:1-[OHv2]),"
+        "$([FH0v1])]\n"
+    )
+    assert result.stderr == ""
+
+
+def test_cli_rgroup2smarts_reads_file_and_writes_output(tmp_path):
+    input_path = tmp_path / "rgroups.txt"
+    output_path = tmp_path / "cut_smarts.txt"
+    input_path.write_text(
+        "*Cl chlorine\n*Br bromine\n*F fluorine\n",
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "rgroup2smarts",
+        "--input",
+        str(input_path),
+        "--output",
+        str(output_path),
+    )
+
+    assert result.stdout == ""
+    assert output_path.read_text(encoding="utf-8") == (
+        "*-!@[$([ClH0v1]),$([BrH0v1]),$([FH0v1])]\n"
+    )
+
+
+def test_cli_rgroup2smarts_output_dash_writes_stdout():
+    dash_path = Path("-")
+    dash_path.unlink(missing_ok=True)
+
+    try:
+        result = _run_cli("rgroup2smarts", "*Cl", "--output", "-")
+    finally:
+        dash_path.unlink(missing_ok=True)
+
+    assert result.stdout == "*-!@[$([ClH0v1])]\n"
+    assert result.stderr == ""
+    assert not dash_path.exists()
+
+
+def test_cli_rgroup2smarts_reads_stdin():
+    result = _run_cli(
+        "rgroup2smarts",
+        "--input",
+        "-",
+        input_text="*Cl chlorine\n*Br bromine\n",
+    )
+
+    assert result.stdout == "*-!@[$([ClH0v1]),$([BrH0v1])]\n"
+    assert result.stderr == ""
+
+
+def test_cli_rgroup2smarts_reports_missing_input_file(tmp_path):
+    missing_file = tmp_path / "missing-rgroups.txt"
+
+    result = _run_cli(
+        "rgroup2smarts",
+        "--input",
+        str(missing_file),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"missing R-group file: {missing_file}" in result.stderr
+
+
 def test_cli_list_reports_persistent_store_summary(tmp_path):
     database = _build_cli_store(tmp_path)
 
@@ -319,6 +470,22 @@ def test_cli_list_reports_persistent_store_summary(tmp_path):
 
     assert _tsv_header(result.stdout) == ["metric", "value"]
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
+def test_cli_list_output_dash_writes_stdout(tmp_path):
+    database = _build_cli_store(tmp_path)
+    dash_path = Path("-")
+    dash_path.unlink(missing_ok=True)
+
+    try:
+        result = _run_cli("list", str(database), "--output", "-")
+    finally:
+        dash_path.unlink(missing_ok=True)
+
+    assert _tsv_header(result.stdout) == ["metric", "value"]
+    assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+    assert result.stderr == ""
+    assert not dash_path.exists()
 
 
 def test_cli_list_refuses_to_write_report_over_database(tmp_path):
@@ -562,6 +729,33 @@ def test_cli_persisted_generate_can_filter_transform(tmp_path):
     assert len(rows) == 1
     assert rows[0]["smiles"] == "c1ccc(cc1)O"
     assert rows[0]["rule_environment_id"] == "6"
+
+
+def test_cli_persisted_generate_no_properties_outputs_products(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+        "--no-properties",
+    )
+
+    assert _tsv_header(result.stdout) == NO_PROPERTY_GENERATION_HEADER
+    rows = _tsv_rows(result.stdout)
+    assert rows == [
+        {
+            "smiles": "c1ccc(cc1)N",
+            "transform": "[*:1]C>>[*:1]N",
+            "evidence_count": "1",
+        },
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "evidence_count": "1",
+        },
+    ]
 
 
 def test_cli_persisted_generate_writes_gzip_output(tmp_path):
@@ -876,7 +1070,7 @@ def test_cli_persisted_reports_reject_fragmentation_options(
 
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(PYTHON_ROOT))
-    from oemmpa_cli import cli as cli_module
+    from oemmpa import cli as cli_module
 
     class FakeStore:
         def summary(self, recount=False):
@@ -1064,6 +1258,53 @@ def test_cli_stateless_generate_can_filter_transform():
     assert rows[0]["smiles"] == "c1ccc(cc1)O"
     assert rows[0]["transform"] == "[*:1]C>>[*:1]O"
     assert rows[0]["predicted_delta"] == "1"
+
+
+def test_cli_stateless_generate_no_properties_outputs_products():
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--source",
+        "Cc1ccccc1",
+        "--no-properties",
+    )
+
+    assert _tsv_header(result.stdout) == NO_PROPERTY_GENERATION_HEADER
+    rows = _tsv_rows(result.stdout)
+    assert rows == [
+        {
+            "smiles": "c1ccc(cc1)N",
+            "transform": "[*:1]C>>[*:1]N",
+            "evidence_count": "1",
+        },
+        {
+            "smiles": "c1ccc(cc1)O",
+            "transform": "[*:1]C>>[*:1]O",
+            "evidence_count": "1",
+        },
+    ]
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_cli_generate_requires_property_unless_no_properties(tmp_path, persisted):
+    database_args = [str(_build_cli_store(tmp_path))] if persisted else []
+    stateless_args = [] if persisted else [
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+    ]
+
+    result = _run_cli(
+        "generate",
+        *database_args,
+        *stateless_args,
+        "--source",
+        "Cc1ccccc1",
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "generate requires --property unless --no-properties is used" in result.stderr
 
 
 def test_cli_stateless_generate_uses_selected_aggregation(tmp_path):

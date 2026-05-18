@@ -1,11 +1,27 @@
 """Package import behavior tests."""
 
 import importlib
+from pathlib import Path
 import shutil
 import sys
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 _STUB_MODULE = 'class _Stub:\n    def __init__(self, *args, **kwargs):\n        pass\n    def __call__(self, *args, **kwargs):\n        return None\n\ndef __getattr__(name):\n    return _Stub\n'
+
+
+def test_package_exposes_oemmpa_command_without_legacy_cli_alias():
+    """The package should expose the product command name, not the template alias."""
+    expected = 'oemmpa = "oemmpa.cli:main"'
+    forbidden = "oemmpa-cli"
+
+    for path in (REPO_ROOT / "pyproject.toml", REPO_ROOT / "python" / "pyproject.toml"):
+        text = path.read_text(encoding="utf-8")
+
+        assert expected in text
+        assert forbidden not in text
 
 
 def test_import_uses_user_cache_for_broken_openeye_runtime_compat_symlink(

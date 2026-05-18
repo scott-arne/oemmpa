@@ -35,16 +35,18 @@ openeye_add_swig_module(
 )
 
 install(FILES
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/__main__.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_analytics.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_dataframe.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_facade.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_loading.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_query.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_results.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_rgroup.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_rule_environment.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_smiles_file.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_storage.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_transform.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/cli.py
     DESTINATION oemmpa
-)
-
-install(DIRECTORY ${CMAKE_SOURCE_DIR}/python/oemmpa_cli
-    DESTINATION .
-    FILES_MATCHING PATTERN "*.py"
 )

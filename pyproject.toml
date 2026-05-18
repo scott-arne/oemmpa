@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-oemmpa-cli = "oemmpa_cli.cli:main"
+oemmpa = "oemmpa.cli:main"
 
 [project.optional-dependencies]
 dev = [
