@@ -157,6 +157,18 @@ def _add_input_arguments(parser, *, require_files=True):
         default=None,
         help="Property CSV molecule ID column. Defaults to id/ID/Name/name.",
     )
+    parser.add_argument(
+        "--cut-rgroup",
+        action="append",
+        dest="cut_rgroups",
+        default=None,
+        help="R-group SMILES used to derive cut SMARTS. May be repeated.",
+    )
+    parser.add_argument(
+        "--cut-rgroup-file",
+        default=None,
+        help="File containing R-group SMILES used to derive cut SMARTS.",
+    )
 
 
 def _format_value(value, column):
@@ -341,8 +353,24 @@ def _load_properties(analyzer, path, id_column, property_name):
                 raise ValueError(f"row {row_number}: {property_name}: {exc}") from exc
 
 
+def _configure_fragmentation(analyzer, args):
+    cut_rgroups = getattr(args, "cut_rgroups", None)
+    cut_rgroup_file = getattr(args, "cut_rgroup_file", None)
+    if cut_rgroups is None and cut_rgroup_file is None:
+        return
+
+    try:
+        analyzer.configure_fragmentation(
+            cut_rgroups=cut_rgroups,
+            cut_rgroup_file=cut_rgroup_file,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError(f"missing cut R-group file: {cut_rgroup_file}") from exc
+
+
 def _build_analyzer(args):
     analyzer = Analyzer()
+    _configure_fragmentation(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
     if molecule_report.rejected_count:
         first_error = molecule_report.errors[0]
@@ -438,6 +466,18 @@ def _require_file_inputs(args, command):
         )
 
 
+def _reject_persisted_fragmentation_options(args, command):
+    for option, value in (
+        ("--cut-rgroup", getattr(args, "cut_rgroups", None)),
+        ("--cut-rgroup-file", getattr(args, "cut_rgroup_file", None)),
+    ):
+        if value is not None:
+            raise ValueError(
+                f"{command} {option} requires stateless inputs or "
+                "build-time configuration"
+            )
+
+
 def _reject_stateless_details(args, command):
     if getattr(args, "details_prefix", None) is not None:
         raise ValueError(f"{command} detail reports require a database path")
@@ -471,6 +511,7 @@ def _find_persisted_matches(args):
 
 
 def _predict_persisted(args):
+    _reject_persisted_fragmentation_options(args, "predict")
     _ensure_persisted_report_outputs(
         args.database,
         args.output,
@@ -588,6 +629,7 @@ def _generate_stateless(args):
 
 
 def _generate_persisted(args):
+    _reject_persisted_fragmentation_options(args, "generate")
     _reject_stateless_generate_options(args)
     _ensure_persisted_report_outputs(
         args.database,

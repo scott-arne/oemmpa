@@ -70,9 +70,9 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
         "matched",
     ),
     ("mmpdb", "test_fragment.py", "TestFragmentCutRGroups.test_missing_rgroup_filename"): (
-        "-",
-        "-",
-        "deferred",
+        "tests/python/test_cli.py",
+        "test_cli_build_reports_missing_cut_rgroup_file",
+        "accepted divergence",
     ),
     ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_one_cut_rgroup"): (
         "tests/python/test_rgroup.py",
@@ -95,9 +95,9 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
         "accepted divergence",
     ),
     ("mmpdb", "test_fragment.py", "TestSmiFragCutRGroups.test_missing_rgroup_filename"): (
-        "-",
-        "-",
-        "deferred",
+        "tests/python/test_cli.py",
+        "test_cli_build_reports_missing_cut_rgroup_file",
+        "accepted divergence",
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestSmilesFromFile.test_different_whitespace"): (
         "tests/python/test_rgroup.py",
@@ -115,9 +115,9 @@ REQUIRED_SOURCE_LEVEL_TRACEABILITY = {
         "matched",
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestFilenameFailures.test_file_does_not_exist"): (
-        "-",
-        "-",
-        "deferred",
+        "tests/python/test_cli.py",
+        "test_cli_build_reports_missing_cut_rgroup_file",
+        "accepted divergence",
     ),
     ("mmpdb", "test_rgroup2smarts.py", "TestOtherErrors.test_both_cut_rgroup_and_filename"): (
         "tests/python/test_rgroup.py",

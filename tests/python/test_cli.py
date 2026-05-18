@@ -184,11 +184,132 @@ def _build_cli_store(tmp_path, *, smiles=None, properties=None):
     return output
 
 
+def _write_rgroup_cli_inputs(tmp_path):
+    smiles = tmp_path / "rgroup_molecules.smi"
+    smiles.write_text(
+        "Oc1ccccc1N aminophenol\n"
+        "Oc1ccccc1C cresol\n",
+        encoding="utf-8",
+    )
+    properties = tmp_path / "rgroup_properties.csv"
+    properties.write_text(
+        "id,pIC50\n"
+        "aminophenol,7.0\n"
+        "cresol,6.0\n",
+        encoding="utf-8",
+    )
+    return smiles, properties
+
+
+def _assert_rgroup_store_summary(database):
+    result = _run_cli("list", str(database))
+
+    assert _tsv_rows(result.stdout) == [
+        {"metric": "compounds", "value": "2"},
+        {"metric": "rules", "value": "1"},
+        {"metric": "pairs", "value": "6"},
+        {"metric": "rule_environments", "value": "6"},
+        {"metric": "rule_environment_statistics", "value": "6"},
+    ]
+
+
 def test_cli_build_creates_persistent_duckdb_store(tmp_path):
     database = _build_cli_store(tmp_path)
 
     assert database.exists()
     assert database.stat().st_size > 0
+
+
+def test_cli_build_accepts_cut_rgroup_option(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+    database = tmp_path / "analysis.oemmpa.duckdb"
+
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--cut-rgroup",
+        "Oc1ccccc1*",
+        "--output",
+        str(database),
+    )
+
+    _assert_rgroup_store_summary(database)
+
+
+def test_cli_build_accepts_repeated_cut_rgroup_options(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+    database = tmp_path / "analysis.oemmpa.duckdb"
+
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--cut-rgroup",
+        "Oc1ccccc1*",
+        "--cut-rgroup",
+        "*F",
+        "--output",
+        str(database),
+    )
+
+    _assert_rgroup_store_summary(database)
+
+
+def test_cli_build_accepts_cut_rgroup_file(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+    rgroup_file = tmp_path / "rgroups.txt"
+    rgroup_file.write_text("Oc1ccccc1*\n", encoding="utf-8")
+    database = tmp_path / "analysis.oemmpa.duckdb"
+
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--cut-rgroup-file",
+        str(rgroup_file),
+        "--output",
+        str(database),
+    )
+
+    _assert_rgroup_store_summary(database)
+
+
+def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+    database = tmp_path / "analysis.oemmpa.duckdb"
+    missing_file = tmp_path / "missing-rgroups.txt"
+
+    result = _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--cut-rgroup-file",
+        str(missing_file),
+        "--output",
+        str(database),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert f"missing cut R-group file: {missing_file}" in result.stderr
+    assert not database.exists()
 
 
 def test_cli_list_reports_persistent_store_summary(tmp_path):
@@ -708,6 +829,51 @@ def test_cli_persisted_generate_rejects_stateless_file_options(
     assert f"generate {option} requires stateless inputs" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("command", "command_args"),
+    [
+        ("predict", ["--transform", "[*:1]C>>[*:1]O"]),
+        ("generate", ["--source", "Cc1ccccc1"]),
+    ],
+)
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--cut-rgroup", "Oc1ccccc1*"),
+        ("--cut-rgroup-file", "rgroups.txt"),
+    ],
+)
+def test_cli_persisted_reports_reject_fragmentation_options(
+    tmp_path,
+    command,
+    command_args,
+    option,
+    value,
+):
+    database = _build_cli_store(tmp_path)
+    if option == "--cut-rgroup-file":
+        rgroup_file = tmp_path / value
+        rgroup_file.write_text("Oc1ccccc1*\n", encoding="utf-8")
+        value = str(rgroup_file)
+
+    result = _run_cli(
+        command,
+        str(database),
+        "--property",
+        "pIC50",
+        *command_args,
+        option,
+        value,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert (
+        f"{command} {option} requires stateless inputs or build-time configuration"
+        in result.stderr
+    )
+
+
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(PYTHON_ROOT))
     from oemmpa_cli import cli as cli_module
@@ -788,6 +954,36 @@ def test_cli_predict_outputs_property_delta_prediction():
     ]
 
 
+def test_cli_predict_accepts_cut_rgroup_option(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+
+    result = _run_cli(
+        "predict",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--transform",
+        "[*:1]C>>[*:1]N",
+        "--cut-rgroup",
+        "Oc1ccccc1*",
+    )
+
+    assert _tsv_rows(result.stdout) == [
+        {
+            "transform": "[*:1]C>>[*:1]N",
+            "property": "pIC50",
+            "aggregation": "avg",
+            "predicted_delta": "1",
+            "count": "1",
+            "std": "",
+            "p_value": "",
+        }
+    ]
+
+
 def test_cli_generate_outputs_statistics_annotated_products():
     result = _run_cli(
         "generate",
@@ -811,6 +1007,41 @@ def test_cli_generate_outputs_statistics_annotated_products():
     assert phenol_row["smiles"] == "c1ccc(cc1)O"
     assert phenol_row["predicted_delta"] == "1"
     assert phenol_row["count"] == "1"
+
+
+def test_cli_generate_accepts_cut_rgroup_file(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+    rgroup_file = tmp_path / "rgroups.txt"
+    rgroup_file.write_text("Oc1ccccc1*\n", encoding="utf-8")
+
+    result = _run_cli(
+        "generate",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--source",
+        "Oc1ccccc1C",
+        "--transform",
+        "[*:1]C>>[*:1]N",
+        "--cut-rgroup-file",
+        str(rgroup_file),
+    )
+
+    assert _tsv_rows(result.stdout) == [
+        {
+            "smiles": "c1ccc(c(c1)N)O",
+            "transform": "[*:1]C>>[*:1]N",
+            "evidence_count": "1",
+            "property": "pIC50",
+            "predicted_delta": "1",
+            "count": "1",
+            "std": "",
+            "p_value": "",
+        }
+    ]
 
 
 def test_cli_stateless_generate_can_filter_transform():
@@ -972,6 +1203,29 @@ def test_cli_refresh_stats_writes_gzip_output(tmp_path):
     assert next(
         row for row in rows if row["transform"] == "[*:1]C>>[*:1]O"
     )["avg"] == "1"
+
+
+def test_cli_refresh_stats_accepts_cut_rgroup_option(tmp_path):
+    smiles, properties = _write_rgroup_cli_inputs(tmp_path)
+
+    result = _run_cli(
+        "refresh-stats",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--cut-rgroup",
+        "Oc1ccccc1*",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    assert [row["transform"] for row in rows] == [
+        "[*:1]C>>[*:1]N",
+        "[*:1]N>>[*:1]C",
+    ]
+    assert [row["avg"] for row in rows] == ["1", "-1"]
 
 
 def test_cli_stateless_generate_writes_gzip_output(tmp_path):

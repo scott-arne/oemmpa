@@ -1,9 +1,8 @@
 # CLI
 
 The `oemmpa-cli` command runs file-based MMPA workflows without writing a
-Python script. The Phase 14 workflow builds a persistent OEMMPA DuckDB store,
-then reads that store for reports, predictions, generated products, and detail
-reports.
+Python script. The workflow builds a persistent OEMMPA DuckDB store, then reads
+that store for reports, predictions, generated products, and detail reports.
 
 ## Build A Store
 
@@ -21,6 +20,24 @@ the molecule ID column using the common MMPDB order: `id`, `ID`, `Name`, then
 
 Use `--force` to replace an existing store path. SMILES and property inputs may
 end in `.gz`.
+
+R-group fragmentation controls can be supplied when the store is built:
+
+```bash
+oemmpa-cli build \
+  --smiles molecules.smi \
+  --properties properties.csv \
+  --property pIC50 \
+  --cut-rgroup 'Oc1ccccc1*' \
+  --cut-rgroup '*F' \
+  --output analysis.oemmpa.duckdb
+```
+
+Use repeated `--cut-rgroup` options for inline R-group SMILES, or
+`--cut-rgroup-file rgroups.txt` for a whitespace-delimited MMPDB-style R-group
+file. The resulting cut SMARTS are part of the analysis inputs; persisted
+`predict` and persisted `generate` read the stored rule environments and reject
+fragmentation options at report time.
 
 ## List Store Counts
 
@@ -59,6 +76,10 @@ rule_environment_id	transform	property	aggregation	predicted_delta	predicted_val
 Selection options include `--aggregation`, `--min-pairs`, `--score`, and
 `--where`.
 
+Persisted `predict` uses the fragmentation settings that were applied when the
+store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
+with stateless `predict`.
+
 Use `--output prediction.tsv` to write a report file, or `--output
 prediction.tsv.gz` for gzip-compressed TSV.
 
@@ -79,6 +100,10 @@ smiles	transform	property	aggregation	predicted_delta	evidence_count	rule_enviro
 
 Selection options include `--transform`, `--aggregation`, `--min-pairs`,
 `--score`, and `--where`.
+
+Persisted `generate` uses the fragmentation settings that were applied when the
+store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
+with stateless `generate`.
 
 Use `--output generated.tsv` to write a report file, or `--output
 generated.tsv.gz` for gzip-compressed TSV.
@@ -120,8 +145,8 @@ The stateless commands remain available for single-command workflows:
 
 ```bash
 oemmpa-cli refresh-stats --smiles molecules.smi --properties properties.csv --property pIC50
-oemmpa-cli predict --smiles molecules.smi --properties properties.csv --property pIC50 --transform '[*:1]C>>[*:1]O'
-oemmpa-cli generate --smiles molecules.smi --properties properties.csv --property pIC50 --source Cc1ccccc1
+oemmpa-cli predict --smiles molecules.smi --properties properties.csv --property pIC50 --transform '[*:1]C>>[*:1]O' --cut-rgroup 'Oc1ccccc1*'
+oemmpa-cli generate --smiles molecules.smi --properties properties.csv --property pIC50 --source Cc1ccccc1 --cut-rgroup-file rgroups.txt
 ```
 
 `refresh-stats`, stateless `predict`, and stateless `generate` write TSV to
@@ -129,12 +154,17 @@ standard output by default. Use `--output stats.tsv`, `--output
 prediction.tsv`, or `--output products.tsv` to write a report file; when the
 output path ends in `.gz`, OEMMPA writes gzip-compressed TSV.
 
+Stateless commands accept the same `--cut-rgroup` and `--cut-rgroup-file`
+controls as `build`, because they construct an in-memory analyzer from the file
+inputs for each run.
+
 Stateless `generate` keeps source generation explicit around `--source`,
 `--property`, and optional `--transform`. MMPDB-only generation modes such as
 subquery expansion and deriving missing constant/query pieces remain deferred.
 
 ## Roadmap Boundaries
 
-Phase 14b defines the current CLI reporting surface. Phase 15 is reserved for
-post-14 workflow decisions and explicitly excludes performance, scale,
-benchmarking, timing comparisons, memory profiling, and large-dataset fixtures.
+Phase 17 adds build-time and stateless R-group fragmentation controls to the
+Phase 14b CLI reporting surface. Performance, scale, benchmarking, timing
+comparisons, memory profiling, and large-dataset fixtures remain outside this
+CLI compatibility slice.
