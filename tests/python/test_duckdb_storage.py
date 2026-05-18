@@ -95,6 +95,25 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
     )
 
 
+def test_duckdb_store_keeps_raw_fragment_storage_deferred():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    table_names = set(store.table_names())
+
+    assert "fragment" not in table_names
+    assert "fragmentation" not in table_names
+    assert "fragmentations" not in table_names
+    assert {"compound", "rule", "rule_environment", "pair"} <= table_names
+    assert len(store.pairs()) == 1
+
+
 def test_duckdb_store_defaults_to_mmpdb_compatible_orientation():
     from oemmpa import Analyzer, DuckDBStore
 

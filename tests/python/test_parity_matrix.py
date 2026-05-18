@@ -213,6 +213,23 @@ def test_parity_matrix_records_source_level_audit_surfaces():
         assert observed.get(key) == expected, key
 
 
+def test_phase16_fragment_cache_row_records_reopen_trigger():
+    rows = _read_matrix()
+
+    row = next(
+        row
+        for row in rows
+        if row["upstream_project"] == "mmpdb"
+        and row["upstream_file"] == "test_fragment.py"
+        and row["upstream_test"] == "TestOptions.test_cache"
+    )
+
+    assert row["phase"] == "16"
+    assert row["status"] == "deferred"
+    assert "reopen" in row["notes"].lower()
+    assert "fragment" in row["notes"].lower()
+
+
 def test_active_parity_rows_reference_existing_oemmpa_tests():
     rows = _read_matrix()
 
