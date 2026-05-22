@@ -24,6 +24,15 @@ def test_package_exposes_oemmpa_command_without_legacy_cli_alias():
         assert forbidden not in text
 
 
+def test_package_exports_notebook_friendly_workflow_names():
+    import oemmpa
+
+    assert oemmpa.analyze is oemmpa.analyze_dataframe
+    assert oemmpa.open is oemmpa.open_store
+    assert oemmpa.Objective("pIC50").higher_is_better is True
+    assert oemmpa.Selection(property_name="pIC50").property_name == "pIC50"
+
+
 def test_import_uses_user_cache_for_broken_openeye_runtime_compat_symlink(
     monkeypatch,
     tmp_path,

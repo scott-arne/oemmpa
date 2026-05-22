@@ -18,6 +18,15 @@ The property file may be comma- or tab-delimited. By default, OEMMPA looks for
 the molecule ID column using the common MMPDB order: `id`, `ID`, `Name`, then
 `name`.
 
+Properties are optional. If you only need matched pairs, transforms, and
+product generation, omit both `--properties` and `--property`:
+
+```bash
+oemmpa build \
+  --smiles molecules.smi \
+  --output analysis.oemmpa.duckdb
+```
+
 Use `--force` to replace an existing store path. SMILES and property inputs may
 end in `.gz`.
 
@@ -77,13 +86,13 @@ Use `--input rgroups.txt` for a whitespace-delimited R-group file, or
 cut_smarts.txt` or `--output cut_smarts.txt.gz` to write the result to a file;
 use `--output -` to write to standard output explicitly.
 
-## List Store Counts
+## Summarize Store Counts
 
 ```bash
-oemmpa list analysis.oemmpa.duckdb --recount
+oemmpa summary analysis.oemmpa.duckdb --recount
 ```
 
-`list` emits a stable TSV report:
+`summary` emits a stable TSV report:
 
 ```text
 metric	value
@@ -93,6 +102,8 @@ pairs	18
 rule_environments	18
 rule_environment_statistics	18
 ```
+
+`list` is accepted as an alias for `summary`.
 
 Use `--output summary.tsv` to write a report file, `--output summary.tsv.gz`
 for gzip-compressed TSV, or `--output -` to write TSV to standard output
@@ -149,13 +160,12 @@ Use `--output generated.tsv` to write a report file, `--output
 generated.tsv.gz` for gzip-compressed TSV, or `--output -` to write TSV to
 standard output explicitly.
 
-Use `--no-properties` when you only need product and transform reporting from
-the observed pair set:
+Omit `--property` when you only need product and transform reporting from the
+observed pair set:
 
 ```bash
 oemmpa generate analysis.oemmpa.duckdb \
-  --source Cc1ccccc1 \
-  --no-properties
+  --source Cc1ccccc1
 ```
 
 The no-property report omits rule-environment statistics and emits:
@@ -163,6 +173,9 @@ The no-property report omits rule-environment statistics and emits:
 ```text
 smiles	transform	evidence_count
 ```
+
+No special flag is needed for this mode. If `--property` is omitted,
+`generate` writes the product-only report.
 
 ## Detail Reports
 
@@ -200,17 +213,19 @@ Detail reports are persisted-only. Stateless `predict` and `generate` reject
 The stateless commands remain available for single-command workflows:
 
 ```bash
-oemmpa refresh-stats --smiles molecules.smi --properties properties.csv --property pIC50
+oemmpa stats --smiles molecules.smi --properties properties.csv --property pIC50
 oemmpa predict --smiles molecules.smi --properties properties.csv --property pIC50 --transform '[*:1]C>>[*:1]O' --cut-rgroup 'Oc1ccccc1*'
 oemmpa generate --smiles molecules.smi --properties properties.csv --property pIC50 --source Cc1ccccc1 --cut-rgroup-file rgroups.txt
-oemmpa generate --smiles molecules.smi --source Cc1ccccc1 --no-properties
+oemmpa generate --smiles molecules.smi --source Cc1ccccc1
 ```
 
-`refresh-stats`, stateless `predict`, and stateless `generate` write TSV to
+`stats`, stateless `predict`, and stateless `generate` write TSV to
 standard output by default. Use `--output stats.tsv`, `--output
 prediction.tsv`, or `--output products.tsv` to write a report file; when the
 output path ends in `.gz`, OEMMPA writes gzip-compressed TSV. Use `--output -`
 to write TSV to standard output explicitly.
+
+`refresh-stats` is accepted as an alias for `stats`.
 
 Stateless commands accept the same `--cut-rgroup` and `--cut-rgroup-file`
 controls as `build`, because they construct an in-memory analyzer from the file

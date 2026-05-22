@@ -107,18 +107,19 @@ formatting errors are reported cleanly and do not leave partial rows behind.
 
 ## Querying Dataframe Analyses
 
-For interactive dataframe work, `analyze_dataframe()` loads molecules,
+For interactive dataframe work, `analyze()` loads molecules, optional
 properties, runs analysis, and returns a queryable result object:
 
 ```python
-from oemmpa import analyze_dataframe
+from oemmpa import Objective, analyze
 
-analysis = analyze_dataframe(
+analysis = analyze(
     df,
     smiles="smiles",
     id="compound_id",
     properties=["pIC50"],
 )
+objective = Objective("pIC50")
 
 improving_pairs = (
     analysis.pairs
@@ -142,11 +143,15 @@ columns. Set it to `False` for endpoints where lower values are better.
 Use `unchanged()` when you want pairs or transforms with exactly zero property
 delta.
 
+Properties can be omitted entirely. In that mode, pair and transform discovery
+still works and product generation emits product/transform evidence columns
+without prediction metadata.
+
 Transform queries can attach property statistics and rank transformations by
 predicted improvement:
 
 ```python
-rules = analysis.transforms.with_statistics("pIC50").improves("pIC50").top(25)
+rules = analysis.objective(objective).transforms.improves().top(25)
 rules_df = rules.to_dataframe()
 ```
 
@@ -156,13 +161,13 @@ opportunity review:
 ```python
 products = analysis.generate(
     "Cc1ccccc1",
-    property_name="pIC50",
+    objective=objective,
     min_evidence=2,
 )
 
 opportunities = analysis.opportunities(
     "compound_123",
-    property_name="pIC50",
+    objective=objective,
     min_evidence=2,
 )
 print(opportunities.rules.to_dicts())
@@ -185,6 +190,50 @@ Generated products returned by `AnalysisResult.generate()` and
 `AnalysisResult.opportunities()` include `is_known_product` and
 `known_product_ids`, so notebook workflows can distinguish novel suggestions
 from products already present in the analyzed dataset.
+
+## Notebook Display
+
+OEMMPA result objects provide lightweight notebook representations. Evaluating
+`analysis`, `products`, `pairs`, `rules`, or `opportunities` in Jupyter shows
+compact summaries and bounded text previews. These displays do not depict
+molecules and do not import notebook-specific packages.
+
+Chemical rendering remains delegated to dataframe integrations:
+
+```python
+products.to_dataframe(molecules=True)
+pairs.to_dataframe(molecules=True)
+```
+
+When molecule-aware dataframe packages are not installed, use the default text
+dataframes:
+
+```python
+products.to_dataframe()
+pairs.to_dataframe()
+```
+
+Marimo users can wrap OEMMPA dataframes with normal Marimo table APIs:
+
+```python
+import marimo as mo
+
+mo.ui.table(products.to_dataframe())
+mo.ui.table(opportunities.pairs.to_dataframe())
+mo.ui.table(opportunities.products.to_dataframe())
+```
+
+Persist an interactive analysis and reopen it later with the same store API
+used by the CLI:
+
+```python
+analysis.save("analysis.oemmpa.duckdb")
+
+from oemmpa import open as open_oemmpa
+
+store = open_oemmpa("analysis.oemmpa.duckdb")
+print(store.summary())
+```
 
 ## Results
 
@@ -367,7 +416,7 @@ generated.
 ```python
 from oemmpa import (
     DuckDBStore,
-    RuleSelectionOptions,
+    Selection,
     find_transform_environments,
     generate_products_from_rule_environments,
 )
@@ -375,10 +424,10 @@ from oemmpa import (
 store = DuckDBStore()
 store.save_analyzer(analyzer)
 
-selection = RuleSelectionOptions(
+selection = Selection(
     property_name="pIC50",
     min_radius=2,
-    substructure_smarts="[*:1][#8]",
+    variable_smarts="[*:1][#8]",
 )
 matches = find_transform_environments(
     store,
@@ -400,7 +449,7 @@ above. It is useful for quick file-based analyses without writing a Python
 script.
 
 ```bash
-oemmpa refresh-stats \
+oemmpa stats \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50

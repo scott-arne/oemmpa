@@ -740,9 +740,11 @@ from ._rule_environment import (
 )
 from ._query import (
     AnalysisResult,
+    ObjectiveAnalysis,
     OpportunityResult,
     PairQuery,
     TransformQuery,
+    analyze,
     analyze_dataframe,
 )
 from ._storage import DuckDBStore, duckdb_available
@@ -754,6 +756,7 @@ from ._transform import (
     generate_products,
     generate_products_from_rule_environments,
 )
+from ._workflow import Objective, Selection, open, open_store
 
 del _OPTIONAL_RAW_BINDING_EXPORTS, _missing_raw_exports, _swig_proxy
 
@@ -767,6 +770,8 @@ __all__ = [
     "GeneratedProductCollection",
     "GeneratedProductResult",
     "LoadReport",
+    "Objective",
+    "ObjectiveAnalysis",
     "OpportunityResult",
     "PairCollection",
     "PairResult",
@@ -779,6 +784,7 @@ __all__ = [
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",
     "RuleSelectionOptions",
+    "Selection",
     "TransformCollection",
     "TransformQuery",
     "TransformResult",
@@ -787,6 +793,7 @@ __all__ = [
     "apply_pair_transform",
     "apply_transform_smirks",
     "apply_variable_transform",
+    "analyze",
     "analyze_dataframe",
     "build_variable_transform_smirks",
     "calculate_molecular_weight",
@@ -795,6 +802,8 @@ __all__ = [
     "find_transform_environments",
     "generate_products",
     "generate_products_from_rule_environments",
+    "open",
+    "open_store",
     "predict_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",

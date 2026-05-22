@@ -22,6 +22,14 @@ EXPECTED_PERSISTED_SUMMARY = [
     {"metric": "rule_environment_statistics", "value": "18"},
 ]
 
+EXPECTED_NO_PROPERTY_SUMMARY = [
+    {"metric": "compounds", "value": "3"},
+    {"metric": "rules", "value": "3"},
+    {"metric": "pairs", "value": "18"},
+    {"metric": "rule_environments", "value": "18"},
+    {"metric": "rule_environment_statistics", "value": "0"},
+]
+
 PERSISTED_PREDICTION_HEADER = [
     "rule_environment_id",
     "transform",
@@ -242,6 +250,30 @@ def test_cli_build_creates_persistent_duckdb_store(tmp_path):
 
     assert database.exists()
     assert database.stat().st_size > 0
+
+
+def test_cli_build_accepts_no_property_workflow(tmp_path):
+    database = tmp_path / "analysis.oemmpa.duckdb"
+
+    _run_cli(
+        "build",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--output",
+        str(database),
+    )
+    result = _run_cli("summary", str(database), "--recount")
+    generate_result = _run_cli(
+        "generate",
+        str(database),
+        "--source",
+        "Cc1ccccc1",
+    )
+
+    assert database.exists()
+    assert _tsv_rows(result.stdout) == EXPECTED_NO_PROPERTY_SUMMARY
+    assert _tsv_header(generate_result.stdout) == NO_PROPERTY_GENERATION_HEADER
+    assert _tsv_rows(generate_result.stdout)
 
 
 def test_cli_build_accepts_cut_rgroup_option(tmp_path):
@@ -467,6 +499,15 @@ def test_cli_list_reports_persistent_store_summary(tmp_path):
     database = _build_cli_store(tmp_path)
 
     result = _run_cli("list", str(database))
+
+    assert _tsv_header(result.stdout) == ["metric", "value"]
+    assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
+def test_cli_summary_alias_reports_persistent_store_summary(tmp_path):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli("summary", str(database))
 
     assert _tsv_header(result.stdout) == ["metric", "value"]
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
@@ -739,7 +780,6 @@ def test_cli_persisted_generate_no_properties_outputs_products(tmp_path):
         str(database),
         "--source",
         "Cc1ccccc1",
-        "--no-properties",
     )
 
     assert _tsv_header(result.stdout) == NO_PROPERTY_GENERATION_HEADER
@@ -1120,6 +1160,24 @@ def test_cli_refresh_stats_outputs_transform_statistics():
     )["avg"] == "1"
 
 
+def test_cli_stats_alias_outputs_transform_statistics():
+    result = _run_cli(
+        "stats",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+    )
+
+    rows = _tsv_rows(result.stdout)
+
+    assert next(
+        row for row in rows if row["transform"] == "[*:1]C>>[*:1]O"
+    )["avg"] == "1"
+
+
 def test_cli_predict_outputs_property_delta_prediction():
     result = _run_cli(
         "predict",
@@ -1267,7 +1325,6 @@ def test_cli_stateless_generate_no_properties_outputs_products():
         str(DATA_DIR / "mmpa_smiles.smi"),
         "--source",
         "Cc1ccccc1",
-        "--no-properties",
     )
 
     assert _tsv_header(result.stdout) == NO_PROPERTY_GENERATION_HEADER
@@ -1284,28 +1341,6 @@ def test_cli_stateless_generate_no_properties_outputs_products():
             "evidence_count": "1",
         },
     ]
-
-
-@pytest.mark.parametrize("persisted", [False, True])
-def test_cli_generate_requires_property_unless_no_properties(tmp_path, persisted):
-    database_args = [str(_build_cli_store(tmp_path))] if persisted else []
-    stateless_args = [] if persisted else [
-        "--smiles",
-        str(DATA_DIR / "mmpa_smiles.smi"),
-    ]
-
-    result = _run_cli(
-        "generate",
-        *database_args,
-        *stateless_args,
-        "--source",
-        "Cc1ccccc1",
-        check=False,
-    )
-
-    assert result.returncode == 2
-    assert "generate requires --property unless --no-properties is used" in result.stderr
-
 
 def test_cli_stateless_generate_uses_selected_aggregation(tmp_path):
     smiles = tmp_path / "aggregation.smi"

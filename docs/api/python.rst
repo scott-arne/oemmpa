@@ -38,6 +38,13 @@ Storage
    :members:
    :undoc-members:
 
+Workflow Helpers
+----------------
+
+.. automodule:: oemmpa._workflow
+   :members:
+   :undoc-members:
+
 Transform Helpers
 -----------------
 

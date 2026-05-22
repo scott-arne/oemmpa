@@ -22,3 +22,12 @@ def test_rdkit_comparison_is_not_a_user_facing_docs_topic():
 
 def test_dedicated_rdkit_comparison_doc_is_absent():
     assert not (REPO_ROOT / "docs" / "rdkit-comparison.md").exists()
+
+
+def test_notebook_docs_keep_marimo_support_documentation_only():
+    python_api = (REPO_ROOT / "docs" / "python-api.md").read_text(encoding="utf-8")
+    quickstart = (REPO_ROOT / "docs" / "quickstart.md").read_text(encoding="utf-8")
+
+    for text in (python_api, quickstart):
+        assert "mo.ui.table(products.to_dataframe())" in text
+        assert "to_marimo(" not in text

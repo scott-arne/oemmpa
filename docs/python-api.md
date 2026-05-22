@@ -86,19 +86,22 @@ loading unless the supplied object already comes from that package.
 
 ## Query Layer
 
-`analyze_dataframe()` is the dataframe-first entry point for exploratory MMP
-work. It loads molecules and properties, runs analysis, and returns an
-`AnalysisResult`:
+`analyze()` is the dataframe-first entry point for exploratory MMP work. It
+loads molecules, optional properties, runs analysis, and returns an
+`AnalysisResult`. `analyze_dataframe()` is kept as the explicit spelling for
+codebases that prefer naming the input shape:
 
 ```python
-from oemmpa import analyze_dataframe
+from oemmpa import analyze, Objective
 
-analysis = analyze_dataframe(
+analysis = analyze(
     frame,
     smiles="smiles",
     id="compound_id",
     properties=["pIC50"],
 )
+
+objective = Objective("pIC50", direction="increase")
 ```
 
 The `smiles` argument names the molecule column. The column may contain SMILES
@@ -122,17 +125,22 @@ hits = (
 hits.to_dataframe()
 ```
 
-`higher_is_better` defaults to `True`, matching pIC50 semantics. Use
-`higher_is_better=False` for endpoints such as IC50 where lower values are
-preferred. `decreases()` keeps the opposite direction, and `unchanged()` keeps
-exactly zero deltas.
+Properties are optional. If you omit `properties`, OEMMPA still returns
+pairs, transforms, and generated products; property-delta filters and
+prediction metadata are simply unavailable until an objective is supplied.
+
+`Objective` makes optimization direction explicit. `Objective("pIC50")`
+defaults to increasing values, while `Objective("IC50", direction="decrease")`
+models endpoints where lower values are preferred. The older
+`higher_is_better` argument remains available on query methods, but notebooks
+are usually clearer when the objective is named once.
 
 `analysis.transforms` is a `TransformQuery`. It can compute transform
 statistics, filter to improving transformations, rank them by predicted delta,
 and export plotting-friendly rows:
 
 ```python
-rules = analysis.transforms.with_statistics("pIC50").improves("pIC50").top(25)
+rules = analysis.objective(objective).transforms.improves().top(25)
 rules.to_dataframe()
 ```
 
@@ -142,7 +150,7 @@ new molecule:
 ```python
 products = analysis.generate(
     "Cc1ccccc1",
-    property_name="pIC50",
+    objective=objective,
     min_evidence=2,
 )
 products.to_dataframe()
@@ -165,13 +173,45 @@ hits.to_dataframe(molecules=True)
 rules.to_dataframe(molecules=True)
 ```
 
+### Notebook Display
+
+OEMMPA result objects provide lightweight notebook representations. Evaluating
+`analysis`, `products`, `pairs`, `rules`, or `opportunities` in Jupyter shows
+compact summaries and bounded text previews. These displays do not depict
+molecules and do not import notebook-specific packages.
+
+Chemical rendering remains delegated to dataframe integrations:
+
+```python
+products.to_dataframe(molecules=True)
+pairs.to_dataframe(molecules=True)
+```
+
+When molecule-aware dataframe packages are not installed, use the default text
+dataframes:
+
+```python
+products.to_dataframe()
+pairs.to_dataframe()
+```
+
+Marimo users can wrap OEMMPA dataframes with normal Marimo table APIs:
+
+```python
+import marimo as mo
+
+mo.ui.table(products.to_dataframe())
+mo.ui.table(opportunities.pairs.to_dataframe())
+mo.ui.table(opportunities.products.to_dataframe())
+```
+
 Use `AnalysisResult.opportunities()` to ask what observed matched pairs and
 generated products suggest for one molecule in the analyzed dataset:
 
 ```python
 opportunities = analysis.opportunities(
     "compound_123",
-    property_name="pIC50",
+    objective=objective,
     min_evidence=2,
 )
 opportunities.rules.to_dataframe()
@@ -189,6 +229,34 @@ molecule's observed outgoing matched pairs. For novel source molecules, it
 contains supporting evidence pairs from the analyzed dataset for the applicable
 rules. `opportunities.rules` contains the applicable transforms and their
 statistics in both cases.
+
+Use `AnalysisResult.save()` and `oemmpa.open()` to move between interactive
+analysis and a persisted DuckDB store:
+
+```python
+analysis.save("analysis.oemmpa.duckdb")
+
+from oemmpa import open as open_oemmpa
+
+store = open_oemmpa("analysis.oemmpa.duckdb")
+store.summary()
+```
+
+The lower-level rule-environment helpers accept `Selection`, a shorter
+user-facing name for structured persisted-rule selection:
+
+```python
+from oemmpa import Selection, find_transform_environments
+
+selection = Selection(
+    objective=objective,
+    min_radius=2,
+    min_pairs=3,
+    variable_smarts="[*:1][#7]",
+    score="largest-radius",
+)
+matches = find_transform_environments(store, selection=selection)
+```
 
 ### configure_fragmentation
 
@@ -428,7 +496,7 @@ generating products.
 ```python
 from oemmpa import (
     DuckDBStore,
-    RuleSelectionOptions,
+    Selection,
     find_transform_environments,
     generate_products_from_rule_environments,
 )
@@ -436,11 +504,11 @@ from oemmpa import (
 store = DuckDBStore()
 store.save_analyzer(analyzer)
 
-selection = RuleSelectionOptions(
+selection = Selection(
     property_name="pIC50",
     min_radius=2,
     min_pairs=1,
-    substructure_smarts="[*:1][#8]",
+    variable_smarts="[*:1][#8]",
 )
 matches = find_transform_environments(
     store,
@@ -462,7 +530,7 @@ The `oemmpa` package provides the `oemmpa` console script and also supports
 module execution:
 
 ```bash
-python -m oemmpa refresh-stats \
+python -m oemmpa stats \
   --smiles molecules.smi \
   --properties properties.csv \
   --property pIC50
@@ -480,8 +548,8 @@ python -m oemmpa generate \
   --source Cc1ccccc1
 ```
 
-The current CLI commands read files and run the analysis in memory. Stored
-database statistics can be added later without changing the file formats.
+The CLI can run stateless file workflows or read a persisted DuckDB store
+created with `oemmpa build`.
 
 ## Dataframe Export
 

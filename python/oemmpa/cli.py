@@ -149,7 +149,13 @@ ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
 INTEGER_COLUMNS = {"count", "evidence_count", "radius", "rule_environment_id"}
 
 
-def _add_input_arguments(parser, *, require_files=True, require_property=True):
+def _add_input_arguments(
+    parser,
+    *,
+    require_files=True,
+    require_properties=True,
+    require_property=True,
+):
     parser.add_argument(
         "--smiles",
         required=require_files,
@@ -157,7 +163,7 @@ def _add_input_arguments(parser, *, require_files=True, require_property=True):
     )
     parser.add_argument(
         "--properties",
-        required=require_files,
+        required=require_files and require_properties,
         help="Property CSV file.",
     )
     parser.add_argument(
@@ -449,7 +455,17 @@ def _configure_fragmentation(analyzer, args):
         raise ValueError(f"missing cut R-group file: {cut_rgroup_file}") from exc
 
 
-def _build_analyzer(args, *, load_properties=True):
+def _validate_property_file_pair(args, command):
+    has_properties = args.properties is not None
+    has_property = args.property is not None
+    if has_properties == has_property:
+        return has_properties
+    raise ValueError(
+        f"{command} requires both --properties and --property when loading properties"
+    )
+
+
+def _build_analyzer(args, *, load_properties=None):
     analyzer = Analyzer()
     _configure_fragmentation(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
@@ -458,6 +474,8 @@ def _build_analyzer(args, *, load_properties=True):
         raise ValueError(
             f"failed to load molecule row {first_error.row}: {first_error.message}"
         )
+    if load_properties is None:
+        load_properties = _validate_property_file_pair(args, "build")
     if load_properties:
         _load_properties(
             analyzer,
@@ -578,7 +596,7 @@ def _list_store(args):
 
 
 def _compute_statistics(args):
-    analyzer = _build_analyzer(args)
+    analyzer = _build_analyzer(args, load_properties=True)
     return analyzer, compute_transform_statistics(
         analyzer.transforms(),
         args.property,
@@ -863,10 +881,8 @@ def _generate_persisted(args):
 
 
 def _generate(args):
-    if args.no_properties:
-        return _generate_no_properties(args)
     if args.property is None:
-        raise ValueError("generate requires --property unless --no-properties is used")
+        return _generate_no_properties(args)
     if args.database is not None:
         return _generate_persisted(args)
     return _generate_stateless(args)
@@ -880,7 +896,11 @@ def _build_parser():
         "build",
         help="Build a persistent DuckDB analysis store.",
     )
-    _add_input_arguments(build_parser)
+    _add_input_arguments(
+        build_parser,
+        require_properties=False,
+        require_property=False,
+    )
     build_parser.add_argument(
         "--output",
         required=True,
@@ -960,6 +980,7 @@ def _build_parser():
 
     list_parser = subparsers.add_parser(
         "list",
+        aliases=["summary"],
         help="List summary metrics from a persistent DuckDB store.",
     )
     list_parser.add_argument("database", help="DuckDB database path.")
@@ -980,6 +1001,7 @@ def _build_parser():
 
     stats_parser = subparsers.add_parser(
         "refresh-stats",
+        aliases=["stats"],
         help="Compute transform statistics from molecules and properties.",
     )
     _add_input_arguments(stats_parser)
@@ -1078,11 +1100,6 @@ def _build_parser():
         "--transform",
         default=None,
         help="Optional transform SMILES to generate from.",
-    )
-    generate_parser.add_argument(
-        "--no-properties",
-        action="store_true",
-        help="Generate products from observed transforms without property statistics.",
     )
     generate_parser.add_argument(
         "--aggregation",

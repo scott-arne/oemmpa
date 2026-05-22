@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import importlib
 
 from ._dataframe import TRANSFORM_SMIRKS_COLUMNS, dataframe_from_dicts
+from ._display import html_collection_preview, text_collection_summary
 
 
 AGGREGATE_FIELDS = (
@@ -230,6 +231,12 @@ class TransformStatisticsResult:
 
 class TransformStatisticsCollection(list):
     """List of transform statistics with lookup and export helpers."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def __getitem__(self, key):
         if isinstance(key, str):

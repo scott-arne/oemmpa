@@ -8,9 +8,16 @@ from ._dataframe import (
     TRANSFORM_SMIRKS_COLUMNS,
     dataframe_from_dicts,
 )
+from ._display import (
+    html_collection_preview,
+    html_summary_card,
+    text_collection_summary,
+    text_summary,
+)
 from ._facade import Analyzer
 from ._loading import LoadReport, iter_dataframe_records
 from ._transform import generate_products
+from ._workflow import coerce_objective
 
 
 def _delta_key(property_name):
@@ -91,6 +98,12 @@ class PairQuery:
 
     def __getitem__(self, key):
         return self._pairs[key]
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def with_delta(self, property_name):
         """Include a property-delta column in exported rows."""
@@ -194,10 +207,17 @@ class PairQuery:
 class TransformQuery:
     """Chainable transform query wrapper."""
 
-    def __init__(self, transforms, statistics=None, property_name=None):
+    def __init__(
+        self,
+        transforms,
+        statistics=None,
+        property_name=None,
+        higher_is_better=True,
+    ):
         self._transforms = list(transforms)
         self._statistics = statistics
         self._property_name = None if property_name is None else str(property_name)
+        self._higher_is_better = bool(higher_is_better)
 
     def __iter__(self):
         return iter(self._transforms)
@@ -208,12 +228,18 @@ class TransformQuery:
     def __getitem__(self, key):
         return self._transforms[key]
 
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
+
     @property
     def statistics(self):
         """Statistics attached to this query, if any."""
         return self._statistics
 
-    def with_statistics(self, property_name, min_count=1):
+    def with_statistics(self, property_name, min_count=1, higher_is_better=None):
         """Attach transform-level property statistics."""
         property_name = str(property_name)
         statistics = compute_transform_statistics(
@@ -225,14 +251,23 @@ class TransformQuery:
             self._transforms,
             statistics=statistics,
             property_name=property_name,
+            higher_is_better=(
+                self._higher_is_better
+                if higher_is_better is None
+                else higher_is_better
+            ),
         )
 
-    def improves(self, property_name=None, higher_is_better=True):
+    def improves(self, property_name=None, higher_is_better=None):
         """Return transforms whose predicted delta improves the objective."""
+        if higher_is_better is None:
+            higher_is_better = self._higher_is_better
         return self._filter_by_prediction(property_name, bool(higher_is_better))
 
-    def decreases(self, property_name=None, higher_is_better=True):
+    def decreases(self, property_name=None, higher_is_better=None):
         """Return transforms whose predicted delta worsens the objective."""
+        if higher_is_better is None:
+            higher_is_better = self._higher_is_better
         return self._filter_by_prediction(property_name, not bool(higher_is_better))
 
     def unchanged(self, property_name=None):
@@ -249,6 +284,7 @@ class TransformQuery:
             rows,
             statistics=query._statistics,
             property_name=query._property_name,
+            higher_is_better=query._higher_is_better,
         )
 
     def top(self, n):
@@ -257,6 +293,7 @@ class TransformQuery:
             self._transforms[: int(n)],
             statistics=self._statistics,
             property_name=self._property_name,
+            higher_is_better=self._higher_is_better,
         )
 
     def to_dicts(self):
@@ -310,6 +347,7 @@ class TransformQuery:
             rows,
             statistics=query._statistics,
             property_name=query._property_name,
+            higher_is_better=query._higher_is_better,
         )
 
     def _ensure_statistics(self, property_name):
@@ -333,6 +371,7 @@ class TransformQuery:
             [transform for transform in self._transforms if predicate(transform)],
             statistics=self._statistics,
             property_name=self._property_name,
+            higher_is_better=self._higher_is_better,
         )
 
 
@@ -360,14 +399,100 @@ class OpportunityResult:
             "rules": self.rules.to_dicts(),
         }
 
+    def summary(self):
+        """Return a plain opportunity summary."""
+        return {
+            "molecule_id": self.molecule_id,
+            "source_smiles": self.source_smiles,
+            "rules": len(self.rules),
+            "pairs": len(self.pairs),
+            "products": len(self.products),
+        }
+
+    def __repr__(self):
+        return text_summary("OpportunityResult", self.summary())
+
+    def _repr_html_(self):
+        summary = html_summary_card("OpportunityResult", self.summary())
+        return (
+            summary
+            + html_collection_preview("Rules", self.rules)
+            + html_collection_preview("Pairs", self.pairs)
+            + html_collection_preview("Products", self.products)
+        )
+
+
+class ObjectiveAnalysis:
+    """Analysis view with a default optimization objective."""
+
+    def __init__(self, analysis, objective):
+        self.analysis = analysis
+        self.objective = objective
+
+    @property
+    def pairs(self):
+        """Matched pairs annotated with the objective property delta."""
+        return self.analysis.pairs.with_delta(self.objective.property_name)
+
+    @property
+    def transforms(self):
+        """Transforms annotated with objective-property statistics."""
+        return self.analysis.transforms.with_statistics(
+            self.objective.property_name,
+            higher_is_better=self.objective.higher_is_better,
+        )
+
+    def generate(self, source, **kwargs):
+        """Generate products using this objective."""
+        return self.analysis.generate(source, objective=self.objective, **kwargs)
+
+    def opportunities(self, source, **kwargs):
+        """Return opportunities using this objective."""
+        return self.analysis.opportunities(source, objective=self.objective, **kwargs)
+
+    def summary(self):
+        """Return a plain objective-analysis summary."""
+        parent = self.analysis.summary()
+        return {
+            "property": self.objective.property_name,
+            "direction": self.objective.direction,
+            "aggregation": self.objective.aggregation,
+            "molecules": parent["molecules"],
+            "pairs": parent["pairs"],
+            "transforms": parent["transforms"],
+        }
+
+    def __repr__(self):
+        return text_summary("ObjectiveAnalysis", self.summary())
+
+    def _repr_html_(self):
+        return html_summary_card(
+            "ObjectiveAnalysis",
+            self.summary(),
+            actions=[
+                "objective_analysis.transforms.improves()",
+                "objective_analysis.generate(...)",
+                "objective_analysis.opportunities(...)",
+            ],
+        )
+
 
 class AnalysisResult:
     """Analyzed dataset with chainable query helpers."""
 
-    def __init__(self, analyzer, load_report=None, molecule_smiles=None):
+    def __init__(
+        self,
+        analyzer,
+        load_report=None,
+        molecule_smiles=None,
+        property_names=(),
+    ):
         self.analyzer = analyzer
         self.load_report = load_report
         self.molecule_smiles = dict(molecule_smiles or {})
+        self.property_names = tuple(str(name) for name in property_names)
+        self._pairs_query = None
+        self._transforms_query = None
         self._known_product_ids_by_smiles = _known_product_ids_by_smiles(
             self.molecule_smiles
         )
@@ -375,19 +500,57 @@ class AnalysisResult:
     @property
     def pairs(self):
         """Matched-pair query surface."""
-        return PairQuery(self.analyzer.pairs())
+        if self._pairs_query is None:
+            self._pairs_query = PairQuery(self.analyzer.pairs())
+        return self._pairs_query
 
     @property
     def transforms(self):
         """Transform query surface."""
-        return TransformQuery(self.analyzer.transforms())
+        if self._transforms_query is None:
+            self._transforms_query = TransformQuery(self.analyzer.transforms())
+        return self._transforms_query
+
+    def summary(self):
+        """Return a plain analysis summary."""
+        return {
+            "method": self.analyzer.method,
+            "molecules": len(self.molecule_smiles),
+            "pairs": len(self.pairs),
+            "transforms": len(self.transforms),
+            "properties": list(self.property_names),
+        }
+
+    def __repr__(self):
+        return text_summary("AnalysisResult", self.summary())
+
+    def _repr_html_(self):
+        summary = self.summary()
+        actions = [
+            "analysis.pairs.to_dataframe()",
+            "analysis.transforms.to_dataframe()",
+            "analysis.save(...)",
+        ]
+        if summary["properties"]:
+            first_property = summary["properties"][0]
+            actions.insert(
+                2,
+                f'analysis.objective("{first_property}").generate(...)',
+            )
+            return html_summary_card("AnalysisResult", summary, actions=actions)
+        return (
+            html_summary_card("AnalysisResult", summary, actions=actions)
+            + '<p class="oemmpa-note">properties are optional</p>'
+        )
 
     def generate(
         self,
         source,
         *,
+        objective=None,
         property_name=None,
-        higher_is_better=True,
+        higher_is_better=None,
+        aggregation="avg",
         min_evidence=1,
         skip_unsupported=True,
         transforms=None,
@@ -395,9 +558,12 @@ class AnalysisResult:
         """Generate products from the current transform set.
 
         :param source: Source molecule as SMILES or supported molecule object.
-        :param property_name: Optional property used to keep improving
-            transforms and attach prediction metadata.
+        :param objective: Optional :class:`oemmpa.Objective` used to keep
+            improving transforms and attach prediction metadata.
+        :param property_name: Optional property name shorthand for
+            ``objective``.
         :param higher_is_better: Whether positive deltas are improvements.
+        :param aggregation: Statistic used when ``property_name`` is provided.
         :param min_evidence: Minimum transform evidence for product
             generation. Use ``0`` to disable evidence filtering.
         :param skip_unsupported: Whether unsupported transforms are skipped.
@@ -412,10 +578,16 @@ class AnalysisResult:
         else:
             query = TransformQuery(transforms)
 
-        if property_name is not None:
-            query = query.with_statistics(property_name).improves(
-                property_name,
-                higher_is_better=higher_is_better,
+        objective = coerce_objective(
+            objective,
+            property_name=property_name,
+            higher_is_better=higher_is_better,
+            aggregation=aggregation,
+        )
+        if objective is not None:
+            query = query.with_statistics(objective.property_name).improves(
+                objective.property_name,
+                higher_is_better=objective.higher_is_better,
             )
 
         products = generate_products(
@@ -431,8 +603,10 @@ class AnalysisResult:
         self,
         source,
         *,
-        property_name,
-        higher_is_better=True,
+        objective=None,
+        property_name=None,
+        higher_is_better=None,
+        aggregation="avg",
         min_evidence=1,
         skip_unsupported=True,
         source_id=None,
@@ -441,8 +615,12 @@ class AnalysisResult:
 
         :param source: Indexed molecule identifier, source molecule SMILES, or
             supported molecule object.
-        :param property_name: Property used to rank improving opportunities.
+        :param objective: :class:`oemmpa.Objective` used to rank improving
+            opportunities.
+        :param property_name: Optional property name shorthand for
+            ``objective``.
         :param higher_is_better: Whether positive deltas are improvements.
+        :param aggregation: Statistic used when ``property_name`` is provided.
         :param min_evidence: Minimum transform evidence for included pair and
             product opportunities. Use ``0`` to disable evidence filtering.
         :param skip_unsupported: Whether unsupported transforms are skipped.
@@ -450,25 +628,37 @@ class AnalysisResult:
         :returns: Molecule-level opportunity result.
         """
         min_evidence = _validate_min_evidence(min_evidence)
+        objective = coerce_objective(
+            objective,
+            property_name=property_name,
+            higher_is_better=higher_is_better,
+            aggregation=aggregation,
+        )
+        if objective is None:
+            raise ValueError("objective or property_name is required")
+
         source_key = str(source)
         if source_key in self.molecule_smiles:
             molecule_id = source_key
             source_smiles = self.molecule_smiles[molecule_id]
-            outgoing = PairQuery(
-                pair for pair in self.analyzer.pairs()
-                if str(pair.source_id) == molecule_id
+            outgoing = self.pairs._filter(
+                lambda pair: str(pair.source_id) == molecule_id
             )
         else:
             molecule_id = str(source_id) if source_id is not None else source_key
             source_smiles = _source_to_smiles(source)
             outgoing = self.pairs
 
-        rules = self.transforms.with_statistics(property_name).improves(
-            property_name,
-            higher_is_better=higher_is_better,
+        rules = self.transforms.with_statistics(
+            objective.property_name,
+            higher_is_better=objective.higher_is_better,
+        ).improves(
+            objective.property_name,
+            higher_is_better=objective.higher_is_better,
         )
         products = self.generate(
             source_smiles,
+            objective=objective,
             min_evidence=min_evidence,
             skip_unsupported=skip_unsupported,
             transforms=rules,
@@ -477,9 +667,9 @@ class AnalysisResult:
         rules = rules._filter(
             lambda transform: transform.transform in applied_transforms
         )
-        pairs = outgoing.with_delta(property_name).improves(
-            property_name,
-            higher_is_better=higher_is_better,
+        pairs = outgoing.with_delta(objective.property_name).improves(
+            objective.property_name,
+            higher_is_better=objective.higher_is_better,
         )
         pairs = pairs._filter(lambda pair: pair.transform in applied_transforms)
         return OpportunityResult(
@@ -488,6 +678,29 @@ class AnalysisResult:
             pairs,
             products,
             rules,
+        )
+
+    def objective(self, objective=None, **kwargs):
+        """Return an analysis view with a default optimization objective."""
+        objective = coerce_objective(objective, **kwargs)
+        if objective is None:
+            raise ValueError("objective or property_name is required")
+        return ObjectiveAnalysis(self, objective)
+
+    def save(self, path, *, index_mode="mmpdb", query_options=None):
+        """Persist this analysis to a DuckDB store.
+
+        :param path: Output DuckDB database path.
+        :param index_mode: Persisted pair orientation mode.
+        :param query_options: Optional raw query options.
+        :returns: Open :class:`oemmpa.DuckDBStore` wrapper for the saved store.
+        """
+        from ._storage import DuckDBStore
+
+        return DuckDBStore(path).save_analyzer(
+            self.analyzer,
+            index_mode=index_mode,
+            query_options=query_options,
         )
 
 
@@ -547,13 +760,19 @@ def analyze_dataframe(
         analyzer,
         load_report=report,
         molecule_smiles=molecule_smiles,
+        property_names=property_columns,
     )
+
+
+analyze = analyze_dataframe
 
 
 __all__ = [
     "AnalysisResult",
+    "ObjectiveAnalysis",
     "OpportunityResult",
     "PairQuery",
     "TransformQuery",
+    "analyze",
     "analyze_dataframe",
 ]

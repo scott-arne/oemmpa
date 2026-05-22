@@ -10,6 +10,7 @@ from ._dataframe import (
     TRANSFORM_SMIRKS_COLUMNS,
     dataframe_from_dicts,
 )
+from ._display import html_collection_preview, text_collection_summary
 
 
 AGGREGATE_FIELDS = (
@@ -206,6 +207,11 @@ class RuleSelectionOptions:
 def _coerce_selection(selection=None, **overrides):
     if selection is None:
         values = {}
+    elif hasattr(selection, "to_rule_selection_options"):
+        return _coerce_selection(
+            selection.to_rule_selection_options(),
+            **overrides,
+        )
     else:
         field_names = tuple(field.name for field in fields(RuleSelectionOptions))
         if not all(hasattr(selection, name) for name in field_names):
@@ -307,6 +313,12 @@ class RuleEnvironmentStatisticsResult:
 
 class RuleEnvironmentStatisticsCollection(list):
     """List of rule-environment statistics with filtering helpers."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -450,6 +462,12 @@ class RuleEnvironmentMatch:
 
 class RuleEnvironmentMatchCollection(list):
     """List of selected rule environments with product-generation helpers."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def statistics(self):
         """Return selected statistics rows."""

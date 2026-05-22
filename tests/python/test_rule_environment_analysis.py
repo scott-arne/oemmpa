@@ -214,6 +214,30 @@ def test_rule_selection_options_compose_with_filtering_and_prediction():
     assert store_prediction.predicted_value == pytest.approx(7.5)
 
 
+def test_selection_alias_compose_with_rule_environment_queries():
+    from oemmpa import Selection, find_transform_environments
+
+    store = _store_with_toluene_phenol_statistics()
+    selection = Selection(
+        property_name="pIC50",
+        min_radius=2,
+        max_radius=4,
+        min_pairs=0,
+        variable_smarts="[*:1][#8]",
+        score="smallest-radius",
+    )
+
+    matches = find_transform_environments(
+        store,
+        transform="[*:1]C>>[*:1]O",
+        selection=selection,
+    )
+
+    assert selection.substructure_smarts == "[*:1][#8]"
+    assert [match.rule_environment_id for match in matches] == [3]
+    assert matches[0].statistics.radius == 2
+
+
 def test_rule_selection_options_validate_user_facing_filters():
     from oemmpa import RuleSelectionOptions
 

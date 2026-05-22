@@ -31,6 +31,24 @@ def _neutral_potency_frame():
     }
 
 
+def _ic50_frame():
+    return {
+        "smiles": [
+            "Cc1ccccc1",
+            "Oc1ccccc1",
+            "Cc1ccccn1",
+            "Oc1ccccn1",
+        ],
+        "id": [
+            "toluene",
+            "phenol",
+            "methyl_pyridine",
+            "hydroxy_pyridine",
+        ],
+        "IC50": [10.0, 5.0, 12.0, 4.0],
+    }
+
+
 def _oe_mol(smiles):
     from openeye import oechem  # type: ignore[import-untyped]
 
@@ -283,6 +301,62 @@ def test_analysis_generate_filters_to_improving_products_by_default():
     assert rows[0]["count"] == 2
     assert rows[0]["std"] == pytest.approx(2**0.5)
     assert "p_value" in rows[0]
+
+
+def test_analyze_alias_supports_no_property_workflow_and_save_open(tmp_path):
+    from oemmpa import analyze, open as open_oemmpa
+
+    analysis = analyze(_potency_frame(), smiles="smiles", id="id")
+
+    products = analysis.generate("Cc1ccccc1", min_evidence=2).to_dicts()
+    database_path = tmp_path / "analysis.oemmpa.duckdb"
+    saved_store = analysis.save(database_path)
+    reopened_store = open_oemmpa(database_path)
+
+    assert {
+        row["smiles"] for row in products
+    } >= {"c1ccc(cc1)O"}
+    assert all("property" not in row for row in products)
+    assert all("predicted_delta" not in row for row in products)
+    assert saved_store.summary()["rule_environment_statistics"] == 0
+    assert reopened_store.summary()["compounds"] == 5
+    assert reopened_store.summary()["rule_environment_statistics"] == 0
+
+
+def test_objective_configures_direction_and_analysis_shortcut():
+    from oemmpa import Objective, analyze
+
+    analysis = analyze(
+        _ic50_frame(),
+        smiles="smiles",
+        id="id",
+        properties=["IC50"],
+    )
+
+    objective = Objective("IC50", direction="decrease")
+    improving_transforms = analysis.objective(objective).transforms.improves()
+    products = analysis.objective(objective).generate(
+        "Cc1ccccc1",
+        min_evidence=2,
+    ).to_dicts()
+    opportunities = analysis.opportunities(
+        "toluene",
+        objective=objective,
+        min_evidence=2,
+    )
+
+    assert objective.property_name == "IC50"
+    assert objective.property == "IC50"
+    assert objective.higher_is_better is False
+    assert improving_transforms[0].transform == "[*:1]C>>[*:1]O"
+    assert all(row["predicted_delta"] < 0 for row in improving_transforms.to_dicts())
+    assert opportunities.rules.improves().to_dicts() == opportunities.rules.to_dicts()
+    assert products[0]["smiles"] == "c1ccc(cc1)O"
+    assert products[0]["property"] == "IC50"
+    assert products[0]["predicted_delta"] == pytest.approx(-6.5)
+    assert _pair_between(opportunities.pairs, "toluene", "phenol").property_delta(
+        "IC50"
+    ) == pytest.approx(-5.0)
 
 
 def test_analysis_generate_marks_known_and_novel_products():

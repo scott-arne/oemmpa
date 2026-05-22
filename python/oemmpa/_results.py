@@ -6,6 +6,7 @@ from ._dataframe import (
     TRANSFORM_SMIRKS_COLUMNS,
     dataframe_from_dicts,
 )
+from ._display import html_collection_preview, text_collection_summary
 
 
 class PairResult:
@@ -100,6 +101,12 @@ class PairResult:
 class PairCollection(list):
     """List of :class:`PairResult` objects with export helpers."""
 
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
+
     def to_dicts(self):
         """Return all pair results as dictionaries.
 
@@ -160,6 +167,12 @@ class TransformResult:
 
 class TransformCollection(list):
     """List of :class:`TransformResult` objects with export helpers."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def to_dicts(self):
         """Return all transform results as dictionaries.
@@ -287,6 +300,12 @@ class GeneratedProductResult:
 
 class GeneratedProductCollection(list):
     """List of :class:`GeneratedProductResult` objects with export helpers."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
 
     def to_dicts(self):
         """Return all generated product results as dictionaries.
