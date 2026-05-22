@@ -5,7 +5,6 @@
 %{
 #include "oemmpa/oemmpa.h"
 #include <oechem.h>
-#include <oegrid.h>
 
 using namespace OEMMPA;
 %}
@@ -56,7 +55,6 @@ namespace OEPlatform {
 }
 
 namespace OESystem {
-    class OEScalarGrid;
     class OERecord;
     class OEMolRecord;
 }
@@ -152,49 +150,10 @@ DEFINE_OE_TYPE_CHECKER(oehierchain,  "openeye.oechem", "OEHierChain")
 DEFINE_OE_TYPE_CHECKER(oeinteractionhint,          "openeye.oechem", "OEInteractionHint")
 DEFINE_OE_TYPE_CHECKER(oeinteractionhintcontainer, "openeye.oechem", "OEInteractionHintContainer")
 
-// ---- Grid (openeye.oegrid) ----
-DEFINE_OE_TYPE_CHECKER(oescalargrid, "openeye.oegrid", "OEScalarGrid")
-
 // ---- Docking (openeye.oedocking) ----
 DEFINE_OE_TYPE_CHECKER(oereceptor,   "openeye.oedocking", "OEReceptor")
 
 #undef DEFINE_OE_TYPE_CHECKER
-
-// ---- OEScalarGrid return-type helper (zero-copy pointer swap) ----
-static PyObject* _oemmpa_wrap_as_oe_grid(OESystem::OEScalarGrid* grid) {
-    if (!grid) {
-        Py_RETURN_NONE;
-    }
-    PyObject* oegrid_mod = PyImport_ImportModule("openeye.oegrid");
-    if (!oegrid_mod) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* grid_cls = PyObject_GetAttrString(oegrid_mod, "OEScalarGrid");
-    Py_DECREF(oegrid_mod);
-    if (!grid_cls) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* oe_grid = PyObject_CallNoArgs(grid_cls);
-    Py_DECREF(grid_cls);
-    if (!oe_grid) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* thisAttr = PyObject_GetAttrString(oe_grid, "this");
-    if (!thisAttr) {
-        PyErr_Clear();
-        Py_DECREF(oe_grid);
-        delete grid;
-        return NULL;
-    }
-    _SwigPyObjectCompat* swig_this = (_SwigPyObjectCompat*)thisAttr;
-    delete reinterpret_cast<OESystem::OEScalarGrid*>(swig_this->ptr);
-    swig_this->ptr = grid;
-    Py_DECREF(thisAttr);
-    return oe_grid;
-}
 %}
 
 // ============================================================================
@@ -335,16 +294,6 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEHierFragment,  _oemmpa_is_oehierfragment,
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEHierChain,    _oemmpa_is_oehierchain,  "Expected OEHierChain object.")
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEInteractionHint,          _oemmpa_is_oeinteractionhint,          "Expected OEInteractionHint object.")
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEInteractionHintContainer, _oemmpa_is_oeinteractionhintcontainer, "Expected OEInteractionHintContainer object.")
-
-// ---- Grid (OESystem) ----
-OE_CROSS_RUNTIME_REF_TYPEMAPS(OESystem::OEScalarGrid, _oemmpa_is_oescalargrid, "Expected OEScalarGrid-derived object.")
-OE_CROSS_RUNTIME_NULLABLE_PTR_TYPEMAPS(OESystem::OEScalarGrid, _oemmpa_is_oescalargrid, "Expected OEScalarGrid or None.")
-
-// OEScalarGrid return-type typemap (wraps C++ grid as native openeye.oegrid object)
-%typemap(out) OESystem::OEScalarGrid* {
-    $result = _oemmpa_wrap_as_oe_grid($1);
-    if (!$result) SWIG_fail;
-}
 
 // ---- Docking (OEDocking) ----
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Expected OEReceptor object.")

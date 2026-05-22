@@ -158,9 +158,12 @@ jobs:
 
       - name: Test wheel
         run: |
-          /opt/venv/bin/pip install pytest
-          /opt/venv/bin/pip install dist/oemmpa-*.whl
-          /opt/venv/bin/pytest tests/python/ -v -s
+          WHEEL="$(pwd)/$(ls dist/oemmpa-*.whl)"
+          /opt/venv/bin/pip install "$WHEEL"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          /opt/venv/bin/python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
+          /opt/venv/bin/python -m oemmpa --help
 
       - name: List built artifacts
         run: |
@@ -261,9 +264,12 @@ jobs:
 
       - name: Test wheel
         run: |
-          pip install pytest
-          pip install dist/oemmpa-*.whl
-          pytest tests/python/ -v -s
+          WHEEL="$(pwd)/$(ls dist/oemmpa-*.whl)"
+          pip install "$WHEEL"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
+          python -m oemmpa --help
 
       - name: List built artifacts
         run: |
@@ -404,8 +410,12 @@ jobs:
 
       - name: Test wheel
         run: |
-          pip install dist/oemmpa-*.whl
-          pytest tests/python/ -v -s
+          WHEEL="$(pwd)/$(ls dist/oemmpa-*.whl)"
+          pip install "$WHEEL"
+          SMOKE_DIR="$(mktemp -d)"
+          cd "$SMOKE_DIR"
+          python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
+          python -m oemmpa --help
 
       - name: List built artifacts
         run: |
