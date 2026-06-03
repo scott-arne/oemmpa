@@ -111,15 +111,20 @@ For interactive dataframe work, `analyze()` loads molecules, optional
 properties, runs analysis, and returns a queryable result object:
 
 ```python
-from oemmpa import Objective, analyze
+from oemmpa import analyze
+
+frame = {
+    "smiles": ["Cc1ccccc1", "Oc1ccccc1", "Nc1ccccc1"],
+    "compound_id": ["toluene", "phenol", "aniline"],
+    "pIC50": [6.0, 7.0, 6.5],
+}
 
 analysis = analyze(
-    df,
+    frame,
     smiles="smiles",
     id="compound_id",
     properties=["pIC50"],
 )
-objective = Objective("pIC50")
 
 improving_pairs = (
     analysis.pairs
@@ -147,10 +152,16 @@ Properties can be omitted entirely. In that mode, pair and transform discovery
 still works and product generation emits product/transform evidence columns
 without prediction metadata.
 
-Transform queries can attach property statistics and rank transformations by
-predicted improvement:
+An `Objective` names the property and optimization direction once, so it can
+drive transform ranking, product generation, and opportunity review without
+repeating `higher_is_better` at each call. Transform queries can then attach
+property statistics and rank transformations by predicted improvement:
 
 ```python
+from oemmpa import Objective
+
+objective = Objective("pIC50")
+
 rules = analysis.objective(objective).transforms.improves().top(25)
 rules_df = rules.to_dataframe()
 ```
@@ -166,7 +177,7 @@ products = analysis.generate(
 )
 
 opportunities = analysis.opportunities(
-    "compound_123",
+    "toluene",
     objective=objective,
     min_evidence=2,
 )

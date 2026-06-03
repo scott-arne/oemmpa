@@ -92,9 +92,9 @@ std::vector<OEMMPA::TransformProduct> products =
 
 `ApplyPairTransform()` applies the observed transformation represented by a
 `MatchedPair` to that pair's source molecule. Observed-transform conversion
-currently supports single-cut transformations where the changing group is a
-single atom. Multi-atom and multi-cut transformations raise `InvalidQueryError`
-for now.
+supports connected changing groups with one, two, or three attachment labels,
+including multi-atom variables. Disconnected multi-cut transformations, such as
+the unresolved multi-cut hydrogen cases, raise `InvalidQueryError`.
 
 `GenerateProducts()` applies a collection of transformations to a source
 molecule and returns `GeneratedProduct` rows with canonical product SMILES, the
@@ -310,15 +310,16 @@ selected rule-environment row for pair inspection.
 ## Current Scope
 
 The fragmentation, DMCSS, and initial OEMedChem methods are available now.
-Explicit unimolecular SMIRKS application and single-cut, single-atom observed
-transform application are available through `TransformApplicator`. DuckDB
-storage can save molecules, properties, and pairs; load SMILES and property
-files; refresh rule-environment property statistics; and query stored pairs,
-transformations, and rule-environment statistics. Python transformation
-statistics, rule-environment prediction helpers, product generation, and
-cut R-group workflow helpers are available on top of the common result objects.
-File-based CLI commands are available for transform and prediction workflows.
-Input-SMILES environment matching, SMARTS-filtered rule selection, and
-reference-based property prediction are available through the Python API. A
-separate fragment database, multi-atom product generation, and C++ analytics
-APIs remain later work.
+Explicit unimolecular SMIRKS application and observed-transform application for
+connected one- to three-attachment changing groups, including multi-atom
+variables, are available through `TransformApplicator`. DuckDB storage can save
+molecules, properties, and pairs; load SMILES and property files; refresh
+rule-environment property statistics; and query stored pairs, transformations,
+and rule-environment statistics. Python transformation statistics,
+rule-environment prediction helpers, product generation, and cut R-group
+workflow helpers are available on top of the common result objects. File-based
+CLI commands are available for transform and prediction workflows. Input-SMILES
+environment matching, SMARTS-filtered rule selection, and reference-based
+property prediction are available through the Python API. A separate fragment
+database, disconnected multi-cut product generation, and C++ analytics APIs
+remain later work.
