@@ -9,14 +9,18 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.13"
+  # Doxygen is required for the Breathe/Exhale C++ API generation.
+  apt_packages:
+    - doxygen
 
 # Build documentation in the "docs/" directory with Sphinx
 sphinx:
    configuration: docs/conf.py
 
-# Optionally, but recommended,
-# declare the Python requirements required to build your documentation
+# Declare the Python requirements required to build the documentation.
 # See https://docs.readthedocs.io/en/stable/guides/reproducible-builds.html
-# python:
-#    install:
-#    - requirements: docs/requirements.txt
+# The compiled extension and OpenEye toolkits are not installed here; the
+# Python autodoc pass mocks them (see autodoc_mock_imports in docs/conf.py).
+python:
+  install:
+    - requirements: docs/requirements.txt

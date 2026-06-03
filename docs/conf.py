@@ -69,6 +69,14 @@ html_theme_options = {
 autodoc_member_order = "bysource"
 autodoc_typehints = "description"
 autodoc_typehints_format = "short"
+# The compiled SWIG extension is unavailable on documentation-only builds
+# (e.g. Read the Docs), where neither the C++ extension nor the OpenEye
+# toolkits are installed. Mock the raw bindings so autodoc can import the
+# pure-Python package and introspect its public API.
+autodoc_mock_imports = [
+    "oemmpa._oemmpa",
+    "oemmpa.oemmpa",
+]
 napoleon_google_docstring = False
 napoleon_numpy_docstring = False
 
