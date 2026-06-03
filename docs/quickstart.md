@@ -10,7 +10,7 @@ transformations, calculate transformation statistics, and generate products.
 from oemmpa import Analyzer
 
 analyzer = Analyzer()
-analyzer.add_molecule("Cc1ccccc1", id="tol")
+analyzer.add_molecule("Cc1ccccc1", id="toluene")
 analyzer.add_molecule("Oc1ccccc1", id="phenol")
 
 analyzer.analyze()
@@ -40,7 +40,7 @@ and optional `id` values.
 ```python
 report = analyzer.add_molecules(
     [
-        ("Cc1ccccc1", "tol"),
+        ("Cc1ccccc1", "toluene"),
         {"smiles": "Oc1ccccc1", "id": "phenol"},
         "Nc1ccccc1",
     ]
@@ -88,7 +88,7 @@ accepts simple column dictionaries and iterables of row dictionaries.
 ```python
 frame = {
     "smiles": ["Cc1ccccc1", "Oc1ccccc1"],
-    "id": ["tol", "phenol"],
+    "id": ["toluene", "phenol"],
     "pIC50": [6.0, 7.0],
     "logD": [2.4, 1.2],
 }
