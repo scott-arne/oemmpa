@@ -240,6 +240,34 @@ TEST(AnalyzerTest, MMPDBReferenceDoesNotPairDisconnectedTwoCutSubstituentSwaps) 
     EXPECT_FALSE(HasUnorderedPair(pairs, "2-chlorophenol", "o-phenylenediamine"));
 }
 
+TEST(AnalyzerTest, FragmentationDiscoversHydrogenDeletionAndInsertionTransforms) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs(QueryOptions());
+
+    EXPECT_TRUE(std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceExternalId() == "phenol" &&
+                pair.GetTargetExternalId() == "benzene" &&
+                pair.GetTransformSmiles() == "[*:1]O>>[*:1][H]";
+        }
+    ));
+    EXPECT_TRUE(std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceExternalId() == "benzene" &&
+                pair.GetTargetExternalId() == "phenol" &&
+                pair.GetTransformSmiles() == "[*:1][H]>>[*:1]O";
+        }
+    ));
+}
+
 TEST(AnalyzerTest, PropertyDeltaInjectionUsesMatchingSourceAndTargetProperties) {
     Analyzer analyzer = MakeToluenePhenolAnalyzer();
     analyzer.AddProperty("tol", "pIC50", 6.0);

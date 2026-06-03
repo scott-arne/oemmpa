@@ -352,6 +352,128 @@ TEST(MemoryIndexTest, DuplicateFragmentationsDoNotInflatePairOrTransformSupport)
     EXPECT_EQ(transforms[1].GetEvidenceCount(), 1);
 }
 
+TEST(MemoryIndexTest, HydrogenParentBuildsDeletionAndInsertionPairs) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    ASSERT_EQ(pairs.size(), 2);
+    EXPECT_TRUE(std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceMoleculeId() == 2 &&
+                pair.GetTargetMoleculeId() == 1 &&
+                pair.GetTransformSmiles() == "[*:1]O>>[*:1][H]";
+        }
+    ));
+    EXPECT_TRUE(std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [](const MatchedPair& pair) {
+            return pair.GetSourceMoleculeId() == 1 &&
+                pair.GetTargetMoleculeId() == 2 &&
+                pair.GetTransformSmiles() == "[*:1][H]>>[*:1]O";
+        }
+    ));
+}
+
+TEST(MemoryIndexTest, DuplicateFragmentationCanSupplyHydrogenParentMetadata) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1
+    ));
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    EXPECT_TRUE(HasTransform(pairs, "[*:1]O>>[*:1][H]"));
+    EXPECT_TRUE(HasTransform(pairs, "[*:1][H]>>[*:1]O"));
+}
+
+TEST(MemoryIndexTest, ExplicitHydrogenFragmentationDoesNotInflateSyntheticHydrogenSupport) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+    index.AddFragmentation(Fragmentation(
+        benzene.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1][H]",
+        1
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+    const std::vector<Transform> transforms = index.GetTransforms(QueryOptions());
+
+    EXPECT_EQ(pairs.size(), 2);
+    ASSERT_EQ(transforms.size(), 2);
+    for (const Transform& transform : transforms) {
+        EXPECT_EQ(transform.GetEvidenceCount(), 1);
+    }
+}
+
+TEST(MemoryIndexTest, HydrogenRowsRequireLoadedHydrogenParent) {
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+
+    MemoryIndex index;
+    index.AddMolecule(phenol);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        benzene.GetCanonicalSmiles()
+    ));
+
+    EXPECT_TRUE(index.GetPairs(QueryOptions()).empty());
+}
+
+TEST(MemoryIndexTest, HydrogenVariableValidationAllowsOneCutMappedHydrogen) {
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "C", "methane"));
+
+    EXPECT_NO_THROW(index.AddFragmentation(
+        MakeFragmentation(1, "[*:1]", "[*:1][H]", 1)
+    ));
+}
+
 TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {
     MoleculeRecord molecule = MakeMolecule(1, "CCCCCCC", "heptane");
     Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();

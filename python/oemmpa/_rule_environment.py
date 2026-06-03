@@ -46,12 +46,25 @@ _SCORE_ALIASES = {
 }
 _AGGREGATIONS = {"avg", "mean", "median"}
 _SMILES_MOL_CACHE_MAXSIZE = 4096
+_HYDROGEN_VARIABLE_SMILES = "[*:1][H]"
 
 
 def _optional(raw_row, has_name, getter_name):
     if not getattr(raw_row, has_name)():
         return None
     return getattr(raw_row, getter_name)()
+
+
+def _coerce_radius(name, value):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    try:
+        radius = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if radius < 0 or radius > 5:
+        raise ValueError(f"{name} must be between 0 and 5")
+    return radius
 
 
 def _normalize_score(score):
@@ -612,10 +625,25 @@ class RuleEnvironmentPredictionResult:
     pseudosmiles: str
     std: float | None
     p_value: float | None
+    query_environment: "QueryEnvironmentResult | None" = None
+    reference_environment: "QueryEnvironmentResult | None" = None
 
     @classmethod
-    def from_statistics(cls, row, aggregation, value=None):
-        """Build a prediction from a selected statistics row."""
+    def from_statistics(
+        cls,
+        row,
+        aggregation,
+        value=None,
+        query_environment=None,
+        reference_environment=None,
+    ):
+        """Build a prediction from a selected statistics row.
+
+        :param query_environment: Optional query-molecule environment that
+            produced this prediction, populated by query-driven prediction.
+        :param reference_environment: Optional reference-molecule environment,
+            populated by reference-based prediction.
+        """
         normalized_aggregation = "avg" if aggregation == "mean" else str(aggregation)
         predicted_delta = row.predicted_delta(normalized_aggregation)
         predicted_value = None
@@ -634,11 +662,13 @@ class RuleEnvironmentPredictionResult:
             pseudosmiles=row.pseudosmiles,
             std=row.std,
             p_value=row.p_value,
+            query_environment=query_environment,
+            reference_environment=reference_environment,
         )
 
     def to_dict(self):
         """Return a serializable prediction mapping."""
-        return {
+        result = {
             "rule_environment_id": self.rule_environment_id,
             "transform": self.transform,
             "property": self.property_name,
@@ -652,6 +682,11 @@ class RuleEnvironmentPredictionResult:
             "std": self.std,
             "p_value": self.p_value,
         }
+        if self.query_environment is not None:
+            result["query_environment"] = self.query_environment.to_dict()
+        if self.reference_environment is not None:
+            result["reference_environment"] = self.reference_environment.to_dict()
+        return result
 
 
 def _score_key(row, score):
@@ -810,15 +845,396 @@ def predict_rule_environment_delta(
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Query-environment feature
+#
+# These helpers predict and match transforms using the local chemical
+# environments of a query (and optional reference) molecule, rather than a
+# caller-supplied transform SMILES. They reuse the canonical selection,
+# filtering, and scoring machinery above; only the entry points differ.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueryEnvironmentResult:
+    """Query molecule environment derived from one fragmentation."""
+
+    constant_smiles: str
+    variable_smiles: str
+    cut_count: int
+    radius: int
+    smarts: str
+    pseudosmiles: str
+    parent_smarts: str
+
+    @classmethod
+    def from_raw(cls, raw_row):
+        """Build a Python result from a raw C++ query environment."""
+        return cls(
+            constant_smiles=raw_row.GetConstantSmiles(),
+            variable_smiles=raw_row.GetVariableSmiles(),
+            cut_count=int(raw_row.GetCutCount()),
+            radius=int(raw_row.GetRadius()),
+            smarts=raw_row.GetSmarts(),
+            pseudosmiles=raw_row.GetPseudoSmiles(),
+            parent_smarts=raw_row.GetParentSmarts(),
+        )
+
+    def to_dict(self):
+        """Return a serializable query-environment mapping."""
+        return {
+            "constant_smiles": self.constant_smiles,
+            "variable_smiles": self.variable_smiles,
+            "cut_count": self.cut_count,
+            "radius": self.radius,
+            "smarts": self.smarts,
+            "pseudosmiles": self.pseudosmiles,
+            "parent_smarts": self.parent_smarts,
+        }
+
+
+class QueryEnvironmentCollection(list):
+    """List of query molecule environments."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
+
+    def to_dicts(self):
+        """Return all query environments as dictionaries."""
+        return [row.to_dict() for row in self]
+
+
+@dataclass(frozen=True)
+class QueryEnvironmentMatch:
+    """Stored rule-environment statistics matched to a query environment."""
+
+    query_environment: QueryEnvironmentResult
+    statistics: RuleEnvironmentStatisticsResult
+
+    def to_dict(self):
+        """Return a serializable match mapping."""
+        return {
+            "query_environment": self.query_environment.to_dict(),
+            "statistics": self.statistics.to_dict(),
+        }
+
+
+class QueryEnvironmentMatchCollection(list):
+    """List of query-environment matches."""
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
+
+    def to_dicts(self):
+        """Return all matches as dictionaries."""
+        return [match.to_dict() for match in self]
+
+
+def compute_query_environments(smiles, min_radius=0, max_radius=5):
+    """Compute query environments for an input molecule SMILES.
+
+    :param smiles: Query molecule SMILES.
+    :param min_radius: Minimum environment radius, inclusive.
+    :param max_radius: Maximum environment radius, inclusive.
+    :returns: :class:`QueryEnvironmentCollection`.
+    """
+    from . import _oemmpa
+
+    raw_rows = _oemmpa.ComputeQueryEnvironments(
+        str(smiles),
+        _coerce_radius("min_radius", min_radius),
+        _coerce_radius("max_radius", max_radius),
+    )
+    return QueryEnvironmentCollection(
+        QueryEnvironmentResult.from_raw(row)
+        for row in raw_rows
+    )
+
+
+def _environment_key(row):
+    return (
+        row.radius,
+        row.smarts,
+        row.pseudosmiles,
+        row.parent_smarts,
+    )
+
+
+def _implicit_hydrogen_environment(row):
+    """Build an environment placeholder for implicit-hydrogen transforms."""
+    return QueryEnvironmentResult(
+        constant_smiles="",
+        variable_smiles=_HYDROGEN_VARIABLE_SMILES,
+        cut_count=1,
+        radius=row.radius,
+        smarts=row.smarts,
+        pseudosmiles=row.pseudosmiles,
+        parent_smarts=row.parent_smarts,
+    )
+
+
+def _canonical_smiles(smiles):
+    from . import _oemmpa
+
+    return _oemmpa.MoleculeRecord.FromSmiles(1, str(smiles)).GetCanonicalSmiles()
+
+
+def _transform_maps_reference_to_query(reference, query, transform):
+    from ._transform import apply_variable_transform
+
+    query_canonical = _canonical_smiles(query)
+    try:
+        products = apply_variable_transform(reference, transform)
+    except ValueError:
+        return False
+
+    return any(
+        _canonical_smiles(product) == query_canonical
+        for product in products
+    )
+
+
+def _hydrogen_transform_matches_source_environment(source, row):
+    from ._transform import apply_variable_transform
+
+    try:
+        products = apply_variable_transform(source, row.transform)
+    except ValueError:
+        return False
+
+    row_key = _environment_key(row)
+    for product in products:
+        product_environments = compute_query_environments(
+            product,
+            row.radius,
+            row.radius,
+        )
+        for environment in product_environments:
+            if environment.variable_smiles != row.to_smiles:
+                continue
+            if _environment_key(environment) == row_key:
+                return True
+    return False
+
+
+def _query_statistics(store, options):
+    """Return filtered statistics in the raw (uncollapsed) orientation view."""
+    return store.rule_environment_statistics(options.property_name).filter(
+        selection=options,
+        rule_view="openeye-native",
+    )
+
+
+def find_query_environments(store, smiles, *, selection=None, **filters):
+    """Find stored transform statistics compatible with a query molecule.
+
+    Unlike :func:`find_transform_environments`, which selects a caller-supplied
+    transform, this matches stored rule environments against the local chemical
+    environments of ``smiles``.
+
+    :param store: :class:`oemmpa.DuckDBStore` or compatible object.
+    :param smiles: Query molecule SMILES.
+    :param selection: Optional :class:`RuleSelectionOptions`.
+    :param filters: Keyword filters accepted by :class:`RuleSelectionOptions`.
+    :returns: :class:`QueryEnvironmentMatchCollection`.
+    """
+    options = _coerce_selection(selection, **filters)
+    query_environments = compute_query_environments(
+        smiles,
+        options.min_radius,
+        options.max_radius,
+    )
+    statistics = _query_statistics(store, options)
+
+    best_matches = {}
+    for query_environment in query_environments:
+        query_key = _environment_key(query_environment)
+        for row in statistics:
+            if row.from_smiles != query_environment.variable_smiles:
+                continue
+            if _environment_key(row) != query_key:
+                continue
+            match_key = (row.property_name, row.transform)
+            candidate = QueryEnvironmentMatch(query_environment, row)
+            current = best_matches.get(match_key)
+            if current is None or _score_key(row, options.score) > _score_key(
+                current.statistics,
+                options.score,
+            ):
+                best_matches[match_key] = candidate
+
+    if not query_environments:
+        for row in statistics:
+            if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if not _hydrogen_transform_matches_source_environment(smiles, row):
+                continue
+            match_key = (row.property_name, row.transform)
+            candidate = QueryEnvironmentMatch(_implicit_hydrogen_environment(row), row)
+            current = best_matches.get(match_key)
+            if current is None or _score_key(row, options.score) > _score_key(
+                current.statistics,
+                options.score,
+            ):
+                best_matches[match_key] = candidate
+
+    return QueryEnvironmentMatchCollection(
+        best_matches[key]
+        for key in sorted(best_matches)
+    )
+
+
+def predict_query_property_delta(
+    store,
+    smiles,
+    reference,
+    property_name,
+    value=None,
+    *,
+    selection=None,
+    **filters,
+):
+    """Predict a property delta from query and reference molecule environments.
+
+    :param store: :class:`oemmpa.DuckDBStore` or compatible object.
+    :param smiles: Query molecule SMILES.
+    :param reference: Reference molecule SMILES that should transform into
+        ``smiles``.
+    :param property_name: Property name used for the prediction.
+    :param value: Optional starting property value.
+    :param selection: Optional :class:`RuleSelectionOptions`.
+    :param filters: Keyword filters accepted by :class:`RuleSelectionOptions`.
+    :returns: :class:`RuleEnvironmentPredictionResult`.
+    :raises KeyError: If no compatible rule environment is found.
+    """
+    options = _coerce_selection(selection, property_name=property_name, **filters)
+
+    query_environments = compute_query_environments(
+        smiles,
+        options.min_radius,
+        options.max_radius,
+    )
+    reference_environments = compute_query_environments(
+        reference,
+        options.min_radius,
+        options.max_radius,
+    )
+
+    references_by_key = {}
+    for reference_environment in reference_environments:
+        references_by_key.setdefault(
+            _environment_key(reference_environment),
+            [],
+        ).append(reference_environment)
+
+    statistics = _query_statistics(store, options)
+
+    candidates = []
+    possible_transforms = []
+    for query_environment in query_environments:
+        query_key = _environment_key(query_environment)
+        reference_matches = references_by_key.get(query_key, [])
+        for reference_environment in reference_matches:
+            transform = (
+                reference_environment.variable_smiles
+                + ">>"
+                + query_environment.variable_smiles
+            )
+            possible_transforms.append(transform)
+            for row in statistics:
+                if row.transform != transform:
+                    continue
+                if _environment_key(row) != query_key:
+                    continue
+                if not _transform_maps_reference_to_query(
+                    reference,
+                    smiles,
+                    row.transform,
+                ):
+                    continue
+                candidates.append((row, query_environment, reference_environment))
+        if reference_matches:
+            continue
+        for row in statistics:
+            if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if row.to_smiles != query_environment.variable_smiles:
+                continue
+            if _environment_key(row) != query_key:
+                continue
+            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
+                continue
+            transform = row.transform
+            possible_transforms.append(transform)
+            candidates.append(
+                (
+                    row,
+                    query_environment,
+                    _implicit_hydrogen_environment(row),
+                )
+            )
+    for reference_environment in reference_environments:
+        reference_key = _environment_key(reference_environment)
+        for row in statistics:
+            if row.to_smiles != _HYDROGEN_VARIABLE_SMILES:
+                continue
+            if row.from_smiles != reference_environment.variable_smiles:
+                continue
+            if _environment_key(row) != reference_key:
+                continue
+            transform = row.transform
+            possible_transforms.append(transform)
+            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
+                continue
+            candidates.append(
+                (
+                    row,
+                    _implicit_hydrogen_environment(row),
+                    reference_environment,
+                )
+            )
+
+    if not candidates:
+        if possible_transforms:
+            raise KeyError(sorted(set(possible_transforms))[0])
+        raise KeyError(f"{reference}>>{smiles}")
+
+    selected_row, query_environment, reference_environment = max(
+        candidates,
+        key=lambda candidate: _score_key(candidate[0], options.score),
+    )
+    return RuleEnvironmentPredictionResult.from_statistics(
+        selected_row,
+        options.aggregation,
+        value=value,
+        query_environment=query_environment,
+        reference_environment=reference_environment,
+    )
+
+
 __all__ = [
+    "QueryEnvironmentCollection",
+    "QueryEnvironmentMatch",
+    "QueryEnvironmentMatchCollection",
+    "QueryEnvironmentResult",
     "RuleEnvironmentMatch",
     "RuleEnvironmentMatchCollection",
     "RuleEnvironmentPredictionResult",
     "RuleEnvironmentStatisticsCollection",
     "RuleEnvironmentStatisticsResult",
     "RuleSelectionOptions",
+    "compute_query_environments",
+    "find_query_environments",
     "find_transform_environments",
     "predict_property_delta",
+    "predict_query_property_delta",
     "predict_rule_environment_delta",
     "wrap_rule_environment_statistics",
 ]

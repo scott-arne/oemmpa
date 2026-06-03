@@ -330,6 +330,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(CutBondVector) std::vector<OEMMPA::CutBond>;
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
 %template(EnvironmentFingerprintVector) std::vector<OEMMPA::EnvironmentFingerprint>;
+%template(QueryEnvironmentVector) std::vector<OEMMPA::QueryEnvironment>;
 %template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
 %template(RuleEnvironmentStatisticsVector) std::vector<OEMMPA::RuleEnvironmentStatistics>;
 %template(TransformVector) std::vector<OEMMPA::Transform>;
@@ -340,8 +341,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Version macros
 // ============================================================================
 #define OEMMPA_VERSION_MAJOR 1
-#define OEMMPA_VERSION_MINOR 0
-#define OEMMPA_VERSION_PATCH 1
+#define OEMMPA_VERSION_MINOR 1
+#define OEMMPA_VERSION_PATCH 0
 
 // ============================================================================
 // Phase 1 public headers
@@ -358,6 +359,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/Error.h"
 %include "../include/oemmpa/DatabaseSummary.h"
 %include "../include/oemmpa/EnvironmentFingerprint.h"
+%include "../include/oemmpa/QueryEnvironment.h"
 %include "../include/oemmpa/Fragmentation.h"
 %include "../include/oemmpa/MoleculeRecord.h"
 %include "../include/oemmpa/LoadReport.h"

@@ -841,6 +841,33 @@ TEST(DuckDBStoreTest, AnalyzerSaveRefreshesRuleEnvironmentStatistics) {
     );
 }
 
+TEST(DuckDBStoreTest, AnalyzerSaveRefreshesHydrogenRuleEnvironmentStatistics) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1cccnc1O", "pyridinol");
+    analyzer.AddMolecule("c1ccncc1", "pyridine");
+    analyzer.AddProperty("pyridinol", "MW", 95.0);
+    analyzer.AddProperty("pyridine", "MW", 79.0);
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<RuleEnvironmentStatistics> rows =
+        store.GetRuleEnvironmentStatistics("MW");
+    const auto hydrogen_iter = std::find_if(
+        rows.begin(),
+        rows.end(),
+        [](const RuleEnvironmentStatistics& row) {
+            return row.GetTransformSmiles() == "[*:1]O>>[*:1][H]" &&
+                row.GetRadius() == 1;
+        }
+    );
+
+    ASSERT_NE(hydrogen_iter, rows.end());
+    EXPECT_EQ(hydrogen_iter->GetCount(), 1U);
+    EXPECT_DOUBLE_EQ(hydrogen_iter->GetAvg(), -16.0);
+}
+
 TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "tol");

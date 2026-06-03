@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"
 
 #include <oechem.h>
+
+#include <algorithm>
 
 namespace OEMMPA {
 namespace test {
@@ -213,6 +216,38 @@ TEST(TransformApplicationTest, AppliesMMPDBGenerateStyleVariableTransforms) {
         ASSERT_EQ(products.size(), 1U) << test_case.first;
         EXPECT_EQ(products.front().GetSmiles(), test_case.second) << test_case.first;
     }
+}
+
+TEST(TransformApplicationTest, AppliesAnalyzerDiscoveredHydrogenTransform) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Oc1ccccn1", "pyridinol");
+    analyzer.AddMolecule("c1ccncc1", "pyridine");
+
+    analyzer.Analyze();
+    const std::vector<Transform> transforms = analyzer.GetTransforms();
+
+    const Transform* hydrogen_transform = nullptr;
+    for (const Transform& transform : transforms) {
+        if (transform.GetTransformSmiles() == "[*:1]O>>[*:1][H]") {
+            hydrogen_transform = &transform;
+            break;
+        }
+    }
+
+    ASSERT_NE(hydrogen_transform, nullptr);
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplyVariableTransform(
+            "Oc1ccccn1",
+            hydrogen_transform->GetTransformSmiles()
+        );
+
+    EXPECT_TRUE(std::any_of(
+        products.begin(),
+        products.end(),
+        [](const TransformProduct& product) {
+            return product.GetSmiles() == "c1ccncc1";
+        }
+    ));
 }
 
 TEST(TransformApplicationTest, GeneratesProductsFromTransformCollectionWithEvidenceFiltering) {

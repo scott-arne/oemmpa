@@ -54,6 +54,21 @@ def _store_with_toluene_aniline_statistics():
     return store
 
 
+def _store_with_pyridinol_hydrogen_statistics():
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    analyzer.add_molecule("c1cccnc1O", id="pyridinol")
+    analyzer.add_molecule("c1ccncc1", id="pyridine")
+    analyzer.add_property("pyridinol", "MW", 95.0)
+    analyzer.add_property("pyridine", "MW", 79.0)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer, index_mode="openeye-native")
+    return store
+
+
 def _store_with_multicut_ring_environment_statistics():
     from oemmpa import Analyzer, DuckDBStore, _oemmpa
 
@@ -342,8 +357,206 @@ def test_rule_environment_statistics_collection_supports_safe_where_filters():
         rows.filter(where="count + radius > 1")
 
 
+def test_compute_query_environments_wraps_raw_rows():
+    from oemmpa import compute_query_environments
+
+    environments = compute_query_environments("c1cccnc1O", min_radius=0, max_radius=2)
+
+    assert len(environments) > 0
+    assert {environment.radius for environment in environments} >= {0, 1, 2}
+    assert "[*:1]O" in {
+        environment.variable_smiles
+        for environment in environments
+    }
+    assert all(environment.smarts for environment in environments)
+    assert all(environment.pseudosmiles for environment in environments)
+
+
+def test_find_query_environments_matches_query_environment_rows():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _store_with_toluene_phenol_statistics()
+
+    matches = find_query_environments(
+        store,
+        "Cc1ccccc1",
+        selection=RuleSelectionOptions(
+            property_name="pIC50",
+            min_radius=0,
+            max_radius=1,
+            score=" -min-radius",
+        ),
+    )
+
+    assert len(matches) == 1
+    assert matches[0].query_environment.variable_smiles == "[*:1]C"
+    assert matches[0].statistics.transform == "[*:1]C>>[*:1]O"
+    assert matches[0].statistics.radius == 0
+    assert matches[0].statistics.avg == pytest.approx(1.5)
+
+
+def test_find_query_environments_matches_hydrogen_deletion_rows():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert "[*:1]O>>[*:1][H]" in by_transform
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    assert hydrogen.radius == 1
+    assert hydrogen.count == 1
+    assert hydrogen.avg == pytest.approx(-16.0)
+
+
+def test_find_query_environments_matches_implicit_hydrogen_insertion_rows():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_query_environments(
+        store,
+        "c1ccncc1",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert "[*:1][H]>>[*:1]O" in by_transform
+    hydrogen = by_transform["[*:1][H]>>[*:1]O"]
+    assert hydrogen.radius == 1
+    assert hydrogen.count == 1
+    assert hydrogen.avg == pytest.approx(16.0)
+
+
+def test_find_query_environments_rejects_wrong_implicit_hydrogen_environment():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    matches = find_query_environments(
+        store,
+        "c1ccccc1",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=2,
+            max_radius=3,
+        ),
+    )
+
+    assert {
+        match.statistics.transform
+        for match in matches
+    }.isdisjoint({"[*:1][H]>>[*:1]O"})
+
+
+def test_discovered_hydrogen_transform_applies_to_query_source():
+    import oemmpa
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+    source_smiles = "c1cccnc1O"
+
+    matches = find_query_environments(
+        store,
+        source_smiles,
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert "[*:1]O>>[*:1][H]" in by_transform
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    products = oemmpa.apply_variable_transform(source_smiles, hydrogen.transform)
+
+    assert "c1ccncc1" in products
+
+
+def test_predict_query_property_delta_matches_query_and_reference_environments():
+    from oemmpa import RuleSelectionOptions, predict_query_property_delta
+
+    store = _store_with_toluene_phenol_statistics()
+
+    prediction = predict_query_property_delta(
+        store,
+        smiles="Oc1ccccc1",
+        reference="Cc1ccccc1",
+        property_name="pIC50",
+        value=6.0,
+        selection=RuleSelectionOptions(max_radius=1, score=" -min-radius"),
+    )
+
+    assert prediction.transform == "[*:1]C>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(1.5)
+    assert prediction.predicted_value == pytest.approx(7.5)
+    assert prediction.radius == 0
+    assert prediction.query_environment.variable_smiles == "[*:1]O"
+    assert prediction.reference_environment.variable_smiles == "[*:1]C"
+
+
+def test_predict_query_property_delta_rejects_reference_that_does_not_generate_query():
+    from oemmpa import predict_query_property_delta
+
+    store = _store_with_toluene_phenol_statistics()
+
+    with pytest.raises(KeyError):
+        predict_query_property_delta(
+            store,
+            smiles="Oc1ccccc1",
+            reference="Cc1ccccn1",
+            property_name="pIC50",
+        )
+
+
+def test_predict_query_property_delta_supports_hydrogen_deletion_reference_direction():
+    from oemmpa import RuleSelectionOptions, predict_query_property_delta
+
+    store = _store_with_pyridinol_hydrogen_statistics()
+
+    prediction = predict_query_property_delta(
+        store,
+        smiles="c1ccncc1",
+        reference="c1cccnc1O",
+        property_name="MW",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+
+    assert prediction.transform == "[*:1]O>>[*:1][H]"
+    assert prediction.predicted_delta == pytest.approx(-16.0)
+    assert prediction.query_environment.variable_smiles == "[*:1][H]"
+    assert prediction.reference_environment.variable_smiles == "[*:1]O"
+
+
 def test_predict_rule_environment_delta_selects_environment_row():
-    from oemmpa import predict_rule_environment_delta
+    from oemmpa import RuleSelectionOptions, predict_rule_environment_delta
 
     store = _store_with_toluene_phenol_statistics()
     rows = store.rule_environment_statistics("pIC50")
@@ -384,6 +597,20 @@ def test_predict_rule_environment_delta_selects_environment_row():
         score="smallest-radius",
     )
     assert radius_two_prediction.radius == 2
+
+    selection_prediction = predict_rule_environment_delta(
+        rows,
+        "[*:1]C>>[*:1]O",
+        selection=RuleSelectionOptions(
+            property_name="pIC50",
+            min_radius=1,
+            max_radius=3,
+            score="-min-radius",
+            aggregation="mean",
+        ),
+    )
+    assert selection_prediction.radius == 1
+    assert selection_prediction.aggregation == "avg"
 
     with pytest.raises(KeyError, match=r"\[\*:1\]C>>\[\*:1\]O"):
         predict_rule_environment_delta(

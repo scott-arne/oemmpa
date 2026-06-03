@@ -15,8 +15,8 @@ import warnings
 from importlib import metadata
 from pathlib import Path
 
-__version__ = "1.0.1"
-__version_info__ = (1, 0, 1)
+__version__ = "1.1.0"
+__version_info__ = (1, 1, 0)
 
 
 _OPENEYE_COMPAT_PRELOAD_PATHS: list[str] = []
@@ -658,6 +658,8 @@ _RAW_BINDING_EXPORTS = (
     "MoleculeRecord",
     "OEMMPAError",
     "PairScoring",
+    "QueryEnvironment",
+    "QueryEnvironmentVector",
     "QueryOptions",
     "RuleEnvironmentStatistics",
     "RuleEnvironmentStatisticsVector",
@@ -668,6 +670,7 @@ _RAW_BINDING_EXPORTS = (
     "ScoringMode_MinimalHeavyBondChange",
     "ScoringOptions",
     "SmartsFragmentationStrategy",
+    "SmilesContainsSubstructure",
     "StorageError",
     "StringVector",
     "Transform",
@@ -728,14 +731,21 @@ from ._analytics import (
     predict_transform_delta,
 )
 from ._rule_environment import (
+    QueryEnvironmentCollection,
+    QueryEnvironmentMatch,
+    QueryEnvironmentMatchCollection,
+    QueryEnvironmentResult,
     RuleEnvironmentMatch,
     RuleEnvironmentMatchCollection,
     RuleEnvironmentPredictionResult,
     RuleEnvironmentStatisticsCollection,
     RuleEnvironmentStatisticsResult,
     RuleSelectionOptions,
+    compute_query_environments,
+    find_query_environments,
     find_transform_environments,
     predict_property_delta,
+    predict_query_property_delta,
     predict_rule_environment_delta,
 )
 from ._query import (
@@ -777,6 +787,10 @@ __all__ = [
     "PairResult",
     "PredictionResult",
     "PairQuery",
+    "QueryEnvironmentCollection",
+    "QueryEnvironmentMatch",
+    "QueryEnvironmentMatchCollection",
+    "QueryEnvironmentResult",
     "RowError",
     "RuleEnvironmentMatch",
     "RuleEnvironmentMatchCollection",
@@ -797,14 +811,17 @@ __all__ = [
     "analyze_dataframe",
     "build_variable_transform_smirks",
     "calculate_molecular_weight",
+    "compute_query_environments",
     "compute_transform_statistics",
     "duckdb_available",
+    "find_query_environments",
     "find_transform_environments",
     "generate_products",
     "generate_products_from_rule_environments",
     "open",
     "open_store",
     "predict_property_delta",
+    "predict_query_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",
     "read_rgroup_file",

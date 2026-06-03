@@ -254,12 +254,12 @@ def _mmpdb_reference_transform(row, evidence_count=None):
     return transform
 
 
-def _mmpdb_reference_store(property_names=("MW", "MP")):
+def _mmpdb_reference_store(property_names=("MW", "MP"), index_mode="mmpdb"):
     from oemmpa import DuckDBStore
 
     analyzer = _mmpdb_reference_analyzer(property_names=property_names)
     store = DuckDBStore()
-    store.save_analyzer(analyzer)
+    store.save_analyzer(analyzer, index_mode=index_mode)
     return store
 
 
@@ -282,6 +282,59 @@ def _pair_between(pairs, source_id, target_id):
 def _phase13_6_transform_for_case(row):
     source_variable = "C([*:1])[*:2]"
     return f"{source_variable}>>{row['target_variable_smiles']}"
+
+
+def _supporting_pair_key(pair):
+    row = pair.to_dict()
+    return (
+        row["source_id"],
+        row["target_id"],
+        row["constant"],
+        row["source_variable"],
+        row["target_variable"],
+        row["transform"],
+        row["cut_count"],
+    )
+
+
+def _supporting_pair_keys_by_environment(store):
+    keys_by_environment = {}
+    for row in store.rule_environment_statistics():
+        if row.rule_environment_id in keys_by_environment:
+            continue
+        keys_by_environment[row.rule_environment_id] = tuple(
+            sorted(
+                _supporting_pair_key(pair)
+                for pair in store.pairs_for_rule_environment(row.rule_environment_id)
+            )
+        )
+    return keys_by_environment
+
+
+def _rule_environment_statistics_keys(store):
+    supporting_pairs = _supporting_pair_keys_by_environment(store)
+    return [
+        (
+            row.property_name,
+            row.transform,
+            row.radius,
+            row.smarts,
+            row.pseudosmiles,
+            row.parent_smarts,
+            supporting_pairs[row.rule_environment_id],
+        )
+        for row in store.rule_environment_statistics()
+    ]
+
+
+def _statistics_attachment_classes(store):
+    classes = {"single_attachment": 0, "multi_attachment": 0}
+    for row in store.rule_environment_statistics():
+        if "[*:2]" in row.from_smiles or "[*:2]" in row.to_smiles:
+            classes["multi_attachment"] += 1
+        else:
+            classes["single_attachment"] += 1
+    return classes
 
 
 def test_mmpdb_reference_data_loads_expected_ids():
@@ -582,6 +635,32 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS
 
 
+def test_mmpdb_phase9_count_surplus_is_unique_openeye_native_rows():
+    from oemmpa import DuckDBStore
+
+    analyzer = _mmpdb_reference_analyzer(property_names=("MW", "MP"))
+    store = DuckDBStore()
+    store.save_analyzer(analyzer, index_mode="openeye-native")
+
+    statistics_keys = _rule_environment_statistics_keys(store)
+    supporting_pair_keys = _supporting_pair_keys_by_environment(store)
+
+    assert store.row_count("compound") == MMPDB_PHASE9_REFERENCE_COUNTS["compound"]
+    assert store.row_count("compound_property") == MMPDB_PHASE9_REFERENCE_COUNTS[
+        "compound_property"
+    ]
+    assert len(statistics_keys) == store.row_count("rule_environment_statistics")
+    assert len(statistics_keys) == len(set(statistics_keys))
+    assert all(len(keys) == len(set(keys)) for keys in supporting_pair_keys.values())
+    assert len(store.pairs()) == len(analyzer.pairs())
+
+    attachment_classes = _statistics_attachment_classes(store)
+    assert attachment_classes == {
+        "single_attachment": 960,
+        "multi_attachment": 94,
+    }
+
+
 def test_mmpdb_phase10_rule_environment_statistics_expose_transform_metadata():
     from oemmpa import predict_rule_environment_delta
 
@@ -646,6 +725,142 @@ def test_mmpdb_phase10_rule_environment_filters_cover_min_pairs_where_and_score(
         )
 
 
+def test_mmpdb_phase10_query_environment_matching_uses_source_smiles_context():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",), index_mode="openeye-native")
+
+    radius_one_matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in radius_one_matches
+    }
+
+    assert set(by_transform) == {
+        "[*:1]O>>[*:1]Cl",
+        "[*:1]O>>[*:1][H]",
+        "[*:1]O>>[*:1]N",
+    }
+    assert by_transform["[*:1]O>>[*:1]Cl"].avg == pytest.approx(18.5)
+    assert by_transform["[*:1]O>>[*:1][H]"].avg == pytest.approx(-16.0)
+    assert by_transform["[*:1]O>>[*:1]N"].avg == pytest.approx(-1.0)
+
+    assert find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(property_name="MW", min_radius=2),
+    ) == []
+
+
+def test_mmpdb_phase10_query_environment_matching_applies_selection_options():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",), index_mode="openeye-native")
+
+    matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_pairs=3,
+            where="count > 2",
+            score=" -min-radius",
+        ),
+    )
+
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    assert set(by_transform) == {
+        "[*:1]O>>[*:1][H]",
+        "[*:1]O>>[*:1]N",
+    }
+    assert by_transform["[*:1]O>>[*:1][H]"].radius == 0
+    assert by_transform["[*:1]O>>[*:1][H]"].count == 4
+    assert by_transform["[*:1]O>>[*:1]N"].radius == 0
+    assert by_transform["[*:1]O>>[*:1]N"].count == 3
+
+
+def test_mmpdb_phase10_smarts_substructure_filtering_uses_target_fragment():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",), index_mode="openeye-native")
+
+    chlorine_matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=0,
+            max_radius=1,
+            substructure_smarts="Cl",
+        ),
+    )
+    assert {match.statistics.to_smiles for match in chlorine_matches} == {"[*:1]Cl"}
+    assert {match.statistics.transform for match in chlorine_matches} == {
+        "[*:1]O>>[*:1]Cl"
+    }
+
+    nitrogen_matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        property_name="MW",
+        min_radius=0,
+        max_radius=1,
+        substructure_smarts="N",
+    )
+    assert {match.statistics.to_smiles for match in nitrogen_matches} == {"[*:1]N"}
+    assert {match.statistics.transform for match in nitrogen_matches} == {
+        "[*:1]O>>[*:1]N"
+    }
+
+
+def test_mmpdb_phase10_reference_based_prediction_matches_supported_transform():
+    from oemmpa import predict_query_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    prediction = predict_query_property_delta(
+        store,
+        smiles="c1cccnc1O",
+        reference="Clc1ccccn1",
+        property_name="MW",
+        value=20.1,
+    )
+
+    assert prediction.transform == "[*:1]Cl>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(-18.5)
+    assert prediction.predicted_value == pytest.approx(1.6)
+    assert prediction.radius == 1
+    assert prediction.count == 1
+    assert prediction.query_environment.variable_smiles == "[*:1]O"
+    assert prediction.reference_environment.variable_smiles == "[*:1]Cl"
+
+    pairs = store.pairs_for_rule_environment(prediction.rule_environment_id)
+    assert len(pairs) == 1
+    assert pairs[0].transform == prediction.transform
+    assert pairs[0].property_delta("MW") == pytest.approx(-18.5)
+
+    with pytest.raises(KeyError, match=r"\[\*:1\]Cl>>\[\*:1\]O"):
+        predict_query_property_delta(
+            store,
+            smiles="c1cccnc1O",
+            reference="Clc1ccccn1",
+            property_name="MW",
+            where="count > 10",
+        )
+
+
 def test_mmpdb_phase10_prediction_details_expose_selected_rule_pairs():
     from oemmpa import predict_rule_environment_delta
 
@@ -676,6 +891,130 @@ def test_mmpdb_hydrogen_deletion_transform_is_supported():
     assert hydrogen_deletion.count == 4
     assert hydrogen_deletion.avg == pytest.approx(-16.0)
     assert hydrogen_deletion.std == pytest.approx(0.0)
+
+
+def test_mmpdb_hydrogen_deletion_matches_reference_query_at_radius_one():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+        ),
+    )
+    by_transform = {
+        match.statistics.transform: match.statistics
+        for match in matches
+    }
+
+    hydrogen = by_transform["[*:1]O>>[*:1][H]"]
+    assert hydrogen.radius == 1
+    assert hydrogen.avg == pytest.approx(-16.0)
+
+
+def test_mmpdb_hydrogen_deletion_does_not_match_reference_query_at_radius_two():
+    from oemmpa import RuleSelectionOptions, find_query_environments
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    matches = find_query_environments(
+        store,
+        "c1cccnc1O",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=2,
+            max_radius=2,
+        ),
+    )
+
+    assert {
+        match.statistics.transform
+        for match in matches
+    }.isdisjoint({"[*:1]O>>[*:1][H]"})
+
+
+def test_mmpdb_hydrogen_deletion_mp_delta_matches_reference_fixture_when_present():
+    store = _mmpdb_reference_store(property_names=("MP",))
+    rows = store.rule_environment_statistics("MP").filter(
+        transform="[*:1]O>>[*:1][H]",
+        min_radius=1,
+        max_radius=1,
+    )
+    if not rows:
+        pytest.skip("MMPDB reference fixture does not provide MP for O>>H")
+
+    assert rows[0].avg == pytest.approx(-93.0)
+
+
+def test_mmpdb_hydrogen_reference_prediction_matches_deletion_delta():
+    from oemmpa import RuleSelectionOptions, predict_query_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",), index_mode="openeye-native")
+
+    prediction = predict_query_property_delta(
+        store,
+        smiles="c1cccnc1O",
+        reference="c1ccncc1",
+        property_name="MW",
+        value=20.1,
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+            min_pairs=1,
+        ),
+    )
+
+    assert prediction.transform == "[*:1][H]>>[*:1]O"
+    assert prediction.predicted_delta == pytest.approx(16.0)
+    assert prediction.predicted_value == pytest.approx(36.1)
+
+
+def test_mmpdb_hydrogen_reference_prediction_matches_insertion_delta():
+    from oemmpa import RuleSelectionOptions, predict_query_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    prediction = predict_query_property_delta(
+        store,
+        smiles="c1ccncc1",
+        reference="c1cccnc1O",
+        property_name="MW",
+        selection=RuleSelectionOptions(
+            property_name="MW",
+            min_radius=1,
+            max_radius=1,
+            min_pairs=1,
+        ),
+    )
+
+    assert prediction.transform == "[*:1]O>>[*:1][H]"
+    assert prediction.predicted_delta == pytest.approx(-16.0)
+
+
+def test_mmpdb_hydrogen_reference_prediction_rejects_unrelated_reference():
+    from oemmpa import RuleSelectionOptions, predict_query_property_delta
+
+    store = _mmpdb_reference_store(property_names=("MW",))
+
+    with pytest.raises(KeyError):
+        predict_query_property_delta(
+            store,
+            smiles="c1cccnc1O",
+            reference="c1ccccc1",
+            property_name="MW",
+            selection=RuleSelectionOptions(
+                property_name="MW",
+                min_radius=1,
+                max_radius=1,
+                min_pairs=1,
+            ),
+        )
 
 
 def test_cli_refresh_stats_accepts_mmpdb_property_file_conventions():

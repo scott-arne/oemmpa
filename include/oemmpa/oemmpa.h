@@ -3,8 +3,8 @@
 
 // Version information
 #define OEMMPA_VERSION_MAJOR 1
-#define OEMMPA_VERSION_MINOR 0
-#define OEMMPA_VERSION_PATCH 1
+#define OEMMPA_VERSION_MINOR 1
+#define OEMMPA_VERSION_PATCH 0
 
 #include "oemmpa/AnalysisMethod.h"
 #include "oemmpa/Analyzer.h"
@@ -27,6 +27,7 @@
 #include "oemmpa/OEMedChemMethod.h"
 #endif
 #include "oemmpa/PairScoring.h"
+#include "oemmpa/QueryEnvironment.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Transform.h"

@@ -3,6 +3,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/FragmentationStrategy.h"
+#include "oemmpa/MoleculeRecord.h"
 
 #include <oechem.h>
 
@@ -193,6 +194,27 @@ TEST(FragmenterTest, DefaultStrategyMatchesMMPDBPhenolSingleCutOrientations) {
     EXPECT_EQ(records, expected);
 }
 
+TEST(FragmenterTest, PhenolSingleCutHydrogenConstantMatchesBenzeneCanonicalSmiles) {
+    OEChem::OEGraphMol mol = MolFromSmiles("c1ccccc1O");
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const MoleculeRecord benzene = MoleculeRecord::FromSmiles(1, "c1ccccc1", "benzene");
+    const std::vector<Fragmentation> fragmentations = fragmenter.Fragment(7, mol);
+
+    ASSERT_FALSE(fragmentations.empty());
+    EXPECT_TRUE(std::any_of(
+        fragmentations.begin(),
+        fragmentations.end(),
+        [&benzene](const Fragmentation& fragmentation) {
+            return fragmentation.GetConstantSmiles() == "[*:1]c1ccccc1" &&
+                fragmentation.GetVariableSmiles() == "[*:1]O" &&
+                fragmentation.GetConstantWithHydrogenSmiles() ==
+                    benzene.GetCanonicalSmiles();
+        }
+    ));
+}
+
 TEST(FragmenterTest, InvalidCutBoundsThrowFragmentationError) {
     Fragmenter fragmenter;
 
@@ -318,6 +340,27 @@ TEST(FragmenterTest, MMPDBNumCutsTwoAlkaneRecordCountUsesCanonicalAttachments) {
         NormalizeFragmentations(fragmenter.Fragment(103, mol));
 
     EXPECT_EQ(records.size(), 15);
+}
+
+TEST(FragmenterTest, MultiCutFragmentationHasEmptyHydrogenConstant) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    fragmenter.SetMinCuts(2);
+    fragmenter.SetMaxCuts(2);
+
+    const std::vector<Fragmentation> fragmentations = fragmenter.Fragment(17, mol);
+
+    ASSERT_FALSE(fragmentations.empty());
+    EXPECT_TRUE(std::any_of(
+        fragmentations.begin(),
+        fragmentations.end(),
+        [](const Fragmentation& fragmentation) {
+            return fragmentation.GetCutCount() == 2 &&
+                fragmentation.GetConstantSmiles() == "[*:1]C.[*:2]C" &&
+                fragmentation.GetVariableSmiles() == "[*:1]CC[*:2]" &&
+                fragmentation.GetConstantWithHydrogenSmiles().empty();
+        }
+    ));
 }
 
 TEST(FragmenterTest, DuplicateCutBondsDoNotDuplicateFragmentations) {

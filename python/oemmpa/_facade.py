@@ -2,7 +2,7 @@
 
 import operator
 
-from . import _oemmpa
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, iter_dataframe_records
 from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
