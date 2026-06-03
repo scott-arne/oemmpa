@@ -43,7 +43,14 @@ def test_docs_infrastructure_matches_serving_contract():
 
 
 def test_strict_docs_build(tmp_path):
-    required = ["sphinx", "breathe", "exhale", "myst_parser"]
+    required = [
+        "sphinx",
+        "breathe",
+        "exhale",
+        "myst_parser",
+        "sphinx_rtd_theme",
+        "sphinx_autodoc_typehints",
+    ]
     missing = [name for name in required if importlib.util.find_spec(name) is None]
     assert not missing, f"missing docs dependencies: {missing}"
 
