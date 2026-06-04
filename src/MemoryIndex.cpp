@@ -196,22 +196,33 @@ std::vector<Fragmentation> sorted_fragmentations(const std::vector<Fragmentation
 }
 
 std::string constant_with_hydrogen_smiles(const std::string& constant_smiles) {
-    const std::string attachment = "[*:1]";
-    const std::string::size_type attachment_pos = constant_smiles.find(attachment);
-    if (attachment_pos == std::string::npos) {
-        return "";
-    }
-    if (constant_smiles.find(attachment, attachment_pos + attachment.size()) != std::string::npos) {
+    // Cap the single ``[*:1]`` attachment point with hydrogen by editing the
+    // parsed molecule rather than the SMILES text. Textual replacement of the
+    // literal ``[*:1]`` token misses canonical spellings of the attachment and
+    // silently drops the hydrogen-substitution pairing for that constant.
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, constant_smiles)) {
         return "";
     }
 
-    std::string smiles = constant_smiles;
-    smiles.replace(attachment_pos, attachment.size(), "[H]");
-    try {
-        return MoleculeRecord::FromSmiles(0, smiles).GetCanonicalSmiles();
-    } catch (const InvalidMoleculeError&) {
+    OEChem::OEAtomBase* dummy_atom = nullptr;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() != 0) {
+            continue;
+        }
+        if (atom->GetMapIdx() != 1 || dummy_atom != nullptr) {
+            return "";
+        }
+        dummy_atom = atom;
+    }
+    if (dummy_atom == nullptr) {
         return "";
     }
+
+    dummy_atom->SetAtomicNum(1);
+    dummy_atom->SetMapIdx(0);
+    OEChem::OESuppressHydrogens(mol);
+    return OEChem::OEMolToSmiles(mol);
 }
 
 std::map<std::string, std::vector<unsigned int>> molecule_ids_by_canonical_smiles(
@@ -633,6 +644,8 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                     continue;
                 }
 
+                // Reaching here means the symmetric branch (the asymmetric
+                // case above ``continue``s), so emit both pair directions.
                 add_candidate_if_allowed(
                     candidates_by_group,
                     lhs,
@@ -643,19 +656,16 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                     options,
                     metrics_cache
                 );
-
-                if (options.GetSymmetric()) {
-                    add_candidate_if_allowed(
-                        candidates_by_group,
-                        rhs,
-                        lhs,
-                        rhs_record,
-                        lhs_record,
-                        constant_smiles,
-                        options,
-                        metrics_cache
-                    );
-                }
+                add_candidate_if_allowed(
+                    candidates_by_group,
+                    rhs,
+                    lhs,
+                    rhs_record,
+                    lhs_record,
+                    constant_smiles,
+                    options,
+                    metrics_cache
+                );
             }
         }
     }

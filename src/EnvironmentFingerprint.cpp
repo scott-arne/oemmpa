@@ -473,10 +473,12 @@ std::vector<LocalAtomRecord> make_local_atom_order(
     return ordered_atoms;
 }
 
-std::string serialize_environment(
+// Serialize the SMARTS and pseudo-SMILES forms of one environment together.
+// The expensive part -- the canonical local atom ordering -- is identical for
+// both forms, so it is computed once and only the per-atom token differs.
+std::pair<std::string, std::string> serialize_environment(
     const EnvironmentGraph& graph,
-    const AtomByIndex& atoms,
-    bool pseudo_smiles
+    const AtomByIndex& atoms
 ) {
     const std::vector<LocalAtomRecord> ordered_atoms =
         make_local_atom_order(graph, atoms);
@@ -488,11 +490,14 @@ std::string serialize_environment(
         );
     }
 
-    std::ostringstream output;
-    output << "A{";
+    std::ostringstream smarts_output;
+    std::ostringstream pseudo_output;
+    smarts_output << "A{";
+    pseudo_output << "A{";
     for (size_t i = 0; i < ordered_atoms.size(); ++i) {
         if (i > 0) {
-            output << ",";
+            smarts_output << ",";
+            pseudo_output << ",";
         }
 
         const unsigned int atom_idx = ordered_atoms[i].original_idx;
@@ -502,12 +507,11 @@ std::string serialize_environment(
         }
 
         // Local IDs keep environment keys independent of input SMILES atom order.
-        output << i << ":";
-        output << (pseudo_smiles
-            ? atom_pseudo_token(*found_atom->second)
-            : atom_smarts_token(*found_atom->second));
+        smarts_output << i << ":" << atom_smarts_token(*found_atom->second);
+        pseudo_output << i << ":" << atom_pseudo_token(*found_atom->second);
     }
-    output << "};B{";
+    smarts_output << "};B{";
+    pseudo_output << "};B{";
 
     std::vector<std::tuple<unsigned int, std::string, unsigned int>> local_bonds;
     for (const auto& bond : graph.bonds) {
@@ -527,16 +531,21 @@ std::string serialize_environment(
 
     for (size_t i = 0; i < local_bonds.size(); ++i) {
         if (i > 0) {
-            output << ",";
+            smarts_output << ",";
+            pseudo_output << ",";
         }
 
-        output << std::get<0>(local_bonds[i])
-               << std::get<1>(local_bonds[i])
-               << std::get<2>(local_bonds[i]);
+        smarts_output << std::get<0>(local_bonds[i])
+                      << std::get<1>(local_bonds[i])
+                      << std::get<2>(local_bonds[i]);
+        pseudo_output << std::get<0>(local_bonds[i])
+                      << std::get<1>(local_bonds[i])
+                      << std::get<2>(local_bonds[i]);
     }
-    output << "}";
+    smarts_output << "}";
+    pseudo_output << "}";
 
-    return output.str();
+    return {smarts_output.str(), pseudo_output.str()};
 }
 
 }  // namespace
@@ -592,8 +601,10 @@ std::vector<EnvironmentFingerprint> ComputeConstantEnvironmentFingerprints(
     for (unsigned int radius = 0; radius <= max_radius; ++radius) {
         const EnvironmentGraph graph =
             build_environment_graph(mol, atoms, attachments, radius);
-        const std::string smarts = serialize_environment(graph, atoms, false);
-        const std::string pseudo_smiles = serialize_environment(graph, atoms, true);
+        const std::pair<std::string, std::string> serialized =
+            serialize_environment(graph, atoms);
+        const std::string& smarts = serialized.first;
+        const std::string& pseudo_smiles = serialized.second;
 
         if (radius >= min_radius) {
             fingerprints.emplace_back(radius, smarts, pseudo_smiles, previous_smarts);

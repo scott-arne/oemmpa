@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "oemmpa/DatabaseSummary.h"
+#include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
@@ -151,9 +153,19 @@ public:
     std::vector<std::string> GetTableNames() const;
 
 private:
+    /// Return the constant-environment fingerprints for ``constant_smiles``,
+    /// computing and caching them on first use. Fingerprints depend only on the
+    /// constant SMILES, so caching avoids recomputing them for every pair that
+    /// shares a constant during a bulk ``AddPairs`` load.
+    const std::vector<EnvironmentFingerprint>& constant_fingerprints(
+        const std::string& constant_smiles
+    );
+
     std::string database_path_;
     std::unique_ptr<duckdb::DuckDB> database_;
     std::unique_ptr<duckdb::Connection> connection_;
+    std::unordered_map<std::string, std::vector<EnvironmentFingerprint>>
+        constant_fingerprint_cache_;
 };
 
 }  // namespace OEMMPA

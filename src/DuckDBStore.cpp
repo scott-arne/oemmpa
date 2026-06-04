@@ -990,6 +990,67 @@ std::vector<RuleEnvironmentStatistics> collect_rule_environment_statistics(
     return rows;
 }
 
+// Read matched pairs from a pair query and attach their numeric properties.
+// The property statement is prepared once and re-executed per pair instead of
+// being recompiled for every row, removing the prepare cost of the prior
+// N+1 pattern while keeping the shared logic in one place.
+std::vector<MatchedPair> read_pairs_with_properties(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    duckdb::QueryResult& result
+) {
+    const std::string property_sql =
+        "select property_name.name, source_property.value, target_property.value "
+        "from compound_property source_property "
+        "join compound_property target_property "
+        "on target_property.property_name_id = source_property.property_name_id "
+        "join property_name on property_name.id = source_property.property_name_id "
+        "where source_property.compound_id = ? and target_property.compound_id = ? "
+        "order by property_name.name";
+    std::unique_ptr<duckdb::PreparedStatement> property_statement =
+        connection->Prepare(property_sql);
+    if (!property_statement || property_statement->HasError()) {
+        throw StorageError(
+            "DuckDB prepare failed for pair property query: " + property_sql
+        );
+    }
+
+    std::vector<MatchedPair> pairs;
+    for (const auto& row : result) {
+        MatchedPair pair(
+            static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
+            static_cast<unsigned int>(row.GetValue<std::uint64_t>(1)),
+            row.GetValue<std::string>(2),
+            row.GetValue<std::string>(3),
+            row.GetValue<std::string>(4),
+            row.GetValue<std::string>(5),
+            row.GetValue<std::string>(6),
+            row.GetValue<std::string>(7),
+            row.GetValue<std::string>(8),
+            static_cast<unsigned int>(row.GetValue<std::uint32_t>(9)),
+            row.GetValue<std::int32_t>(10),
+            row.GetValue<std::int32_t>(11)
+        );
+
+        duckdb::vector<duckdb::Value> property_values = {
+            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
+            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
+        };
+        std::unique_ptr<duckdb::QueryResult> property_result =
+            property_statement->Execute(property_values);
+        require_success(*property_result, property_sql);
+        for (const auto& property_row : *property_result) {
+            pair.SetProperty(
+                property_row.GetValue<std::string>(0),
+                property_row.GetValue<double>(1),
+                property_row.GetValue<double>(2)
+            );
+        }
+
+        pairs.push_back(pair);
+    }
+    return pairs;
+}
+
 }  // namespace
 
 DuckDBStore::DuckDBStore()
@@ -1122,6 +1183,22 @@ void DuckDBStore::InitializeSchema() {
             "heavy_bond_delta integer not null"
             ")"
         );
+        // The pair foreign keys back the hot pair-query joins and the
+        // per-pair lookups during bulk loads; the unique constraints on the
+        // other tables already provide their backing indexes.
+        Execute(
+            "create index if not exists pair_rule_environment_idx "
+            "on pair(rule_environment_id)"
+        );
+        Execute(
+            "create index if not exists pair_compound1_idx on pair(compound1_id)"
+        );
+        Execute(
+            "create index if not exists pair_compound2_idx on pair(compound2_id)"
+        );
+        Execute(
+            "create index if not exists pair_constant_idx on pair(constant_id)"
+        );
         Execute("commit");
     } catch (...) {
         try {
@@ -1186,35 +1263,48 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(const std::string& smiles_pat
     std::uint64_t next_id = get_next_id(connection_, "compound", "id");
     std::string line;
     unsigned int row_number = 0;
-    while (std::getline(input, line)) {
-        ++row_number;
-        const std::string stripped = trim_copy(line);
-        if (stripped.empty() || stripped[0] == '#') {
-            continue;
-        }
+    // Wrap the row inserts in a single transaction: per-row failures are
+    // absorbed into the report, so a rollback only happens on an unexpected
+    // error, and the bulk insert avoids a commit per accepted row.
+    Execute("begin transaction");
+    try {
+        while (std::getline(input, line)) {
+            ++row_number;
+            const std::string stripped = trim_copy(line);
+            if (stripped.empty() || stripped[0] == '#') {
+                continue;
+            }
 
-        std::istringstream row_stream(stripped);
-        std::string smiles;
-        std::string external_id;
-        row_stream >> smiles;
-        if (!(row_stream >> external_id)) {
-            external_id = make_generated_external_id(next_id);
-        }
+            std::istringstream row_stream(stripped);
+            std::string smiles;
+            std::string external_id;
+            row_stream >> smiles;
+            if (!(row_stream >> external_id)) {
+                external_id = make_generated_external_id(next_id);
+            }
 
+            try {
+                const MoleculeRecord molecule = MoleculeRecord::FromSmiles(
+                    static_cast<unsigned int>(next_id),
+                    smiles,
+                    external_id
+                );
+                AddMolecule(molecule);
+            } catch (const std::exception& exc) {
+                report.RecordRejected(row_number, exc.what());
+                continue;
+            }
+
+            report.RecordAccepted(external_id);
+            ++next_id;
+        }
+        Execute("commit");
+    } catch (...) {
         try {
-            const MoleculeRecord molecule = MoleculeRecord::FromSmiles(
-                static_cast<unsigned int>(next_id),
-                smiles,
-                external_id
-            );
-            AddMolecule(molecule);
-        } catch (const std::exception& exc) {
-            report.RecordRejected(row_number, exc.what());
-            continue;
+            Execute("rollback");
+        } catch (const StorageError&) {
         }
-
-        report.RecordAccepted(external_id);
-        ++next_id;
+        throw;
     }
 
     return report;
@@ -1252,55 +1342,71 @@ LoadReport DuckDBStore::AddPropertiesFromCsvFile(
 
     LoadReport report;
     unsigned int row_number = 1;
-    while (std::getline(input, line)) {
-        ++row_number;
-        if (trim_copy(line).empty()) {
-            continue;
-        }
-
-        try {
-            const std::vector<std::string> fields = parse_csv_line(line);
-            if (fields.size() != header.size()) {
-                throw StorageError(
-                    "CSV row has " + std::to_string(fields.size()) +
-                    " fields but header has " + std::to_string(header.size())
-                );
+    // Insert all property rows in one transaction; per-row failures are
+    // recorded in the report rather than aborting the load. The statistics
+    // refresh below manages its own transaction, so commit before it runs.
+    Execute("begin transaction");
+    try {
+        while (std::getline(input, line)) {
+            ++row_number;
+            if (trim_copy(line).empty()) {
+                continue;
             }
 
-            const std::string external_id = fields[id_index];
-            if (external_id.empty()) {
-                throw StorageError("CSV id value must not be blank");
-            }
-
-            const std::uint64_t molecule_id =
-                find_molecule_internal_id_by_external_id(connection_, external_id);
-            if (molecule_id == 0) {
-                throw StorageError("unknown molecule id in property CSV: " + external_id);
-            }
-
-            std::vector<std::pair<std::string, double>> parsed_values;
-            for (const std::string& property_name : resolved_property_columns) {
-                const std::string value_text = fields[header_index.at(property_name)];
-                if (value_text.empty() || value_text == "*") {
-                    continue;
+            try {
+                const std::vector<std::string> fields = parse_csv_line(line);
+                if (fields.size() != header.size()) {
+                    throw StorageError(
+                        "CSV row has " + std::to_string(fields.size()) +
+                        " fields but header has " + std::to_string(header.size())
+                    );
                 }
-                parsed_values.push_back({
-                    property_name,
-                    parse_property_value(property_name, value_text),
-                });
-            }
 
-            for (const auto& property_value : parsed_values) {
-                AddMoleculeProperty(
-                    static_cast<unsigned int>(molecule_id),
-                    property_value.first,
-                    property_value.second
-                );
+                const std::string external_id = fields[id_index];
+                if (external_id.empty()) {
+                    throw StorageError("CSV id value must not be blank");
+                }
+
+                const std::uint64_t molecule_id =
+                    find_molecule_internal_id_by_external_id(connection_, external_id);
+                if (molecule_id == 0) {
+                    throw StorageError(
+                        "unknown molecule id in property CSV: " + external_id
+                    );
+                }
+
+                std::vector<std::pair<std::string, double>> parsed_values;
+                for (const std::string& property_name : resolved_property_columns) {
+                    const std::string value_text =
+                        fields[header_index.at(property_name)];
+                    if (value_text.empty() || value_text == "*") {
+                        continue;
+                    }
+                    parsed_values.push_back({
+                        property_name,
+                        parse_property_value(property_name, value_text),
+                    });
+                }
+
+                for (const auto& property_value : parsed_values) {
+                    AddMoleculeProperty(
+                        static_cast<unsigned int>(molecule_id),
+                        property_value.first,
+                        property_value.second
+                    );
+                }
+                report.RecordAccepted(external_id);
+            } catch (const std::exception& exc) {
+                report.RecordRejected(row_number, exc.what());
             }
-            report.RecordAccepted(external_id);
-        } catch (const std::exception& exc) {
-            report.RecordRejected(row_number, exc.what());
         }
+        Execute("commit");
+    } catch (...) {
+        try {
+            Execute("rollback");
+        } catch (const StorageError&) {
+        }
+        throw;
     }
 
     RefreshRuleEnvironmentStatistics();
@@ -1353,6 +1459,20 @@ void DuckDBStore::AddMoleculeProperty(
     execute_prepared(connection_, sql, std::move(values));
 }
 
+const std::vector<EnvironmentFingerprint>& DuckDBStore::constant_fingerprints(
+    const std::string& constant_smiles
+) {
+    auto cached = constant_fingerprint_cache_.find(constant_smiles);
+    if (cached != constant_fingerprint_cache_.end()) {
+        return cached->second;
+    }
+    auto inserted = constant_fingerprint_cache_.emplace(
+        constant_smiles,
+        ComputeConstantEnvironmentFingerprints(constant_smiles, 0, 5)
+    );
+    return inserted.first->second;
+}
+
 void DuckDBStore::AddPair(const MatchedPair& pair) {
     if (!HasMolecule(pair.GetSourceMoleculeId())) {
         throw StorageError("cannot add pair with unknown source molecule");
@@ -1361,8 +1481,8 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         throw StorageError("cannot add pair with unknown target molecule");
     }
 
-    const std::vector<EnvironmentFingerprint> environment_fingerprints =
-        ComputeConstantEnvironmentFingerprints(pair.GetConstantSmiles(), 0, 5);
+    const std::vector<EnvironmentFingerprint>& environment_fingerprints =
+        constant_fingerprints(pair.GetConstantSmiles());
 
     const std::uint64_t constant_id = get_or_create_named_row_id(
         connection_,
@@ -1643,47 +1763,8 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
     }
     require_success(*result, sql);
 
-    std::vector<MatchedPair> pairs;
-    for (const auto& row : *result) {
-        MatchedPair pair(
-            static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
-            static_cast<unsigned int>(row.GetValue<std::uint64_t>(1)),
-            row.GetValue<std::string>(2),
-            row.GetValue<std::string>(3),
-            row.GetValue<std::string>(4),
-            row.GetValue<std::string>(5),
-            row.GetValue<std::string>(6),
-            row.GetValue<std::string>(7),
-            row.GetValue<std::string>(8),
-            static_cast<unsigned int>(row.GetValue<std::uint32_t>(9)),
-            row.GetValue<std::int32_t>(10),
-            row.GetValue<std::int32_t>(11)
-        );
-
-        const std::string property_sql =
-            "select property_name.name, source_property.value, target_property.value "
-            "from compound_property source_property "
-            "join compound_property target_property "
-            "on target_property.property_name_id = source_property.property_name_id "
-            "join property_name on property_name.id = source_property.property_name_id "
-            "where source_property.compound_id = ? and target_property.compound_id = ? "
-            "order by property_name.name";
-        duckdb::vector<duckdb::Value> property_values = {
-            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-        };
-        std::unique_ptr<duckdb::QueryResult> property_result =
-            execute_prepared(connection_, property_sql, std::move(property_values));
-        for (const auto& property_row : *property_result) {
-            pair.SetProperty(
-                property_row.GetValue<std::string>(0),
-                property_row.GetValue<double>(1),
-                property_row.GetValue<double>(2)
-            );
-        }
-
-        pairs.push_back(pair);
-    }
+    std::vector<MatchedPair> pairs =
+        read_pairs_with_properties(connection_, *result);
     return apply_pair_scoring(pairs, options.GetScoringOptions());
 }
 
@@ -1702,48 +1783,7 @@ std::vector<MatchedPair> DuckDBStore::GetPairsForRuleEnvironment(
     }
     require_success(*result, sql);
 
-    std::vector<MatchedPair> pairs;
-    for (const auto& row : *result) {
-        MatchedPair pair(
-            static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
-            static_cast<unsigned int>(row.GetValue<std::uint64_t>(1)),
-            row.GetValue<std::string>(2),
-            row.GetValue<std::string>(3),
-            row.GetValue<std::string>(4),
-            row.GetValue<std::string>(5),
-            row.GetValue<std::string>(6),
-            row.GetValue<std::string>(7),
-            row.GetValue<std::string>(8),
-            static_cast<unsigned int>(row.GetValue<std::uint32_t>(9)),
-            row.GetValue<std::int32_t>(10),
-            row.GetValue<std::int32_t>(11)
-        );
-
-        const std::string property_sql =
-            "select property_name.name, source_property.value, target_property.value "
-            "from compound_property source_property "
-            "join compound_property target_property "
-            "on target_property.property_name_id = source_property.property_name_id "
-            "join property_name on property_name.id = source_property.property_name_id "
-            "where source_property.compound_id = ? and target_property.compound_id = ? "
-            "order by property_name.name";
-        duckdb::vector<duckdb::Value> property_values = {
-            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-        };
-        std::unique_ptr<duckdb::QueryResult> property_result =
-            execute_prepared(connection_, property_sql, std::move(property_values));
-        for (const auto& property_row : *property_result) {
-            pair.SetProperty(
-                property_row.GetValue<std::string>(0),
-                property_row.GetValue<double>(1),
-                property_row.GetValue<double>(2)
-            );
-        }
-
-        pairs.push_back(pair);
-    }
-    return pairs;
+    return read_pairs_with_properties(connection_, *result);
 }
 
 std::vector<Transform> DuckDBStore::GetTransforms() const {

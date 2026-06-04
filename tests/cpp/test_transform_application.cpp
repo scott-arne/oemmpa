@@ -82,6 +82,19 @@ TEST(TransformApplicationTest, NonMatchingTransformReturnsEmptyProducts) {
     EXPECT_TRUE(products.empty());
 }
 
+TEST(TransformApplicationTest, RejectsDisconnectedProducts) {
+    // A SMIRKS that severs the molecule yields two components; welded products
+    // must stay a single connected molecule, so the disconnected result is
+    // dropped rather than surfaced as ``CC.CCO``.
+    const std::vector<TransformProduct> products =
+        TransformApplicator::ApplySmirks(
+            "CCOCC",
+            "[C:1][O:2][C:3]>>[C:1][O:2].[C:3]"
+        );
+
+    EXPECT_TRUE(products.empty());
+}
+
 TEST(TransformApplicationTest, InvalidSmilesThrowsInvalidMoleculeError) {
     try {
         TransformApplicator::ApplySmirks(

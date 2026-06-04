@@ -363,8 +363,30 @@ bool find_mcs_match(
         return false;
     }
 
-    record = extract_match_record(*matches);
-    return !record.source_constant_atoms.empty() && !record.target_constant_atoms.empty();
+    // Several MCS solutions of equal size can exist; the order OEChem yields
+    // them is not guaranteed stable across inputs/versions. Pick the
+    // lexicographically smallest mapping so the resulting pair is reproducible.
+    bool have_record = false;
+    for (; matches; ++matches) {
+        MCSMatchRecord candidate = extract_match_record(*matches);
+        if (candidate.source_constant_atoms.empty()
+            || candidate.target_constant_atoms.empty()) {
+            continue;
+        }
+        if (!have_record
+            || std::tie(
+                   candidate.source_constant_atoms,
+                   candidate.target_constant_atoms
+               )
+                   < std::tie(
+                       record.source_constant_atoms,
+                       record.target_constant_atoms
+                   )) {
+            record = std::move(candidate);
+            have_record = true;
+        }
+    }
+    return have_record;
 }
 
 MCSMatchRecord find_disconnected_mcs_match(
@@ -584,26 +606,6 @@ void add_mcs_pair_if_valid(
     ));
 }
 
-unsigned int heavy_atom_count_for_molecule_id(
-    const std::vector<MoleculeRecord>& molecules,
-    unsigned int molecule_id
-) {
-    const auto molecule = std::find_if(
-        molecules.begin(),
-        molecules.end(),
-        [molecule_id](const MoleculeRecord& record) {
-            return record.GetInternalId() == molecule_id;
-        }
-    );
-    if (molecule == molecules.end()) {
-        throw AnalysisStateError(
-            "DMCSS pair references unloaded molecule id: " + std::to_string(molecule_id)
-        );
-    }
-
-    return molecule->GetHeavyAtomCount();
-}
-
 }  // namespace
 
 void DMCSSMethod::Clear() {
@@ -643,6 +645,16 @@ void DMCSSMethod::Analyze() {
 std::vector<MatchedPair> DMCSSMethod::GetPairs(const QueryOptions& options) const {
     RequireAnalyzed();
 
+    // Index heavy-atom counts by molecule id once instead of scanning the
+    // molecule list for every pair (this method is also re-run by
+    // GetTransforms), turning the per-pair lookup from O(M) into O(1).
+    std::unordered_map<unsigned int, unsigned int> heavy_atoms_by_molecule_id;
+    heavy_atoms_by_molecule_id.reserve(molecules_.size());
+    for (const MoleculeRecord& molecule : molecules_) {
+        heavy_atoms_by_molecule_id[molecule.GetInternalId()] =
+            molecule.GetHeavyAtomCount();
+    }
+
     std::vector<MatchedPair> pairs;
     for (const MatchedPair& pair : pairs_) {
         if (
@@ -651,10 +663,18 @@ std::vector<MatchedPair> DMCSSMethod::GetPairs(const QueryOptions& options) cons
         ) {
             continue;
         }
+        const auto source_heavy_atoms =
+            heavy_atoms_by_molecule_id.find(pair.GetSourceMoleculeId());
+        if (source_heavy_atoms == heavy_atoms_by_molecule_id.end()) {
+            throw AnalysisStateError(
+                "DMCSS pair references unloaded molecule id: " +
+                std::to_string(pair.GetSourceMoleculeId())
+            );
+        }
         if (!passes_atom_delta_filters(
             pair.GetHeavyAtomDelta(),
             options,
-            heavy_atom_count_for_molecule_id(molecules_, pair.GetSourceMoleculeId())
+            source_heavy_atoms->second
         )) {
             continue;
         }

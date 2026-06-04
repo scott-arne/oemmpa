@@ -29,6 +29,16 @@ OEChem::OEQMol parse_transform_smirks(const std::string& transform_smirks) {
 }
 
 std::string canonical_product_smiles(const OEChem::OEMolBase& mol) {
+    // Welding a transform onto a source must yield a single connected
+    // molecule. A transform that fragments the source (e.g. deleting a
+    // bridging atom) produces multiple components; reject those so callers do
+    // not surface a disconnected ``a.b`` product as a generated molecule.
+    std::vector<unsigned int> parts(mol.GetMaxAtomIdx());
+    const unsigned int part_count =
+        OEChem::OEDetermineComponents(mol, parts.data());
+    if (part_count > 1) {
+        return "";
+    }
     return OEChem::OEMolToSmiles(mol);
 }
 

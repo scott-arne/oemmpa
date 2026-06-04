@@ -26,6 +26,13 @@ struct Boundary {
     unsigned int sort_map_idx = 0;
 };
 
+// OEMedChem's indexable fragment range is expressed as a percentage of the
+// molecule's heavy atoms. 50-100% keeps the variable (changing) fragment from
+// being smaller than the constant, matching the single-cut/combo-cut matched
+// pairs OEMMPA currently consumes.
+constexpr float OEMEDCHEM_MIN_FRAGMENT_PERCENT = 50.0f;
+constexpr float OEMEDCHEM_MAX_FRAGMENT_PERCENT = 100.0f;
+
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
     return atom != nullptr && atom->GetAtomicNum() > 1;
 }
@@ -408,25 +415,6 @@ bool passes_atom_delta_filters(
     return true;
 }
 
-unsigned int heavy_atom_count_for_molecule_id(
-    const std::vector<MoleculeRecord>& molecules,
-    unsigned int molecule_id
-) {
-    const auto molecule = std::find_if(
-        molecules.begin(),
-        molecules.end(),
-        [molecule_id](const MoleculeRecord& record) {
-            return record.GetInternalId() == molecule_id;
-        }
-    );
-    if (molecule == molecules.end()) {
-        throw AnalysisStateError(
-            "OEMedChem pair references unloaded molecule id: " + std::to_string(molecule_id)
-        );
-    }
-    return molecule->GetHeavyAtomCount();
-}
-
 bool is_expected_index_filter(int status) {
     return status == OEMedChem::OEMatchedPairIndexStatus::FragmentationLimitFilter ||
         status == OEMedChem::OEMatchedPairIndexStatus::HeavyAtomFilter ||
@@ -442,7 +430,10 @@ OEMedChem::OEMatchedPairAnalyzerOptions make_analyzer_options() {
         OEMedChem::OEMatchedPairOptions::ComboCuts |
         OEMedChem::OEMatchedPairOptions::UniquesOnly
     );
-    options.SetIndexableFragmentRange(50.0f, 100.0f);
+    options.SetIndexableFragmentRange(
+        OEMEDCHEM_MIN_FRAGMENT_PERCENT,
+        OEMEDCHEM_MAX_FRAGMENT_PERCENT
+    );
     return options;
 }
 
@@ -518,6 +509,16 @@ void OEMedChemMethod::Analyze() {
 std::vector<MatchedPair> OEMedChemMethod::GetPairs(const QueryOptions& options) const {
     RequireAnalyzed();
 
+    // Index heavy-atom counts by molecule id once rather than scanning the
+    // molecule list per pair (GetTransforms re-runs this), making the lookup
+    // O(1).
+    std::unordered_map<unsigned int, unsigned int> heavy_atoms_by_molecule_id;
+    heavy_atoms_by_molecule_id.reserve(molecules_.size());
+    for (const MoleculeRecord& molecule : molecules_) {
+        heavy_atoms_by_molecule_id[molecule.GetInternalId()] =
+            molecule.GetHeavyAtomCount();
+    }
+
     std::vector<MatchedPair> pairs;
     for (const MatchedPair& pair : pairs_) {
         if (
@@ -526,10 +527,18 @@ std::vector<MatchedPair> OEMedChemMethod::GetPairs(const QueryOptions& options) 
         ) {
             continue;
         }
+        const auto source_heavy_atoms =
+            heavy_atoms_by_molecule_id.find(pair.GetSourceMoleculeId());
+        if (source_heavy_atoms == heavy_atoms_by_molecule_id.end()) {
+            throw AnalysisStateError(
+                "OEMedChem pair references unloaded molecule id: " +
+                std::to_string(pair.GetSourceMoleculeId())
+            );
+        }
         if (!passes_atom_delta_filters(
             pair.GetHeavyAtomDelta(),
             options,
-            heavy_atom_count_for_molecule_id(molecules_, pair.GetSourceMoleculeId())
+            source_heavy_atoms->second
         )) {
             continue;
         }

@@ -162,7 +162,7 @@ private:
     void RejectDuplicateExternalId(const std::string& external_id) const;
     void RequireKnownExternalId(const std::string& external_id) const;
     void RequireAnalyzed() const;
-    const Fragmenter& RequireFragmenter();
+    Fragmenter RequireFragmenter();
     void CommitFragmenter(const Fragmenter& fragmenter);
     std::vector<MatchedPair> InjectProperties(std::vector<MatchedPair> pairs) const;
 

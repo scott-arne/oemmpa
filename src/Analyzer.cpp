@@ -407,7 +407,10 @@ void Analyzer::RequireAnalyzed() const {
     }
 }
 
-const Fragmenter& Analyzer::RequireFragmenter() {
+Fragmenter Analyzer::RequireFragmenter() {
+    // Return a snapshot by value: callers mutate a local copy and write it back
+    // through CommitFragmenter, so handing out a reference into method_-owned
+    // state would let a stale alias outlive a SetFragmenter reassignment.
     Fragmenter* fragmenter = method_->GetFragmenter();
     if (fragmenter == nullptr) {
         throw InvalidQueryError("fragmentation controls require the fragmentation method");
