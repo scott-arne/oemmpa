@@ -111,6 +111,7 @@ def generate_products(
     min_evidence=1,
     skip_unsupported=True,
     statistics=None,
+    aggregation="avg",
 ):
     """Generate products from a collection of observed transforms.
 
@@ -125,6 +126,8 @@ def generate_products(
         :class:`ValueError`.
     :param statistics: Optional transform statistics used to attach prediction
         metadata to generated products.
+    :param aggregation: Statistic used for predicted-delta metadata on the
+        generated products.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
     :raises ValueError: If the source molecule is invalid, ``min_evidence`` is
         negative, or unsupported transforms are not skipped.
@@ -153,6 +156,7 @@ def generate_products(
         GeneratedProductResult(
             product,
             _find_statistics(statistics, product.GetTransformSmiles()),
+            aggregation=aggregation,
         )
         for product in products
     )

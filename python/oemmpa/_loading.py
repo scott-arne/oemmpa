@@ -152,6 +152,74 @@ def _row_to_mapping(row):
     raise TypeError(f"unsupported dataframe row type: {type(row).__name__}")
 
 
+def load_dataframe_rows(
+    analyzer,
+    frame,
+    smiles_column,
+    id_column,
+    property_columns,
+    *,
+    report=None,
+    molecule_smiles=None,
+    smiles_of=None,
+):
+    """Load dataframe rows into ``analyzer``, recording row-level failures.
+
+    Shared by :meth:`Analyzer.add_molecules_from_dataframe` and
+    :func:`analyze_dataframe`. Each accepted row's molecule and numeric
+    properties are added to ``analyzer``; malformed rows are recorded in
+    ``report`` without stopping the load.
+
+    :param analyzer: Object exposing ``add_molecule``, ``add_property``, and
+        ``_coerce_dataframe_row``.
+    :param frame: Dataframe-like source.
+    :param smiles_column: Column containing molecule SMILES.
+    :param id_column: Optional column containing external molecule IDs.
+    :param property_columns: Iterable of numeric property columns to load.
+    :param report: Optional :class:`LoadReport` to populate; created if absent.
+    :param molecule_smiles: Optional mapping populated with
+        ``accepted_id -> source SMILES`` for accepted rows. Requires
+        ``smiles_of``.
+    :param smiles_of: Optional callable converting a molecule source to SMILES,
+        used only when ``molecule_smiles`` is provided.
+    :returns: The :class:`LoadReport` describing accepted and rejected rows.
+    """
+    if report is None:
+        report = LoadReport()
+    property_columns = list(property_columns or ())
+
+    rows = iter(iter_dataframe_records(frame))
+    next_error_row = 1
+    while True:
+        try:
+            row_number, row = next(rows)
+        except StopIteration:
+            break
+        except Exception as exc:
+            report.record_rejected(next_error_row, exc)
+            break
+
+        next_error_row = row_number + 1
+        try:
+            molecule, molecule_id, properties = analyzer._coerce_dataframe_row(
+                row,
+                smiles_column,
+                id_column,
+                property_columns,
+            )
+            accepted_id = analyzer.add_molecule(molecule, id=molecule_id)
+            for property_name, value in properties:
+                analyzer.add_property(accepted_id, property_name, value)
+        except Exception as exc:
+            report.record_rejected(row_number, exc)
+            continue
+
+        report.record_accepted(accepted_id)
+        if molecule_smiles is not None and smiles_of is not None:
+            molecule_smiles[str(accepted_id)] = smiles_of(molecule)
+    return report
+
+
 def _sequence_to_mapping(row, columns):
     if isinstance(row, (str, bytes, bytearray)):
         raise TypeError("string rows are not valid dataframe records")

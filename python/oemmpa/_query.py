@@ -15,7 +15,7 @@ from ._display import (
     text_summary,
 )
 from ._facade import Analyzer
-from ._loading import LoadReport, iter_dataframe_records
+from ._loading import load_dataframe_rows
 from ._transform import generate_products
 from ._workflow import coerce_objective
 
@@ -213,11 +213,13 @@ class TransformQuery:
         statistics=None,
         property_name=None,
         higher_is_better=True,
+        aggregation="avg",
     ):
         self._transforms = list(transforms)
         self._statistics = statistics
         self._property_name = None if property_name is None else str(property_name)
         self._higher_is_better = bool(higher_is_better)
+        self._aggregation = str(aggregation)
 
     def __iter__(self):
         return iter(self._transforms)
@@ -239,7 +241,13 @@ class TransformQuery:
         """Statistics attached to this query, if any."""
         return self._statistics
 
-    def with_statistics(self, property_name, min_count=1, higher_is_better=None):
+    def with_statistics(
+        self,
+        property_name,
+        min_count=1,
+        higher_is_better=None,
+        aggregation=None,
+    ):
         """Attach transform-level property statistics."""
         property_name = str(property_name)
         statistics = compute_transform_statistics(
@@ -255,6 +263,9 @@ class TransformQuery:
                 self._higher_is_better
                 if higher_is_better is None
                 else higher_is_better
+            ),
+            aggregation=(
+                self._aggregation if aggregation is None else aggregation
             ),
         )
 
@@ -278,13 +289,14 @@ class TransformQuery:
             statistics = query._find_statistics(transform.transform)
             if statistics is None:
                 continue
-            if statistics.predicted_delta() == 0:
+            if statistics.predicted_delta(query._aggregation) == 0:
                 rows.append(transform)
         return TransformQuery(
             rows,
             statistics=query._statistics,
             property_name=query._property_name,
             higher_is_better=query._higher_is_better,
+            aggregation=query._aggregation,
         )
 
     def top(self, n):
@@ -294,6 +306,7 @@ class TransformQuery:
             statistics=self._statistics,
             property_name=self._property_name,
             higher_is_better=self._higher_is_better,
+            aggregation=self._aggregation,
         )
 
     def to_dicts(self):
@@ -306,7 +319,9 @@ class TransformQuery:
                 row.update(
                     {
                         "property": statistics.property_name,
-                        "predicted_delta": statistics.predicted_delta(),
+                        "predicted_delta": statistics.predicted_delta(
+                            self._aggregation
+                        ),
                         "count": statistics.count,
                         "std": statistics.std,
                         "p_value": statistics.p_value,
@@ -331,7 +346,7 @@ class TransformQuery:
             statistics = query._find_statistics(transform.transform)
             if statistics is None:
                 continue
-            predicted_delta = statistics.predicted_delta()
+            predicted_delta = statistics.predicted_delta(query._aggregation)
             if positive_delta and predicted_delta > 0:
                 rows.append(transform)
             elif not positive_delta and predicted_delta < 0:
@@ -340,7 +355,7 @@ class TransformQuery:
         rows.sort(
             key=lambda transform: query._find_statistics(
                 transform.transform
-            ).predicted_delta(),
+            ).predicted_delta(query._aggregation),
             reverse=positive_delta,
         )
         return TransformQuery(
@@ -348,6 +363,7 @@ class TransformQuery:
             statistics=query._statistics,
             property_name=query._property_name,
             higher_is_better=query._higher_is_better,
+            aggregation=query._aggregation,
         )
 
     def _ensure_statistics(self, property_name):
@@ -372,6 +388,7 @@ class TransformQuery:
             statistics=self._statistics,
             property_name=self._property_name,
             higher_is_better=self._higher_is_better,
+            aggregation=self._aggregation,
         )
 
 
@@ -440,6 +457,7 @@ class ObjectiveAnalysis:
         return self.analysis.transforms.with_statistics(
             self.objective.property_name,
             higher_is_better=self.objective.higher_is_better,
+            aggregation=self.objective.aggregation,
         )
 
     def generate(self, source, **kwargs):
@@ -493,9 +511,21 @@ class AnalysisResult:
         self.property_names = tuple(str(name) for name in property_names)
         self._pairs_query = None
         self._transforms_query = None
-        self._known_product_ids_by_smiles = _known_product_ids_by_smiles(
-            self.molecule_smiles
-        )
+        self._known_product_ids_cache = None
+
+    @property
+    def _known_product_ids_by_smiles(self):
+        """Known-product id lookup, canonicalized lazily on first use.
+
+        Canonicalizing every analyzed molecule is only needed by
+        :meth:`generate`, so it is deferred until that path runs rather than
+        paid on every :class:`AnalysisResult` construction.
+        """
+        if self._known_product_ids_cache is None:
+            self._known_product_ids_cache = _known_product_ids_by_smiles(
+                self.molecule_smiles
+            )
+        return self._known_product_ids_cache
 
     @property
     def pairs(self):
@@ -585,7 +615,10 @@ class AnalysisResult:
             aggregation=aggregation,
         )
         if objective is not None:
-            query = query.with_statistics(objective.property_name).improves(
+            query = query.with_statistics(
+                objective.property_name,
+                aggregation=objective.aggregation,
+            ).improves(
                 objective.property_name,
                 higher_is_better=objective.higher_is_better,
             )
@@ -596,6 +629,7 @@ class AnalysisResult:
             min_evidence=min_evidence,
             skip_unsupported=skip_unsupported,
             statistics=query.statistics,
+            aggregation=query._aggregation,
         )
         return products.with_known_products(self._known_product_ids_by_smiles)
 
@@ -722,45 +756,23 @@ def analyze_dataframe(
     :returns: :class:`AnalysisResult`.
     """
     analyzer = Analyzer(method=method)
-    report = LoadReport()
     molecule_smiles = {}
-    property_columns = list(properties or ())
-
-    rows = iter(iter_dataframe_records(frame))
-    next_error_row = 1
-    while True:
-        try:
-            row_number, row = next(rows)
-        except StopIteration:
-            break
-        except Exception as exc:
-            report.record_rejected(next_error_row, exc)
-            break
-
-        next_error_row = row_number + 1
-        try:
-            molecule, molecule_id, property_values = Analyzer._coerce_dataframe_row(
-                row,
-                smiles,
-                id,
-                property_columns,
-            )
-            accepted_id = analyzer.add_molecule(molecule, id=molecule_id)
-            for property_name, value in property_values:
-                analyzer.add_property(accepted_id, property_name, value)
-        except Exception as exc:
-            report.record_rejected(row_number, exc)
-            continue
-
-        report.record_accepted(accepted_id)
-        molecule_smiles[str(accepted_id)] = _source_to_smiles(molecule)
+    report = load_dataframe_rows(
+        analyzer,
+        frame,
+        smiles,
+        id,
+        properties,
+        molecule_smiles=molecule_smiles,
+        smiles_of=_source_to_smiles,
+    )
 
     analyzer.analyze()
     return AnalysisResult(
         analyzer,
         load_report=report,
         molecule_smiles=molecule_smiles,
-        property_names=property_columns,
+        property_names=list(properties or ()),
     )
 
 

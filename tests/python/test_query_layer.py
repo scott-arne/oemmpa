@@ -359,6 +359,39 @@ def test_objective_configures_direction_and_analysis_shortcut():
     ) == pytest.approx(-5.0)
 
 
+def test_objective_aggregation_propagates_to_transform_predictions():
+    from oemmpa import Objective, analyze
+
+    # Three C->O pairs with deltas {4.0, 1.0, 1.5} so the average (2.167)
+    # differs from the median (1.5); the objective aggregation must select
+    # which statistic drives the predicted delta.
+    frame = {
+        "smiles": [
+            "Cc1ccccc1",
+            "Oc1ccccc1",
+            "Cc1ccccc1F",
+            "Oc1ccccc1F",
+            "Cc1ccc(F)cc1",
+            "Oc1ccc(F)cc1",
+        ],
+        "id": ["a", "b", "c", "d", "e", "f"],
+        "pIC50": [5.0, 9.0, 5.0, 6.0, 5.0, 6.5],
+    }
+    analysis = analyze(frame, smiles="smiles", id="id", properties=["pIC50"])
+
+    def predicted(aggregation):
+        rows = (
+            analysis.objective(Objective("pIC50", aggregation=aggregation))
+            .transforms.improves()
+            .to_dicts()
+        )
+        by_transform = {row["transform"]: row for row in rows}
+        return by_transform["[*:1]C>>[*:1]O"]["predicted_delta"]
+
+    assert predicted("avg") == pytest.approx(2.16666667)
+    assert predicted("median") == pytest.approx(1.5)
+
+
 def test_analysis_generate_marks_known_and_novel_products():
     from oemmpa import analyze_dataframe
 

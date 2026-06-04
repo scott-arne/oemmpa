@@ -19,6 +19,23 @@ RULE_ENVIRONMENT_SMILES_COLUMNS = (
 )
 TRANSFORM_SMIRKS_COLUMNS = ("transform",)
 
+# Aggregate statistic fields shared by transform and rule-environment
+# statistics results, in MMPDB column order.
+AGGREGATE_FIELDS = (
+    "count",
+    "avg",
+    "std",
+    "kurtosis",
+    "skewness",
+    "min",
+    "q1",
+    "median",
+    "q3",
+    "max",
+    "paired_t",
+    "p_value",
+)
+
 
 def dataframe_from_dicts(
     rows,

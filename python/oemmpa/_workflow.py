@@ -30,7 +30,9 @@ def _normalize_aggregation(aggregation):
     normalized = str(aggregation)
     if normalized not in _AGGREGATIONS:
         raise ValueError(f"unsupported aggregation: {aggregation}")
-    return normalized
+    # ``mean`` and ``avg`` select the same statistic; normalize to one spelling
+    # so equivalent objectives never spuriously conflict.
+    return "avg" if normalized == "mean" else normalized
 
 
 def _normalize_direction(direction):

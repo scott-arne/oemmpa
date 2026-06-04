@@ -658,11 +658,16 @@ def _predict_stateless(args):
     _reject_stateless_details(args, "predict")
     _require_file_inputs(args, "predict")
     _, statistics = _compute_statistics(args)
-    prediction = predict_transform_delta(
-        statistics,
-        args.transform,
-        aggregation=args.aggregation,
-    )
+    try:
+        prediction = predict_transform_delta(
+            statistics,
+            args.transform,
+            aggregation=args.aggregation,
+        )
+    except KeyError:
+        raise ValueError(
+            f"no transform statistics found for transform: {args.transform}"
+        ) from None
     _write_tsv_output([prediction.to_dict()], PREDICTION_COLUMNS, args.output)
     return 0
 
@@ -690,7 +695,9 @@ def _predict_persisted(args):
     )
     _, matches = _find_persisted_matches(args)
     if not matches:
-        raise KeyError(args.transform)
+        raise ValueError(
+            f"no rule environment found for transform: {args.transform}"
+        )
     match = matches[0]
     prediction = RuleEnvironmentPredictionResult.from_statistics(
         match.statistics,

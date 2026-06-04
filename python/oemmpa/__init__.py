@@ -404,7 +404,6 @@ def _preload_shared_libs():
     unrelated C extensions such as ``_sqlite3``.
     """
     import ctypes
-    import sys
     if sys.platform not in ('linux', 'darwin'):
         return
 
@@ -457,7 +456,6 @@ def _preload_bundled_libs():
     until no new libraries can be loaded. Libraries are loaded without
     ``RTLD_GLOBAL`` to avoid polluting the global symbol namespace.
     """
-    import sys
     if sys.platform != 'linux':
         return
 
@@ -497,7 +495,6 @@ def _preload_extension_openeye_libs():
     """
     import ctypes
     import importlib.util
-    import sys
     from pathlib import Path
 
     pkg_dir = os.path.dirname(os.path.abspath(__file__))

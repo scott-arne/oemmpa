@@ -205,11 +205,19 @@ class GeneratedProductResult:
     :param statistics: Optional transform statistics for prediction metadata.
     :param known_product_ids: Optional analyzed-dataset molecule identifiers
         matching this product.
+    :param aggregation: Statistic used for the default predicted delta.
     """
 
-    def __init__(self, raw_product, statistics=None, known_product_ids=None):
+    def __init__(
+        self,
+        raw_product,
+        statistics=None,
+        known_product_ids=None,
+        aggregation="avg",
+    ):
         self._raw_product = raw_product
         self._statistics = statistics
+        self._aggregation = str(aggregation)
         self._known_product_ids = (
             None if known_product_ids is None
             else tuple(str(molecule_id) for molecule_id in known_product_ids)
@@ -247,16 +255,19 @@ class GeneratedProductResult:
             return ()
         return self._known_product_ids
 
-    def predicted_delta(self, aggregation="avg"):
+    def predicted_delta(self, aggregation=None):
         """Return a predicted property delta from attached statistics.
 
-        :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
+        :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``. Defaults to
+            the aggregation this product was generated with.
         :returns: Predicted delta, or ``None`` when no statistics were
             attached.
         :raises ValueError: If ``aggregation`` is unsupported.
         """
         if self._statistics is None:
             return None
+        if aggregation is None:
+            aggregation = self._aggregation
         return self._statistics.predicted_delta(aggregation)
 
     def with_known_product_ids(self, known_product_ids):
@@ -265,6 +276,7 @@ class GeneratedProductResult:
             self._raw_product,
             statistics=self._statistics,
             known_product_ids=known_product_ids,
+            aggregation=self._aggregation,
         )
 
     def to_dict(self):
@@ -289,7 +301,9 @@ class GeneratedProductResult:
             row.update(
                 {
                     "property": self._statistics.property_name,
-                    "predicted_delta": self._statistics.predicted_delta(),
+                    "predicted_delta": self._statistics.predicted_delta(
+                        self._aggregation
+                    ),
                     "count": self._statistics.count,
                     "std": self._statistics.std,
                     "p_value": self._statistics.p_value,

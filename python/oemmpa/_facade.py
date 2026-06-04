@@ -3,7 +3,7 @@
 import operator
 
 from . import _oemmpa  # type: ignore[attr-defined]
-from ._loading import LoadReport, iter_dataframe_records
+from ._loading import LoadReport, load_dataframe_rows
 from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
     PairCollection,
@@ -130,37 +130,13 @@ class Analyzer:
         :returns: :class:`oemmpa.LoadReport` describing accepted and rejected
             rows.
         """
-        report = LoadReport()
-        property_columns = list(property_columns or ())
-
-        rows = iter(iter_dataframe_records(frame))
-        next_error_row = 1
-        while True:
-            try:
-                row_number, row = next(rows)
-            except StopIteration:
-                break
-            except Exception as exc:
-                report.record_rejected(next_error_row, exc)
-                break
-
-            next_error_row = row_number + 1
-            try:
-                molecule, molecule_id, properties = self._coerce_dataframe_row(
-                    row,
-                    smiles_column,
-                    id_column,
-                    property_columns,
-                )
-                accepted_id = self.add_molecule(molecule, id=molecule_id)
-                for property_name, value in properties:
-                    self.add_property(accepted_id, property_name, value)
-            except Exception as exc:
-                report.record_rejected(row_number, exc)
-                continue
-
-            report.record_accepted(accepted_id)
-        return report
+        return load_dataframe_rows(
+            self,
+            frame,
+            smiles_column,
+            id_column,
+            property_columns,
+        )
 
     def add_property(self, molecule_id, name, value):
         """Add a numeric property for a molecule.

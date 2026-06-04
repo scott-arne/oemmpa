@@ -3,24 +3,12 @@
 from dataclasses import dataclass
 import importlib
 
-from ._dataframe import TRANSFORM_SMIRKS_COLUMNS, dataframe_from_dicts
-from ._display import html_collection_preview, text_collection_summary
-
-
-AGGREGATE_FIELDS = (
-    "count",
-    "avg",
-    "std",
-    "kurtosis",
-    "skewness",
-    "min",
-    "q1",
-    "median",
-    "q3",
-    "max",
-    "paired_t",
-    "p_value",
+from ._dataframe import (
+    AGGREGATE_FIELDS,
+    TRANSFORM_SMIRKS_COLUMNS,
+    dataframe_from_dicts,
 )
+from ._display import html_collection_preview, text_collection_summary
 
 
 def _raw_transform(transform):

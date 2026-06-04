@@ -6,27 +6,12 @@ from dataclasses import fields
 import re
 
 from ._dataframe import (
+    AGGREGATE_FIELDS,
     RULE_ENVIRONMENT_SMILES_COLUMNS,
     TRANSFORM_SMIRKS_COLUMNS,
     dataframe_from_dicts,
 )
 from ._display import html_collection_preview, text_collection_summary
-
-
-AGGREGATE_FIELDS = (
-    "count",
-    "avg",
-    "std",
-    "kurtosis",
-    "skewness",
-    "min",
-    "q1",
-    "median",
-    "q3",
-    "max",
-    "paired_t",
-    "p_value",
-)
 
 _WHERE_PATTERN = re.compile(
     r"^\s*(?P<variable>[A-Za-z_][A-Za-z0-9_]*)\s*"
@@ -986,21 +971,6 @@ def _canonical_smiles(smiles):
     return _oemmpa.MoleculeRecord.FromSmiles(1, str(smiles)).GetCanonicalSmiles()
 
 
-def _transform_maps_reference_to_query(reference, query, transform):
-    from ._transform import apply_variable_transform
-
-    query_canonical = _canonical_smiles(query)
-    try:
-        products = apply_variable_transform(reference, transform)
-    except ValueError:
-        return False
-
-    return any(
-        _canonical_smiles(product) == query_canonical
-        for product in products
-    )
-
-
 def _hydrogen_transform_matches_source_environment(source, row):
     from ._transform import apply_variable_transform
 
@@ -1032,6 +1002,28 @@ def _query_statistics(store, options):
     )
 
 
+def _index_statistics(statistics):
+    """Index statistics rows for environment-keyed lookups.
+
+    Returns three mappings from ``(smiles, environment_key)`` to the rows whose
+    ``from_smiles``, ``to_smiles``, or ``transform`` (paired with the row's
+    environment key) match. Building these once avoids re-scanning the full
+    statistics collection for every query environment.
+
+    :param statistics: Filtered rule-environment statistics rows.
+    :returns: ``(by_from, by_to, by_transform)`` dictionaries.
+    """
+    by_from = {}
+    by_to = {}
+    by_transform = {}
+    for row in statistics:
+        env_key = _environment_key(row)
+        by_from.setdefault((row.from_smiles, env_key), []).append(row)
+        by_to.setdefault((row.to_smiles, env_key), []).append(row)
+        by_transform.setdefault((row.transform, env_key), []).append(row)
+    return by_from, by_to, by_transform
+
+
 def find_query_environments(store, smiles, *, selection=None, **filters):
     """Find stored transform statistics compatible with a query molecule.
 
@@ -1052,38 +1044,34 @@ def find_query_environments(store, smiles, *, selection=None, **filters):
         options.max_radius,
     )
     statistics = _query_statistics(store, options)
+    by_from, _, _ = _index_statistics(statistics)
 
     best_matches = {}
+
+    def consider(query_environment, row):
+        match_key = (row.property_name, row.transform)
+        current = best_matches.get(match_key)
+        if current is None or _score_key(row, options.score) > _score_key(
+            current.statistics,
+            options.score,
+        ):
+            best_matches[match_key] = QueryEnvironmentMatch(query_environment, row)
+
     for query_environment in query_environments:
         query_key = _environment_key(query_environment)
-        for row in statistics:
-            if row.from_smiles != query_environment.variable_smiles:
-                continue
-            if _environment_key(row) != query_key:
-                continue
-            match_key = (row.property_name, row.transform)
-            candidate = QueryEnvironmentMatch(query_environment, row)
-            current = best_matches.get(match_key)
-            if current is None or _score_key(row, options.score) > _score_key(
-                current.statistics,
-                options.score,
-            ):
-                best_matches[match_key] = candidate
+        for row in by_from.get((query_environment.variable_smiles, query_key), ()):
+            consider(query_environment, row)
 
+    # When the query molecule has no fragmentable single cut (e.g. a bare ring),
+    # it produces no explicit query environments. Fall back to implicit-hydrogen
+    # source rows whose transform reproduces a query environment of the input.
     if not query_environments:
-        for row in statistics:
-            if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
+        for (from_smiles, _env_key), rows in by_from.items():
+            if from_smiles != _HYDROGEN_VARIABLE_SMILES:
                 continue
-            if not _hydrogen_transform_matches_source_environment(smiles, row):
-                continue
-            match_key = (row.property_name, row.transform)
-            candidate = QueryEnvironmentMatch(_implicit_hydrogen_environment(row), row)
-            current = best_matches.get(match_key)
-            if current is None or _score_key(row, options.score) > _score_key(
-                current.statistics,
-                options.score,
-            ):
-                best_matches[match_key] = candidate
+            for row in rows:
+                if _hydrogen_transform_matches_source_environment(smiles, row):
+                    consider(_implicit_hydrogen_environment(row), row)
 
     return QueryEnvironmentMatchCollection(
         best_matches[key]
@@ -1135,6 +1123,20 @@ def predict_query_property_delta(
         ).append(reference_environment)
 
     statistics = _query_statistics(store, options)
+    by_from, by_to, by_transform = _index_statistics(statistics)
+
+    query_canonical = _canonical_smiles(smiles)
+
+    def maps_reference_to_query(transform):
+        from ._transform import apply_variable_transform
+
+        try:
+            products = apply_variable_transform(reference, transform)
+        except ValueError:
+            return False
+        return any(
+            _canonical_smiles(product) == query_canonical for product in products
+        )
 
     candidates = []
     possible_transforms = []
@@ -1148,31 +1150,18 @@ def predict_query_property_delta(
                 + query_environment.variable_smiles
             )
             possible_transforms.append(transform)
-            for row in statistics:
-                if row.transform != transform:
-                    continue
-                if _environment_key(row) != query_key:
-                    continue
-                if not _transform_maps_reference_to_query(
-                    reference,
-                    smiles,
-                    row.transform,
-                ):
+            for row in by_transform.get((transform, query_key), ()):
+                if not maps_reference_to_query(row.transform):
                     continue
                 candidates.append((row, query_environment, reference_environment))
         if reference_matches:
             continue
-        for row in statistics:
+        for row in by_to.get((query_environment.variable_smiles, query_key), ()):
             if row.from_smiles != _HYDROGEN_VARIABLE_SMILES:
                 continue
-            if row.to_smiles != query_environment.variable_smiles:
+            if not maps_reference_to_query(row.transform):
                 continue
-            if _environment_key(row) != query_key:
-                continue
-            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
-                continue
-            transform = row.transform
-            possible_transforms.append(transform)
+            possible_transforms.append(row.transform)
             candidates.append(
                 (
                     row,
@@ -1182,17 +1171,14 @@ def predict_query_property_delta(
             )
     for reference_environment in reference_environments:
         reference_key = _environment_key(reference_environment)
-        for row in statistics:
+        for row in by_from.get(
+            (reference_environment.variable_smiles, reference_key), ()
+        ):
             if row.to_smiles != _HYDROGEN_VARIABLE_SMILES:
                 continue
-            if row.from_smiles != reference_environment.variable_smiles:
+            if not maps_reference_to_query(row.transform):
                 continue
-            if _environment_key(row) != reference_key:
-                continue
-            transform = row.transform
-            possible_transforms.append(transform)
-            if not _transform_maps_reference_to_query(reference, smiles, row.transform):
-                continue
+            possible_transforms.append(row.transform)
             candidates.append(
                 (
                     row,
