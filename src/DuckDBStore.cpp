@@ -1064,6 +1064,12 @@ DuckDBStore::DuckDBStore(const std::string& database_path)
     } catch (const std::exception& exc) {
         throw StorageError("failed to open DuckDB database: " + std::string(exc.what()));
     }
+
+    // Ensure the schema (and its indexes) exists on open. InitializeSchema is
+    // idempotent (every table/index uses ``if not exists``), so this also
+    // backfills indexes added in later versions onto previously created
+    // database files, not just freshly created ones.
+    InitializeSchema();
 }
 
 DuckDBStore::~DuckDBStore() = default;

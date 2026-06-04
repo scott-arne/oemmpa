@@ -793,6 +793,34 @@ TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithStoredPairs) {
     std::filesystem::remove(database_path);
 }
 
+TEST(DuckDBStoreTest, ReopenedFileBackedDatabaseServesIndexedRuleEnvironmentQuery) {
+    // Opening an existing file-backed database runs the idempotent schema
+    // initialization (including the pair foreign-key indexes) so the indexed
+    // GetPairsForRuleEnvironment lookup works after reopen, not only on the
+    // store that originally wrote the rows.
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        AddToluenePhenolMolecules(store);
+        store.AddMoleculeProperty(1, "pIC50", 6.0);
+        store.AddMoleculeProperty(2, "pIC50", 7.5);
+        store.AddPairs(AnalyzeToluenePhenolPairs());
+        store.RefreshRuleEnvironmentStatistics();
+    }
+
+    DuckDBStore reopened(database_path.string());
+    const std::vector<RuleEnvironmentStatistics> rows =
+        reopened.GetRuleEnvironmentStatistics("pIC50");
+    ASSERT_FALSE(rows.empty());
+    const std::vector<MatchedPair> environment_pairs =
+        reopened.GetPairsForRuleEnvironment(rows.front().GetRuleEnvironmentId());
+    EXPECT_FALSE(environment_pairs.empty());
+
+    std::filesystem::remove(database_path);
+}
+
 TEST(DuckDBStoreTest, AnalyzerSavesMoleculesPropertiesAndPairsToStore) {
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "tol");
