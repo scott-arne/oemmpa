@@ -4,10 +4,12 @@
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/RuleEnvironmentStatistics.h"
 
 #include <duckdb.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -891,6 +893,45 @@ TEST(DuckDBStoreTest, AnalyzerSaveRefreshesRuleEnvironmentStatistics) {
         store.GetSummary(true).GetNumRuleEnvironmentStatistics(),
         statistics_count
     );
+}
+
+TEST(DuckDBStoreTest, RuleEnvironmentStatisticsPValueMatchesScipy) {
+    // Three scaffolds undergoing the same methyl->hydroxyl transform with
+    // pIC50 deltas of exactly {1, 2, 4}. The two-sided paired-t p-value for
+    // those deltas (df = 2) is 0.11808289631180306 from scipy
+    // (scipy.stats.t.sf(|t|, 2) * 2). The C++ regularized-incomplete-beta
+    // implementation must reproduce that value.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "s1");
+    analyzer.AddMolecule("Oc1ccccc1", "t1");
+    analyzer.AddMolecule("Cc1ccncc1", "s2");
+    analyzer.AddMolecule("Oc1ccncc1", "t2");
+    analyzer.AddMolecule("Cc1ccc(F)cc1", "s3");
+    analyzer.AddMolecule("Oc1ccc(F)cc1", "t3");
+    analyzer.AddProperty("s1", "pIC50", 5.0);
+    analyzer.AddProperty("t1", "pIC50", 6.0);
+    analyzer.AddProperty("s2", "pIC50", 5.0);
+    analyzer.AddProperty("t2", "pIC50", 7.0);
+    analyzer.AddProperty("s3", "pIC50", 5.0);
+    analyzer.AddProperty("t3", "pIC50", 9.0);
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<RuleEnvironmentStatistics> rows =
+        store.GetRuleEnvironmentStatistics("pIC50");
+
+    bool checked = false;
+    for (const RuleEnvironmentStatistics& row : rows) {
+        if (row.GetCount() != 3) {
+            continue;
+        }
+        ASSERT_TRUE(row.HasPValue());
+        EXPECT_NEAR(row.GetPValue(), 0.11808289631180306, 1e-12);
+        checked = true;
+    }
+    EXPECT_TRUE(checked);
 }
 
 TEST(DuckDBStoreTest, AnalyzerSaveRefreshesHydrogenRuleEnvironmentStatistics) {

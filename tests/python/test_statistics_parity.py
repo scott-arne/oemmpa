@@ -2,15 +2,15 @@
 
 The DuckDB persistence layer (C++) and the Python ``_analytics`` module each
 implement the same descriptive statistics (mean, sample standard deviation,
-quartiles, kurtosis, skewness, paired t). These tests reconstruct the exact
-per-rule-environment property deltas the C++ engine aggregated and assert that
-Python's ``_aggregate_values`` produces identical results on the same inputs,
-so the two implementations cannot silently drift.
+quartiles, kurtosis, skewness, paired t, and the two-sided p-value). These
+tests reconstruct the exact per-rule-environment property deltas the C++ engine
+aggregated and assert that Python's ``_aggregate_values`` produces identical
+results on the same inputs, so the two implementations cannot silently drift.
 
-Known intentional asymmetry: the C++ persistence layer never computes the
-two-sided p-value (it has no t-distribution CDF dependency) and always stores
-NULL, whereas the Python layer fills it in via scipy when available. The test
-encodes this boundary explicitly rather than treating it as drift.
+The p-value is validated end to end against scipy: Python's ``_p_value`` uses
+``scipy.stats.t.sf`` and C++ computes the same two-sided Student's t p-value via
+the regularized incomplete beta function, so matching the Python value here also
+matches scipy.
 """
 
 import csv
@@ -85,6 +85,7 @@ def test_cpp_and_python_statistics_match_on_reference_dataset():
     compared = 0
     saw_multi_pair = False
     saw_nonzero_variance = False
+    saw_p_value = False
     for row in rows:
         deltas = _reconstruct_deltas(store, row)
         assert len(deltas) == row.count
@@ -106,8 +107,10 @@ def test_cpp_and_python_statistics_match_on_reference_dataset():
         _assert_optional_match(row.kurtosis, expected["kurtosis"])
         _assert_optional_match(row.skewness, expected["skewness"])
         _assert_optional_match(row.paired_t, expected["paired_t"])
-        # Known asymmetry: C++ never persists a p-value.
-        assert row.p_value is None
+        # C++ now computes the same two-sided p-value as Python's scipy path.
+        _assert_optional_match(row.p_value, expected["p_value"])
+        if row.p_value is not None:
+            saw_p_value = True
         compared += 1
 
     assert compared == len(rows)
@@ -115,3 +118,4 @@ def test_cpp_and_python_statistics_match_on_reference_dataset():
     # trivial single-pair environments.
     assert saw_multi_pair
     assert saw_nonzero_variance
+    assert saw_p_value
