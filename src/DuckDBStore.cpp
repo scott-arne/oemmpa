@@ -148,12 +148,39 @@ std::unique_ptr<duckdb::QueryResult> execute_prepared(
     return result;
 }
 
+// Name of the id-allocation sequence backing a table's primary key.
+std::string id_sequence_name(const std::string& table_name) {
+    return "seq_" + table_name + "_id";
+}
+
+// Current maximum id in a table, or 0 when empty. Used once per table at
+// schema-init time to seed its id sequence; not on the per-insert hot path.
+std::uint64_t get_max_id(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    const std::string& table_name
+) {
+    const std::string sql = "select coalesce(max(id), 0) from " + table_name;
+    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    throw StorageError("DuckDB did not return a max ID for " + table_name);
+}
+
+// Allocate the next primary-key id for a table. Backed by a DuckDB sequence
+// (see InitializeSchema), so this is an atomic O(1) counter rather than a
+// repeated max(id) table scan.
 std::uint64_t get_next_id(
     const std::unique_ptr<duckdb::Connection>& connection,
     const std::string& table_name,
-    const std::string& id_column
+    const std::string& /*id_column*/
 ) {
-    const std::string sql = "select coalesce(max(" + id_column + "), 0) + 1 from " + table_name;
+    const std::string sql = "select nextval('" + id_sequence_name(table_name) + "')";
     std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
@@ -1238,6 +1265,23 @@ void DuckDBStore::InitializeSchema() {
         Execute(
             "create index if not exists pair_constant_idx on pair(constant_id)"
         );
+
+        // Back each id column with a DuckDB sequence instead of recomputing
+        // max(id)+1 on every insert. Each sequence is seeded at max(id)+1 so it
+        // is correct on a fresh database (max 0 -> start 1) and on a database
+        // whose rows predate the sequence; "if not exists" preserves an
+        // already-advanced sequence across reopen.
+        for (const char* table : {
+            "compound", "compound_property", "constant_smiles",
+            "environment_fingerprint", "pair", "property_name",
+            "rule", "rule_environment", "rule_smiles"
+        }) {
+            const std::string table_name = table;
+            Execute(
+                "create sequence if not exists " + id_sequence_name(table_name) +
+                " start " + std::to_string(get_max_id(connection_, table_name) + 1)
+            );
+        }
         Execute("commit");
     } catch (...) {
         try {

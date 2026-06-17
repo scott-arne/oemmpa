@@ -504,6 +504,30 @@ TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithStoredRows) {
     std::filesystem::remove(database_path);
 }
 
+TEST(DuckDBStoreTest, ReopenedDatabaseAllocatesNonCollidingIds) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+        store.AddMoleculeProperty(1, "pIC50", 6.5);
+    }
+
+    // Reopening must continue id allocation past the persisted rows, not
+    // restart it. The id sequences are seeded from max(id)+1 on open, so a
+    // second property row gets a fresh id rather than colliding with the one
+    // written before the reopen.
+    DuckDBStore reopened(database_path.string());
+    reopened.AddMoleculeProperty(1, "logD", 1.2);
+    EXPECT_EQ(reopened.GetRowCount("compound_property"), 2U);
+    EXPECT_DOUBLE_EQ(reopened.GetMoleculeProperty(1, "pIC50"), 6.5);
+    EXPECT_DOUBLE_EQ(reopened.GetMoleculeProperty(1, "logD"), 1.2);
+
+    std::filesystem::remove(database_path);
+}
+
 TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     DuckDBStore store;
     store.InitializeSchema();
