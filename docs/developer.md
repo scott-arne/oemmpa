@@ -66,6 +66,20 @@ type-check cleanly, so mypy is configured to skip following into them rather
 than abort the run. They are imported lazily where used and are not required to
 run static analysis.
 
+## Clean Build
+
+`invoke clean` removes generated build, documentation, and in-tree package
+artifacts (CMake build trees, `dist/`, generated docs, the compiled `_oemmpa`
+extension, the generated `oemmpa.py` wrapper, and the bundled OpenEye libraries
+copied into the editable package). It deliberately leaves local developer files
+such as `CMakeUserPresets.json` and `.venv` untouched. Add `--pycache` to also
+remove `__pycache__` directories:
+
+```bash
+python -m invoke clean
+python -m invoke clean --pycache
+```
+
 ## Persistent Fragment Storage
 
 OEMMPA currently persists the post-analysis model: compounds, properties,
