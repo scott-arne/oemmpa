@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import sys
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -172,3 +174,74 @@ def test_import_creates_cache_alias_for_static_named_openeye_runtime_lib(
     assert len(cached_aliases) == 1
     assert cached_aliases[0].is_symlink()
     assert cached_aliases[0].resolve().name == runtime_name
+
+
+def test_import_error_chains_openeye_preload_diagnostics(monkeypatch, tmp_path):
+    """A failed extension import surfaces the underlying preload failure."""
+    package = "oemmpa"
+    source_dir = tmp_path / package
+    shutil.copytree(
+        "python/oemmpa",
+        source_dir,
+        ignore=shutil.ignore_patterns(
+            "__pycache__",
+            "_*.so",
+            "_*.pyd",
+            "_*.dylib",
+            "lib*.so",
+            "lib*.dylib",
+            "lib*.a",
+        ),
+    )
+    # A runtime library that exists but cannot be dlopen-ed (not a real shared
+    # object), so preloading records a failure.
+    suffix = "dylib" if sys.platform == "darwin" else "so"
+    expected_name = f"liboechem.{suffix}"
+
+    (source_dir / "_build_info.py").write_text(
+        "OPENEYE_LIBRARY_TYPE = 'SHARED'\n"
+        f"OPENEYE_EXPECTED_LIBS = [{expected_name!r}]\n"
+        "OPENEYE_BUILD_VERSION = '2025.2.1'\n"
+    )
+    # A _oemmpa stub that raises ImportError simulates a broken/unloadable
+    # compiled extension, so the extension import fails after the preload
+    # failure above -- exercising the diagnostic-chaining path.
+    (source_dir / "_oemmpa.py").write_text("raise ImportError('simulated broken extension')\n")
+    (source_dir / "oemmpa.py").write_text(_STUB_MODULE)
+
+    fake_openeye = tmp_path / "openeye"
+    fake_libs = fake_openeye / "libs"
+    fake_runtime = fake_libs / "runtime"
+    fake_runtime.mkdir(parents=True)
+    (fake_openeye / "__init__.py").write_text("")
+    (fake_libs / "__init__.py").write_text("")
+    (fake_runtime / expected_name).write_text("not a loadable shared object")
+    cache_home = tmp_path / "cache"
+
+    for module_name in list(sys.modules):
+        if module_name == package or module_name.startswith(f"{package}."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+        if module_name == "openeye" or module_name.startswith("openeye."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            finder
+            for finder in sys.meta_path
+            if package not in type(finder).__module__
+        ],
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
+    importlib.invalidate_caches()
+
+    with pytest.raises(ImportError) as excinfo:
+        importlib.import_module(package)
+
+    message = str(excinfo.value)
+    assert "failed to preload" in message
+    assert expected_name in message
+    # The original extension-import error is preserved as the chained cause.
+    assert excinfo.value.__cause__ is not None
