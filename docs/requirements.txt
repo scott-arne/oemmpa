@@ -1,5 +1,6 @@
 # OEMMPA Documentation Build Dependencies
-# Install with: python -m pip install -r docs/requirements.txt
+# Install with: uv pip install -r docs/requirements.txt
+# (or run `python -m invoke docs-deps`, which installs these via uv)
 
 # Core Sphinx
 sphinx>=7.0

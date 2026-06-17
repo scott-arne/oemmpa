@@ -158,12 +158,22 @@ cmake --build build-release
 
 ## Editable Python Install
 
+The `python/` project is a development overlay: it packages the pure-Python
+`oemmpa` sources but does **not** build the compiled `_oemmpa` SWIG extension.
+Build the extension first with a CMake preset (the debug/release presets emit
+`_oemmpa` and the generated `oemmpa.py` into `python/oemmpa/`), then install the
+overlay editably so the package resolves from the source tree:
+
 ```bash
-pip install --config-settings editable_mode=compat -e python/
+cmake --preset debug
+cmake --build build-debug
+uv pip install --config-settings editable_mode=compat -e python/
 ```
 
 `editable_mode=compat` is required because scikit-build-core's default editable
 mode uses import hooks that are not reliable for this SWIG extension workflow.
+On a clean checkout, skipping the CMake build leaves the overlay importable but
+unable to load the compiled extension.
 
 ## Test
 
@@ -289,8 +299,7 @@ The benchmark suite writes CSV rows for repeated analysis throughput, DuckDB
 storage loading, and command-line runs:
 
 ```bash
-/Users/johnss51/Applications/miniforge3/envs/main/bin/python \
-  -m benchmarks.benchmark_suite thread-scaling tests/data/mmpa_smiles.smi
+python -m benchmarks.benchmark_suite thread-scaling tests/data/mmpa_smiles.smi
 ```
 
 See [docs/benchmarks.md](docs/benchmarks.md) for the benchmark commands.

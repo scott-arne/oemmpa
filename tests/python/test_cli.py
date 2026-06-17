@@ -513,6 +513,17 @@ def test_cli_summary_alias_reports_persistent_store_summary(tmp_path):
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def test_cli_list_output_creates_missing_parent_directories(tmp_path):
+    database = _build_cli_store(tmp_path)
+    report = tmp_path / "reports" / "nested" / "summary.tsv"
+
+    result = _run_cli("list", str(database), "--output", str(report))
+
+    assert result.returncode == 0
+    assert report.exists()
+    assert _tsv_rows(report.read_text()) == EXPECTED_PERSISTED_SUMMARY
+
+
 def test_cli_list_output_dash_writes_stdout(tmp_path):
     database = _build_cli_store(tmp_path)
     dash_path = Path("-")

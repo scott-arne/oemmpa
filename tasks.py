@@ -92,9 +92,12 @@ def docs_check(ctx):
 
 @task
 def docs_deps(ctx):
-    """Install documentation dependencies."""
-    print("Installing documentation dependencies...")
-    ctx.run(f"{sys.executable} -m pip install -r {DOCS_DIR}/requirements.txt")
+    """Install documentation dependencies into the active interpreter via uv."""
+    # Use uv and target the same interpreter this task runs under (consistent
+    # with SPHINXBUILD) rather than a bare pip install, which would silently
+    # install into whichever interpreter happens to be active.
+    print(f"Installing documentation dependencies into {sys.executable}...")
+    ctx.run(f"uv pip install --python {sys.executable} -r {DOCS_DIR}/requirements.txt")
     print("Done.")
 
 

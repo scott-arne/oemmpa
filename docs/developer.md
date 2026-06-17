@@ -44,9 +44,27 @@ Before completing a phase, run:
 ```bash
 cmake --build build-debug
 ctest --test-dir build-debug --output-on-failure
-/Users/johnss51/Applications/miniforge3/envs/main/bin/python -m pytest tests/python
+python -m pytest tests/python
 git diff --check
 ```
+
+## Static Analysis
+
+`ruff` and `mypy` cover the Python package, benchmarks, and `tasks.py`. The
+`dev` optional-dependency set installs everything those tools need to resolve
+imports (`pytest`, `rich`, `rich-click`, `invoke`); install it into the active
+environment first:
+
+```bash
+uv pip install -e ".[dev]"
+ruff check .
+mypy python/oemmpa benchmarks tasks.py scripts/build_python.py
+```
+
+Optional native dependencies (`openeye`, `rdkit`) ship stubs that do not
+type-check cleanly, so mypy is configured to skip following into them rather
+than abort the run. They are imported lazily where used and are not required to
+run static analysis.
 
 ## Persistent Fragment Storage
 

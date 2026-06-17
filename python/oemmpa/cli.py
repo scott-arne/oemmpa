@@ -276,6 +276,11 @@ def _open_text_output(path):
         return
 
     output_path = Path(path)
+    # Create the parent directory so writing to a not-yet-existing report
+    # location (e.g. --output reports/pairs.tsv) succeeds instead of failing
+    # with a bare file-open error. A bare filename has parent ".", for which
+    # this is a harmless no-op.
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.suffix == ".gz":
         with gzip.open(output_path, "wt", encoding="utf-8", newline="") as handle:
             yield handle
