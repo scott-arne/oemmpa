@@ -136,6 +136,11 @@ public:
 
     /// \brief Return transforms grouped from pairs filtered by query options.
     ///
+    /// Results are not cached: each call re-runs filtering, scoring, and
+    /// property injection over the pairs (GetTransforms is GetPairs followed by
+    /// grouping). Callers that need both the pairs and the transforms for the
+    /// same options should retain the returned vectors rather than re-querying.
+    ///
     /// Throws if Analyze() has not succeeded since the last mutation.
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
