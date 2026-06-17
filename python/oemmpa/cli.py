@@ -422,6 +422,23 @@ def _resolve_id_column(fieldnames, requested_id_column):
     raise ValueError(f"missing id column: expected one of {candidates}")
 
 
+def _format_row_error_summary(path, errors, *, max_detail=10):
+    """Build a concise multi-row error message for a malformed input file.
+
+    :param path: Source file path for context.
+    :param errors: Ordered per-row error strings.
+    :param max_detail: Maximum number of row errors to list inline.
+    :returns: A single summary string listing up to ``max_detail`` rows.
+    """
+    count = len(errors)
+    shown = errors[:max_detail]
+    lines = [f"{count} invalid row(s) in {path}:"]
+    lines.extend(f"  {error}" for error in shown)
+    if count > max_detail:
+        lines.append(f"  ... and {count - max_detail} more")
+    return "\n".join(lines)
+
+
 def _load_properties(analyzer, path, id_column, property_name):
     with _open_text_input(path) as handle:
         reader = csv.DictReader(handle, dialect=_property_csv_dialect(handle))
@@ -431,10 +448,16 @@ def _load_properties(analyzer, path, id_column, property_name):
         if property_name not in reader.fieldnames:
             raise ValueError(f"missing property column: {property_name}")
 
+        # Accumulate per-row failures rather than aborting on the first bad
+        # row, so users get a complete report of what to fix in one pass. Valid
+        # rows are still applied; the summary is raised at the end so the
+        # caller (e.g. build) does not proceed with a partial property set.
+        errors = []
         for row_number, row in enumerate(reader, start=2):
             molecule_id = row.get(id_column)
             if molecule_id is None or molecule_id == "":
-                raise ValueError(f"row {row_number}: missing molecule id")
+                errors.append(f"row {row_number}: missing molecule id")
+                continue
 
             value = row.get(property_name)
             if value is None or value == "" or value == "*":
@@ -442,7 +465,10 @@ def _load_properties(analyzer, path, id_column, property_name):
             try:
                 analyzer.add_property(molecule_id, property_name, float(value))
             except ValueError as exc:
-                raise ValueError(f"row {row_number}: {property_name}: {exc}") from exc
+                errors.append(f"row {row_number}: {property_name}: {exc}")
+
+        if errors:
+            raise ValueError(_format_row_error_summary(path, errors))
 
 
 def _configure_fragmentation(analyzer, args):
@@ -902,6 +928,11 @@ def _generate(args):
 
 def _build_parser():
     parser = argparse.ArgumentParser(prog="oemmpa")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print a full traceback for unexpected runtime errors.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build_parser = subparsers.add_parser(
@@ -1180,5 +1211,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+    except (ValueError, KeyError, FileNotFoundError) as exc:
+        # Known user-facing errors (bad inputs, validation, missing files).
+        # Exit code 2 matches argparse's usage-error convention. KeyError's
+        # repr quotes its message, so format it explicitly.
+        message = exc.args[0] if exc.args else exc
+        parser.exit(2, f"oemmpa: error: {message}\n")
     except Exception as exc:
-        parser.exit(2, f"oemmpa: error: {exc}\n")
+        # Unexpected runtime failures (internal bugs, IO errors, database
+        # corruption, C++/SWIG RuntimeError). Use a distinct non-usage exit
+        # code so field reports are distinguishable from usage errors, and
+        # surface the full traceback under --debug.
+        if getattr(args, "debug", False):
+            raise
+        print(
+            f"oemmpa: runtime error: {exc}\n"
+            "Re-run with --debug for a full traceback.",
+            file=sys.stderr,
+        )
+        return 1

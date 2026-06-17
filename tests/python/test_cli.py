@@ -595,6 +595,72 @@ def test_cli_build_rejects_directory_output_path(tmp_path):
     assert "output path is a directory" in result.stderr
 
 
+def test_cli_property_load_reports_all_invalid_rows(tmp_path):
+    smiles = tmp_path / "molecules.smi"
+    properties = tmp_path / "properties.csv"
+    smiles.write_text(
+        "\n".join(["Cc1ccccc1 tol", "Oc1ccccc1 phenol", "Nc1ccccc1 aniline", ""]),
+        encoding="utf-8",
+    )
+    # Two bad rows (non-numeric value on row 3, missing id on row 4) plus valid
+    # rows. The loader should report both failures in one summary rather than
+    # aborting on the first.
+    properties.write_text(
+        "\n".join(
+            [
+                "id,pIC50",
+                "tol,6.0",
+                "phenol,not-a-number",
+                ",6.5",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--properties",
+        str(properties),
+        "--property",
+        "pIC50",
+        "--output",
+        str(tmp_path / "out.oemmpa.duckdb"),
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "2 invalid row(s)" in result.stderr
+    assert "row 3: pIC50:" in result.stderr
+    assert "row 4: missing molecule id" in result.stderr
+
+
+def test_cli_unexpected_runtime_error_exits_one_without_traceback(tmp_path):
+    corrupt = tmp_path / "corrupt.oemmpa.duckdb"
+    corrupt.write_text("not a valid duckdb database", encoding="utf-8")
+
+    result = _run_cli("list", str(corrupt), check=False)
+
+    # Unexpected runtime failures (here a C++/SWIG RuntimeError from DuckDB) use
+    # the non-usage exit code 1, not the argparse usage code 2.
+    assert result.returncode == 1
+    assert "oemmpa: runtime error:" in result.stderr
+    assert "Re-run with --debug" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_debug_flag_prints_traceback_for_runtime_error(tmp_path):
+    corrupt = tmp_path / "corrupt.oemmpa.duckdb"
+    corrupt.write_text("not a valid duckdb database", encoding="utf-8")
+
+    result = _run_cli("--debug", "list", str(corrupt), check=False)
+
+    assert result.returncode == 1
+    assert "Traceback" in result.stderr
+
+
 def test_cli_build_force_replaces_existing_output(tmp_path):
     database = tmp_path / "analysis.oemmpa.duckdb"
     database.write_text("not a duckdb database", encoding="utf-8")
