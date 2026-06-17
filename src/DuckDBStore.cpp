@@ -1386,6 +1386,11 @@ void DuckDBStore::Execute(const std::string& sql) {
     if (!connection_) {
         throw StorageError("DuckDB connection is not open");
     }
+    // A rollback discards rows whose ids may be cached, so invalidate the
+    // in-memory id caches to avoid handing out stale ids afterwards.
+    if (sql == "rollback") {
+        ClearIdCaches();
+    }
 
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
     if (!result) {
@@ -1657,32 +1662,24 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
     const std::vector<EnvironmentFingerprint>& environment_fingerprints =
         constant_fingerprints(pair.GetConstantSmiles());
 
-    const std::uint64_t constant_id = get_or_create_named_row_id(
-        connection_,
-        "constant_smiles",
-        "id",
-        "smiles",
-        pair.GetConstantSmiles()
-    );
-    const std::uint64_t from_smiles_id = get_or_create_named_row_id(
-        connection_,
-        "rule_smiles",
-        "id",
-        "smiles",
-        pair.GetSourceVariableSmiles()
-    );
-    const std::uint64_t to_smiles_id = get_or_create_named_row_id(
-        connection_,
-        "rule_smiles",
-        "id",
-        "smiles",
-        pair.GetTargetVariableSmiles()
-    );
-    const std::uint64_t rule_id = get_or_create_rule_id(
-        connection_,
-        from_smiles_id,
-        to_smiles_id
-    );
+    const std::uint64_t constant_id = cached_named_row_id(
+        constant_id_cache_, "constant_smiles", pair.GetConstantSmiles());
+    const std::uint64_t from_smiles_id = cached_named_row_id(
+        rule_smiles_id_cache_, "rule_smiles", pair.GetSourceVariableSmiles());
+    const std::uint64_t to_smiles_id = cached_named_row_id(
+        rule_smiles_id_cache_, "rule_smiles", pair.GetTargetVariableSmiles());
+
+    std::uint64_t rule_id;
+    {
+        const std::pair<std::uint64_t, std::uint64_t> key{from_smiles_id, to_smiles_id};
+        auto it = rule_id_cache_.find(key);
+        if (it != rule_id_cache_.end()) {
+            rule_id = it->second;
+        } else {
+            rule_id = get_or_create_rule_id(connection_, from_smiles_id, to_smiles_id);
+            rule_id_cache_.emplace(key, rule_id);
+        }
+    }
 
     const std::string pair_sql =
         "insert into pair ("
@@ -1691,20 +1688,35 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         ") values (?, ?, ?, ?, ?, ?, ?, ?)";
 
     for (const EnvironmentFingerprint& fingerprint : environment_fingerprints) {
-        const std::uint64_t environment_fingerprint_id =
-            get_or_create_environment_fingerprint_id(
-                connection_,
-                fingerprint.GetSmarts(),
-                fingerprint.GetPseudoSmiles(),
-                fingerprint.GetParentSmarts()
-            );
-        const std::uint64_t rule_environment_id =
-            get_or_create_rule_environment_id(
-                connection_,
-                rule_id,
-                environment_fingerprint_id,
-                static_cast<int>(fingerprint.GetRadius())
-            );
+        std::uint64_t environment_fingerprint_id;
+        {
+            const std::string fp_key = fingerprint.GetSmarts() + "\x1f" +
+                fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
+            auto it = fingerprint_id_cache_.find(fp_key);
+            if (it != fingerprint_id_cache_.end()) {
+                environment_fingerprint_id = it->second;
+            } else {
+                environment_fingerprint_id = get_or_create_environment_fingerprint_id(
+                    connection_, fingerprint.GetSmarts(),
+                    fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts());
+                fingerprint_id_cache_.emplace(fp_key, environment_fingerprint_id);
+            }
+        }
+        std::uint64_t rule_environment_id;
+        {
+            const std::tuple<std::uint64_t, std::uint64_t, int> re_key{
+                rule_id, environment_fingerprint_id,
+                static_cast<int>(fingerprint.GetRadius())};
+            auto it = rule_environment_id_cache_.find(re_key);
+            if (it != rule_environment_id_cache_.end()) {
+                rule_environment_id = it->second;
+            } else {
+                rule_environment_id = get_or_create_rule_environment_id(
+                    connection_, rule_id, environment_fingerprint_id,
+                    static_cast<int>(fingerprint.GetRadius()));
+                rule_environment_id_cache_.emplace(re_key, rule_environment_id);
+            }
+        }
         const std::uint64_t pair_id = get_next_id(connection_, "pair", "id");
         duckdb::vector<duckdb::Value> values = {
             duckdb::Value::UBIGINT(pair_id),
@@ -1719,6 +1731,29 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         execute_prepared(connection_, pair_sql, std::move(values));
         increment_rule_environment_pair_count(connection_, rule_environment_id);
     }
+}
+
+void DuckDBStore::ClearIdCaches() {
+    constant_id_cache_.clear();
+    rule_smiles_id_cache_.clear();
+    rule_id_cache_.clear();
+    fingerprint_id_cache_.clear();
+    rule_environment_id_cache_.clear();
+}
+
+std::uint64_t DuckDBStore::cached_named_row_id(
+    std::unordered_map<std::string, std::uint64_t>& cache,
+    const std::string& table_name,
+    const std::string& value
+) {
+    auto it = cache.find(value);
+    if (it != cache.end()) {
+        return it->second;
+    }
+    const std::uint64_t id = get_or_create_named_row_id(
+        connection_, table_name, "id", "smiles", value);
+    cache.emplace(value, id);
+    return id;
 }
 
 void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {

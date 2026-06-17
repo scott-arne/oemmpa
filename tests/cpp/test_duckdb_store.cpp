@@ -977,5 +977,43 @@ TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
     EXPECT_EQ(store.GetRowCount("pair"), 0U);
 }
 
+
+TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache) {
+    // A first save rolls back partway (duplicate molecule id), discarding the
+    // rule/fingerprint/rule_environment rows it had begun inserting. Reusing a
+    // store must not reference cached ids from the rolled-back attempt: a clean
+    // save\x27s sum(num_pairs) must equal its pair row count.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.0);
+    analyzer.Analyze();
+
+    DuckDBStore aborted_store;
+    aborted_store.InitializeSchema();
+    aborted_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    EXPECT_THROW(analyzer.SaveTo(aborted_store), StorageError);
+    EXPECT_EQ(aborted_store.GetRowCount("pair"), 0U);
+
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    std::uint64_t pair_rows = 0;
+    {
+        DuckDBStore clean_store(database_path.string());
+        analyzer.SaveTo(clean_store);
+        pair_rows = clean_store.GetRowCount("pair");
+        EXPECT_GT(pair_rows, 0U);
+    }
+
+    std::uint64_t total_num_pairs = 0;
+    for (const RuleEnvironmentRow& row : ReadRuleEnvironmentRows(database_path)) {
+        total_num_pairs += row.num_pairs;
+    }
+    EXPECT_EQ(total_num_pairs, pair_rows);
+
+    std::filesystem::remove(database_path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA
