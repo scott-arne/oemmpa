@@ -95,6 +95,43 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
     )
 
 
+def test_duckdb_store_batched_property_read_attaches_multiple_properties():
+    """Pairs from a multi-pair query carry every shared property correctly.
+
+    Exercises the batched (non-N+1) property read: several pairs are fetched
+    and each property is joined in memory, so all source/target deltas must
+    match across more than one property.
+    """
+    from oemmpa import Analyzer, DuckDBStore
+
+    analyzer = Analyzer()
+    molecules = [
+        ("Cc1ccccc1", "tol"),
+        ("Oc1ccccc1", "phenol"),
+        ("Nc1ccccc1", "aniline"),
+        ("Clc1ccccc1", "chloro"),
+    ]
+    for smiles, identifier in molecules:
+        analyzer.add_molecule(smiles, id=identifier)
+    pic50 = {"tol": 6.0, "phenol": 7.0, "aniline": 6.5, "chloro": 5.0}
+    logd = {"tol": 2.7, "phenol": 1.5, "aniline": 1.3, "chloro": 3.1}
+    for identifier in pic50:
+        analyzer.add_property(identifier, "pIC50", pic50[identifier])
+        analyzer.add_property(identifier, "logD", logd[identifier])
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    pairs = store.pairs()
+
+    assert len(pairs) > 1
+    for pair in pairs:
+        expected_pic50 = pic50[pair.target_id] - pic50[pair.source_id]
+        expected_logd = logd[pair.target_id] - logd[pair.source_id]
+        assert pair.property_delta("pIC50") == pytest.approx(expected_pic50)
+        assert pair.property_delta("logD") == pytest.approx(expected_logd)
+
+
 def test_duckdb_store_keeps_raw_fragment_storage_deferred():
     from oemmpa import Analyzer, DuckDBStore
 

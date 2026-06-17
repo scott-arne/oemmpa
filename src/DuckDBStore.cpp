@@ -991,30 +991,17 @@ std::vector<RuleEnvironmentStatistics> collect_rule_environment_statistics(
 }
 
 // Read matched pairs from a pair query and attach their numeric properties.
-// The property statement is prepared once and re-executed per pair instead of
-// being recompiled for every row, removing the prepare cost of the prior
-// N+1 pattern while keeping the shared logic in one place.
+//
+// Pairs are materialized first, then every property value for the compounds
+// they reference is fetched in a single query and joined in memory. This
+// replaces the prior N+1 pattern (one property query per pair) with two
+// queries total, which scales far better on large result sets.
 std::vector<MatchedPair> read_pairs_with_properties(
     const std::unique_ptr<duckdb::Connection>& connection,
     duckdb::QueryResult& result
 ) {
-    const std::string property_sql =
-        "select property_name.name, source_property.value, target_property.value "
-        "from compound_property source_property "
-        "join compound_property target_property "
-        "on target_property.property_name_id = source_property.property_name_id "
-        "join property_name on property_name.id = source_property.property_name_id "
-        "where source_property.compound_id = ? and target_property.compound_id = ? "
-        "order by property_name.name";
-    std::unique_ptr<duckdb::PreparedStatement> property_statement =
-        connection->Prepare(property_sql);
-    if (!property_statement || property_statement->HasError()) {
-        throw StorageError(
-            "DuckDB prepare failed for pair property query: " + property_sql
-        );
-    }
-
     std::vector<MatchedPair> pairs;
+    std::set<std::uint64_t> compound_ids;
     for (const auto& row : result) {
         MatchedPair pair(
             static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
@@ -1030,23 +1017,69 @@ std::vector<MatchedPair> read_pairs_with_properties(
             row.GetValue<std::int32_t>(10),
             row.GetValue<std::int32_t>(11)
         );
+        compound_ids.insert(pair.GetSourceMoleculeId());
+        compound_ids.insert(pair.GetTargetMoleculeId());
+        pairs.push_back(std::move(pair));
+    }
 
-        duckdb::vector<duckdb::Value> property_values = {
-            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-        };
-        std::unique_ptr<duckdb::QueryResult> property_result =
-            property_statement->Execute(property_values);
-        require_success(*property_result, property_sql);
-        for (const auto& property_row : *property_result) {
-            pair.SetProperty(
-                property_row.GetValue<std::string>(0),
-                property_row.GetValue<double>(1),
-                property_row.GetValue<double>(2)
-            );
+    if (pairs.empty()) {
+        return pairs;
+    }
+
+    // Fetch all property values for the referenced compounds in one query,
+    // keyed by (compound_id, property_name) for in-memory join below.
+    std::ostringstream id_list;
+    bool first = true;
+    for (const std::uint64_t compound_id : compound_ids) {
+        if (!first) {
+            id_list << ",";
         }
+        id_list << compound_id;
+        first = false;
+    }
 
-        pairs.push_back(pair);
+    const std::string property_sql =
+        "select compound_property.compound_id, property_name.name, "
+        "compound_property.value "
+        "from compound_property "
+        "join property_name on property_name.id = compound_property.property_name_id "
+        "where compound_property.compound_id in (" + id_list.str() + ")";
+    std::unique_ptr<duckdb::QueryResult> property_result =
+        connection->Query(property_sql);
+    if (!property_result) {
+        throw StorageError("DuckDB query returned no result: " + property_sql);
+    }
+    require_success(*property_result, property_sql);
+
+    // property_name -> value for each compound, with names kept in sorted
+    // order so SetProperty is invoked in the same order as the prior
+    // ``order by property_name.name`` query.
+    std::map<std::uint64_t, std::map<std::string, double>> values_by_compound;
+    for (const auto& property_row : *property_result) {
+        values_by_compound[property_row.GetValue<std::uint64_t>(0)]
+            [property_row.GetValue<std::string>(1)] =
+            property_row.GetValue<double>(2);
+    }
+
+    // Attach a property to a pair only when both compounds carry it, matching
+    // the inner-join semantics of the prior per-pair query.
+    for (MatchedPair& pair : pairs) {
+        const auto source_it = values_by_compound.find(pair.GetSourceMoleculeId());
+        const auto target_it = values_by_compound.find(pair.GetTargetMoleculeId());
+        if (source_it == values_by_compound.end() ||
+            target_it == values_by_compound.end()) {
+            continue;
+        }
+        for (const auto& source_entry : source_it->second) {
+            const auto target_value_it = target_it->second.find(source_entry.first);
+            if (target_value_it != target_it->second.end()) {
+                pair.SetProperty(
+                    source_entry.first,
+                    source_entry.second,
+                    target_value_it->second
+                );
+            }
+        }
     }
     return pairs;
 }
