@@ -15,3 +15,14 @@ oemmpa = "oemmpa.cli:main"
 
 [tool.setuptools]
 packages = ["oemmpa"]
+
+# This development overlay (setuptools) is used only for editable installs; the
+# distributable wheel is built separately by scikit-build-core from the root
+# pyproject.toml. The compiled SWIG extension is produced by the CMake build and
+# copied into oemmpa/, so setuptools does not track it as a source. Declaring it
+# as package data makes ``editable_mode=strict`` include it in the symlink
+# layout, keeping the package importable after a strict editable install. Only
+# ``*.so`` is listed: the OpenEye runtime libraries are resolved at import time
+# from the installed ``openeye-toolkits`` package and are not bundled here.
+[tool.setuptools.package-data]
+oemmpa = ["*.so"]
