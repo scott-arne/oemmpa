@@ -147,8 +147,10 @@ cmake --build build-debug
 
 The debug preset builds the C++ library, C++ tests, and SWIG Python extension.
 It also enables optional DuckDB storage when DuckDB is installed in a standard
-Homebrew or `DUCKDB_ROOT` location. Generic CMake/scikit-build builds leave
-DuckDB disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided.
+Homebrew or `DUCKDB_ROOT` location. Published wheels enable DuckDB storage: the
+CI wheel jobs provision the official libduckdb C++ release bundle and build with
+`OEMMPA_BUILD_DUCKDB=ON`. Ad-hoc local CMake/scikit-build builds leave DuckDB
+disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided and DuckDB is discoverable.
 Release builds use the matching preset:
 
 ```bash

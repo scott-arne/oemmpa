@@ -155,5 +155,10 @@ expected-missing-libs = [
     "liboemath", "libzstd",
 ]
 
-# Additional CMake defines passed during wheel build (beyond the standard ones)
+# Additional CMake defines passed during wheel build (beyond the standard ones).
+# Published wheels enable DuckDB-backed storage; the CI wheel jobs provision the
+# official libduckdb C++ release bundle and set DUCKDB_ROOT so FindDuckDB.cmake
+# locates it. Without that bundle present, this define is a no-op because
+# find_package(DuckDB QUIET) leaves OEMMPA_HAS_DUCKDB FALSE.
 [tool.oe-build.extra-cmake-defines]
+OEMMPA_BUILD_DUCKDB = "ON"

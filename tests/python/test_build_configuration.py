@@ -37,6 +37,30 @@ def test_wheel_workflow_uses_installed_package_smoke_tests():
     assert "python -m oemmpa --help" in workflow
 
 
+def test_wheel_build_enables_duckdb_storage():
+    """Published wheels must be built with DuckDB storage enabled.
+
+    Guards the full chain: pyproject flips the CMake flag for the wheel build,
+    each platform job provisions the libduckdb C++ bundle, and every smoke test
+    asserts ``duckdb_available()`` so a disabled build fails CI rather than
+    silently shipping a wheel that cannot persist.
+    """
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    workflow = (REPO_ROOT / ".github/workflows/build-wheels.yml").read_text()
+
+    assert 'OEMMPA_BUILD_DUCKDB = "ON"' in pyproject
+
+    # One DuckDB provisioning step per platform job (linux, macos, windows).
+    assert workflow.count("Download DuckDB C++ library") == 3
+    assert "libduckdb-linux-amd64.zip" in workflow
+    assert "libduckdb-osx-universal.zip" in workflow
+    assert "libduckdb-windows-amd64.zip" in workflow
+    # Windows lacks auditwheel/delocate, so the DLL is vendored explicitly.
+    assert "Bundle duckdb.dll into wheel" in workflow
+    # Every job's smoke test must fail closed when DuckDB is missing.
+    assert "wheel built without DuckDB storage" in workflow
+
+
 def test_swig_openeye_grid_dependency_is_explicitly_linked():
     swig_interface = (REPO_ROOT / "swig/oemmpa.i").read_text()
     swig_cmake = (REPO_ROOT / "swig/CMakeLists.txt").read_text()
