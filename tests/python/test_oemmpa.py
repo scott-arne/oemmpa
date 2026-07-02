@@ -57,5 +57,5 @@ class TestCalculateMolecularWeight:
         import oemmpa
         assert hasattr(oemmpa, '__version__')
         assert hasattr(oemmpa, '__version_info__')
-        assert oemmpa.__version__ == "1.1.1"
-        assert oemmpa.__version_info__ == (1, 1, 1)
+        assert oemmpa.__version__ == "1.1.2"
+        assert oemmpa.__version_info__ == (1, 1, 2)
