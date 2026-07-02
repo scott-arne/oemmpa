@@ -36,6 +36,22 @@ class TestCalculateMolecularWeight:
         with pytest.raises(TypeError):
             calculate_molecular_weight("not a molecule")
 
+    def test_rejects_object_with_non_swig_this(self):
+        """Pointer extraction fails closed for a fake object with a bad ``this``.
+
+        The cross-runtime typemap extracts the C++ pointer via int(obj.this).
+        An object that merely has a non-SWIG ``this`` attribute must be
+        rejected with a clean exception, not dereferenced as if it were a real
+        SwigPyObject.
+        """
+        from oemmpa import calculate_molecular_weight
+
+        class FakeMolecule:
+            this = "not a swig object"
+
+        with pytest.raises((TypeError, ValueError)):
+            calculate_molecular_weight(FakeMolecule())
+
     def test_version_available(self):
         """Verify version info is accessible."""
         import oemmpa

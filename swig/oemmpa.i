@@ -64,29 +64,46 @@ namespace OESystem {
 // ============================================================================
 // OpenEye's Python bindings use SWIG runtime v4; our module uses v5.
 // Since the runtimes are separate, SWIG_TypeQuery cannot access OpenEye types.
-// We use Python isinstance for type safety and directly extract the void*
-// pointer from the SwigPyObject struct layout (stable across SWIG versions).
+// We use Python isinstance for type safety and extract the underlying C++
+// pointer through SwigPyObject's public __int__ (PyNumber_Long), which both
+// runtimes expose. This avoids depending on the private SwigPyObject struct
+// layout: int(obj.this) returns the wrapped void* as a Python integer.
+//
+// Version contract: validated against OpenEye Toolkits 2025.2 (SWIG v4
+// wrappers) consumed by this module's SWIG v5 runtime. If a future OpenEye
+// release stops exposing SwigPyObject.__int__, extraction fails closed with a
+// clean Python exception rather than dereferencing an unknown layout.
 //
 // This approach enables passing OpenEye objects between Python and C++ without
 // serialization. The macros below generate the boilerplate for each type.
 
 %{
-// Minimal SwigPyObject layout compatible across SWIG runtime versions.
-// The actual struct may have more fields, but ptr is always first after
-// PyObject_HEAD.
-struct _SwigPyObjectCompat {
-    PyObject_HEAD
-    void *ptr;
-};
-
+// Extract the wrapped C++ pointer from an OpenEye SWIG object via the public
+// SwigPyObject.__int__ conversion. Returns NULL (with no Python error pending)
+// on any failure, so the caller's typemap fails closed with its own clean
+// type error instead of using a bad pointer.
 static void* _oemmpa_extract_swig_ptr(PyObject* obj) {
     PyObject* thisAttr = PyObject_GetAttrString(obj, "this");
     if (!thisAttr) {
+        // No `this` attribute: not a SWIG-wrapped object. Clear the lookup
+        // error so the caller's typemap raises its own clean type error.
         PyErr_Clear();
         return NULL;
     }
-    void* ptr = ((_SwigPyObjectCompat*)thisAttr)->ptr;
+    // int(obj.this) yields the underlying void* for a SwigPyObject. This is
+    // SWIG's documented, layout-independent extraction path.
+    PyObject* asInt = PyNumber_Long(thisAttr);
     Py_DECREF(thisAttr);
+    if (!asInt) {
+        PyErr_Clear();
+        return NULL;
+    }
+    void* ptr = PyLong_AsVoidPtr(asInt);
+    Py_DECREF(asInt);
+    if (ptr == NULL && PyErr_Occurred()) {
+        PyErr_Clear();
+        return NULL;
+    }
     return ptr;
 }
 

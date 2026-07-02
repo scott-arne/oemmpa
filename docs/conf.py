@@ -9,8 +9,17 @@ import warnings
 from sphinx.deprecation import RemovedInSphinx10Warning
 
 
-ROOT = Path(__file__).resolve().parents[1]
-PYTHON_ROOT = ROOT / "python"
+# Directory holding this conf.py. Generated artifacts (Doxygen XML, Exhale RST)
+# are written relative to here, so a build run from a copied source tree keeps
+# all generated files inside that copy instead of the real repository.
+HERE = Path(__file__).resolve().parent
+
+# Root of the repository providing the documented sources (python/, include/).
+# These are always read from the real checkout; OEMMPA_DOCS_REPO_ROOT lets a
+# test build from a copied docs/ tree while still pointing source inputs at the
+# real repository.
+REPO_ROOT = Path(os.environ.get("OEMMPA_DOCS_REPO_ROOT", HERE.parents[0]))
+PYTHON_ROOT = REPO_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
@@ -81,20 +90,24 @@ napoleon_google_docstring = False
 napoleon_numpy_docstring = False
 
 breathe_default_project = "oemmpa"
+# Write the generated Doxygen XML relative to this conf.py (the Sphinx source
+# dir), not the repository root, so a build from a copied tree keeps it inside
+# the copy. Exhale's containmentFolder (./cpp-api) is likewise resolved against
+# the conf dir and must remain a subdirectory of the Sphinx source.
 breathe_projects = {
-    "oemmpa": str(ROOT / "docs" / "_doxygen" / "xml"),
+    "oemmpa": str(HERE / "_doxygen" / "xml"),
 }
 
 exhale_args = {
     "containmentFolder": "./cpp-api",
     "rootFileName": "library_root.rst",
     "rootFileTitle": "C++ API",
-    "doxygenStripFromPath": str(ROOT / "include"),
+    "doxygenStripFromPath": str(REPO_ROOT / "include"),
     "createTreeView": True,
     "exhaleExecutesDoxygen": True,
     "exhaleUseDoxyfile": False,
     "exhaleDoxygenStdin": f"""
-INPUT                  = {ROOT / "include" / "oemmpa"}
+INPUT                  = {REPO_ROOT / "include" / "oemmpa"}
 RECURSIVE              = YES
 EXTRACT_ALL            = YES
 GENERATE_HTML          = NO

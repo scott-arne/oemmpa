@@ -171,8 +171,9 @@ class Analyzer:
 
         :param min_cuts: Optional minimum number of cuts.
         :param max_cuts: Optional maximum number of cuts.
-        :param max_cut_bonds: Optional maximum number of candidate cut bonds;
-            ``0`` or ``None`` disables the guard.
+        :param max_cut_bonds: Optional maximum number of candidate cut bonds.
+            ``None`` leaves the default (20, matching RDKit) in place; ``0``
+            disables the guard (unlimited enumeration).
         :param max_heavy_atoms: Optional maximum molecule heavy atom count.
         :param max_rotatable_bonds: Optional maximum rotatable bond count.
         :param rotatable_smarts: Optional SMARTS used to count rotatable bonds.

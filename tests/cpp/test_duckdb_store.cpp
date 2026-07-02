@@ -4,10 +4,12 @@
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/RuleEnvironmentStatistics.h"
 
 #include <duckdb.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -504,6 +506,30 @@ TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithStoredRows) {
     std::filesystem::remove(database_path);
 }
 
+TEST(DuckDBStoreTest, ReopenedDatabaseAllocatesNonCollidingIds) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+        store.AddMoleculeProperty(1, "pIC50", 6.5);
+    }
+
+    // Reopening must continue id allocation past the persisted rows, not
+    // restart it. The id sequences are seeded from max(id)+1 on open, so a
+    // second property row gets a fresh id rather than colliding with the one
+    // written before the reopen.
+    DuckDBStore reopened(database_path.string());
+    reopened.AddMoleculeProperty(1, "logD", 1.2);
+    EXPECT_EQ(reopened.GetRowCount("compound_property"), 2U);
+    EXPECT_DOUBLE_EQ(reopened.GetMoleculeProperty(1, "pIC50"), 6.5);
+    EXPECT_DOUBLE_EQ(reopened.GetMoleculeProperty(1, "logD"), 1.2);
+
+    std::filesystem::remove(database_path);
+}
+
 TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     DuckDBStore store;
     store.InitializeSchema();
@@ -869,6 +895,45 @@ TEST(DuckDBStoreTest, AnalyzerSaveRefreshesRuleEnvironmentStatistics) {
     );
 }
 
+TEST(DuckDBStoreTest, RuleEnvironmentStatisticsPValueMatchesScipy) {
+    // Three scaffolds undergoing the same methyl->hydroxyl transform with
+    // pIC50 deltas of exactly {1, 2, 4}. The two-sided paired-t p-value for
+    // those deltas (df = 2) is 0.11808289631180306 from scipy
+    // (scipy.stats.t.sf(|t|, 2) * 2). The C++ regularized-incomplete-beta
+    // implementation must reproduce that value.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "s1");
+    analyzer.AddMolecule("Oc1ccccc1", "t1");
+    analyzer.AddMolecule("Cc1ccncc1", "s2");
+    analyzer.AddMolecule("Oc1ccncc1", "t2");
+    analyzer.AddMolecule("Cc1ccc(F)cc1", "s3");
+    analyzer.AddMolecule("Oc1ccc(F)cc1", "t3");
+    analyzer.AddProperty("s1", "pIC50", 5.0);
+    analyzer.AddProperty("t1", "pIC50", 6.0);
+    analyzer.AddProperty("s2", "pIC50", 5.0);
+    analyzer.AddProperty("t2", "pIC50", 7.0);
+    analyzer.AddProperty("s3", "pIC50", 5.0);
+    analyzer.AddProperty("t3", "pIC50", 9.0);
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<RuleEnvironmentStatistics> rows =
+        store.GetRuleEnvironmentStatistics("pIC50");
+
+    bool checked = false;
+    for (const RuleEnvironmentStatistics& row : rows) {
+        if (row.GetCount() != 3) {
+            continue;
+        }
+        ASSERT_TRUE(row.HasPValue());
+        EXPECT_NEAR(row.GetPValue(), 0.11808289631180306, 1e-12);
+        checked = true;
+    }
+    EXPECT_TRUE(checked);
+}
+
 TEST(DuckDBStoreTest, AnalyzerSaveRefreshesHydrogenRuleEnvironmentStatistics) {
     Analyzer analyzer;
     analyzer.AddMolecule("c1cccnc1O", "pyridinol");
@@ -910,6 +975,44 @@ TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
     EXPECT_FALSE(store.HasMolecule(1));
     EXPECT_TRUE(store.HasMolecule(2));
     EXPECT_EQ(store.GetRowCount("pair"), 0U);
+}
+
+
+TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache) {
+    // A first save rolls back partway (duplicate molecule id), discarding the
+    // rule/fingerprint/rule_environment rows it had begun inserting. Reusing a
+    // store must not reference cached ids from the rolled-back attempt: a clean
+    // save\x27s sum(num_pairs) must equal its pair row count.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.0);
+    analyzer.Analyze();
+
+    DuckDBStore aborted_store;
+    aborted_store.InitializeSchema();
+    aborted_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    EXPECT_THROW(analyzer.SaveTo(aborted_store), StorageError);
+    EXPECT_EQ(aborted_store.GetRowCount("pair"), 0U);
+
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    std::uint64_t pair_rows = 0;
+    {
+        DuckDBStore clean_store(database_path.string());
+        analyzer.SaveTo(clean_store);
+        pair_rows = clean_store.GetRowCount("pair");
+        EXPECT_GT(pair_rows, 0U);
+    }
+
+    std::uint64_t total_num_pairs = 0;
+    for (const RuleEnvironmentRow& row : ReadRuleEnvironmentRows(database_path)) {
+        total_num_pairs += row.num_pairs;
+    }
+    EXPECT_EQ(total_num_pairs, pair_rows);
+
+    std::filesystem::remove(database_path);
 }
 
 }  // namespace test

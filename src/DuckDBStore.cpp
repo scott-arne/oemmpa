@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -148,12 +149,39 @@ std::unique_ptr<duckdb::QueryResult> execute_prepared(
     return result;
 }
 
+// Name of the id-allocation sequence backing a table's primary key.
+std::string id_sequence_name(const std::string& table_name) {
+    return "seq_" + table_name + "_id";
+}
+
+// Current maximum id in a table, or 0 when empty. Used once per table at
+// schema-init time to seed its id sequence; not on the per-insert hot path.
+std::uint64_t get_max_id(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    const std::string& table_name
+) {
+    const std::string sql = "select coalesce(max(id), 0) from " + table_name;
+    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    throw StorageError("DuckDB did not return a max ID for " + table_name);
+}
+
+// Allocate the next primary-key id for a table. Backed by a DuckDB sequence
+// (see InitializeSchema), so this is an atomic O(1) counter rather than a
+// repeated max(id) table scan.
 std::uint64_t get_next_id(
     const std::unique_ptr<duckdb::Connection>& connection,
     const std::string& table_name,
-    const std::string& id_column
+    const std::string& /*id_column*/
 ) {
-    const std::string sql = "select coalesce(max(" + id_column + "), 0) + 1 from " + table_name;
+    const std::string sql = "select nextval('" + id_sequence_name(table_name) + "')";
     std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
@@ -517,7 +545,87 @@ struct AggregateStatistics {
     double q3 = 0.0;
     double max = 0.0;
     duckdb::Value paired_t = duckdb::Value(nullptr);
+    duckdb::Value p_value = duckdb::Value(nullptr);
 };
+
+// Continued-fraction evaluation for the regularized incomplete beta function
+// (Numerical Recipes betacf, modified Lentz). Used to compute the Student's t
+// two-sided p-value without a third-party dependency, matching scipy's
+// stats.t.sf(|t|, df) * 2 to machine precision.
+double incomplete_beta_cf(double a, double b, double x) {
+    const int MAX_ITERATIONS = 200;
+    const double EPSILON = 3.0e-16;
+    const double FLOOR = 1.0e-300;
+    const double qab = a + b;
+    const double qap = a + 1.0;
+    const double qam = a - 1.0;
+    double c = 1.0;
+    double d = 1.0 - qab * x / qap;
+    if (std::fabs(d) < FLOOR) {
+        d = FLOOR;
+    }
+    d = 1.0 / d;
+    double h = d;
+    for (int m = 1; m <= MAX_ITERATIONS; ++m) {
+        const double m2 = 2.0 * m;
+        double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 + aa * d;
+        if (std::fabs(d) < FLOOR) {
+            d = FLOOR;
+        }
+        c = 1.0 + aa / c;
+        if (std::fabs(c) < FLOOR) {
+            c = FLOOR;
+        }
+        d = 1.0 / d;
+        h *= d * c;
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 + aa * d;
+        if (std::fabs(d) < FLOOR) {
+            d = FLOOR;
+        }
+        c = 1.0 + aa / c;
+        if (std::fabs(c) < FLOOR) {
+            c = FLOOR;
+        }
+        d = 1.0 / d;
+        const double delta = d * c;
+        h *= delta;
+        if (std::fabs(delta - 1.0) < EPSILON) {
+            break;
+        }
+    }
+    return h;
+}
+
+// Regularized incomplete beta function I_x(a, b).
+double regularized_incomplete_beta(double a, double b, double x) {
+    if (x <= 0.0) {
+        return 0.0;
+    }
+    if (x >= 1.0) {
+        return 1.0;
+    }
+    const double front = std::exp(
+        std::lgamma(a + b) - std::lgamma(a) - std::lgamma(b) +
+        a * std::log(x) + b * std::log1p(-x)
+    );
+    if (x < (a + 1.0) / (a + b + 2.0)) {
+        return front * incomplete_beta_cf(a, b, x) / a;
+    }
+    return 1.0 - front * incomplete_beta_cf(b, a, 1.0 - x) / b;
+}
+
+// Two-sided Student's t p-value for a t statistic with the given degrees of
+// freedom. Equals scipy.stats.t.sf(|t|, df) * 2 via the identity
+// 2 * sf(|t|, df) == I_{df/(df+t^2)}(df/2, 1/2).
+double two_sided_t_p_value(double t, double df) {
+    if (df <= 0.0) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const double x = df / (df + t * t);
+    return regularized_incomplete_beta(df / 2.0, 0.5, x);
+}
 
 double median(const std::vector<double>& values) {
     const std::size_t count = values.size();
@@ -671,13 +779,22 @@ AggregateStatistics aggregate_values(std::vector<double> values) {
     if (statistics.count > 1) {
         const double std_value = statistics.std.GetValue<double>();
         if (std_value == 0.0) {
+            // Zero variance: paired_t saturates and the p-value is undefined,
+            // so it is left NULL (matching the Python _p_value contract).
             statistics.paired_t = duckdb::Value::DOUBLE(100000000.0);
         } else {
-            statistics.paired_t = duckdb::Value::DOUBLE(
-                std::min(
-                    (statistics.avg / std_value) *
-                        std::sqrt(static_cast<double>(statistics.count)),
-                    100000000.0
+            const double paired_t = std::min(
+                (statistics.avg / std_value) *
+                    std::sqrt(static_cast<double>(statistics.count)),
+                100000000.0
+            );
+            statistics.paired_t = duckdb::Value::DOUBLE(paired_t);
+            // Two-sided p-value from the (clamped) t statistic with
+            // df = count - 1, matching Python's scipy-based computation.
+            statistics.p_value = duckdb::Value::DOUBLE(
+                two_sided_t_p_value(
+                    paired_t,
+                    static_cast<double>(statistics.count - 1)
                 )
             );
         }
@@ -785,7 +902,7 @@ void refresh_rule_environment_statistics(
             duckdb::Value::DOUBLE(statistics.q3),
             duckdb::Value::DOUBLE(statistics.max),
             statistics.paired_t,
-            duckdb::Value(nullptr),
+            statistics.p_value,
         };
         execute_prepared(connection, insert_sql, std::move(values));
         ++next_id;
@@ -991,30 +1108,17 @@ std::vector<RuleEnvironmentStatistics> collect_rule_environment_statistics(
 }
 
 // Read matched pairs from a pair query and attach their numeric properties.
-// The property statement is prepared once and re-executed per pair instead of
-// being recompiled for every row, removing the prepare cost of the prior
-// N+1 pattern while keeping the shared logic in one place.
+//
+// Pairs are materialized first, then every property value for the compounds
+// they reference is fetched in a single query and joined in memory. This
+// replaces the prior N+1 pattern (one property query per pair) with two
+// queries total, which scales far better on large result sets.
 std::vector<MatchedPair> read_pairs_with_properties(
     const std::unique_ptr<duckdb::Connection>& connection,
     duckdb::QueryResult& result
 ) {
-    const std::string property_sql =
-        "select property_name.name, source_property.value, target_property.value "
-        "from compound_property source_property "
-        "join compound_property target_property "
-        "on target_property.property_name_id = source_property.property_name_id "
-        "join property_name on property_name.id = source_property.property_name_id "
-        "where source_property.compound_id = ? and target_property.compound_id = ? "
-        "order by property_name.name";
-    std::unique_ptr<duckdb::PreparedStatement> property_statement =
-        connection->Prepare(property_sql);
-    if (!property_statement || property_statement->HasError()) {
-        throw StorageError(
-            "DuckDB prepare failed for pair property query: " + property_sql
-        );
-    }
-
     std::vector<MatchedPair> pairs;
+    std::set<std::uint64_t> compound_ids;
     for (const auto& row : result) {
         MatchedPair pair(
             static_cast<unsigned int>(row.GetValue<std::uint64_t>(0)),
@@ -1030,23 +1134,69 @@ std::vector<MatchedPair> read_pairs_with_properties(
             row.GetValue<std::int32_t>(10),
             row.GetValue<std::int32_t>(11)
         );
+        compound_ids.insert(pair.GetSourceMoleculeId());
+        compound_ids.insert(pair.GetTargetMoleculeId());
+        pairs.push_back(std::move(pair));
+    }
 
-        duckdb::vector<duckdb::Value> property_values = {
-            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-        };
-        std::unique_ptr<duckdb::QueryResult> property_result =
-            property_statement->Execute(property_values);
-        require_success(*property_result, property_sql);
-        for (const auto& property_row : *property_result) {
-            pair.SetProperty(
-                property_row.GetValue<std::string>(0),
-                property_row.GetValue<double>(1),
-                property_row.GetValue<double>(2)
-            );
+    if (pairs.empty()) {
+        return pairs;
+    }
+
+    // Fetch all property values for the referenced compounds in one query,
+    // keyed by (compound_id, property_name) for in-memory join below.
+    std::ostringstream id_list;
+    bool first = true;
+    for (const std::uint64_t compound_id : compound_ids) {
+        if (!first) {
+            id_list << ",";
         }
+        id_list << compound_id;
+        first = false;
+    }
 
-        pairs.push_back(pair);
+    const std::string property_sql =
+        "select compound_property.compound_id, property_name.name, "
+        "compound_property.value "
+        "from compound_property "
+        "join property_name on property_name.id = compound_property.property_name_id "
+        "where compound_property.compound_id in (" + id_list.str() + ")";
+    std::unique_ptr<duckdb::QueryResult> property_result =
+        connection->Query(property_sql);
+    if (!property_result) {
+        throw StorageError("DuckDB query returned no result: " + property_sql);
+    }
+    require_success(*property_result, property_sql);
+
+    // property_name -> value for each compound, with names kept in sorted
+    // order so SetProperty is invoked in the same order as the prior
+    // ``order by property_name.name`` query.
+    std::map<std::uint64_t, std::map<std::string, double>> values_by_compound;
+    for (const auto& property_row : *property_result) {
+        values_by_compound[property_row.GetValue<std::uint64_t>(0)]
+            [property_row.GetValue<std::string>(1)] =
+            property_row.GetValue<double>(2);
+    }
+
+    // Attach a property to a pair only when both compounds carry it, matching
+    // the inner-join semantics of the prior per-pair query.
+    for (MatchedPair& pair : pairs) {
+        const auto source_it = values_by_compound.find(pair.GetSourceMoleculeId());
+        const auto target_it = values_by_compound.find(pair.GetTargetMoleculeId());
+        if (source_it == values_by_compound.end() ||
+            target_it == values_by_compound.end()) {
+            continue;
+        }
+        for (const auto& source_entry : source_it->second) {
+            const auto target_value_it = target_it->second.find(source_entry.first);
+            if (target_value_it != target_it->second.end()) {
+                pair.SetProperty(
+                    source_entry.first,
+                    source_entry.second,
+                    target_value_it->second
+                );
+            }
+        }
     }
     return pairs;
 }
@@ -1205,6 +1355,23 @@ void DuckDBStore::InitializeSchema() {
         Execute(
             "create index if not exists pair_constant_idx on pair(constant_id)"
         );
+
+        // Back each id column with a DuckDB sequence instead of recomputing
+        // max(id)+1 on every insert. Each sequence is seeded at max(id)+1 so it
+        // is correct on a fresh database (max 0 -> start 1) and on a database
+        // whose rows predate the sequence; "if not exists" preserves an
+        // already-advanced sequence across reopen.
+        for (const char* table : {
+            "compound", "compound_property", "constant_smiles",
+            "environment_fingerprint", "pair", "property_name",
+            "rule", "rule_environment", "rule_smiles"
+        }) {
+            const std::string table_name = table;
+            Execute(
+                "create sequence if not exists " + id_sequence_name(table_name) +
+                " start " + std::to_string(get_max_id(connection_, table_name) + 1)
+            );
+        }
         Execute("commit");
     } catch (...) {
         try {
@@ -1218,6 +1385,11 @@ void DuckDBStore::InitializeSchema() {
 void DuckDBStore::Execute(const std::string& sql) {
     if (!connection_) {
         throw StorageError("DuckDB connection is not open");
+    }
+    // A rollback discards rows whose ids may be cached, so invalidate the
+    // in-memory id caches to avoid handing out stale ids afterwards.
+    if (sql == "rollback") {
+        ClearIdCaches();
     }
 
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
@@ -1490,32 +1662,24 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
     const std::vector<EnvironmentFingerprint>& environment_fingerprints =
         constant_fingerprints(pair.GetConstantSmiles());
 
-    const std::uint64_t constant_id = get_or_create_named_row_id(
-        connection_,
-        "constant_smiles",
-        "id",
-        "smiles",
-        pair.GetConstantSmiles()
-    );
-    const std::uint64_t from_smiles_id = get_or_create_named_row_id(
-        connection_,
-        "rule_smiles",
-        "id",
-        "smiles",
-        pair.GetSourceVariableSmiles()
-    );
-    const std::uint64_t to_smiles_id = get_or_create_named_row_id(
-        connection_,
-        "rule_smiles",
-        "id",
-        "smiles",
-        pair.GetTargetVariableSmiles()
-    );
-    const std::uint64_t rule_id = get_or_create_rule_id(
-        connection_,
-        from_smiles_id,
-        to_smiles_id
-    );
+    const std::uint64_t constant_id = cached_named_row_id(
+        constant_id_cache_, "constant_smiles", pair.GetConstantSmiles());
+    const std::uint64_t from_smiles_id = cached_named_row_id(
+        rule_smiles_id_cache_, "rule_smiles", pair.GetSourceVariableSmiles());
+    const std::uint64_t to_smiles_id = cached_named_row_id(
+        rule_smiles_id_cache_, "rule_smiles", pair.GetTargetVariableSmiles());
+
+    std::uint64_t rule_id;
+    {
+        const std::pair<std::uint64_t, std::uint64_t> key{from_smiles_id, to_smiles_id};
+        auto it = rule_id_cache_.find(key);
+        if (it != rule_id_cache_.end()) {
+            rule_id = it->second;
+        } else {
+            rule_id = get_or_create_rule_id(connection_, from_smiles_id, to_smiles_id);
+            rule_id_cache_.emplace(key, rule_id);
+        }
+    }
 
     const std::string pair_sql =
         "insert into pair ("
@@ -1524,20 +1688,35 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         ") values (?, ?, ?, ?, ?, ?, ?, ?)";
 
     for (const EnvironmentFingerprint& fingerprint : environment_fingerprints) {
-        const std::uint64_t environment_fingerprint_id =
-            get_or_create_environment_fingerprint_id(
-                connection_,
-                fingerprint.GetSmarts(),
-                fingerprint.GetPseudoSmiles(),
-                fingerprint.GetParentSmarts()
-            );
-        const std::uint64_t rule_environment_id =
-            get_or_create_rule_environment_id(
-                connection_,
-                rule_id,
-                environment_fingerprint_id,
-                static_cast<int>(fingerprint.GetRadius())
-            );
+        std::uint64_t environment_fingerprint_id;
+        {
+            const std::string fp_key = fingerprint.GetSmarts() + "\x1f" +
+                fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
+            auto it = fingerprint_id_cache_.find(fp_key);
+            if (it != fingerprint_id_cache_.end()) {
+                environment_fingerprint_id = it->second;
+            } else {
+                environment_fingerprint_id = get_or_create_environment_fingerprint_id(
+                    connection_, fingerprint.GetSmarts(),
+                    fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts());
+                fingerprint_id_cache_.emplace(fp_key, environment_fingerprint_id);
+            }
+        }
+        std::uint64_t rule_environment_id;
+        {
+            const std::tuple<std::uint64_t, std::uint64_t, int> re_key{
+                rule_id, environment_fingerprint_id,
+                static_cast<int>(fingerprint.GetRadius())};
+            auto it = rule_environment_id_cache_.find(re_key);
+            if (it != rule_environment_id_cache_.end()) {
+                rule_environment_id = it->second;
+            } else {
+                rule_environment_id = get_or_create_rule_environment_id(
+                    connection_, rule_id, environment_fingerprint_id,
+                    static_cast<int>(fingerprint.GetRadius()));
+                rule_environment_id_cache_.emplace(re_key, rule_environment_id);
+            }
+        }
         const std::uint64_t pair_id = get_next_id(connection_, "pair", "id");
         duckdb::vector<duckdb::Value> values = {
             duckdb::Value::UBIGINT(pair_id),
@@ -1552,6 +1731,29 @@ void DuckDBStore::AddPair(const MatchedPair& pair) {
         execute_prepared(connection_, pair_sql, std::move(values));
         increment_rule_environment_pair_count(connection_, rule_environment_id);
     }
+}
+
+void DuckDBStore::ClearIdCaches() {
+    constant_id_cache_.clear();
+    rule_smiles_id_cache_.clear();
+    rule_id_cache_.clear();
+    fingerprint_id_cache_.clear();
+    rule_environment_id_cache_.clear();
+}
+
+std::uint64_t DuckDBStore::cached_named_row_id(
+    std::unordered_map<std::string, std::uint64_t>& cache,
+    const std::string& table_name,
+    const std::string& value
+) {
+    auto it = cache.find(value);
+    if (it != cache.end()) {
+        return it->second;
+    }
+    const std::uint64_t id = get_or_create_named_row_id(
+        connection_, table_name, "id", "smiles", value);
+    cache.emplace(value, id);
+    return id;
 }
 
 void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {

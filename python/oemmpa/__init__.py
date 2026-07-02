@@ -7,6 +7,7 @@ OEMMPA - Enhanced matched molecular pair capabilities with the OpenEye Toolkits
 import hashlib
 import importlib.machinery
 import importlib.util
+import logging
 import os
 import re
 import shutil
@@ -21,6 +22,44 @@ __version_info__ = (1, 1, 1)
 
 _OPENEYE_COMPAT_PRELOAD_PATHS: list[str] = []
 _OPENEYE_COMPAT_EXTENSION_DIR: Path | None = None
+
+# Diagnostics collected while preloading OpenEye runtime libraries. Preloading
+# is best-effort (the extension's own RPATH may still resolve a library), so a
+# failure here is not fatal on its own -- but if importing the _oemmpa
+# extension later fails, these records are chained into the ImportError so the
+# real missing-library cause is not lost behind a bare dlopen message.
+_OPENEYE_PRELOAD_DIAGNOSTICS: list[str] = []
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _loader_debug_enabled():
+    """Return whether verbose loader diagnostics are requested."""
+    return bool(os.environ.get("OEMMPA_DEBUG_LOADER"))
+
+
+def _loader_debug(message):
+    """Emit a loader diagnostic when OEMMPA_DEBUG_LOADER is set.
+
+    A stderr handler is attached on demand so diagnostics are visible without
+    the importing application having configured logging, while normal imports
+    stay silent.
+    """
+    if not _loader_debug_enabled():
+        return
+    if not _LOGGER.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("oemmpa loader: %(message)s"))
+        _LOGGER.addHandler(handler)
+        _LOGGER.setLevel(logging.DEBUG)
+    _LOGGER.debug(message)
+
+
+def _record_preload_failure(path, exc):
+    """Record (and optionally log) a non-fatal library preload failure."""
+    message = f"failed to preload {path}: {exc}"
+    _OPENEYE_PRELOAD_DIAGNOSTICS.append(message)
+    _loader_debug(message)
 
 
 def _user_cache_root():
@@ -440,8 +479,9 @@ def _preload_shared_libs():
         if os.path.exists(path) or os.path.islink(path):
             try:
                 ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
-            except OSError:
-                pass
+                _loader_debug(f"preloaded {path}")
+            except OSError as exc:
+                _record_preload_failure(path, exc)
 
 def _preload_bundled_libs():
     """Preload libraries bundled by auditwheel from the .libs directory.
@@ -474,12 +514,19 @@ def _preload_bundled_libs():
         ]
         while remaining:
             failed = []
+            last_errors = {}
             for lib_path in remaining:
                 try:
                     ctypes.CDLL(lib_path)
-                except OSError:
+                    _loader_debug(f"preloaded bundled {lib_path}")
+                except OSError as exc:
                     failed.append(lib_path)
+                    last_errors[lib_path] = exc
             if len(failed) == len(remaining):
+                # No library loaded this pass: the remaining set cannot be
+                # resolved. Record the final errors rather than discarding them.
+                for lib_path in failed:
+                    _record_preload_failure(lib_path, last_errors[lib_path])
                 break
             remaining = failed
 
@@ -505,7 +552,8 @@ def _preload_extension_openeye_libs():
     try:
         with open(extension_path, "rb") as extension:
             linked = extension.read()
-    except OSError:
+    except OSError as exc:
+        _loader_debug(f"could not read extension {extension_path}: {exc}")
         return
 
     pattern = (
@@ -577,8 +625,9 @@ def _preload_extension_openeye_libs():
         if path and os.path.exists(path):
             try:
                 ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
-            except OSError:
-                pass
+                _loader_debug(f"preloaded extension-linked {path}")
+            except OSError as exc:
+                _record_preload_failure(path, exc)
 
 
 def _check_openeye_version():
@@ -623,7 +672,21 @@ _load_cached_extension_if_needed()
 _preload_extension_openeye_libs()
 _check_openeye_version()
 
-from . import _oemmpa  # type: ignore
+try:
+    from . import _oemmpa  # type: ignore
+except ImportError as exc:
+    # The extension failed to load. If preloading any OpenEye runtime library
+    # also failed, the underlying missing-library error is the likely cause and
+    # is far more actionable than the bare dlopen message, so surface it (and
+    # point at OEMMPA_DEBUG_LOADER for the full trail).
+    if _OPENEYE_PRELOAD_DIAGNOSTICS:
+        detail = "\n  ".join(_OPENEYE_PRELOAD_DIAGNOSTICS)
+        raise ImportError(
+            f"Could not import the oemmpa C extension ({exc}). "
+            f"OpenEye runtime libraries failed to preload:\n  {detail}\n"
+            "Set OEMMPA_DEBUG_LOADER=1 for the full loader trail."
+        ) from exc
+    raise
 from . import oemmpa as _swig_proxy
 
 _RAW_BINDING_EXPORTS = (

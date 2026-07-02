@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import sys
 
 from invoke.tasks import task
@@ -14,6 +15,32 @@ DOCS_DIR = PROJECT_ROOT / "docs"
 BUILD_DIR = DOCS_DIR / "_build"
 HTML_DIR = BUILD_DIR / "html"
 SPHINXBUILD = f"{sys.executable} -m sphinx.cmd.build"
+
+# Generated artifact locations relative to the project root. Only known build
+# outputs are listed; local developer files that happen to be gitignored
+# (CMakeUserPresets.json, .venv, .vscode) are deliberately excluded so `clean`
+# never removes machine configuration.
+_CLEAN_DIRS = (
+    "build",
+    "build-debug",
+    "build-release",
+    "dist",
+    "docs/_build",
+    "docs/_doxygen",
+    "docs/cpp-api",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+)
+# In-tree artifacts copied/generated into the editable package by the CMake
+# build (the compiled extension, generated SWIG wrapper, build info, and the
+# bundled OpenEye shared/static libraries).
+_CLEAN_PACKAGE_FILES = (
+    "python/oemmpa/_oemmpa.so",
+    "python/oemmpa/oemmpa.py",
+    "python/oemmpa/_build_info.py",
+)
+_CLEAN_PACKAGE_GLOBS = ("lib*.dylib", "lib*.so", "lib*.a")
 
 
 @task
@@ -92,9 +119,12 @@ def docs_check(ctx):
 
 @task
 def docs_deps(ctx):
-    """Install documentation dependencies."""
-    print("Installing documentation dependencies...")
-    ctx.run(f"{sys.executable} -m pip install -r {DOCS_DIR}/requirements.txt")
+    """Install documentation dependencies into the active interpreter via uv."""
+    # Use uv and target the same interpreter this task runs under (consistent
+    # with SPHINXBUILD) rather than a bare pip install, which would silently
+    # install into whichever interpreter happens to be active.
+    print(f"Installing documentation dependencies into {sys.executable}...")
+    ctx.run(f"uv pip install --python {sys.executable} -r {DOCS_DIR}/requirements.txt")
     print("Done.")
 
 
@@ -108,3 +138,47 @@ def docs_build(ctx, clean=False):
 def docs_serve(ctx, port=8000, clean=False, watch=False):
     """Compatibility alias for :func:`serve_docs`."""
     serve_docs(ctx, port=port, clean=clean, watch=watch)
+
+
+@task
+def clean(ctx, pycache=False):
+    """Remove generated build, docs, and in-tree package artifacts.
+
+    Removes only known build outputs (CMake build trees, generated docs, the
+    compiled extension and bundled OpenEye libraries copied into the editable
+    package). Local developer files such as ``CMakeUserPresets.json`` and
+    ``.venv`` are never touched.
+
+    :param pycache: Also remove ``__pycache__`` directories under the project.
+    """
+    removed = []
+
+    for relative in _CLEAN_DIRS:
+        target = PROJECT_ROOT / relative
+        if target.is_dir():
+            shutil.rmtree(target)
+            removed.append(relative)
+
+    for relative in _CLEAN_PACKAGE_FILES:
+        target = PROJECT_ROOT / relative
+        if target.exists():
+            target.unlink()
+            removed.append(relative)
+
+    package_dir = PROJECT_ROOT / "python" / "oemmpa"
+    for pattern in _CLEAN_PACKAGE_GLOBS:
+        for target in package_dir.glob(pattern):
+            target.unlink()
+            removed.append(str(target.relative_to(PROJECT_ROOT)))
+
+    if pycache:
+        for cache_dir in PROJECT_ROOT.rglob("__pycache__"):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            removed.append(str(cache_dir.relative_to(PROJECT_ROOT)))
+
+    if removed:
+        print("Removed:")
+        for item in removed:
+            print(f"  {item}")
+    else:
+        print("Nothing to clean.")

@@ -27,8 +27,20 @@ public:
     QueryOptions() = default;
 
     int GetMaxHeavyAtomChange() const;
+    /// \brief Set the maximum absolute heavy-atom change.
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is less than -1.
     void SetMaxHeavyAtomChange(int value);
     double GetMaxRelativeHeavyAtomChange() const;
+    /// \brief Set the maximum relative heavy-atom change.
+    ///
+    /// The relative change is delta/source_heavy_atoms and may exceed 1.0, so
+    /// only the sentinel and non-finite values are rejected.
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is not finite or is negative and not
+    ///         the -1 sentinel.
     void SetMaxRelativeHeavyAtomChange(double value);
     bool GetSymmetric() const;
     void SetSymmetric(bool value);

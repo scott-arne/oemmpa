@@ -28,21 +28,26 @@ if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 
 # Dependencies
-include(FetchContent)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-FetchContent_Declare(
-    cmake_openeye
-    GIT_REPOSITORY https://github.com/scott-arne/cmake-openeye.git
-    GIT_TAG v1.2.1
-    GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(cmake_openeye)
-list(APPEND CMAKE_MODULE_PATH "${cmake_openeye_SOURCE_DIR}")
+# The cmake-openeye modules (FindOpenEye, FindOpenEyePython, OpenEyeSWIG) are
+# vendored under cmake/cmake-openeye so configure never depends on live GitHub
+# access. See cmake/cmake-openeye/README.md for the pinned version and refresh
+# instructions.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-openeye")
 
 if(OEMMPA_BUILD_PYTHON)
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+    # Python bindings cannot be built without SWIG, so fail fast with an
+    # explicit message rather than silently producing a build with no _oemmpa
+    # extension. Opt out with -DOEMMPA_BUILD_PYTHON=OFF for a C++-only build.
     find_package(SWIG 4.0)
+    if(NOT SWIG_FOUND)
+        message(FATAL_ERROR
+            "OEMMPA_BUILD_PYTHON is ON but SWIG (>= 4.0) was not found. "
+            "Install SWIG to build the Python bindings, or configure with "
+            "-DOEMMPA_BUILD_PYTHON=OFF for a C++-only build.")
+    endif()
 endif()
 
 if(OPENEYE_USE_SHARED)
@@ -136,8 +141,9 @@ if(OEMMPA_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Python bindings
-if(OEMMPA_BUILD_PYTHON AND SWIG_FOUND)
+# Python bindings. SWIG is REQUIRED above when OEMMPA_BUILD_PYTHON is ON, so
+# reaching here guarantees it was found.
+if(OEMMPA_BUILD_PYTHON)
     add_subdirectory(swig)
 endif()
 

@@ -572,6 +572,26 @@ TEST(FragmenterTest, MaxCutBondsZeroMeansUnlimited) {
     EXPECT_EQ(fragmenter.GetMaxCutBonds(), 0);
 }
 
+TEST(FragmenterTest, DefaultMaxCutBondsMatchesRdkit) {
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    EXPECT_EQ(fragmenter.GetMaxCutBonds(), 20U);
+}
+
+TEST(FragmenterTest, DefaultMaxCutBondsSuppressesManyCutBondMolecules) {
+    // C25 has 24 acyclic heavy-heavy bonds, exceeding the default cap of 20.
+    OEChem::OEGraphMol large = MolFromSmiles("CCCCCCCCCCCCCCCCCCCCCCCCC");
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    // Avoid the rotatable-bond/heavy-atom limits masking the cut-bond cap.
+    fragmenter.SetMaxRotatableBonds(100);
+    fragmenter.SetMaxHeavyAtoms(100);
+
+    EXPECT_TRUE(fragmenter.Fragment(45, large).empty());
+
+    // Opting out (0 = unlimited) restores enumeration for the same molecule.
+    fragmenter.SetMaxCutBonds(0);
+    EXPECT_FALSE(fragmenter.Fragment(45, large).empty());
+}
+
 TEST(FragmenterTest, MaxHeavyAtomsSuppressesLargeMolecules) {
     OEChem::OEGraphMol large = MolFromSmiles("CCCCCCCC");
     OEChem::OEGraphMol small = MolFromSmiles("c1ccccc1O");

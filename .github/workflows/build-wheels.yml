@@ -7,6 +7,12 @@ on:
 
 env:
   OPENEYE_VERSION: ${{ vars.OPENEYE_VERSION }}
+  # Official libduckdb C++ release bundle (headers + shared library) pulled from
+  # the duckdb/duckdb GitHub releases. Pinned for reproducible wheels; bump in
+  # lockstep across all platforms. The PyPI `duckdb` package is unsuitable here
+  # because it ships no C++ headers and only a Python-version-locked extension
+  # module, not a linkable library.
+  DUCKDB_VERSION: "1.5.4"
 
 jobs:
   build-linux:
@@ -114,6 +120,25 @@ jobs:
           /opt/venv/bin/pip show openeye-toolkits
           /opt/venv/bin/python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
 
+      - name: Download DuckDB C++ library
+        run: |
+          case "${{ matrix.arch }}" in
+            x86_64)  DUCKDB_ASSET=libduckdb-linux-amd64.zip ;;
+            aarch64) DUCKDB_ASSET=libduckdb-linux-arm64.zip ;;
+            *) echo "::error::Unsupported arch ${{ matrix.arch }}"; exit 1 ;;
+          esac
+          mkdir -p /opt/duckdb/include /opt/duckdb/lib
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/${DUCKDB_ASSET}" \
+            -o /tmp/libduckdb.zip
+          unzip -o /tmp/libduckdb.zip -d /tmp/libduckdb
+          # The bundle is flat (amalgamated duckdb.hpp + duckdb.h + libduckdb.so);
+          # stage it into the include/ + lib/ layout FindDuckDB.cmake expects.
+          cp /tmp/libduckdb/duckdb.h /tmp/libduckdb/duckdb.hpp /opt/duckdb/include/
+          cp /tmp/libduckdb/libduckdb.so /opt/duckdb/lib/
+          rm -rf /tmp/libduckdb.zip /tmp/libduckdb
+          echo "DUCKDB_ROOT=/opt/duckdb" >> $GITHUB_ENV
+
       - name: Build wheel
         env:
           OPENEYE_ROOT: /opt/openeye
@@ -131,7 +156,10 @@ jobs:
           for lib in "$OE_LIB_DIR"/lib*.so; do
             EXCLUDE_ARGS="$EXCLUDE_ARGS --exclude $(basename $lib)"
           done
-          LD_LIBRARY_PATH="$OE_LIB_DIR" auditwheel repair \
+          # OpenEye libs are excluded (provided at runtime by openeye-toolkits);
+          # libduckdb is deliberately NOT excluded so auditwheel vendors it into
+          # the wheel. DUCKDB_ROOT/lib is on LD_LIBRARY_PATH so it is findable.
+          LD_LIBRARY_PATH="$OE_LIB_DIR:$DUCKDB_ROOT/lib" auditwheel repair \
             $EXCLUDE_ARGS \
             --plat ${{ matrix.manylinux_plat }} \
             --wheel-dir dist-repaired/ \
@@ -164,6 +192,8 @@ jobs:
           cd "$SMOKE_DIR"
           /opt/venv/bin/python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
           /opt/venv/bin/python -m oemmpa --help
+          # Guard against silently shipping a wheel without DuckDB storage.
+          /opt/venv/bin/python -c "import oemmpa; assert oemmpa.duckdb_available(), 'wheel built without DuckDB storage'; print('DuckDB storage: available')"
 
       - name: List built artifacts
         run: |
@@ -253,6 +283,25 @@ jobs:
           pip show openeye-toolkits
           python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
 
+      - name: Download DuckDB C++ library
+        run: |
+          DUCKDB_ROOT="${{ runner.temp }}/duckdb"
+          mkdir -p "$DUCKDB_ROOT/include" "$DUCKDB_ROOT/lib"
+          # The osx-universal bundle carries both x86_64 and arm64 slices, so it
+          # links cleanly regardless of the runner's native arch.
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-osx-universal.zip" \
+            -o "${{ runner.temp }}/libduckdb.zip"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          cp "${{ runner.temp }}/libduckdb/duckdb.h" "${{ runner.temp }}/libduckdb/duckdb.hpp" "$DUCKDB_ROOT/include/"
+          cp "${{ runner.temp }}/libduckdb/libduckdb.dylib" "$DUCKDB_ROOT/lib/"
+          # The bundle's install name is @rpath/libduckdb.dylib. Rewrite it to the
+          # absolute path so the linked reference in _oemmpa.so is unambiguous and
+          # delocate can always resolve and bundle it without relying on rpath.
+          install_name_tool -id "$DUCKDB_ROOT/lib/libduckdb.dylib" "$DUCKDB_ROOT/lib/libduckdb.dylib"
+          rm -rf "${{ runner.temp }}/libduckdb.zip" "${{ runner.temp }}/libduckdb"
+          echo "DUCKDB_ROOT=$DUCKDB_ROOT" >> $GITHUB_ENV
+
       - name: Build wheel
         env:
           OPENEYE_ROOT: ${{ runner.temp }}/openeye
@@ -270,6 +319,8 @@ jobs:
           cd "$SMOKE_DIR"
           python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
           python -m oemmpa --help
+          # Guard against silently shipping a wheel without DuckDB storage.
+          python -c "import oemmpa; assert oemmpa.duckdb_available(), 'wheel built without DuckDB storage'; print('DuckDB storage: available')"
 
       - name: List built artifacts
         run: |
@@ -374,12 +425,41 @@ jobs:
           pip show openeye-toolkits
           python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
 
+      - name: Download DuckDB C++ library
+        run: |
+          DUCKDB_ROOT="${RUNNER_TEMP}/duckdb"
+          mkdir -p "$DUCKDB_ROOT/include" "$DUCKDB_ROOT/lib"
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-windows-amd64.zip" \
+            -o "${RUNNER_TEMP}/libduckdb.zip"
+          unzip -o "${RUNNER_TEMP}/libduckdb.zip" -d "${RUNNER_TEMP}/libduckdb"
+          # The Windows bundle ships duckdb.dll (runtime) + duckdb.lib (import
+          # library); FindDuckDB.cmake links against duckdb.lib. The DLL is
+          # injected into the wheel after the build.
+          cp "${RUNNER_TEMP}/libduckdb/duckdb.h" "${RUNNER_TEMP}/libduckdb/duckdb.hpp" "$DUCKDB_ROOT/include/"
+          cp "${RUNNER_TEMP}/libduckdb/duckdb.lib" "$DUCKDB_ROOT/lib/"
+          cp "${RUNNER_TEMP}/libduckdb/duckdb.dll" "$DUCKDB_ROOT/lib/"
+          echo "DUCKDB_ROOT=$DUCKDB_ROOT" >> $GITHUB_ENV
+
       - name: Build wheel
         run: |
           python scripts/build_python.py \
             --openeye-root "${OPENEYE_ROOT}" \
             --python "$(which python)" \
             --verbose
+
+      - name: Bundle duckdb.dll into wheel
+        run: |
+          # Windows has no auditwheel/delocate step, so vendor duckdb.dll into
+          # the oemmpa package next to _oemmpa*.pyd. Windows searches a loaded
+          # module's own directory when resolving its dependent DLLs.
+          WHEEL=$(ls dist/oemmpa-*.whl)
+          TMPDIR=$(mktemp -d)
+          unzip -q "$WHEEL" -d "$TMPDIR"
+          cp "${DUCKDB_ROOT}/lib/duckdb.dll" "$TMPDIR/oemmpa/"
+          rm "$WHEEL"
+          python -m wheel pack "$TMPDIR" -d dist/
+          rm -rf "$TMPDIR"
 
       - name: Validate abi3 import table
         run: |
@@ -416,6 +496,8 @@ jobs:
           cd "$SMOKE_DIR"
           python -c "import oemmpa; assert oemmpa.__version__; print('oemmpa', oemmpa.__version__, 'loaded')"
           python -m oemmpa --help
+          # Guard against silently shipping a wheel without DuckDB storage.
+          python -c "import oemmpa; assert oemmpa.duckdb_available(), 'wheel built without DuckDB storage'; print('DuckDB storage: available')"
 
       - name: List built artifacts
         run: |
@@ -436,6 +518,7 @@ jobs:
             --no-cache-dir
           pip install dist/oemmpa-*.whl
           python -c "import oemmpa; print('oemmpa', oemmpa.__version__, 'loaded under Python', __import__('sys').version)"
+          python -c "import oemmpa; assert oemmpa.duckdb_available(), 'wheel built without DuckDB storage'; print('DuckDB storage: available')"
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7

@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "oemmpa/DatabaseSummary.h"
@@ -30,6 +32,23 @@ class MoleculeRecord;
 /// normalized property names, rules, rule environments, constants, and pairs.
 /// Raw fragmentations remain an analysis-stage artifact until OEMMPA has a
 /// dedicated fragment-index persistence stage.
+struct PairHash {
+    std::size_t operator()(const std::pair<std::uint64_t, std::uint64_t>& key) const {
+        return std::hash<std::uint64_t>()(key.first) * 1000003u ^
+            std::hash<std::uint64_t>()(key.second);
+    }
+};
+
+struct TupleHash {
+    std::size_t operator()(
+        const std::tuple<std::uint64_t, std::uint64_t, int>& key) const {
+        std::size_t h = std::hash<std::uint64_t>()(std::get<0>(key));
+        h = h * 1000003u ^ std::hash<std::uint64_t>()(std::get<1>(key));
+        h = h * 1000003u ^ std::hash<int>()(std::get<2>(key));
+        return h;
+    }
+};
+
 class DuckDBStore {
 public:
     /// \brief Open an in-memory DuckDB database.
@@ -161,11 +180,29 @@ private:
         const std::string& constant_smiles
     );
 
+    void ClearIdCaches();
+
+    std::uint64_t cached_named_row_id(
+        std::unordered_map<std::string, std::uint64_t>& cache,
+        const std::string& table_name,
+        const std::string& value
+    );
+
     std::string database_path_;
     std::unique_ptr<duckdb::DuckDB> database_;
     std::unique_ptr<duckdb::Connection> connection_;
     std::unordered_map<std::string, std::vector<EnvironmentFingerprint>>
         constant_fingerprint_cache_;
+
+    // In-memory id caches populated on miss / insert during a bulk save, so
+    // repeated transforms/fingerprints/environments do not re-query DuckDB.
+    std::unordered_map<std::string, std::uint64_t> constant_id_cache_;
+    std::unordered_map<std::string, std::uint64_t> rule_smiles_id_cache_;
+    std::unordered_map<std::pair<std::uint64_t, std::uint64_t>, std::uint64_t,
+        PairHash> rule_id_cache_;
+    std::unordered_map<std::string, std::uint64_t> fingerprint_id_cache_;
+    std::unordered_map<std::tuple<std::uint64_t, std::uint64_t, int>,
+        std::uint64_t, TupleHash> rule_environment_id_cache_;
 };
 
 }  // namespace OEMMPA

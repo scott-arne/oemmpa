@@ -25,6 +25,12 @@ public:
     void SetStrategy(const FragmentationStrategy& strategy);
     void SetMinCuts(unsigned int min_cuts);
     void SetMaxCuts(unsigned int max_cuts);
+    /// \brief Set the maximum number of eligible cut bonds per molecule.
+    ///
+    /// Molecules with more eligible cut bonds than this are skipped, bounding
+    /// the combinatorial cut enumeration. Defaults to 20 (matching RDKit).
+    ///
+    /// \param max_cut_bonds Maximum eligible cut bonds, or 0 for no limit.
     void SetMaxCutBonds(unsigned int max_cut_bonds);
     void SetMaxHeavyAtoms(unsigned int max_heavy_atoms);
     void ClearMaxHeavyAtoms();
@@ -49,7 +55,10 @@ private:
     std::unique_ptr<FragmentationStrategy> strategy_;
     unsigned int min_cuts_ = 1;
     unsigned int max_cuts_ = 3;
-    unsigned int max_cut_bonds_ = 0;
+    // Default matches RDKit FragmentMol(maxCutBonds=20): bounds the
+    // combinatorial cut enumeration on molecules with many eligible cut bonds.
+    // SetMaxCutBonds(0) restores unlimited enumeration.
+    unsigned int max_cut_bonds_ = 20;
     bool has_max_heavy_atoms_ = false;
     unsigned int max_heavy_atoms_ = 0;
     bool has_max_rotatable_bonds_ = false;

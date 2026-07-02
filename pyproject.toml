@@ -32,6 +32,9 @@ dev = [
     "pytest>=7.0",
     "rich>=13.0",
     "rich-click>=1.8",
+    # invoke is needed to type-check/lint tasks.py, which is part of the static
+    # analysis target, so the dev extra is self-sufficient for ruff/mypy.
+    "invoke>=2.0",
     "vrzn>=0.1.0",
 ]
 docs = [
@@ -67,9 +70,24 @@ module = [
 ignore_errors = true
 ignore_missing_imports = true
 
+# Untyped or imperfectly-stubbed third-party modules. rdkit and openeye are
+# optional native dependencies whose shipped stubs do not type-check cleanly
+# (e.g. rdkit-stubs contains a stub-only syntax error), so skip following into
+# them rather than letting a vendor stub abort the whole run.
+[[tool.mypy.overrides]]
+module = [
+    "rdkit.*",
+    "openeye.*",
+    "invoke.*",
+]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+ignore_missing_imports = true
+
 [tool.pyright]
-venvPath = "/Users/johnss51/Applications/miniforge3/envs"
-venv = "main"
+# Resolve the interpreter from the active environment rather than a hardcoded
+# absolute path. Developers who want Pyright to target a specific virtualenv can
+# set venvPath/venv in a local (gitignored) pyrightconfig.json.
 pythonVersion = "3.13"
 include = [
     "python",
@@ -137,5 +155,10 @@ expected-missing-libs = [
     "liboemath", "libzstd",
 ]
 
-# Additional CMake defines passed during wheel build (beyond the standard ones)
+# Additional CMake defines passed during wheel build (beyond the standard ones).
+# Published wheels enable DuckDB-backed storage; the CI wheel jobs provision the
+# official libduckdb C++ release bundle and set DUCKDB_ROOT so FindDuckDB.cmake
+# locates it. Without that bundle present, this define is a no-op because
+# find_package(DuckDB QUIET) leaves OEMMPA_HAS_DUCKDB FALSE.
 [tool.oe-build.extra-cmake-defines]
+OEMMPA_BUILD_DUCKDB = "ON"
