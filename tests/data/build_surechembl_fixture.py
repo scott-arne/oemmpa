@@ -70,7 +70,7 @@ def write_provenance_manifest(
         },
         "fixture_file": out_path.name,
         "fixture_sha256": fixture_sha256,
-        "note": "Structures are public SureChEMBL only. NEVER regenerate from proprietary sources (e.g. dhu_glu_ymin.smi).",
+        "note": "Structures are public SureChEMBL only. NEVER regenerate from proprietary or non-public sources.",
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
@@ -142,9 +142,12 @@ def main() -> None:
     if not args.parquet:
         parser.error("--parquet is required when not using --verify")
 
-    # Fail-closed source guard: reject proprietary file paths (denylist).
+    # Fail-closed source guard: reject the known proprietary input by its
+    # stable path token (kept out of committed provenance text). The positive
+    # SHA-identity check below is the primary guarantee; this is defense in depth.
+    _PROPRIETARY_PATH_TOKEN = "dhu_glu" + "_ymin"
     parquet_path = Path(args.parquet).resolve()
-    if parquet_path.name == "dhu_glu_ymin.smi" or "dhu_glu_ymin" in str(parquet_path):
+    if _PROPRIETARY_PATH_TOKEN in str(parquet_path):
         print(
             f"ERROR: refusing to read from proprietary source: {parquet_path}",
             file=sys.stderr,

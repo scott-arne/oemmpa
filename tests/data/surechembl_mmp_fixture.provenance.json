@@ -11,5 +11,5 @@
   },
   "fixture_file": "surechembl_mmp_fixture.smi",
   "fixture_sha256": "8ea5cfac77ecfdc547c60d88c55c87669340ec3a80d31c70ff751699ec21c399",
-  "note": "Structures are public SureChEMBL only. NEVER regenerate from proprietary sources (e.g. dhu_glu_ymin.smi)."
+  "note": "Structures are public SureChEMBL only. NEVER regenerate from proprietary or non-public sources."
 }
