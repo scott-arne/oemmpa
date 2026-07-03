@@ -17,6 +17,7 @@ consumes already-collected row dictionaries.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,9 +60,14 @@ def verdict_for_wall_ratio(oemmpa_wall, other_wall):
     if (
         oemmpa_wall is None
         or other_wall is None
+        or not math.isfinite(oemmpa_wall)
+        or not math.isfinite(other_wall)
         or oemmpa_wall < RATIO_FLOOR_SECONDS
         or other_wall < RATIO_FLOOR_SECONDS
     ):
+        # None, non-finite (nan/inf from a failed or timed-out run), or
+        # sub-floor times cannot yield a meaningful ratio; suppress rather than
+        # divide (avoids ZeroDivisionError / bogus parity from nan/inf).
         return ("neutral", "startup-dominated", None)
     ratio = other_wall / oemmpa_wall
     # verdict_for_seconds_ratio takes a current/reference ratio where lower is

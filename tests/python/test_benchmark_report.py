@@ -75,6 +75,22 @@ def test_wall_ratio_missing_side_is_startup_dominated():
     assert label == "startup-dominated"
 
 
+def test_wall_ratio_infinite_side_is_suppressed():
+    import math
+
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(0.1, math.inf)
+    assert (severity, label, ratio) == ("neutral", "startup-dominated", None)
+
+
+def test_wall_ratio_nan_side_is_suppressed():
+    import math
+
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(math.nan, 0.1)
+    assert (severity, label, ratio) == ("neutral", "startup-dominated", None)
+
+
 class TestVerdictForEfficiency:
     def test_eighty_percent_or_higher_is_good(self) -> None:
         severity, label = verdict_for_efficiency(0.85)
