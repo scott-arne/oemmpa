@@ -1887,11 +1887,22 @@ std::uint64_t DuckDBStore::cached_named_row_id(
 }
 
 void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
+    // Own a transaction only when the caller has not already opened one. This
+    // keeps a standalone AddPairs/AddPair atomic (and reconciles id sequences),
+    // while still allowing use inside a caller-managed transaction -- DuckDB
+    // 1.5.4 errors on a nested "begin transaction", so we must not start one
+    // when HasActiveTransaction() is already true. When the caller owns the
+    // transaction, it is responsible for commit/rollback; we neither commit nor
+    // reconcile sequences here (the owner does that, as SaveTo does).
+    const bool owns_transaction = !connection_->HasActiveTransaction();
+    if (!owns_transaction) {
+        // Molecule existence is enforced by the pair FKs; no molecules here.
+        AppendBulk({}, pairs);
+        return;
+    }
+
     Execute("begin transaction");
     try {
-        // Standalone bulk pair load: no molecules to append here (callers that
-        // need molecules use SaveTo). Molecule existence is enforced by the
-        // pair FKs at commit.
         AppendBulk({}, pairs);
         ReconcileSequences();
         Execute("commit");

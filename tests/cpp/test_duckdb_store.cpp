@@ -1139,6 +1139,27 @@ TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
     std::filesystem::remove(path);
 }
 
+// AddPair/AddPairs must be usable inside a caller-managed transaction: DuckDB
+// 1.5.4 rejects a nested "begin transaction", so AddPairs owns a transaction
+// only when none is already active. A caller doing begin -> AddPair -> commit
+// must succeed and persist the pair rows (the caller owns commit/rollback).
+TEST(DuckDBStoreBulk, AddPairInsideCallerOwnedTransactionDoesNotNest) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    store.Execute("begin transaction");
+    // Must NOT throw "cannot start a transaction within a transaction".
+    store.AddPair(pairs.front());
+    store.Execute("commit");
+
+    // The pair rows are visible after the caller commits (6 radius rows/pair).
+    EXPECT_EQ(store.GetRowCount("pair"), 6u);
+    EXPECT_EQ(store.GetPairs().size(), 1u);
+}
+
 // A resolve-phase failure (here a malformed non-empty constant SMILES, which
 // makes constant_fingerprints/ComputeConstantEnvironmentFingerprints throw an
 // EnvironmentFingerprintError -- a sibling of StorageError, not a subclass)
