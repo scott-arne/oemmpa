@@ -1015,21 +1015,36 @@ TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache)
     std::filesystem::remove(database_path);
 }
 
-TEST(DuckDBStoreBulk, ReconcileSequencesPreventsIdCollision) {
+// ReconcileSequences/seed_counter are private; no FRIEND_TEST seam was added
+// because gtest_prod.h is not on the production library's include path. This
+// test validates the DuckDB 1.5.4 drop+recreate SQL shape (computing max(id)+1
+// separately, then passing as a literal to CREATE SEQUENCE START) and asserts
+// that nextval after recreate yields an id strictly greater than a pre-seeded
+// high id. Full end-to-end coverage of ReconcileSequences is deferred to Task 9's
+// MixedBulkThenSingleInsert test.
+TEST(DuckDBStoreBulk, SequenceReconciliationSqlShape) {
     const std::filesystem::path path = TemporaryDatabasePath();
     {
         DuckDBStore store(path.string());
         store.InitializeSchema();
+        // Insert row with id=100 bypassing the sequence.
         store.Execute("insert into constant_smiles (id, smiles) values (100, 'X')");
-        // ReconcileSequences is exercised indirectly: after a bulk SaveTo that
-        // assigns high ids, a legacy single insert must not collide. This is
-        // covered end-to-end by DuckDBStoreBulk.MixedBulkThenSingleInsert
-        // (Task 9). Here we assert the drop/recreate SQL itself is valid on
-        // DuckDB 1.5.4 by running it directly.
+        // Manually drop and recreate the sequence at max(id)+1 (seed_counter logic).
         store.Execute("drop sequence seq_constant_smiles_id");
         store.Execute("create sequence seq_constant_smiles_id start 101");
-        auto result = store.GetRowCount("constant_smiles");
-        EXPECT_EQ(result, 1u);
+        // Insert using nextval; should allocate id > 100.
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), 'Y')"
+        );
+        // Assert no duplicate key collision (row count == 2).
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 2u);
+        // Verify a second nextval continues incrementing (no collision at 101).
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), 'Z')"
+        );
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 3u);
     }
     std::filesystem::remove(path);
 }
