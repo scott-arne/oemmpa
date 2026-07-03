@@ -2080,6 +2080,19 @@ void DuckDBStore::AppendBulk(
     pair_rows.reserve(pairs.size() * 6);
 
     for (const MatchedPair& pair : pairs) {
+        // Preserve the legacy get_or_create_named_row_id guard: empty normalized
+        // values must never be stored. AppendBulk assigns ids directly rather
+        // than routing through that helper, so re-check here to keep the bulk
+        // path equivalent to legacy AddPair and to avoid persisting empty
+        // constant/rule_smiles rows (plus dependent rule/rule_environment/pair
+        // rows) for a malformed pair.
+        if (pair.GetConstantSmiles().empty()) {
+            throw StorageError("cannot store empty normalized value in constant_smiles");
+        }
+        if (pair.GetSourceVariableSmiles().empty() ||
+            pair.GetTargetVariableSmiles().empty()) {
+            throw StorageError("cannot store empty normalized value in rule_smiles");
+        }
         // constant_smiles
         std::uint64_t constant_id;
         {
