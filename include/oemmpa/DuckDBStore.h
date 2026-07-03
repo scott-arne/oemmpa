@@ -13,6 +13,7 @@
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
+#include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Transform.h"
@@ -23,8 +24,6 @@ class DuckDB;
 }  // namespace duckdb
 
 namespace OEMMPA {
-
-class MoleculeRecord;
 
 /// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
 ///
@@ -50,6 +49,8 @@ struct TupleHash {
 };
 
 class DuckDBStore {
+    friend class Analyzer;
+
 public:
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
@@ -187,6 +188,34 @@ private:
         const std::string& table_name,
         const std::string& value
     );
+
+    // Monotonic id allocator for a single bulk load; seeded from max(id).
+    struct BulkIdCounter {
+        std::uint64_t next = 1;
+        std::uint64_t operator()() { return next++; }
+    };
+
+    // Bulk resolve-then-append for molecules, dimensions, and pairs. NON-OWNING:
+    // a transaction must already be open; this never issues begin/commit/rollback.
+    // Properties are NOT handled here (they stay on the AddMoleculeProperty
+    // upsert DML path). compound.id is written verbatim from the analyzer id.
+    void AppendBulk(
+        const std::vector<MoleculeRecord>& molecules,
+        const std::vector<MatchedPair>& pairs
+    );
+
+    // Seed member id caches from existing rows so a non-empty store reuses ids.
+    void PreloadIdCaches();
+
+    // Current num_pairs for an existing rule_environment (0 if none).
+    std::uint64_t existing_num_pairs(std::uint64_t rule_environment_id);
+
+    // Seed a bulk counter from the table's current max(id) (0 -> next is 1).
+    std::uint64_t seed_counter(const std::string& table_name);
+
+    // DuckDB 1.5.4 has no ALTER SEQUENCE RESTART; drop+recreate each id
+    // sequence at max(id)+1 so later legacy nextval inserts cannot collide.
+    void ReconcileSequences();
 
     std::string database_path_;
     std::unique_ptr<duckdb::DuckDB> database_;
