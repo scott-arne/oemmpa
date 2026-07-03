@@ -1015,20 +1015,14 @@ TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache)
     std::filesystem::remove(database_path);
 }
 
-// ReconcileSequences/seed_counter are private; no FRIEND_TEST seam was added
-// because gtest_prod.h is not on the production library's include path. This
-// test validates the DuckDB 1.5.4 drop+recreate SQL shape (computing max(id)+1
-// separately, then passing as a literal to CREATE SEQUENCE START) and asserts
-// that nextval after recreate yields an id strictly greater than a pre-seeded
-// high id. Full end-to-end coverage of ReconcileSequences is deferred to Task 9's
 // Validates the DuckDB 1.5.4 drop+recreate-at-max(id)+1 sequence-reset SQL
 // mechanism that ReconcileSequences emits: after resetting the sequence, nextval
 // must allocate ids strictly greater than a pre-seeded high id, not restart at 1.
 // Asserting the actual id values (not just row counts) is what proves the reset
 // advanced the sequence -- a sequence that wrongly restarted at 1 would keep the
 // row counts identical while allocating colliding-in-future ids 1, 2. Full
-// method-level ReconcileSequences coverage lands in Task 9's end-to-end
-// MixedBulkThenSingleInsert via the public Analyzer::SaveTo caller.
+// method-level ReconcileSequences coverage lands in the end-to-end
+// SaveToThenLegacyInsertDoesNotCollide test below via the public SaveTo caller.
 TEST(DuckDBStoreBulk, SequenceReconciliationAdvancesNextvalPastMaxId) {
     const std::filesystem::path path = TemporaryDatabasePath();
     {
@@ -1141,6 +1135,92 @@ TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
         // Rollback: no pair rows, and no second compound was inserted.
         EXPECT_EQ(store.GetRowCount("pair"), 0u);
         EXPECT_EQ(store.GetRowCount("compound"), 1u);
+    }
+    std::filesystem::remove(path);
+}
+
+// Re-loading the same pairs must reuse dimension rows (no UNIQUE violation) and
+// UPDATE the existing rule_environment.num_pairs to the new total rather than
+// leaving it stale. Each stored pair row increments exactly one
+// rule_environment's num_pairs, so sum(num_pairs) must equal the pair row count
+// after each load. This exercises the AppendBulk existing-row seeding +
+// preexisting-id UPDATE path (the bulk equivalent of the legacy per-row
+// increment).
+TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndAccumulatesNumPairs) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+
+    const auto sum_num_pairs = [&path]() -> std::uint64_t {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        return result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+    };
+
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+        ASSERT_FALSE(pairs.empty());
+
+        store.AddPairs(pairs);
+        const std::uint64_t rules_after_first = store.GetRowCount("rule");
+        const std::uint64_t re_after_first = store.GetRowCount("rule_environment");
+        const std::uint64_t pairs_after_first = store.GetRowCount("pair");
+        EXPECT_GT(pairs_after_first, 0u);
+
+        // Re-add the same pairs: dimension rows are reused (counts unchanged),
+        // pair rows are appended again (pair has no unique key), and num_pairs
+        // on the existing rule_environment rows is updated to the new total.
+        store.AddPairs(pairs);
+        EXPECT_EQ(store.GetRowCount("rule"), rules_after_first);
+        EXPECT_EQ(store.GetRowCount("rule_environment"), re_after_first);
+        EXPECT_EQ(store.GetRowCount("pair"), pairs_after_first * 2u);
+    }
+
+    // sum(num_pairs) must have doubled with the pair rows -- the existing
+    // rule_environment rows were UPDATEd, not left stale.
+    EXPECT_EQ(sum_num_pairs(), 24u);
+
+    std::filesystem::remove(path);
+}
+
+// End-to-end coverage of ReconcileSequences via the public SaveTo path: after a
+// bulk save assigns dimension/pair ids from C++ counters and writes compound ids
+// verbatim, a subsequent legacy single-row insert (which allocates via nextval)
+// must not collide with any bulk-assigned id. This is the method-level guard the
+// standalone SequenceReconciliationAdvancesNextvalPastMaxId SQL-shape test defers
+// to.
+TEST(DuckDBStoreBulk, SaveToThenLegacyInsertDoesNotCollide) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+        const std::uint64_t constants_after_save =
+            store.GetRowCount("constant_smiles");
+        ASSERT_GT(constants_after_save, 0u);
+
+        // A legacy nextval-allocated insert into a bulk-populated table must get
+        // a fresh id (ReconcileSequences advanced the sequence past the
+        // counter-assigned ids), so this insert succeeds without a PK collision.
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCC')"
+        );
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), constants_after_save + 1u);
+
+        // Likewise a legacy AddMoleculeProperty (property_name + compound_property
+        // nextval) must not collide with rows written during the bulk save.
+        store.AddMoleculeProperty(1, "logP", 2.7);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "logP"), 2.7);
     }
     std::filesystem::remove(path);
 }
