@@ -697,11 +697,20 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
     }
 
     std::vector<MatchedPair> pairs;
-    std::size_t candidate_total = 0;
-    for (const auto& entry : candidates_by_group) {
-        candidate_total += entry.second.size();
+    // Reserve a tight upper bound for the result. KeepAll returns every
+    // candidate, so the total candidate count is exact; every other scoring
+    // mode collapses each group to a single selected pair, so one-per-group is
+    // the bound there. Using the mode-appropriate bound avoids reserving raw
+    // storage for every candidate on scored queries that select only a few.
+    if (options.GetScoringOptions().GetMode() == ScoringMode::KeepAll) {
+        std::size_t candidate_total = 0;
+        for (const auto& entry : candidates_by_group) {
+            candidate_total += entry.second.size();
+        }
+        pairs.reserve(candidate_total);
+    } else {
+        pairs.reserve(candidates_by_group.size());
     }
-    pairs.reserve(candidate_total);
     for (const auto& entry : candidates_by_group) {
         std::vector<MatchedPair> selected =
             PairScoring::Select(entry.second, options.GetScoringOptions());
