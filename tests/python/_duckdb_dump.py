@@ -27,9 +27,14 @@ TABLES = [
 # Natural-key SELECTs: no surrogate id columns, ORDER BY the projected columns
 # so the result is a deterministic multiset (sorted sequence with duplicates).
 _QUERIES = {
+    # compound.id is NOT a renumberable surrogate: it is the analyzer internal
+    # id, referenced by pair.compound1_id/compound2_id and
+    # compound_property.compound_id. Include it so the equivalence test enforces
+    # the "compound.id preserved verbatim" invariant — a rewrite that renumbered
+    # it (even while consistently rewriting all FKs) would otherwise pass.
     "compound": (
-        "select public_id, clean_smiles, clean_num_heavies from compound "
-        "order by 1, 2, 3"
+        "select id, public_id, clean_smiles, clean_num_heavies from compound "
+        "order by 1, 2, 3, 4"
     ),
     "constant_smiles": "select smiles from constant_smiles order by 1",
     "rule_smiles": "select smiles, num_heavies from rule_smiles order by 1, 2",
