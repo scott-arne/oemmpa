@@ -1074,5 +1074,44 @@ TEST(DuckDBStoreBulk, SequenceReconciliationAdvancesNextvalPastMaxId) {
     std::filesystem::remove(path);
 }
 
+TEST(DuckDBStoreBulk, AddPairsRejectsEmptyVariableSmilesAndLeavesNoRows) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Insert two compound rows so pair FKs are valid.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (1, 'mol_a', 'CC', 'CC', 2)"
+        );
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (2, 'mol_b', 'CCC', 'CCC', 3)"
+        );
+        // Build a MatchedPair with an EMPTY source_variable_smiles (should trigger guard).
+        MatchedPair pair(
+            1,                  // source_molecule_id
+            2,                  // target_molecule_id
+            "mol_a",            // source_external_id
+            "mol_b",            // target_external_id
+            "CC",               // source_smiles
+            "CCC",              // target_smiles
+            "[c:1][c:2]",       // constant_smiles
+            "",                 // source_variable_smiles (EMPTY -> should throw)
+            "[CH3:3]",          // target_variable_smiles
+            1,                  // cut_count
+            1,                  // heavy_atom_delta
+            0                   // heavy_bond_delta
+        );
+        // AddPairs must throw on empty variable smiles.
+        EXPECT_THROW(store.AddPairs({pair}), OEMMPA::StorageError);
+        // The transaction must have rolled back cleanly, leaving no rows.
+        EXPECT_EQ(store.GetRowCount("rule_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule"), 0u);
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

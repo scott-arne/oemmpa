@@ -567,17 +567,6 @@ std::uint64_t get_or_create_rule_environment_id(
     return next_id;
 }
 
-void increment_rule_environment_pair_count(
-    const std::unique_ptr<duckdb::Connection>& connection,
-    std::uint64_t rule_environment_id
-) {
-    const std::string sql =
-        "update rule_environment set num_pairs = num_pairs + 1 where id = ?";
-    duckdb::vector<duckdb::Value> values = {
-        duckdb::Value::UBIGINT(rule_environment_id),
-    };
-    execute_prepared(connection, sql, std::move(values));
-}
 
 struct AggregateStatistics {
     std::uint32_t count = 0;
@@ -1844,85 +1833,9 @@ const std::vector<EnvironmentFingerprint>& DuckDBStore::constant_fingerprints(
 }
 
 void DuckDBStore::AddPair(const MatchedPair& pair) {
-    if (!HasMolecule(pair.GetSourceMoleculeId())) {
-        throw StorageError("cannot add pair with unknown source molecule");
-    }
-    if (!HasMolecule(pair.GetTargetMoleculeId())) {
-        throw StorageError("cannot add pair with unknown target molecule");
-    }
-
-    const std::vector<EnvironmentFingerprint>& environment_fingerprints =
-        constant_fingerprints(pair.GetConstantSmiles());
-
-    const std::uint64_t constant_id = cached_named_row_id(
-        constant_id_cache_, "constant_smiles", pair.GetConstantSmiles());
-    const std::uint64_t from_smiles_id = cached_named_row_id(
-        rule_smiles_id_cache_, "rule_smiles", pair.GetSourceVariableSmiles());
-    const std::uint64_t to_smiles_id = cached_named_row_id(
-        rule_smiles_id_cache_, "rule_smiles", pair.GetTargetVariableSmiles());
-
-    std::uint64_t rule_id;
-    {
-        const std::pair<std::uint64_t, std::uint64_t> key{from_smiles_id, to_smiles_id};
-        auto it = rule_id_cache_.find(key);
-        if (it != rule_id_cache_.end()) {
-            rule_id = it->second;
-        } else {
-            rule_id = get_or_create_rule_id(connection_, from_smiles_id, to_smiles_id);
-            rule_id_cache_.emplace(key, rule_id);
-        }
-    }
-
-    const std::string pair_sql =
-        "insert into pair ("
-        "id, rule_environment_id, compound1_id, compound2_id, constant_id, "
-        "cut_count, heavy_atom_delta, heavy_bond_delta"
-        ") values (?, ?, ?, ?, ?, ?, ?, ?)";
-
-    for (const EnvironmentFingerprint& fingerprint : environment_fingerprints) {
-        std::uint64_t environment_fingerprint_id;
-        {
-            const std::string fp_key = fingerprint.GetSmarts() + "\x1f" +
-                fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
-            auto it = fingerprint_id_cache_.find(fp_key);
-            if (it != fingerprint_id_cache_.end()) {
-                environment_fingerprint_id = it->second;
-            } else {
-                environment_fingerprint_id = get_or_create_environment_fingerprint_id(
-                    connection_, fingerprint.GetSmarts(),
-                    fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts());
-                fingerprint_id_cache_.emplace(fp_key, environment_fingerprint_id);
-            }
-        }
-        std::uint64_t rule_environment_id;
-        {
-            const std::tuple<std::uint64_t, std::uint64_t, int> re_key{
-                rule_id, environment_fingerprint_id,
-                static_cast<int>(fingerprint.GetRadius())};
-            auto it = rule_environment_id_cache_.find(re_key);
-            if (it != rule_environment_id_cache_.end()) {
-                rule_environment_id = it->second;
-            } else {
-                rule_environment_id = get_or_create_rule_environment_id(
-                    connection_, rule_id, environment_fingerprint_id,
-                    static_cast<int>(fingerprint.GetRadius()));
-                rule_environment_id_cache_.emplace(re_key, rule_environment_id);
-            }
-        }
-        const std::uint64_t pair_id = get_next_id(connection_, "pair", "id");
-        duckdb::vector<duckdb::Value> values = {
-            duckdb::Value::UBIGINT(pair_id),
-            duckdb::Value::UBIGINT(rule_environment_id),
-            duckdb::Value::UBIGINT(pair.GetSourceMoleculeId()),
-            duckdb::Value::UBIGINT(pair.GetTargetMoleculeId()),
-            duckdb::Value::UBIGINT(constant_id),
-            duckdb::Value::UINTEGER(pair.GetCutCount()),
-            duckdb::Value::INTEGER(pair.GetHeavyAtomDelta()),
-            duckdb::Value::INTEGER(pair.GetHeavyBondDelta()),
-        };
-        execute_prepared(connection_, pair_sql, std::move(values));
-        increment_rule_environment_pair_count(connection_, rule_environment_id);
-    }
+    // Non-owning: assumes caller manages the transaction (e.g., Analyzer::SaveTo).
+    // AddPairs (vector overload) is the transaction-owning entry point.
+    AppendBulk({}, std::vector<MatchedPair>{pair});
 }
 
 void DuckDBStore::ClearIdCaches() {
@@ -1975,17 +1888,21 @@ std::uint64_t DuckDBStore::cached_named_row_id(
 void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
     Execute("begin transaction");
     try {
-        for (const MatchedPair& pair : pairs) {
-            AddPair(pair);
-        }
+        // Standalone bulk pair load: no molecules to append here (callers that
+        // need molecules use SaveTo). Molecule existence is enforced by the
+        // pair FKs at commit.
+        AppendBulk({}, pairs);
+        ReconcileSequences();
         Execute("commit");
     } catch (...) {
         try {
             Execute("rollback");
         } catch (const StorageError&) {
         }
+        ClearIdCaches();
         throw;
     }
+    ClearIdCaches();
 }
 
 void DuckDBStore::PreloadIdCaches() {
