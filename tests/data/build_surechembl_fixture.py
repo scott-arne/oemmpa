@@ -187,7 +187,7 @@ def main() -> None:
     # Compute hash and write provenance manifest.
     fixture_sha256 = compute_sha256(out_path)
     write_provenance_manifest(out_path, len(rows), fixture_sha256, EXPECTED_SOURCE_PARQUET_SHA256)
-    print(f"wrote provenance manifest")
+    print("wrote provenance manifest")
 
 
 if __name__ == "__main__":
