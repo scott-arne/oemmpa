@@ -1179,6 +1179,35 @@ TEST(DuckDBStoreBulk, AddPairInsideCallerOwnedTransactionDoesNotNest) {
     EXPECT_EQ(store.GetRowCount("pair"), max_pair_id_before + 1u);
 }
 
+// An orphan pair (referencing a molecule id that neither exists nor is in the
+// call's molecule batch) must be rejected up front with StorageError, BEFORE any
+// Appender write. In a caller-owned transaction this is what protects the
+// caller's unrelated prior writes: a DuckDB FK constraint error mid-append would
+// abort the whole active transaction and discard them, whereas an up-front throw
+// leaves the transaction intact for the caller to commit their earlier work.
+TEST(DuckDBStoreBulk, OrphanPairInCallerTransactionDoesNotDiscardPriorWrites) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    // Only compound 1 exists; the pair below references a non-existent id 2.
+    store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    const MatchedPair orphan(
+        1, 2, "tol", "ghost", "Cc1ccccc1", "Oc1ccccc1",
+        "[*:1]", "C[*:1]", "O[*:1]", 1, 0, 0);
+
+    store.Execute("begin transaction");
+    // Caller does unrelated work first, then a bad AddPair.
+    store.Execute(
+        "insert into constant_smiles (id, smiles) values (900, '[*:1]PRIOR')"
+    );
+    EXPECT_THROW(store.AddPair(orphan), OEMMPA::StorageError);
+    // The transaction is still usable because AddPair threw BEFORE writing
+    // anything (no FK constraint abort), so the caller's prior insert survives
+    // the commit.
+    store.Execute("commit");
+    EXPECT_EQ(store.GetRowCount("constant_smiles"), 1u);
+    EXPECT_EQ(store.GetRowCount("pair"), 0u);
+}
+
 // A resolve-phase failure (here a malformed non-empty constant SMILES, which
 // makes constant_fingerprints/ComputeConstantEnvironmentFingerprints throw an
 // EnvironmentFingerprintError -- a sibling of StorageError, not a subclass)

@@ -2018,6 +2018,32 @@ void DuckDBStore::AppendBulk(
         }
     }
 
+    // Validate every pair's source/target molecule up front, mirroring the
+    // legacy per-row AddPair guard, so an orphan-FK pair raises StorageError
+    // BEFORE any Appender writes rather than tripping a DuckDB FK constraint
+    // mid-append. The latter matters most on a caller-owned transaction: a
+    // constraint error aborts the whole active transaction, which would discard
+    // the caller's unrelated prior writes. A molecule is valid if it is already
+    // persisted OR supplied in this call's molecules batch (the SaveTo case,
+    // where compounds are appended in the same transaction just below).
+    std::unordered_set<unsigned int> batch_molecule_ids;
+    batch_molecule_ids.reserve(molecules.size());
+    for (const MoleculeRecord& molecule : molecules) {
+        batch_molecule_ids.insert(molecule.GetInternalId());
+    }
+    const auto require_known_molecule = [&](unsigned int molecule_id,
+                                            const char* side) {
+        if (batch_molecule_ids.count(molecule_id) == 0 &&
+            !HasMolecule(molecule_id)) {
+            throw StorageError(
+                std::string("cannot add pair with unknown ") + side + " molecule");
+        }
+    };
+    for (const MatchedPair& pair : pairs) {
+        require_known_molecule(pair.GetSourceMoleculeId(), "source");
+        require_known_molecule(pair.GetTargetMoleculeId(), "target");
+    }
+
     // New-row staging vectors (only rows not already present get appended).
     std::vector<NewConstant> new_constants;
     std::vector<NewRuleSmiles> new_rule_smiles;
