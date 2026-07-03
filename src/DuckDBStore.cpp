@@ -19,6 +19,7 @@
 #include <sstream>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,51 @@ duckdb::Value string_or_null(const std::string& value) {
     }
     return duckdb::Value(value);
 }
+
+// Staged new-row payloads for the bulk resolve-then-append path. They live in
+// the anonymous namespace so the file-local Append* helpers below can name
+// them; only rows not already present in the store are staged for append.
+struct NewConstant {
+    std::uint64_t id;
+    std::string smiles;
+};
+
+struct NewRuleSmiles {
+    std::uint64_t id;
+    std::string smiles;
+};
+
+struct NewRule {
+    std::uint64_t id;
+    std::uint64_t from_id;
+    std::uint64_t to_id;
+};
+
+struct NewFingerprint {
+    std::uint64_t id;
+    std::string smarts;
+    std::string pseudo;
+    std::string parent;
+};
+
+struct NewRuleEnvironment {
+    std::uint64_t id;
+    std::uint64_t rule_id;
+    std::uint64_t fingerprint_id;
+    int radius;
+    std::uint64_t num_pairs;
+};
+
+struct PairRow {
+    std::uint64_t id;
+    std::uint64_t rule_environment_id;
+    std::uint64_t compound1_id;
+    std::uint64_t compound2_id;
+    std::uint64_t constant_id;
+    unsigned int cut_count;
+    int heavy_atom_delta;
+    int heavy_bond_delta;
+};
 
 std::string trim_copy(const std::string& text) {
     const std::string whitespace = " \t\r\n";
@@ -1201,6 +1247,152 @@ std::vector<MatchedPair> read_pairs_with_properties(
     return pairs;
 }
 
+// --- Bulk-load per-table Appender helpers. Each streams staged rows through a
+// duckdb::Appender in the table's schema column order, then Close() flushes.
+// On exception the Appender is destroyed without flushing (RAII), so no
+// partial rows leak; the caller owns the surrounding transaction. Values are
+// appended as duckdb::Value objects (the Appender's Append(Value) overload) to
+// match the codebase's existing typed-value convention.
+
+void AppendMolecules(
+    duckdb::Connection& connection,
+    const std::vector<MoleculeRecord>& molecules
+) {
+    if (molecules.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "compound");
+    for (const MoleculeRecord& molecule : molecules) {
+        appender.BeginRow();
+        // compound.id is the verbatim analyzer internal id, not a counter.
+        appender.Append(duckdb::Value::UBIGINT(molecule.GetInternalId()));
+        appender.Append(string_or_null(molecule.GetExternalId()));
+        appender.Append(duckdb::Value(molecule.GetCanonicalSmiles()));  // input_smiles
+        appender.Append(duckdb::Value(molecule.GetCanonicalSmiles()));  // clean_smiles
+        appender.Append(duckdb::Value::UINTEGER(molecule.GetHeavyAtomCount()));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendConstants(
+    duckdb::Connection& connection,
+    const std::vector<NewConstant>& constants
+) {
+    if (constants.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "constant_smiles");
+    for (const NewConstant& constant : constants) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(constant.id));
+        appender.Append(duckdb::Value(constant.smiles));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendRuleSmiles(
+    duckdb::Connection& connection,
+    const std::vector<NewRuleSmiles>& rule_smiles
+) {
+    if (rule_smiles.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "rule_smiles");
+    for (const NewRuleSmiles& row : rule_smiles) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.id));
+        appender.Append(duckdb::Value(row.smiles));
+        // num_heavies is never populated on the current per-row path; keep it
+        // NULL for equivalence with get_or_create_named_row_id.
+        appender.Append(duckdb::Value(nullptr));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendRules(
+    duckdb::Connection& connection,
+    const std::vector<NewRule>& rules
+) {
+    if (rules.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "rule");
+    for (const NewRule& rule : rules) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(rule.id));
+        appender.Append(duckdb::Value::UBIGINT(rule.from_id));
+        appender.Append(duckdb::Value::UBIGINT(rule.to_id));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendFingerprints(
+    duckdb::Connection& connection,
+    const std::vector<NewFingerprint>& fingerprints
+) {
+    if (fingerprints.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "environment_fingerprint");
+    for (const NewFingerprint& fingerprint : fingerprints) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(fingerprint.id));
+        appender.Append(duckdb::Value(fingerprint.smarts));
+        appender.Append(duckdb::Value(fingerprint.pseudo));
+        appender.Append(duckdb::Value(fingerprint.parent));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendRuleEnvironments(
+    duckdb::Connection& connection,
+    const std::vector<NewRuleEnvironment>& rule_environments
+) {
+    if (rule_environments.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "rule_environment");
+    for (const NewRuleEnvironment& row : rule_environments) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.id));
+        appender.Append(duckdb::Value::UBIGINT(row.rule_id));
+        appender.Append(duckdb::Value::UBIGINT(row.fingerprint_id));
+        appender.Append(duckdb::Value::INTEGER(row.radius));
+        appender.Append(duckdb::Value::UINTEGER(
+            static_cast<std::uint32_t>(row.num_pairs)));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendPairs(
+    duckdb::Connection& connection,
+    const std::vector<PairRow>& pair_rows
+) {
+    if (pair_rows.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "pair");
+    for (const PairRow& row : pair_rows) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.id));
+        appender.Append(duckdb::Value::UBIGINT(row.rule_environment_id));
+        appender.Append(duckdb::Value::UBIGINT(row.compound1_id));
+        appender.Append(duckdb::Value::UBIGINT(row.compound2_id));
+        appender.Append(duckdb::Value::UBIGINT(row.constant_id));
+        appender.Append(duckdb::Value::UINTEGER(row.cut_count));
+        appender.Append(duckdb::Value::INTEGER(row.heavy_atom_delta));
+        appender.Append(duckdb::Value::INTEGER(row.heavy_bond_delta));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
 }  // namespace
 
 DuckDBStore::DuckDBStore()
@@ -1793,6 +1985,226 @@ void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
         } catch (const StorageError&) {
         }
         throw;
+    }
+}
+
+void DuckDBStore::PreloadIdCaches() {
+    // Populate member id caches from existing rows so a non-empty store reuses
+    // ids. On a fresh store these queries return nothing (cheap).
+    auto load_named = [&](const char* table,
+                          std::unordered_map<std::string, std::uint64_t>& cache) {
+        auto result = connection_->Query(
+            std::string("select smiles, id from ") + table);
+        require_success(*result, "preload " + std::string(table));
+        for (const auto& row : *result) {
+            cache.emplace(row.GetValue<std::string>(0),
+                          row.GetValue<std::uint64_t>(1));
+        }
+    };
+    load_named("constant_smiles", constant_id_cache_);
+    load_named("rule_smiles", rule_smiles_id_cache_);
+
+    auto rules = connection_->Query(
+        "select from_smiles_id, to_smiles_id, id from rule");
+    require_success(*rules, "preload rule");
+    for (const auto& row : *rules) {
+        rule_id_cache_.emplace(
+            std::make_pair(row.GetValue<std::uint64_t>(0),
+                           row.GetValue<std::uint64_t>(1)),
+            row.GetValue<std::uint64_t>(2));
+    }
+
+    auto fingerprints = connection_->Query(
+        "select smarts, pseudosmiles, parent_smarts, id from environment_fingerprint");
+    require_success(*fingerprints, "preload environment_fingerprint");
+    for (const auto& row : *fingerprints) {
+        const std::string key = row.GetValue<std::string>(0) + "\x1f" +
+            row.GetValue<std::string>(1) + "\x1f" + row.GetValue<std::string>(2);
+        fingerprint_id_cache_.emplace(key, row.GetValue<std::uint64_t>(3));
+    }
+
+    auto environments = connection_->Query(
+        "select rule_id, environment_fingerprint_id, radius, id from rule_environment");
+    require_success(*environments, "preload rule_environment");
+    for (const auto& row : *environments) {
+        rule_environment_id_cache_.emplace(
+            std::make_tuple(row.GetValue<std::uint64_t>(0),
+                            row.GetValue<std::uint64_t>(1),
+                            row.GetValue<std::int32_t>(2)),
+            row.GetValue<std::uint64_t>(3));
+    }
+}
+
+std::uint64_t DuckDBStore::existing_num_pairs(std::uint64_t rule_environment_id) {
+    const std::string sql = "select num_pairs from rule_environment where id = ?";
+    duckdb::vector<duckdb::Value> values = {duckdb::Value::UBIGINT(rule_environment_id)};
+    auto result = execute_prepared(connection_, sql, std::move(values));
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint32_t>(0);
+    }
+    return 0;
+}
+
+void DuckDBStore::AppendBulk(
+    const std::vector<MoleculeRecord>& molecules,
+    const std::vector<MatchedPair>& pairs
+) {
+    // --- Seed dimension/pair counters from current max(id). compound is NOT
+    // counter-assigned: its id is the analyzer internal id, written verbatim.
+    BulkIdCounter constant_counter{seed_counter("constant_smiles")};
+    BulkIdCounter rule_smiles_counter{seed_counter("rule_smiles")};
+    BulkIdCounter rule_counter{seed_counter("rule")};
+    BulkIdCounter fingerprint_counter{seed_counter("environment_fingerprint")};
+    BulkIdCounter rule_environment_counter{seed_counter("rule_environment")};
+    BulkIdCounter pair_counter{seed_counter("pair")};
+
+    // --- Pre-load existing natural-key -> id rows so a non-empty store reuses
+    // ids instead of re-minting them (preserves get_or_create_* semantics).
+    // Reuses the member caches; they are cleared by the transaction owner.
+    PreloadIdCaches();
+
+    // New-row staging vectors (only rows not already present get appended).
+    std::vector<NewConstant> new_constants;
+    std::vector<NewRuleSmiles> new_rule_smiles;
+    std::vector<NewRule> new_rules;
+    std::vector<NewFingerprint> new_fingerprints;
+    std::vector<NewRuleEnvironment> new_rule_environments;
+
+    // Accumulate num_pairs per rule_environment id, seeded from any existing row.
+    std::unordered_map<std::uint64_t, std::uint64_t> rule_environment_pair_count;
+    // Track which rule_environment ids already existed before this load: those
+    // rows are NOT appended (they exist) but their num_pairs must be UPDATEd to
+    // the new accumulated total. New ids get their total written at append time.
+    std::unordered_set<std::uint64_t> preexisting_rule_environment_ids;
+    std::vector<PairRow> pair_rows;
+    pair_rows.reserve(pairs.size() * 6);
+
+    for (const MatchedPair& pair : pairs) {
+        // constant_smiles
+        std::uint64_t constant_id;
+        {
+            auto it = constant_id_cache_.find(pair.GetConstantSmiles());
+            if (it != constant_id_cache_.end()) {
+                constant_id = it->second;
+            } else {
+                constant_id = constant_counter();
+                constant_id_cache_.emplace(pair.GetConstantSmiles(), constant_id);
+                new_constants.push_back({constant_id, pair.GetConstantSmiles()});
+            }
+        }
+        // rule_smiles (source + target variable)
+        auto resolve_rule_smiles = [&](const std::string& smiles) -> std::uint64_t {
+            auto it = rule_smiles_id_cache_.find(smiles);
+            if (it != rule_smiles_id_cache_.end()) return it->second;
+            const std::uint64_t id = rule_smiles_counter();
+            rule_smiles_id_cache_.emplace(smiles, id);
+            new_rule_smiles.push_back({id, smiles});
+            return id;
+        };
+        const std::uint64_t from_id =
+            resolve_rule_smiles(pair.GetSourceVariableSmiles());
+        const std::uint64_t to_id =
+            resolve_rule_smiles(pair.GetTargetVariableSmiles());
+        // rule
+        std::uint64_t rule_id;
+        {
+            const std::pair<std::uint64_t, std::uint64_t> key{from_id, to_id};
+            auto it = rule_id_cache_.find(key);
+            if (it != rule_id_cache_.end()) {
+                rule_id = it->second;
+            } else {
+                rule_id = rule_counter();
+                rule_id_cache_.emplace(key, rule_id);
+                new_rules.push_back({rule_id, from_id, to_id});
+            }
+        }
+        // fan out over radius 0..5 fingerprints (cached per constant)
+        for (const EnvironmentFingerprint& fingerprint :
+             constant_fingerprints(pair.GetConstantSmiles())) {
+            std::uint64_t fingerprint_id;
+            {
+                const std::string key = fingerprint.GetSmarts() + "\x1f" +
+                    fingerprint.GetPseudoSmiles() + "\x1f" +
+                    fingerprint.GetParentSmarts();
+                auto it = fingerprint_id_cache_.find(key);
+                if (it != fingerprint_id_cache_.end()) {
+                    fingerprint_id = it->second;
+                } else {
+                    fingerprint_id = fingerprint_counter();
+                    fingerprint_id_cache_.emplace(key, fingerprint_id);
+                    new_fingerprints.push_back({
+                        fingerprint_id, fingerprint.GetSmarts(),
+                        fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
+                }
+            }
+            std::uint64_t rule_environment_id;
+            {
+                const std::tuple<std::uint64_t, std::uint64_t, int> key{
+                    rule_id, fingerprint_id,
+                    static_cast<int>(fingerprint.GetRadius())};
+                auto it = rule_environment_id_cache_.find(key);
+                if (it != rule_environment_id_cache_.end()) {
+                    rule_environment_id = it->second;
+                    // The cache is preloaded from existing rows, so a hit that
+                    // is NOT one we minted this call is a pre-existing DB row.
+                    if (!rule_environment_pair_count.count(rule_environment_id)) {
+                        // First time we touch this existing row this call: seed
+                        // its running total from the persisted num_pairs and
+                        // remember it needs an UPDATE (not an append).
+                        rule_environment_pair_count[rule_environment_id] =
+                            existing_num_pairs(rule_environment_id);
+                        preexisting_rule_environment_ids.insert(rule_environment_id);
+                    }
+                } else {
+                    rule_environment_id = rule_environment_counter();
+                    rule_environment_id_cache_.emplace(key, rule_environment_id);
+                    // Fresh row: count starts at 0 and is finalized into the
+                    // appended row's num_pairs column below.
+                    rule_environment_pair_count[rule_environment_id] = 0;
+                    new_rule_environments.push_back({
+                        rule_environment_id, rule_id, fingerprint_id,
+                        static_cast<int>(fingerprint.GetRadius()), 0});
+                }
+            }
+            rule_environment_pair_count[rule_environment_id]++;
+            pair_rows.push_back({
+                pair_counter(), rule_environment_id,
+                pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
+                constant_id, pair.GetCutCount(),
+                pair.GetHeavyAtomDelta(), pair.GetHeavyBondDelta()});
+        }
+    }
+
+    // Finalize num_pairs for the NEW rule_environment rows from the accumulated
+    // counts (existing rows are handled by the UPDATE after append).
+    for (NewRuleEnvironment& row : new_rule_environments) {
+        row.num_pairs = rule_environment_pair_count[row.id];
+    }
+
+    // --- Phase B: append everything in FK-dependency order via Appenders.
+    // compound first (verbatim analyzer ids), then dimensions, then pairs.
+    AppendMolecules(*connection_, molecules);
+    AppendConstants(*connection_, new_constants);
+    AppendRuleSmiles(*connection_, new_rule_smiles);
+    AppendRules(*connection_, new_rules);
+    AppendFingerprints(*connection_, new_fingerprints);
+    AppendRuleEnvironments(*connection_, new_rule_environments);
+    AppendPairs(*connection_, pair_rows);
+
+    // Existing rule_environment rows gained pairs this call: set their num_pairs
+    // to the accumulated total. Set-based (one prepared UPDATE per id) -- still
+    // off the per-pair hot path; there are at most a handful on the common
+    // fresh-store path (zero), and only re-loads touch this branch.
+    for (const std::uint64_t rule_environment_id :
+         preexisting_rule_environment_ids) {
+        const std::string sql =
+            "update rule_environment set num_pairs = ? where id = ?";
+        duckdb::vector<duckdb::Value> values = {
+            duckdb::Value::UINTEGER(static_cast<std::uint32_t>(
+                rule_environment_pair_count[rule_environment_id])),
+            duckdb::Value::UBIGINT(rule_environment_id),
+        };
+        execute_prepared(connection_, sql, std::move(values));
     }
 }
 
