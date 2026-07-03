@@ -1139,6 +1139,44 @@ TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
     std::filesystem::remove(path);
 }
 
+// A resolve-phase failure (here a malformed non-empty constant SMILES, which
+// makes constant_fingerprints/ComputeConstantEnvironmentFingerprints throw an
+// EnvironmentFingerprintError -- a sibling of StorageError, not a subclass)
+// must still surface as StorageError through the public bulk path, and the
+// owning transaction must leave no partial dimension/pair rows.
+TEST(DuckDBStoreBulk, AddPairsRejectsInvalidConstantSmilesAsStorageError) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Valid compound FKs so the failure is the constant, not a molecule.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (1, 'mol_a', 'CC', 'CC', 2)"
+        );
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (2, 'mol_b', 'CCC', 'CCC', 3)"
+        );
+        // Non-empty but unparseable constant SMILES -> fingerprint computation
+        // throws during the resolve phase, before any Appender runs.
+        MatchedPair pair(
+            1, 2, "mol_a", "mol_b", "CC", "CCC",
+            "not-a-smiles",   // constant_smiles (invalid, non-empty)
+            "C[*:1]",         // source_variable_smiles
+            "O[*:1]",         // target_variable_smiles
+            1, 0, 0
+        );
+        EXPECT_THROW(store.AddPairs({pair}), OEMMPA::StorageError);
+        // Rollback left nothing behind.
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule"), 0u);
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+    }
+    std::filesystem::remove(path);
+}
+
 // Re-loading the same pairs must reuse dimension rows (no UNIQUE violation) and
 // UPDATE the existing rule_environment.num_pairs to the new total rather than
 // leaving it stale. Each stored pair row increments exactly one

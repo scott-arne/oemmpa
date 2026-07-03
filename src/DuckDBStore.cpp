@@ -2021,6 +2021,16 @@ void DuckDBStore::AppendBulk(
     std::vector<PairRow> pair_rows;
     pair_rows.reserve(pairs.size() * 6);
 
+    // Wrap the whole resolve-then-append body so every failure mode presents the
+    // store's StorageError contract to callers. The resolve phase can throw
+    // sibling OEMMPAError types that are NOT StorageError -- e.g.
+    // EnvironmentFingerprintError from constant_fingerprints() on a malformed
+    // constant SMILES -- and the Appender phase can throw a raw duckdb::Exception
+    // on a constraint violation. StorageError and DuplicateIdError (the
+    // deliberate validation throws below and the duplicate-external-id contract)
+    // pass through unchanged; anything else becomes StorageError. The owning
+    // transaction (SaveTo / AddPairs) rolls back and clears id caches on throw.
+    try {
     for (const MatchedPair& pair : pairs) {
         // Preserve the legacy get_or_create_named_row_id guard: empty normalized
         // values must never be stored. AppendBulk assigns ids directly rather
@@ -2138,23 +2148,13 @@ void DuckDBStore::AppendBulk(
 
     // --- Phase B: append everything in FK-dependency order via Appenders.
     // compound first (verbatim analyzer ids), then dimensions, then pairs.
-    // A duckdb::Appender surfaces constraint violations (e.g. a duplicate
-    // compound id) as a raw duckdb::Exception; translate those into the store's
-    // StorageError contract so callers (SaveTo, AddPairs) and the rollback path
-    // see the same exception type the legacy per-row inserts threw.
-    try {
-        AppendMolecules(*connection_, molecules);
-        AppendConstants(*connection_, new_constants);
-        AppendRuleSmiles(*connection_, new_rule_smiles);
-        AppendRules(*connection_, new_rules);
-        AppendFingerprints(*connection_, new_fingerprints);
-        AppendRuleEnvironments(*connection_, new_rule_environments);
-        AppendPairs(*connection_, pair_rows);
-    } catch (const StorageError&) {
-        throw;
-    } catch (const std::exception& error) {
-        throw StorageError(std::string("DuckDB bulk append failed: ") + error.what());
-    }
+    AppendMolecules(*connection_, molecules);
+    AppendConstants(*connection_, new_constants);
+    AppendRuleSmiles(*connection_, new_rule_smiles);
+    AppendRules(*connection_, new_rules);
+    AppendFingerprints(*connection_, new_fingerprints);
+    AppendRuleEnvironments(*connection_, new_rule_environments);
+    AppendPairs(*connection_, pair_rows);
 
     // Existing rule_environment rows gained pairs this call: set their num_pairs
     // to the accumulated total. Set-based (one prepared UPDATE per id) -- still
@@ -2170,6 +2170,13 @@ void DuckDBStore::AppendBulk(
             duckdb::Value::UBIGINT(rule_environment_id),
         };
         execute_prepared(connection_, sql, std::move(values));
+    }
+    } catch (const StorageError&) {
+        throw;
+    } catch (const DuplicateIdError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw StorageError(std::string("DuckDB bulk save failed: ") + error.what());
     }
 }
 
