@@ -1741,6 +1741,30 @@ void DuckDBStore::ClearIdCaches() {
     rule_environment_id_cache_.clear();
 }
 
+std::uint64_t DuckDBStore::seed_counter(const std::string& table_name) {
+    return get_max_id(connection_, table_name) + 1;
+}
+
+void DuckDBStore::ReconcileSequences() {
+    // DuckDB 1.5.4 does not support ALTER SEQUENCE ... RESTART, so drop and
+    // recreate each id sequence starting at max(id)+1. Mirrors the seeding in
+    // InitializeSchema so a subsequent legacy nextval insert cannot collide
+    // with any bulk- or verbatim-assigned id.
+    for (const char* table : {
+        "compound", "compound_property", "constant_smiles",
+        "environment_fingerprint", "pair", "property_name",
+        "rule", "rule_environment", "rule_smiles"
+    }) {
+        const std::string table_name = table;
+        const std::uint64_t start = get_max_id(connection_, table_name) + 1;
+        Execute("drop sequence if exists " + id_sequence_name(table_name));
+        Execute(
+            "create sequence " + id_sequence_name(table_name) +
+            " start " + std::to_string(start)
+        );
+    }
+}
+
 std::uint64_t DuckDBStore::cached_named_row_id(
     std::unordered_map<std::string, std::uint64_t>& cache,
     const std::string& table_name,
