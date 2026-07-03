@@ -1021,30 +1021,55 @@ TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache)
 // separately, then passing as a literal to CREATE SEQUENCE START) and asserts
 // that nextval after recreate yields an id strictly greater than a pre-seeded
 // high id. Full end-to-end coverage of ReconcileSequences is deferred to Task 9's
-// MixedBulkThenSingleInsert test.
-TEST(DuckDBStoreBulk, SequenceReconciliationSqlShape) {
+// Validates the DuckDB 1.5.4 drop+recreate-at-max(id)+1 sequence-reset SQL
+// mechanism that ReconcileSequences emits: after resetting the sequence, nextval
+// must allocate ids strictly greater than a pre-seeded high id, not restart at 1.
+// Asserting the actual id values (not just row counts) is what proves the reset
+// advanced the sequence -- a sequence that wrongly restarted at 1 would keep the
+// row counts identical while allocating colliding-in-future ids 1, 2. Full
+// method-level ReconcileSequences coverage lands in Task 9's end-to-end
+// MixedBulkThenSingleInsert via the public Analyzer::SaveTo caller.
+TEST(DuckDBStoreBulk, SequenceReconciliationAdvancesNextvalPastMaxId) {
     const std::filesystem::path path = TemporaryDatabasePath();
     {
         DuckDBStore store(path.string());
         store.InitializeSchema();
-        // Insert row with id=100 bypassing the sequence.
+        // Insert row with id=100 bypassing the sequence (simulating a
+        // bulk-/verbatim-assigned high id ahead of the sequence position).
         store.Execute("insert into constant_smiles (id, smiles) values (100, 'X')");
-        // Manually drop and recreate the sequence at max(id)+1 (seed_counter logic).
+        // Drop and recreate the sequence at max(id)+1 (the ReconcileSequences SQL).
         store.Execute("drop sequence seq_constant_smiles_id");
         store.Execute("create sequence seq_constant_smiles_id start 101");
-        // Insert using nextval; should allocate id > 100.
+        // Two nextval-allocated inserts.
         store.Execute(
             "insert into constant_smiles (id, smiles) "
             "values (nextval('seq_constant_smiles_id'), 'Y')"
         );
-        // Assert no duplicate key collision (row count == 2).
-        EXPECT_EQ(store.GetRowCount("constant_smiles"), 2u);
-        // Verify a second nextval continues incrementing (no collision at 101).
         store.Execute(
             "insert into constant_smiles (id, smiles) "
             "values (nextval('seq_constant_smiles_id'), 'Z')"
         );
         EXPECT_EQ(store.GetRowCount("constant_smiles"), 3u);
+    }
+    // Read the allocated ids back through a fresh connection (the store above has
+    // released its exclusive handle on scope exit). The nextval inserts must have
+    // received ids 101 and 102 -- strictly greater than the pre-seeded 100 --
+    // proving the sequence was reset to max(id)+1 rather than restarting at 1.
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select id from constant_smiles where smiles = 'Y'");
+        ASSERT_FALSE(result->HasError());
+        const std::uint64_t y_id = result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(y_id, 101u);
+
+        std::unique_ptr<duckdb::QueryResult> max_result = connection.Query(
+            "select max(id) from constant_smiles");
+        ASSERT_FALSE(max_result->HasError());
+        const std::uint64_t max_id =
+            max_result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(max_id, 102u);
     }
     std::filesystem::remove(path);
 }
