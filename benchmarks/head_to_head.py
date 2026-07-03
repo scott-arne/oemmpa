@@ -98,7 +98,7 @@ def _mmpdb_importable(mmpdb_exe):
     # without depending on PATH containing the micromamba bin dir.
     candidate = Path(mmpdb_exe)
     if candidate.is_absolute():
-        return candidate.exists()
+        return candidate.is_file() and os.access(candidate, os.X_OK)
     return shutil.which(mmpdb_exe) is not None
 
 
