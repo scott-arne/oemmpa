@@ -1113,5 +1113,37 @@ TEST(DuckDBStoreBulk, AddPairsRejectsEmptyVariableSmilesAndLeavesNoRows) {
     std::filesystem::remove(path);
 }
 
+// The bulk SaveTo path routes molecule inserts through a duckdb::Appender, whose
+// primary-key violation surfaces as a generic exception. AppendBulk validates
+// molecules up front with the legacy AddMolecule semantics so a duplicate
+// external (public) id still raises the distinct DuplicateIdError -- not the
+// generic StorageError a raw Appender collision would throw -- and the owning
+// transaction leaves no partial rows.
+TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Pre-seed a compound with the SAME public_id "tol" but a DIFFERENT
+        // internal id (99), so the collision is on the external id, not the
+        // internal id.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, "
+            "clean_num_heavies) values (99, 'tol', 'CC', 'CC', 2)"
+        );
+        EXPECT_THROW(analyzer.SaveTo(store), DuplicateIdError);
+        // Rollback: no pair rows, and no second compound was inserted.
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+        EXPECT_EQ(store.GetRowCount("compound"), 1u);
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

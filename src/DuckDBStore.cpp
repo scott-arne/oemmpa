@@ -1981,6 +1981,30 @@ void DuckDBStore::AppendBulk(
     // Reuses the member caches; they are cleared by the transaction owner.
     PreloadIdCaches();
 
+    // Validate molecules up front with the same semantics as the legacy
+    // per-row AddMolecule, so the bulk path preserves its exception contract:
+    // a duplicate external (public) id raises DuplicateIdError -- a distinct,
+    // SWIG-exposed type callers catch -- rather than the generic StorageError a
+    // raw Appender primary-key violation would surface. Duplicate internal ids
+    // and empty canonical SMILES keep their StorageError. Checking before any
+    // append means a rejected molecule leaves no partial rows.
+    for (const MoleculeRecord& molecule : molecules) {
+        if (molecule.GetCanonicalSmiles().empty()) {
+            throw StorageError("molecule record has no canonical SMILES");
+        }
+        if (HasMolecule(molecule.GetInternalId())) {
+            throw StorageError(
+                "duplicate internal molecule id: " +
+                std::to_string(molecule.GetInternalId())
+            );
+        }
+        if (molecule.HasExternalId() &&
+            has_external_molecule_id(connection_, molecule.GetExternalId())) {
+            throw DuplicateIdError(
+                "duplicate molecule id: " + molecule.GetExternalId());
+        }
+    }
+
     // New-row staging vectors (only rows not already present get appended).
     std::vector<NewConstant> new_constants;
     std::vector<NewRuleSmiles> new_rule_smiles;
