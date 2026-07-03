@@ -14,13 +14,19 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import _duckdb_dump as dump  # noqa: E402
-
+# Skip cleanly on a build/environment without DuckDB. These guards MUST run
+# before importing _duckdb_dump, which imports the `duckdb` module at import
+# time — otherwise a DuckDB-less environment errors during collection instead
+# of skipping. importorskip both skips when the module is missing and gives the
+# module when present.
+pytest.importorskip("duckdb")
 pytestmark = pytest.mark.skipif(
     not pytest.importorskip("oemmpa").duckdb_available(),
     reason="DuckDB storage helpers require a DuckDB-enabled build",
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _duckdb_dump as dump  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
