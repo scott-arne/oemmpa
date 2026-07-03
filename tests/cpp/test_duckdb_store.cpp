@@ -1201,9 +1201,14 @@ TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndAccumulatesNumPairs) {
 // The id is read back through a fresh connection AFTER the store scope closes
 // (DuckDB holds the file exclusively while the store is open).
 TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
+    // Analyzer carries a property so SaveTo writes property_name +
+    // compound_property rows: a later legacy property upsert must then reconcile
+    // against those bulk-written rows, not collide with them.
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "tol");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.5);
     analyzer.Analyze();
 
     const std::filesystem::path path = TemporaryDatabasePath();
@@ -1218,22 +1223,36 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
         );
         analyzer.SaveTo(store);
 
-        // A legacy nextval-allocated insert; its id must be > 1000 (verified
-        // after the store closes) if ReconcileSequences seeded from max(id)+1.
+        // (a) constant_smiles sequence: a legacy nextval insert; id must be
+        // > 1000 (verified after close) if ReconcileSequences seeded max(id)+1.
         store.Execute(
             "insert into constant_smiles (id, smiles) "
             "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCC')"
         );
 
-        // Likewise a legacy AddMoleculeProperty (property_name + compound_property
-        // nextval) must not collide with rows written during the bulk save.
+        // (b) compound sequence: a legacy file load allocates compound ids via
+        // nextval. SaveTo wrote compound ids verbatim (1, 2), so the new
+        // compound must land beyond them without a PK collision.
+        const std::filesystem::path smiles_path = TemporarySmilesPath();
+        WriteTextFile(smiles_path, "Clc1ccccc1 chlorobenzene\n");
+        const LoadReport report = store.AddMoleculesFromSmilesFile(smiles_path.string());
+        EXPECT_EQ(report.GetAcceptedCount(), 1u);
+        EXPECT_EQ(store.GetRowCount("compound"), 3u);
+        std::filesystem::remove(smiles_path);
+
+        // (c) compound_property / property_name sequences: a legacy property
+        // upsert on a different property must not collide with the pIC50 rows
+        // SaveTo wrote, and updating an existing pIC50 value must overwrite.
         store.AddMoleculeProperty(1, "logP", 2.7);
         EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "logP"), 2.7);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "pIC50"), 6.0);
+        store.AddMoleculeProperty(1, "pIC50", 6.25);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "pIC50"), 6.25);
     }
 
-    // Read the nextval-allocated row's id through a fresh connection now that
-    // the store has released the file. It must be strictly greater than the
-    // pre-seeded high id 1000.
+    // Read the constant_smiles nextval-allocated id through a fresh connection
+    // now that the store has released the file. It must be strictly greater than
+    // the pre-seeded high id 1000 (proving max(id)+1 reconciliation).
     {
         duckdb::DuckDB database(path.string());
         duckdb::Connection connection(database);
