@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <unordered_map>
 
 namespace OEMMPA {
 namespace {
@@ -593,10 +594,19 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
     const std::map<std::string, std::vector<unsigned int>> molecule_ids_by_smiles =
         molecule_ids_by_canonical_smiles(molecules_);
 
-    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
+    const std::vector<std::string> constants = sorted_constants(constant_buckets_);
+    std::unordered_map<std::string, std::vector<Fragmentation>> sorted_buckets;
+    sorted_buckets.reserve(constants.size());
+    for (const std::string& constant_smiles : constants) {
+        sorted_buckets.emplace(
+            constant_smiles,
+            sorted_fragmentations(constant_buckets_.at(constant_smiles)));
+    }
+
+    for (const std::string& constant_smiles : constants) {
         const std::vector<Fragmentation> fragmentations =
             with_hydrogen_fragmentations(
-                sorted_fragmentations(constant_buckets_.at(constant_smiles)),
+                sorted_buckets.at(constant_smiles),
                 constant_smiles,
                 molecule_ids_by_smiles
             );
@@ -670,11 +680,8 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
         }
     }
 
-    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
-        const std::vector<Fragmentation> fragmentations =
-            sorted_fragmentations(constant_buckets_.at(constant_smiles));
-
-        for (const Fragmentation& fragmentation : fragmentations) {
+    for (const std::string& constant_smiles : constants) {
+        for (const Fragmentation& fragmentation : sorted_buckets.at(constant_smiles)) {
             add_hydrogen_candidates_for_fragmentation(
                 candidates_by_group,
                 fragmentation,
