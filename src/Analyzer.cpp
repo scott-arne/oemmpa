@@ -362,9 +362,8 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
             }
         }
 
-        // Reset id sequences past the bulk-assigned / verbatim ids before commit
-        // so any later legacy nextval insert cannot collide.
-        store.ReconcileSequences();
+        // AppendBulk reconciles id sequences (max(id)+1) within this
+        // transaction, so a later legacy nextval insert cannot collide.
         store.Execute("commit");
     } catch (...) {
         try {

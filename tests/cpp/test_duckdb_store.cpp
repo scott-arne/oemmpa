@@ -1158,6 +1158,25 @@ TEST(DuckDBStoreBulk, AddPairInsideCallerOwnedTransactionDoesNotNest) {
     // The pair rows are visible after the caller commits (6 radius rows/pair).
     EXPECT_EQ(store.GetRowCount("pair"), 6u);
     EXPECT_EQ(store.GetPairs().size(), 1u);
+
+    // AppendBulk reconciles id sequences even on the caller-owned path, so a
+    // subsequent legacy nextval insert must allocate past the bulk-assigned max
+    // id, not collide with it. Exercise the constant_smiles and pair sequences.
+    const std::uint64_t max_pair_id_before = store.GetRowCount("pair");
+    store.Execute(
+        "insert into constant_smiles (id, smiles) "
+        "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCCC')"
+    );
+    store.Execute(
+        "insert into pair (id, rule_environment_id, compound1_id, compound2_id, "
+        "constant_id, cut_count, heavy_atom_delta, heavy_bond_delta) "
+        "select nextval('seq_pair_id'), rule_environment_id, compound1_id, "
+        "compound2_id, constant_id, cut_count, heavy_atom_delta, heavy_bond_delta "
+        "from pair limit 1"
+    );
+    // No primary-key collision means the sequences were reconciled past the
+    // bulk-assigned ids; both inserts added exactly one row.
+    EXPECT_EQ(store.GetRowCount("pair"), max_pair_id_before + 1u);
 }
 
 // A resolve-phase failure (here a malformed non-empty constant SMILES, which

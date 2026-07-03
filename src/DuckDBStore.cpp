@@ -1897,14 +1897,16 @@ void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
     const bool owns_transaction = !connection_->HasActiveTransaction();
     if (!owns_transaction) {
         // Molecule existence is enforced by the pair FKs; no molecules here.
+        // AppendBulk reconciles id sequences itself, so the caller-owned
+        // transaction gets consistent sequences on commit too.
         AppendBulk({}, pairs);
         return;
     }
 
     Execute("begin transaction");
     try {
+        // AppendBulk appends and reconciles id sequences within this transaction.
         AppendBulk({}, pairs);
-        ReconcileSequences();
         Execute("commit");
     } catch (...) {
         try {
@@ -2182,6 +2184,16 @@ void DuckDBStore::AppendBulk(
         };
         execute_prepared(connection_, sql, std::move(values));
     }
+
+    // Reconcile id sequences to max(id)+1 inside this (possibly caller-owned)
+    // transaction, so a later legacy nextval insert cannot collide with the
+    // counter-assigned or verbatim ids written above. Doing it here rather than
+    // in the transaction owner means EVERY entry point is covered -- the
+    // standalone AddPairs/AddPair path, a caller-managed transaction (which
+    // cannot reach the private ReconcileSequences itself), and SaveTo. DuckDB
+    // 1.5.4 permits the DROP/CREATE SEQUENCE DDL inside an open transaction and
+    // the reset persists on commit (verified).
+    ReconcileSequences();
     } catch (const StorageError&) {
         throw;
     } catch (const DuplicateIdError&) {
