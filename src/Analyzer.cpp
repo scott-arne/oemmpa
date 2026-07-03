@@ -345,10 +345,13 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
     store.InitializeSchema();
     store.Execute("begin transaction");
     try {
-        for (const MoleculeRecord& molecule : molecules_) {
-            store.AddMolecule(molecule);
-        }
+        // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
+        // through the non-owning helper inside this single owning transaction.
+        store.AppendBulk(molecules_, GetPairs(options));
 
+        // Properties stay on the existing upsert DML path (AddMoleculeProperty),
+        // inside the SAME transaction, keyed by the verbatim analyzer id
+        // (compound.id == analyzer internal id).
         for (const auto& entry : properties_) {
             const auto id_iter = external_ids_.find(entry.first);
             if (id_iter == external_ids_.end()) {
@@ -359,18 +362,19 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
             }
         }
 
-        for (const MatchedPair& pair : GetPairs(options)) {
-            store.AddPair(pair);
-        }
-
+        // Reset id sequences past the bulk-assigned / verbatim ids before commit
+        // so any later legacy nextval insert cannot collide.
+        store.ReconcileSequences();
         store.Execute("commit");
     } catch (...) {
         try {
             store.Execute("rollback");
         } catch (const StorageError&) {
         }
+        store.ClearIdCaches();
         throw;
     }
+    store.ClearIdCaches();
 
     store.RefreshRuleEnvironmentStatistics();
     store.RefreshDatasetCounts();

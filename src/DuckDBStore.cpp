@@ -1833,9 +1833,10 @@ const std::vector<EnvironmentFingerprint>& DuckDBStore::constant_fingerprints(
 }
 
 void DuckDBStore::AddPair(const MatchedPair& pair) {
-    // Non-owning: assumes caller manages the transaction (e.g., Analyzer::SaveTo).
-    // AddPairs (vector overload) is the transaction-owning entry point.
-    AppendBulk({}, std::vector<MatchedPair>{pair});
+    // One write implementation: the single-pair overload is the bulk path with a
+    // one-element vector. AddPairs owns the transaction and reconciles sequences,
+    // so standalone AddPair stays atomic and sequence-consistent.
+    AddPairs(std::vector<MatchedPair>{pair});
 }
 
 void DuckDBStore::ClearIdCaches() {
@@ -2113,13 +2114,23 @@ void DuckDBStore::AppendBulk(
 
     // --- Phase B: append everything in FK-dependency order via Appenders.
     // compound first (verbatim analyzer ids), then dimensions, then pairs.
-    AppendMolecules(*connection_, molecules);
-    AppendConstants(*connection_, new_constants);
-    AppendRuleSmiles(*connection_, new_rule_smiles);
-    AppendRules(*connection_, new_rules);
-    AppendFingerprints(*connection_, new_fingerprints);
-    AppendRuleEnvironments(*connection_, new_rule_environments);
-    AppendPairs(*connection_, pair_rows);
+    // A duckdb::Appender surfaces constraint violations (e.g. a duplicate
+    // compound id) as a raw duckdb::Exception; translate those into the store's
+    // StorageError contract so callers (SaveTo, AddPairs) and the rollback path
+    // see the same exception type the legacy per-row inserts threw.
+    try {
+        AppendMolecules(*connection_, molecules);
+        AppendConstants(*connection_, new_constants);
+        AppendRuleSmiles(*connection_, new_rule_smiles);
+        AppendRules(*connection_, new_rules);
+        AppendFingerprints(*connection_, new_fingerprints);
+        AppendRuleEnvironments(*connection_, new_rule_environments);
+        AppendPairs(*connection_, pair_rows);
+    } catch (const StorageError&) {
+        throw;
+    } catch (const std::exception& error) {
+        throw StorageError(std::string("DuckDB bulk append failed: ") + error.what());
+    }
 
     // Existing rule_environment rows gained pairs this call: set their num_pairs
     // to the accumulated total. Set-based (one prepared UPDATE per id) -- still
