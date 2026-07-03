@@ -1015,5 +1015,363 @@ TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache)
     std::filesystem::remove(database_path);
 }
 
+// Validates the DuckDB 1.5.4 drop+recreate-at-max(id)+1 sequence-reset SQL
+// mechanism that ReconcileSequences emits: after resetting the sequence, nextval
+// must allocate ids strictly greater than a pre-seeded high id, not restart at 1.
+// Asserting the actual id values (not just row counts) is what proves the reset
+// advanced the sequence -- a sequence that wrongly restarted at 1 would keep the
+// row counts identical while allocating colliding-in-future ids 1, 2. Full
+// method-level ReconcileSequences coverage lands in the end-to-end
+// SaveToThenLegacyInsertDoesNotCollide test below via the public SaveTo caller.
+TEST(DuckDBStoreBulk, SequenceReconciliationAdvancesNextvalPastMaxId) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Insert row with id=100 bypassing the sequence (simulating a
+        // bulk-/verbatim-assigned high id ahead of the sequence position).
+        store.Execute("insert into constant_smiles (id, smiles) values (100, 'X')");
+        // Drop and recreate the sequence at max(id)+1 (the ReconcileSequences SQL).
+        store.Execute("drop sequence seq_constant_smiles_id");
+        store.Execute("create sequence seq_constant_smiles_id start 101");
+        // Two nextval-allocated inserts.
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), 'Y')"
+        );
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), 'Z')"
+        );
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 3u);
+    }
+    // Read the allocated ids back through a fresh connection (the store above has
+    // released its exclusive handle on scope exit). The nextval inserts must have
+    // received ids 101 and 102 -- strictly greater than the pre-seeded 100 --
+    // proving the sequence was reset to max(id)+1 rather than restarting at 1.
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select id from constant_smiles where smiles = 'Y'");
+        ASSERT_FALSE(result->HasError());
+        const std::uint64_t y_id = result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(y_id, 101u);
+
+        std::unique_ptr<duckdb::QueryResult> max_result = connection.Query(
+            "select max(id) from constant_smiles");
+        ASSERT_FALSE(max_result->HasError());
+        const std::uint64_t max_id =
+            max_result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(max_id, 102u);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreBulk, AddPairsRejectsEmptyVariableSmilesAndLeavesNoRows) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Insert two compound rows so pair FKs are valid.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (1, 'mol_a', 'CC', 'CC', 2)"
+        );
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (2, 'mol_b', 'CCC', 'CCC', 3)"
+        );
+        // Build a MatchedPair with an EMPTY source_variable_smiles (should trigger guard).
+        MatchedPair pair(
+            1,                  // source_molecule_id
+            2,                  // target_molecule_id
+            "mol_a",            // source_external_id
+            "mol_b",            // target_external_id
+            "CC",               // source_smiles
+            "CCC",              // target_smiles
+            "[c:1][c:2]",       // constant_smiles
+            "",                 // source_variable_smiles (EMPTY -> should throw)
+            "[CH3:3]",          // target_variable_smiles
+            1,                  // cut_count
+            1,                  // heavy_atom_delta
+            0                   // heavy_bond_delta
+        );
+        // AddPairs must throw on empty variable smiles.
+        EXPECT_THROW(store.AddPairs({pair}), OEMMPA::StorageError);
+        // The transaction must have rolled back cleanly, leaving no rows.
+        EXPECT_EQ(store.GetRowCount("rule_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule"), 0u);
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+    }
+    std::filesystem::remove(path);
+}
+
+// The bulk SaveTo path routes molecule inserts through a duckdb::Appender, whose
+// primary-key violation surfaces as a generic exception. AppendBulk validates
+// molecules up front with the legacy AddMolecule semantics so a duplicate
+// external (public) id still raises the distinct DuplicateIdError -- not the
+// generic StorageError a raw Appender collision would throw -- and the owning
+// transaction leaves no partial rows.
+TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Pre-seed a compound with the SAME public_id "tol" but a DIFFERENT
+        // internal id (99), so the collision is on the external id, not the
+        // internal id.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, "
+            "clean_num_heavies) values (99, 'tol', 'CC', 'CC', 2)"
+        );
+        EXPECT_THROW(analyzer.SaveTo(store), DuplicateIdError);
+        // Rollback: no pair rows, and no second compound was inserted.
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+        EXPECT_EQ(store.GetRowCount("compound"), 1u);
+    }
+    std::filesystem::remove(path);
+}
+
+// AddPair/AddPairs must be usable inside a caller-managed transaction: DuckDB
+// 1.5.4 rejects a nested "begin transaction", so AddPairs owns a transaction
+// only when none is already active. A caller doing begin -> AddPair -> commit
+// must succeed and persist the pair rows (the caller owns commit/rollback).
+TEST(DuckDBStoreBulk, AddPairInsideCallerOwnedTransactionDoesNotNest) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    store.Execute("begin transaction");
+    // Must NOT throw "cannot start a transaction within a transaction".
+    store.AddPair(pairs.front());
+    store.Execute("commit");
+
+    // The pair rows are visible after the caller commits (6 radius rows/pair).
+    EXPECT_EQ(store.GetRowCount("pair"), 6u);
+    EXPECT_EQ(store.GetPairs().size(), 1u);
+
+    // AppendBulk reconciles id sequences even on the caller-owned path, so a
+    // subsequent legacy nextval insert must allocate past the bulk-assigned max
+    // id, not collide with it. Exercise the constant_smiles and pair sequences.
+    const std::uint64_t max_pair_id_before = store.GetRowCount("pair");
+    store.Execute(
+        "insert into constant_smiles (id, smiles) "
+        "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCCC')"
+    );
+    store.Execute(
+        "insert into pair (id, rule_environment_id, compound1_id, compound2_id, "
+        "constant_id, cut_count, heavy_atom_delta, heavy_bond_delta) "
+        "select nextval('seq_pair_id'), rule_environment_id, compound1_id, "
+        "compound2_id, constant_id, cut_count, heavy_atom_delta, heavy_bond_delta "
+        "from pair limit 1"
+    );
+    // No primary-key collision means the sequences were reconciled past the
+    // bulk-assigned ids; both inserts added exactly one row.
+    EXPECT_EQ(store.GetRowCount("pair"), max_pair_id_before + 1u);
+}
+
+// An orphan pair (referencing a molecule id that neither exists nor is in the
+// call's molecule batch) must be rejected up front with StorageError, BEFORE any
+// Appender write. In a caller-owned transaction this is what protects the
+// caller's unrelated prior writes: a DuckDB FK constraint error mid-append would
+// abort the whole active transaction and discard them, whereas an up-front throw
+// leaves the transaction intact for the caller to commit their earlier work.
+TEST(DuckDBStoreBulk, OrphanPairInCallerTransactionDoesNotDiscardPriorWrites) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    // Only compound 1 exists; the pair below references a non-existent id 2.
+    store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    const MatchedPair orphan(
+        1, 2, "tol", "ghost", "Cc1ccccc1", "Oc1ccccc1",
+        "[*:1]", "C[*:1]", "O[*:1]", 1, 0, 0);
+
+    store.Execute("begin transaction");
+    // Caller does unrelated work first, then a bad AddPair.
+    store.Execute(
+        "insert into constant_smiles (id, smiles) values (900, '[*:1]PRIOR')"
+    );
+    EXPECT_THROW(store.AddPair(orphan), OEMMPA::StorageError);
+    // The transaction is still usable because AddPair threw BEFORE writing
+    // anything (no FK constraint abort), so the caller's prior insert survives
+    // the commit.
+    store.Execute("commit");
+    EXPECT_EQ(store.GetRowCount("constant_smiles"), 1u);
+    EXPECT_EQ(store.GetRowCount("pair"), 0u);
+}
+
+// A resolve-phase failure (here a malformed non-empty constant SMILES, which
+// makes constant_fingerprints/ComputeConstantEnvironmentFingerprints throw an
+// EnvironmentFingerprintError -- a sibling of StorageError, not a subclass)
+// must still surface as StorageError through the public bulk path, and the
+// owning transaction must leave no partial dimension/pair rows.
+TEST(DuckDBStoreBulk, AddPairsRejectsInvalidConstantSmilesAsStorageError) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Valid compound FKs so the failure is the constant, not a molecule.
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (1, 'mol_a', 'CC', 'CC', 2)"
+        );
+        store.Execute(
+            "insert into compound (id, public_id, input_smiles, clean_smiles, clean_num_heavies) "
+            "values (2, 'mol_b', 'CCC', 'CCC', 3)"
+        );
+        // Non-empty but unparseable constant SMILES -> fingerprint computation
+        // throws during the resolve phase, before any Appender runs.
+        MatchedPair pair(
+            1, 2, "mol_a", "mol_b", "CC", "CCC",
+            "not-a-smiles",   // constant_smiles (invalid, non-empty)
+            "C[*:1]",         // source_variable_smiles
+            "O[*:1]",         // target_variable_smiles
+            1, 0, 0
+        );
+        EXPECT_THROW(store.AddPairs({pair}), OEMMPA::StorageError);
+        // Rollback left nothing behind.
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule_smiles"), 0u);
+        EXPECT_EQ(store.GetRowCount("rule"), 0u);
+        EXPECT_EQ(store.GetRowCount("pair"), 0u);
+    }
+    std::filesystem::remove(path);
+}
+
+// Re-loading the same pairs must reuse dimension rows (no UNIQUE violation) and
+// UPDATE the existing rule_environment.num_pairs to the new total rather than
+// leaving it stale. Each stored pair row increments exactly one
+// rule_environment's num_pairs, so sum(num_pairs) must equal the pair row count
+// after each load. This exercises the AppendBulk existing-row seeding +
+// preexisting-id UPDATE path (the bulk equivalent of the legacy per-row
+// increment).
+TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndAccumulatesNumPairs) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+
+    const auto sum_num_pairs = [&path]() -> std::uint64_t {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        return result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+    };
+
+    std::uint64_t pairs_after_first = 0;
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+        ASSERT_FALSE(pairs.empty());
+
+        store.AddPairs(pairs);
+        const std::uint64_t rules_after_first = store.GetRowCount("rule");
+        const std::uint64_t re_after_first = store.GetRowCount("rule_environment");
+        pairs_after_first = store.GetRowCount("pair");
+        EXPECT_GT(pairs_after_first, 0u);
+        // After the first load, each stored pair row incremented exactly one
+        // rule_environment's num_pairs, so the sum equals the pair row count.
+        EXPECT_EQ(sum_num_pairs(), pairs_after_first);
+
+        // Re-add the same pairs: dimension rows are reused (counts unchanged),
+        // pair rows are appended again (pair has no unique key), and num_pairs
+        // on the existing rule_environment rows is updated to the new total.
+        store.AddPairs(pairs);
+        EXPECT_EQ(store.GetRowCount("rule"), rules_after_first);
+        EXPECT_EQ(store.GetRowCount("rule_environment"), re_after_first);
+        EXPECT_EQ(store.GetRowCount("pair"), pairs_after_first * 2u);
+    }
+
+    // sum(num_pairs) must have doubled with the pair rows -- the existing
+    // rule_environment rows were UPDATEd to the new total, not left stale.
+    // Compare to the observed pair count, not a fixture-specific constant.
+    EXPECT_EQ(sum_num_pairs(), pairs_after_first * 2u);
+
+    std::filesystem::remove(path);
+}
+
+// End-to-end coverage of ReconcileSequences via the public SaveTo path. To
+// force genuine max(id)+1 behaviour (and catch a regression that reconciled to
+// count(*)+1 or another low value), pre-seed a constant_smiles row with a
+// GAPPED high id (1000) before the save, so count(*) != max(id). After the
+// save, a legacy nextval insert must receive an id strictly greater than 1000 --
+// which is only true if ReconcileSequences seeded the sequence from max(id)+1.
+// The id is read back through a fresh connection AFTER the store scope closes
+// (DuckDB holds the file exclusively while the store is open).
+TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
+    // Analyzer carries a property so SaveTo writes property_name +
+    // compound_property rows: a later legacy property upsert must then reconcile
+    // against those bulk-written rows, not collide with them.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.5);
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Gapped high id so count(*) != max(id): a count(*)+1 reconcile bug
+        // would allocate a small colliding id and fail the id assertion below.
+        store.Execute(
+            "insert into constant_smiles (id, smiles) values (1000, '[*:1]GAP')"
+        );
+        analyzer.SaveTo(store);
+
+        // (a) constant_smiles sequence: a legacy nextval insert; id must be
+        // > 1000 (verified after close) if ReconcileSequences seeded max(id)+1.
+        store.Execute(
+            "insert into constant_smiles (id, smiles) "
+            "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCC')"
+        );
+
+        // (b) compound sequence: a legacy file load allocates compound ids via
+        // nextval. SaveTo wrote compound ids verbatim (1, 2), so the new
+        // compound must land beyond them without a PK collision.
+        const std::filesystem::path smiles_path = TemporarySmilesPath();
+        WriteTextFile(smiles_path, "Clc1ccccc1 chlorobenzene\n");
+        const LoadReport report = store.AddMoleculesFromSmilesFile(smiles_path.string());
+        EXPECT_EQ(report.GetAcceptedCount(), 1u);
+        EXPECT_EQ(store.GetRowCount("compound"), 3u);
+        std::filesystem::remove(smiles_path);
+
+        // (c) compound_property / property_name sequences: a legacy property
+        // upsert on a different property must not collide with the pIC50 rows
+        // SaveTo wrote, and updating an existing pIC50 value must overwrite.
+        store.AddMoleculeProperty(1, "logP", 2.7);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "logP"), 2.7);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "pIC50"), 6.0);
+        store.AddMoleculeProperty(1, "pIC50", 6.25);
+        EXPECT_DOUBLE_EQ(store.GetMoleculeProperty(1, "pIC50"), 6.25);
+    }
+
+    // Read the constant_smiles nextval-allocated id through a fresh connection
+    // now that the store has released the file. It must be strictly greater than
+    // the pre-seeded high id 1000 (proving max(id)+1 reconciliation).
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select id from constant_smiles where smiles = '[*:1]CCCCCCC'");
+        ASSERT_FALSE(result->HasError());
+        const std::uint64_t allocated_id =
+            result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_GT(allocated_id, 1000u);
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

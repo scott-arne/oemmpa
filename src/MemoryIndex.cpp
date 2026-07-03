@@ -10,6 +10,8 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace OEMMPA {
 namespace {
@@ -382,6 +384,7 @@ const std::string kHydrogenVariableSmiles = "[*:1][H]";
 
 void add_candidate_if_allowed(
     std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
+    std::map<CandidateKey, std::unordered_set<std::string>>& seen_by_group,
     const Fragmentation& source_fragmentation,
     const Fragmentation& target_fragmentation,
     const MoleculeRecord& source_record,
@@ -428,29 +431,23 @@ void add_candidate_if_allowed(
         heavy_bond_delta
     );
 
-    std::vector<MatchedPair>& candidates = candidates_by_group[
-        {constant_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()}
-    ];
-    const auto duplicate = std::find_if(
-        candidates.begin(),
-        candidates.end(),
-        [&pair](const MatchedPair& candidate) {
-            return candidate.GetSourceVariableSmiles() == pair.GetSourceVariableSmiles() &&
-                candidate.GetTargetVariableSmiles() == pair.GetTargetVariableSmiles() &&
-                candidate.GetCutCount() == pair.GetCutCount() &&
-                candidate.GetHeavyAtomDelta() == pair.GetHeavyAtomDelta() &&
-                candidate.GetHeavyBondDelta() == pair.GetHeavyBondDelta();
-        }
-    );
-    if (duplicate != candidates.end()) {
+    const std::string dedup_key =
+        pair.GetSourceVariableSmiles() + "\x1f" +
+        pair.GetTargetVariableSmiles() + "\x1f" +
+        std::to_string(pair.GetCutCount()) + "\x1f" +
+        std::to_string(pair.GetHeavyAtomDelta()) + "\x1f" +
+        std::to_string(pair.GetHeavyBondDelta());
+    const CandidateKey group_key{
+        constant_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()};
+    if (!seen_by_group[group_key].insert(dedup_key).second) {
         return;
     }
-
-    candidates.push_back(pair);
+    candidates_by_group[group_key].push_back(pair);
 }
 
 void add_hydrogen_candidates_for_fragmentation(
     std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
+    std::map<CandidateKey, std::unordered_set<std::string>>& seen_by_group,
     const Fragmentation& source_fragmentation,
     const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
     const MemoryIndex& index,
@@ -491,6 +488,7 @@ void add_hydrogen_candidates_for_fragmentation(
 
         add_candidate_if_allowed(
             candidates_by_group,
+            seen_by_group,
             source_fragmentation,
             hydrogen_fragmentation,
             source_record,
@@ -503,6 +501,7 @@ void add_hydrogen_candidates_for_fragmentation(
         if (options.GetSymmetric()) {
             add_candidate_if_allowed(
                 candidates_by_group,
+                seen_by_group,
                 hydrogen_fragmentation,
                 source_fragmentation,
                 hydrogen_record,
@@ -588,15 +587,25 @@ const MoleculeRecord& MemoryIndex::GetMolecule(unsigned int internal_id) const {
 
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
     std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
+    std::map<CandidateKey, std::unordered_set<std::string>> seen_by_group;
     VariableMetricsCache metrics_cache;
     VariableOrderKeyCache order_key_cache;
     const std::map<std::string, std::vector<unsigned int>> molecule_ids_by_smiles =
         molecule_ids_by_canonical_smiles(molecules_);
 
-    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
+    const std::vector<std::string> constants = sorted_constants(constant_buckets_);
+    std::unordered_map<std::string, std::vector<Fragmentation>> sorted_buckets;
+    sorted_buckets.reserve(constants.size());
+    for (const std::string& constant_smiles : constants) {
+        sorted_buckets.emplace(
+            constant_smiles,
+            sorted_fragmentations(constant_buckets_.at(constant_smiles)));
+    }
+
+    for (const std::string& constant_smiles : constants) {
         const std::vector<Fragmentation> fragmentations =
             with_hydrogen_fragmentations(
-                sorted_fragmentations(constant_buckets_.at(constant_smiles)),
+                sorted_buckets.at(constant_smiles),
                 constant_smiles,
                 molecule_ids_by_smiles
             );
@@ -633,6 +642,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                         use_lhs_as_source ? rhs_record : lhs_record;
                     add_candidate_if_allowed(
                         candidates_by_group,
+                        seen_by_group,
                         source_fragmentation,
                         target_fragmentation,
                         source_record,
@@ -648,6 +658,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 // case above ``continue``s), so emit both pair directions.
                 add_candidate_if_allowed(
                     candidates_by_group,
+                    seen_by_group,
                     lhs,
                     rhs,
                     lhs_record,
@@ -658,6 +669,7 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 );
                 add_candidate_if_allowed(
                     candidates_by_group,
+                    seen_by_group,
                     rhs,
                     lhs,
                     rhs_record,
@@ -670,13 +682,11 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
         }
     }
 
-    for (const std::string& constant_smiles : sorted_constants(constant_buckets_)) {
-        const std::vector<Fragmentation> fragmentations =
-            sorted_fragmentations(constant_buckets_.at(constant_smiles));
-
-        for (const Fragmentation& fragmentation : fragmentations) {
+    for (const std::string& constant_smiles : constants) {
+        for (const Fragmentation& fragmentation : sorted_buckets.at(constant_smiles)) {
             add_hydrogen_candidates_for_fragmentation(
                 candidates_by_group,
+                seen_by_group,
                 fragmentation,
                 molecule_ids_by_canonical_smiles_,
                 *this,
@@ -687,6 +697,20 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
     }
 
     std::vector<MatchedPair> pairs;
+    // Reserve a tight upper bound for the result. KeepAll returns every
+    // candidate, so the total candidate count is exact; every other scoring
+    // mode collapses each group to a single selected pair, so one-per-group is
+    // the bound there. Using the mode-appropriate bound avoids reserving raw
+    // storage for every candidate on scored queries that select only a few.
+    if (options.GetScoringOptions().GetMode() == ScoringMode::KeepAll) {
+        std::size_t candidate_total = 0;
+        for (const auto& entry : candidates_by_group) {
+            candidate_total += entry.second.size();
+        }
+        pairs.reserve(candidate_total);
+    } else {
+        pairs.reserve(candidates_by_group.size());
+    }
     for (const auto& entry : candidates_by_group) {
         std::vector<MatchedPair> selected =
             PairScoring::Select(entry.second, options.GetScoringOptions());

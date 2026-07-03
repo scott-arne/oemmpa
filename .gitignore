@@ -303,3 +303,9 @@ python/oemmpa/oemmpa.py
 .idea/
 issues/
 .ruff_cache/
+# Proprietary compound datasets: never commit. Public SureChEMBL slices under
+# tests/data/ are the only committed molecule corpora (see the fixture
+# provenance manifest). This is defense-in-depth against an accidental
+# 'git add -A' staging a local proprietary input.
+dhu_glu_ymin.smi
+*_glu_ymin.smi
