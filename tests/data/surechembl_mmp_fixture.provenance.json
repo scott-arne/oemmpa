@@ -2,6 +2,7 @@
   "source": "SureChEMBL",
   "source_visibility": "public",
   "source_reference": "https://www.surechembl.org/ (public patent-derived compound corpus)",
+  "source_parquet_sha256": "0882e2f670628d6aa9580a2b947684c8d90ac146ef98c596eb03a6bb1e73acb6",
   "sampling": {
     "row_group": 0,
     "filters": ["no salts/disconnected (no '.' in SMILES)", "150 <= mol_weight <= 450"],
