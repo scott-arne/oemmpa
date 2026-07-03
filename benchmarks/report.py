@@ -37,6 +37,40 @@ TIER_BETTER = 0.90
 TIER_WORSE = 1.10
 
 
+# Wall times below this floor are dominated by process/import startup, not
+# algorithm cost. A "vs X" ratio computed from sub-floor times is noise, so it
+# is suppressed and labeled instead.
+RATIO_FLOOR_SECONDS = 0.050
+
+
+def verdict_for_wall_ratio(oemmpa_wall, other_wall):
+    """Return ``(severity, label, ratio)`` comparing another tool to OEMMPA.
+
+    ``ratio`` is ``other_wall / oemmpa_wall`` (how many times OEMMPA's wall time
+    fits into the other tool's), so ``ratio > 1`` means OEMMPA is faster. The
+    ratio is suppressed (``None``, ``"startup-dominated"``) when either wall time
+    is missing or below :data:`RATIO_FLOOR_SECONDS`, because sub-floor times
+    reflect startup rather than algorithm cost.
+
+    :param oemmpa_wall: OEMMPA end-to-end wall seconds, or ``None``.
+    :param other_wall: Comparison tool end-to-end wall seconds, or ``None``.
+    :returns: ``(severity, label, ratio_or_None)``.
+    """
+    if (
+        oemmpa_wall is None
+        or other_wall is None
+        or oemmpa_wall < RATIO_FLOOR_SECONDS
+        or other_wall < RATIO_FLOOR_SECONDS
+    ):
+        return ("neutral", "startup-dominated", None)
+    ratio = other_wall / oemmpa_wall
+    # verdict_for_seconds_ratio takes a current/reference ratio where lower is
+    # better; here oemmpa is "current", other is "reference", so pass
+    # oemmpa/other = 1/ratio.
+    severity, label = verdict_for_seconds_ratio(oemmpa_wall / other_wall)
+    return (severity, label, ratio)
+
+
 def verdict_for_seconds_ratio(ratio: float) -> tuple[str, str]:
     """Return ``(severity, label)`` for a ``current / reference`` seconds ratio.
 

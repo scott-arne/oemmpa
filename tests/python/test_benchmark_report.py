@@ -49,6 +49,32 @@ class TestVerdictForSecondsRatio:
         assert severity == "warning"
 
 
+def test_wall_ratio_below_floor_is_startup_dominated():
+    from benchmarks.report import verdict_for_wall_ratio, RATIO_FLOOR_SECONDS
+    # oemmpa fast but below the 50ms floor -> no ratio, startup-dominated.
+    severity, label, ratio = verdict_for_wall_ratio(0.005, 0.004)
+    assert ratio is None
+    assert label == "startup-dominated"
+    assert severity == "neutral"
+    assert RATIO_FLOOR_SECONDS == 0.050
+
+
+def test_wall_ratio_above_floor_reports_faster():
+    from benchmarks.report import verdict_for_wall_ratio
+    # oemmpa 0.1s, other 0.5s, both above floor -> oemmpa 5x faster than other.
+    severity, label, ratio = verdict_for_wall_ratio(0.1, 0.5)
+    assert ratio == 5.0
+    assert severity == "good"
+    assert "faster" in label
+
+
+def test_wall_ratio_missing_side_is_startup_dominated():
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(0.1, None)
+    assert ratio is None
+    assert label == "startup-dominated"
+
+
 class TestVerdictForEfficiency:
     def test_eighty_percent_or_higher_is_good(self) -> None:
         severity, label = verdict_for_efficiency(0.85)
