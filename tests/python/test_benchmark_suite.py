@@ -532,3 +532,37 @@ def test_subcommand_run_omits_at_a_glance():
     assert result.exit_code == 0, result.output
     assert "Storage" in result.output
     assert "At a glance" not in result.output
+
+
+def test_head_to_head_schema_registered():
+    from benchmarks.benchmark_suite import BENCHMARK_SCHEMAS
+    schema = BENCHMARK_SCHEMAS["head_to_head"]
+    assert schema[:4] == ["benchmark", "dataset", "size", "actual_molecule_count"]
+    assert "vs_rdkit_wall_ratio" in schema
+    assert "vs_mmpdb_wall_ratio" in schema
+    assert "mmpdb_warm_process_seconds" in schema
+
+
+def test_head_to_head_in_default_suite():
+    from benchmarks.benchmark_suite import DEFAULT_SUITE_BENCHMARKS
+    assert "head-to-head" in DEFAULT_SUITE_BENCHMARKS
+
+
+def test_head_to_head_subcommand_smoke(tmp_path):
+    from benchmarks.benchmark_suite import main
+    out = tmp_path / "h2h.csv"
+    # Tiny fixture + size + 1 repeat keeps it fast; exit code 0.
+    code = main(
+        [
+            "head-to-head",
+            "--smiles", "tests/data/surechembl_mmp_fixture.smi",
+            "--sizes", "20",
+            "--repeats", "1",
+            "--output", str(out),
+        ],
+        standalone_mode=False,
+    )
+    assert code == 0
+    assert out.exists()
+    header = out.read_text(encoding="utf-8").splitlines()[0]
+    assert "vs_mmpdb_wall_ratio" in header

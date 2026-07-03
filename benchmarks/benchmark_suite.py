@@ -18,9 +18,11 @@ from rich.console import Console
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from benchmarks.rdkit_compare import compare, run_oemmpa
+    from benchmarks.head_to_head import head_to_head_rows, DEFAULT_HEADTOHEAD_SMILES, DEFAULT_SIZES
     from benchmarks.report import Report
 else:
     from .rdkit_compare import compare, run_oemmpa
+    from .head_to_head import head_to_head_rows, DEFAULT_HEADTOHEAD_SMILES, DEFAULT_SIZES
     from .report import Report
 
 
@@ -125,9 +127,31 @@ BENCHMARK_SCHEMAS = {
         "status",
         "message",
     ],
+    "head_to_head": [
+        "benchmark",
+        "dataset",
+        "size",
+        "actual_molecule_count",
+        "oemmpa_warm_seconds",
+        "rdkit_warm_seconds",
+        "mmpdb_warm_process_seconds",
+        "oemmpa_wall_seconds",
+        "rdkit_wall_seconds",
+        "mmpdb_wall_seconds",
+        "oemmpa_pair_count",
+        "rdkit_pair_count",
+        "mmpdb_pair_count",
+        "rdkit_available",
+        "mmpdb_available",
+        "rdkit_unavailable_reason",
+        "mmpdb_unavailable_reason",
+        "vs_rdkit_wall_ratio",
+        "vs_mmpdb_wall_ratio",
+    ],
 }
 
 DEFAULT_SUITE_BENCHMARKS = (
+    "head-to-head",
     "rdkit-report",
     "thread-scaling",
     "storage",
@@ -823,7 +847,15 @@ def suite_rows(
     rows = []
     skipped = []
     for name in selected:
-        if name == "rdkit-report":
+        if name == "head-to-head":
+            rows.extend(
+                head_to_head_rows(
+                    DEFAULT_HEADTOHEAD_SMILES,
+                    sizes=DEFAULT_SIZES,
+                    repeats=repeats,
+                )
+            )
+        elif name == "rdkit-report":
             rows.extend(rdkit_report_rows([rdkit_smiles_path], repeats=repeats))
         elif name == "thread-scaling":
             rows.extend(thread_scaling_rows(smiles_path, workers=workers, repeats=repeats))
@@ -1050,6 +1082,27 @@ def benchmark_cli(
         skipped=skipped,
         baseline_path=resolved_baseline,
         verbose=verbose,
+    )
+
+
+@benchmark_cli.command("head-to-head")
+@click.option("--smiles", type=click.Path(path_type=Path), help="SMILES corpus (default: committed SureChEMBL slice).")
+@click.option("--sizes", default="100,300,500", show_default=True, help="Comma-separated molecule counts.")
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Number of timed repeats.")
+@click.pass_context
+def head_to_head_command(ctx, smiles, sizes, output, repeats):
+    """Run the three-way OEMMPA/RDKit/MMPDB head-to-head benchmark."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    smiles_path = smiles if smiles is not None else DEFAULT_HEADTOHEAD_SMILES
+    size_list = [int(s) for s in str(sizes).split(",") if s.strip()]
+    rows = head_to_head_rows(smiles_path, sizes=size_list, repeats=repeats)
+    _finish_cli(
+        rows,
+        output=output,
+        baseline_path=ctx.obj["baseline"],
+        verbose=ctx.obj["verbose"],
     )
 
 
