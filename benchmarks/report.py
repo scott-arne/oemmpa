@@ -410,6 +410,11 @@ class RdkitSection(Section):
                 "-",
             )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost. See the Head-to-head "
+            "section for a size-swept comparison.[/dim]"
+        )
         if verbose and self.hydrogen_only:
             console.print(
                 f"[dim]OEMMPA also reported {self.hydrogen_only} hydrogen-only "
@@ -647,6 +652,17 @@ class ThreadScalingSection(Section):
         baseline = next((r for r in scaling if int(_as_float(r.get("workers")) or 0) == 1), None)
         if baseline is None:
             return None
+        baseline_wall = _as_float(baseline.get("wall_seconds"))
+        if baseline_wall is not None and baseline_wall < RATIO_FLOOR_SECONDS:
+            # The 1-worker baseline is dominated by warmup/startup, so speedup
+            # and efficiency numbers derived from it are meaningless.
+            return cls(
+                rows=[],
+                severity="neutral",
+                has_warmup_overrun=False,
+                glance_verdict="baseline too small to measure",
+                headline="baseline too small to measure",
+            )
         baseline_jps = _as_float(baseline.get("jobs_per_second"))
         if not baseline_jps:
             return None
@@ -788,6 +804,10 @@ class StorageSection(Section):
             str(self.property_rows),
         )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost.[/dim]"
+        )
 
     def glance_entry(self):
         if not self.available:
@@ -870,6 +890,10 @@ class _CliSectionBase(Section):
                 cells.append(format_bytes(row["database_bytes"]))
             table.add_row(*cells)
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost.[/dim]"
+        )
 
     def glance_entry(self):
         return GlanceEntry(
@@ -988,6 +1012,11 @@ class MmpdbSection(Section):
                 f"[{color}]{row['verdict_label']}[/{color}]",
             )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost. See the Head-to-head "
+            "section for a size-swept comparison.[/dim]"
+        )
 
     def glance_entry(self):
         return GlanceEntry(

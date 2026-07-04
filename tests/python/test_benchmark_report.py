@@ -385,12 +385,15 @@ class TestRdkitSection:
 
 
 def _scaling_row(*, workers, jobs_per_second, molecule_count=10):
+    # Scale wall_seconds to ensure baseline (workers=1) is above the ratio floor (0.050s).
+    # Use a 10x multiplier so jobs_per_second=100 -> 0.1s wall, which is comfortably above floor.
+    wall_seconds = 10.0 / jobs_per_second if jobs_per_second else 0
     return {
         "benchmark": "thread_scaling",
         "dataset": "fixture",
         "workers": workers,
         "jobs_completed": workers,
-        "wall_seconds": 1.0 / jobs_per_second if jobs_per_second else 0,
+        "wall_seconds": wall_seconds,
         "jobs_per_second": jobs_per_second,
         "molecule_count": molecule_count,
         "pair_count": 0,
@@ -811,3 +814,66 @@ class TestReportFromRows:
         baseline = [_cli_row(command="predict", seconds=0.2)]
         report = Report.from_rows(rows, baseline_rows=baseline, skipped=[], baseline_path=None)
         assert report.sections[-1].title == "Baseline comparison"
+
+
+def test_thread_scaling_baseline_below_floor_is_unmeasurable():
+    from benchmarks.report import ThreadScalingSection
+    # 1-worker baseline wall far below the ratio floor -> "baseline too small".
+    rows = [
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 1,
+         "jobs_completed": 1, "wall_seconds": 0.001, "jobs_per_second": 1000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 2,
+         "jobs_completed": 2, "wall_seconds": 0.0005, "jobs_per_second": 4000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+    ]
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    entry = section.glance_entry()
+    assert "too small" in entry.verdict.lower() or "too small" in entry.headline.lower()
+
+
+def test_cli_workflow_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import CliWorkflowSection
+    rows = [
+        {"benchmark": "cli_workflow", "command": "predict", "dataset": "mmpa_smiles.smi",
+         "returncode": 0, "seconds": 11.5, "stdout_lines": 1, "output_rows": 1, "stderr": ""},
+    ]
+    section = CliWorkflowSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()
+
+
+def test_rdkit_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import RdkitSection
+    rows = [
+        {"benchmark": "rdkit_report", "dataset": "rdkit_reference.smi", "molecule_count": 5,
+         "oemmpa_pair_count": 3, "oemmpa_pair_seconds": 0.01, "oemmpa_workflow_seconds": 0.02,
+         "oemmpa_cold_pair_seconds": 0.03, "rdkit_available": True, "rdkit_pair_count": 3,
+         "rdkit_seconds": 0.02, "rdkit_cold_seconds": 0.04, "oemmpa_hydrogen_expansion_only": 0},
+    ]
+    section = RdkitSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()
+
+
+def test_mmpdb_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import MmpdbSection
+    rows = [
+        {"benchmark": "mmpdb_workflow", "command": "list", "dataset": "d.mmpdb",
+         "available": True, "seconds": 0.5},
+        {"benchmark": "persisted_cli_workflow", "command": "list", "dataset": "d.duckdb",
+         "seconds": 0.4},
+    ]
+    section = MmpdbSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()

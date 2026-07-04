@@ -858,7 +858,13 @@ def suite_rows(
         elif name == "rdkit-report":
             rows.extend(rdkit_report_rows([rdkit_smiles_path], repeats=repeats))
         elif name == "thread-scaling":
-            rows.extend(thread_scaling_rows(smiles_path, workers=workers, repeats=repeats))
+            rows.extend(
+                thread_scaling_rows(
+                    DEFAULT_HEADTOHEAD_SMILES,
+                    workers=workers,
+                    repeats=repeats,
+                )
+            )
         elif name == "storage":
             rows.extend(
                 storage_rows(
