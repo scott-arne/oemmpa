@@ -613,3 +613,36 @@ def test_invoke_benchmark_task_registered():
     import pytest as _pytest
     with _pytest.raises(Exit):
         tasks.benchmark(Context(), head_to_head=False, sizes="20")
+
+
+def test_invoke_benchmark_builds_absolute_quoted_command():
+    import sys
+    from pathlib import Path
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(REPO_ROOT))
+    import tasks
+    from invoke import Context
+
+    class _StubContext(Context):
+        def __init__(self):
+            super().__init__()
+            self.command = None
+            self.env = None
+
+        def run(self, command, **kwargs):
+            self.command = command
+            self.env = kwargs.get("env")
+
+    ctx = _StubContext()
+    # Head-to-head with an output path containing a space — must survive as one
+    # quoted token and use the ABSOLUTE script path.
+    tasks.benchmark(ctx, head_to_head=True, sizes="20", output="out dir/res.csv", repeats=1)
+    assert ctx.command is not None
+    # Absolute script path (not a bare relative "benchmarks/benchmark_suite.py").
+    assert str((tasks.PROJECT_ROOT / "benchmarks" / "benchmark_suite.py")) in ctx.command
+    # The space-containing output path is preserved as a single shell token.
+    import shlex
+    tokens = shlex.split(ctx.command)
+    assert "out dir/res.csv" in tokens
+    assert "head-to-head" in tokens
+    assert "--sizes" in tokens and "20" in tokens

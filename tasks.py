@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -234,7 +235,8 @@ def benchmark(c, head_to_head=False, sizes=None, smiles=None, output=None, repea
     interpreter_bin = str(Path(sys.executable).parent)
     env["PATH"] = os.pathsep.join([interpreter_bin, env.get("PATH", "")])
 
-    argv = ["benchmarks/benchmark_suite.py"]
+    script = str(PROJECT_ROOT / "benchmarks" / "benchmark_suite.py")
+    argv = [sys.executable, script]
     if head_to_head:
         argv.append("head-to-head")
         if sizes is not None:
@@ -246,4 +248,4 @@ def benchmark(c, head_to_head=False, sizes=None, smiles=None, output=None, repea
     if repeats is not None:
         argv += ["--repeats", str(repeats)]
 
-    c.run(f"{sys.executable} " + " ".join(argv), env=env, pty=False)
+    c.run(shlex.join(argv), env=env, pty=False)
