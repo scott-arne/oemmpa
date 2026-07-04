@@ -14,8 +14,62 @@ TEST(QueryOptionsTest, DefaultsMatchTaskApi) {
 
     EXPECT_EQ(options.GetMaxHeavyAtomChange(), -1);
     EXPECT_DOUBLE_EQ(options.GetMaxRelativeHeavyAtomChange(), -1.0);
+    EXPECT_EQ(options.GetMaxVariableHeavies(), -1);
+    EXPECT_EQ(options.GetMinVariableHeavies(), -1);
+    EXPECT_DOUBLE_EQ(options.GetMaxVariableRatio(), -1.0);
+    EXPECT_DOUBLE_EQ(options.GetMinVariableRatio(), -1.0);
     EXPECT_TRUE(options.GetSymmetric());
     EXPECT_EQ(options.GetScoringOptions().GetMode(), ScoringMode::KeepAll);
+}
+
+TEST(QueryOptionsTest, StoresVariableFragmentBounds) {
+    QueryOptions options;
+
+    options.SetMaxVariableHeavies(10);
+    options.SetMinVariableHeavies(1);
+    options.SetMaxVariableRatio(0.99);
+    options.SetMinVariableRatio(0.1);
+
+    EXPECT_EQ(options.GetMaxVariableHeavies(), 10);
+    EXPECT_EQ(options.GetMinVariableHeavies(), 1);
+    EXPECT_DOUBLE_EQ(options.GetMaxVariableRatio(), 0.99);
+    EXPECT_DOUBLE_EQ(options.GetMinVariableRatio(), 0.1);
+}
+
+TEST(QueryOptionsTest, AcceptsVariableFragmentSentinels) {
+    QueryOptions options;
+
+    options.SetMaxVariableHeavies(-1);
+    EXPECT_EQ(options.GetMaxVariableHeavies(), -1);
+    options.SetMaxVariableHeavies(0);
+    EXPECT_EQ(options.GetMaxVariableHeavies(), 0);
+
+    options.SetMinVariableRatio(-1.0);
+    EXPECT_DOUBLE_EQ(options.GetMinVariableRatio(), -1.0);
+    options.SetMinVariableRatio(0.0);
+    EXPECT_DOUBLE_EQ(options.GetMinVariableRatio(), 0.0);
+}
+
+TEST(QueryOptionsTest, RejectsInvalidVariableFragmentBounds) {
+    QueryOptions options;
+
+    EXPECT_THROW(options.SetMaxVariableHeavies(-2), InvalidQueryError);
+    EXPECT_THROW(options.SetMinVariableHeavies(-2), InvalidQueryError);
+    EXPECT_THROW(options.SetMaxVariableRatio(-0.5), InvalidQueryError);
+    EXPECT_THROW(options.SetMinVariableRatio(-0.5), InvalidQueryError);
+    EXPECT_THROW(
+        options.SetMaxVariableRatio(std::numeric_limits<double>::quiet_NaN()),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        options.SetMinVariableRatio(std::numeric_limits<double>::infinity()),
+        InvalidQueryError
+    );
+    // Rejected calls must not mutate state.
+    EXPECT_EQ(options.GetMaxVariableHeavies(), -1);
+    EXPECT_EQ(options.GetMinVariableHeavies(), -1);
+    EXPECT_DOUBLE_EQ(options.GetMaxVariableRatio(), -1.0);
+    EXPECT_DOUBLE_EQ(options.GetMinVariableRatio(), -1.0);
 }
 
 TEST(QueryOptionsTest, StoresRequiredTaskApiValues) {

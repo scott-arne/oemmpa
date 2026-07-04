@@ -337,6 +337,53 @@ bool passes_atom_delta_filters(
     return true;
 }
 
+// Apply MMPDB-style variable-fragment size bounds to a single fragment. |V| is
+// the variable fragment's heavy-atom count; the ratio is |V| / (whole-molecule
+// heavy atoms). MMPDB filters each fragment independently at index time, so the
+// caller applies this to both the source and target fragments and keeps a pair
+// only when both pass. A zero-heavy molecule cannot yield a finite ratio, so a
+// ratio bound rejects it (the fragment carries no comparable variable region).
+bool passes_variable_fragment_filters(
+    const QueryOptions& options,
+    unsigned int variable_heavy_atom_count,
+    unsigned int molecule_heavy_atom_count
+) {
+    const int max_variable_heavies = options.GetMaxVariableHeavies();
+    if (
+        max_variable_heavies >= 0 &&
+        static_cast<long long>(variable_heavy_atom_count) > max_variable_heavies
+    ) {
+        return false;
+    }
+
+    const int min_variable_heavies = options.GetMinVariableHeavies();
+    if (
+        min_variable_heavies >= 0 &&
+        static_cast<long long>(variable_heavy_atom_count) < min_variable_heavies
+    ) {
+        return false;
+    }
+
+    const double max_variable_ratio = options.GetMaxVariableRatio();
+    const double min_variable_ratio = options.GetMinVariableRatio();
+    if (max_variable_ratio >= 0.0 || min_variable_ratio >= 0.0) {
+        if (molecule_heavy_atom_count == 0) {
+            return false;
+        }
+        const double ratio =
+            static_cast<double>(variable_heavy_atom_count) /
+            static_cast<double>(molecule_heavy_atom_count);
+        if (max_variable_ratio >= 0.0 && ratio > max_variable_ratio) {
+            return false;
+        }
+        if (min_variable_ratio >= 0.0 && ratio < min_variable_ratio) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool compatible_fragmentation_topology(
     const Fragmentation& source_fragmentation,
     const Fragmentation& target_fragmentation,
@@ -418,6 +465,21 @@ void add_candidate_if_allowed(
         options,
         source_record.GetHeavyAtomCount()
     )) {
+        return;
+    }
+
+    // MMPDB-style variable-fragment size bounds apply to each fragment
+    // independently, so both sides must pass for the pair to survive.
+    if (!passes_variable_fragment_filters(
+            options,
+            source_variable_metrics.heavy_atom_count,
+            source_record.GetHeavyAtomCount()
+        ) ||
+        !passes_variable_fragment_filters(
+            options,
+            target_variable_metrics.heavy_atom_count,
+            target_record.GetHeavyAtomCount()
+        )) {
         return;
     }
 

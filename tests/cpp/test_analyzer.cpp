@@ -111,6 +111,69 @@ TEST(AnalyzerTest, DefaultMethodIsFragmentation) {
     EXPECT_EQ(analyzer.GetMethodName(), "fragmentation");
 }
 
+TEST(AnalyzerTest, MaxVariableHeaviesFiltersLargerVariableFragments) {
+    // Ethylbenzene -> propylbenzene shares the phenyl constant; the variable
+    // fragments are [*:1]CC (2 heavies) and [*:1]CCC (3 heavies). A pair
+    // survives only when BOTH fragments satisfy the bound, matching MMPDB's
+    // per-fragment filter.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    ASSERT_EQ(analyzer.GetPairs(asymmetric).size(), 1U);
+
+    QueryOptions keep_three;
+    keep_three.SetSymmetric(false);
+    keep_three.SetMaxVariableHeavies(3);
+    EXPECT_EQ(analyzer.GetPairs(keep_three).size(), 1U);
+
+    QueryOptions drop_three;
+    drop_three.SetSymmetric(false);
+    drop_three.SetMaxVariableHeavies(2);
+    EXPECT_TRUE(analyzer.GetPairs(drop_three).empty());
+}
+
+TEST(AnalyzerTest, MinVariableHeaviesFiltersSmallerVariableFragments) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions keep_two;
+    keep_two.SetSymmetric(false);
+    keep_two.SetMinVariableHeavies(2);
+    EXPECT_EQ(analyzer.GetPairs(keep_two).size(), 1U);
+
+    // The source fragment [*:1]CC has 2 heavies, so requiring >= 3 drops it.
+    QueryOptions require_three;
+    require_three.SetSymmetric(false);
+    require_three.SetMinVariableHeavies(3);
+    EXPECT_TRUE(analyzer.GetPairs(require_three).empty());
+}
+
+TEST(AnalyzerTest, MaxVariableRatioFiltersLargeVariableRegions) {
+    // Ethylbenzene has 8 heavy atoms; [*:1]CC is 2, ratio 0.25. Propylbenzene
+    // has 9 heavy atoms; [*:1]CCC is 3, ratio 0.333. A max ratio of 0.3 drops
+    // the pair (the target side exceeds it); 0.4 keeps it.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions keep;
+    keep.SetSymmetric(false);
+    keep.SetMaxVariableRatio(0.4);
+    EXPECT_EQ(analyzer.GetPairs(keep).size(), 1U);
+
+    QueryOptions drop;
+    drop.SetSymmetric(false);
+    drop.SetMaxVariableRatio(0.3);
+    EXPECT_TRUE(analyzer.GetPairs(drop).empty());
+}
+
 TEST(AnalyzerTest, ExplicitFragmentationMethodUsesCommonResultModel) {
     Analyzer analyzer("fragmentation");
     analyzer.AddMolecule("Cc1ccccc1", "tol");

@@ -42,6 +42,48 @@ public:
     /// \throws InvalidQueryError if value is not finite or is negative and not
     ///         the -1 sentinel.
     void SetMaxRelativeHeavyAtomChange(double value);
+
+    int GetMaxVariableHeavies() const;
+    /// \brief Set the maximum variable-fragment heavy-atom count.
+    ///
+    /// Bounds |V| for each side of a pair, matching MMPDB's
+    /// ``--max-variable-heavies``. A pair is kept only when both the source and
+    /// target variable fragments satisfy the bound.
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is less than -1.
+    void SetMaxVariableHeavies(int value);
+    int GetMinVariableHeavies() const;
+    /// \brief Set the minimum variable-fragment heavy-atom count.
+    ///
+    /// Bounds |V| for each side of a pair, matching MMPDB's
+    /// ``--min-variable-heavies``.
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is less than -1.
+    void SetMinVariableHeavies(int value);
+    double GetMaxVariableRatio() const;
+    /// \brief Set the maximum variable-fragment heavy-atom ratio.
+    ///
+    /// The ratio is |V| / (whole-molecule heavy atoms) for each side, matching
+    /// MMPDB's ``--max-variable-ratio``. A pair is kept only when both sides
+    /// satisfy the bound. The ratio lies in [0, 1].
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is not finite or is negative and not
+    ///         the -1 sentinel.
+    void SetMaxVariableRatio(double value);
+    double GetMinVariableRatio() const;
+    /// \brief Set the minimum variable-fragment heavy-atom ratio.
+    ///
+    /// The ratio is |V| / (whole-molecule heavy atoms) for each side, matching
+    /// MMPDB's ``--min-variable-ratio``.
+    ///
+    /// \param value Non-negative limit, or -1 for no limit.
+    /// \throws InvalidQueryError if value is not finite or is negative and not
+    ///         the -1 sentinel.
+    void SetMinVariableRatio(double value);
+
     bool GetSymmetric() const;
     void SetSymmetric(bool value);
 
@@ -51,6 +93,10 @@ public:
 private:
     int max_heavy_atom_change_ = -1;
     double max_relative_heavy_atom_change_ = -1.0;
+    int max_variable_heavies_ = -1;
+    int min_variable_heavies_ = -1;
+    double max_variable_ratio_ = -1.0;
+    double min_variable_ratio_ = -1.0;
     bool symmetric_ = true;
     ScoringOptions scoring_options_;
 };
