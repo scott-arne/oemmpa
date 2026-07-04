@@ -137,6 +137,48 @@ void QueryOptions::SetSymmetric(bool value) {
     symmetric_ = value;
 }
 
+bool QueryOptions::AllowsVariableFragment(
+    unsigned int variable_heavy_atoms,
+    unsigned int molecule_heavy_atoms
+) const {
+    if (
+        max_variable_heavies_ >= 0 &&
+        static_cast<long long>(variable_heavy_atoms) > max_variable_heavies_
+    ) {
+        return false;
+    }
+    if (
+        min_variable_heavies_ >= 0 &&
+        static_cast<long long>(variable_heavy_atoms) < min_variable_heavies_
+    ) {
+        return false;
+    }
+
+    if (max_variable_ratio_ >= 0.0 || min_variable_ratio_ >= 0.0) {
+        // A zero-heavy molecule has no comparable variable region under a ratio
+        // bound, so reject rather than divide by zero.
+        if (molecule_heavy_atoms == 0) {
+            return false;
+        }
+        const double ratio =
+            static_cast<double>(variable_heavy_atoms) /
+            static_cast<double>(molecule_heavy_atoms);
+        if (max_variable_ratio_ >= 0.0 && ratio > max_variable_ratio_) {
+            return false;
+        }
+        if (min_variable_ratio_ >= 0.0 && ratio < min_variable_ratio_) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool QueryOptions::HasVariableFragmentBounds() const {
+    return max_variable_heavies_ >= 0 || min_variable_heavies_ >= 0 ||
+        max_variable_ratio_ >= 0.0 || min_variable_ratio_ >= 0.0;
+}
+
 void QueryOptions::SetScoringOptions(const ScoringOptions& scoring_options) {
     scoring_options_ = scoring_options;
 }

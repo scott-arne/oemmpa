@@ -87,6 +87,33 @@ public:
     bool GetSymmetric() const;
     void SetSymmetric(bool value);
 
+    /// \brief Whether a single variable fragment passes the variable-size bounds.
+    ///
+    /// This is the single source of truth for the four variable-fragment
+    /// bounds, shared by the in-memory query path and the DuckDB-backed read
+    /// path so both backends filter identically. It matches MMPDB's
+    /// per-fragment ``allow_fragment``: a pair is kept only when both its source
+    /// and target variable fragments are allowed. A zero-heavy molecule under an
+    /// active ratio bound is rejected (no comparable variable region).
+    ///
+    /// \param variable_heavy_atoms |V|, the variable fragment's heavy-atom count.
+    /// \param molecule_heavy_atoms The whole (cleaned) molecule's heavy-atom
+    ///        count, used as the ratio denominator.
+    /// \returns ``true`` when the fragment satisfies every active bound.
+    bool AllowsVariableFragment(
+        unsigned int variable_heavy_atoms,
+        unsigned int molecule_heavy_atoms
+    ) const;
+
+    /// \brief Whether any variable-fragment bound is active (not the -1 sentinel).
+    ///
+    /// Lets callers skip the (SMILES-parsing) variable-fragment filter pass
+    /// entirely when no bound is set, so the common unfiltered query pays no
+    /// cost.
+    ///
+    /// \returns ``true`` when at least one of the four variable bounds is set.
+    bool HasVariableFragmentBounds() const;
+
     void SetScoringOptions(const ScoringOptions& scoring_options);
     const ScoringOptions& GetScoringOptions() const;
 

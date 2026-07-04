@@ -337,53 +337,6 @@ bool passes_atom_delta_filters(
     return true;
 }
 
-// Apply MMPDB-style variable-fragment size bounds to a single fragment. |V| is
-// the variable fragment's heavy-atom count; the ratio is |V| / (whole-molecule
-// heavy atoms). MMPDB filters each fragment independently at index time, so the
-// caller applies this to both the source and target fragments and keeps a pair
-// only when both pass. A zero-heavy molecule cannot yield a finite ratio, so a
-// ratio bound rejects it (the fragment carries no comparable variable region).
-bool passes_variable_fragment_filters(
-    const QueryOptions& options,
-    unsigned int variable_heavy_atom_count,
-    unsigned int molecule_heavy_atom_count
-) {
-    const int max_variable_heavies = options.GetMaxVariableHeavies();
-    if (
-        max_variable_heavies >= 0 &&
-        static_cast<long long>(variable_heavy_atom_count) > max_variable_heavies
-    ) {
-        return false;
-    }
-
-    const int min_variable_heavies = options.GetMinVariableHeavies();
-    if (
-        min_variable_heavies >= 0 &&
-        static_cast<long long>(variable_heavy_atom_count) < min_variable_heavies
-    ) {
-        return false;
-    }
-
-    const double max_variable_ratio = options.GetMaxVariableRatio();
-    const double min_variable_ratio = options.GetMinVariableRatio();
-    if (max_variable_ratio >= 0.0 || min_variable_ratio >= 0.0) {
-        if (molecule_heavy_atom_count == 0) {
-            return false;
-        }
-        const double ratio =
-            static_cast<double>(variable_heavy_atom_count) /
-            static_cast<double>(molecule_heavy_atom_count);
-        if (max_variable_ratio >= 0.0 && ratio > max_variable_ratio) {
-            return false;
-        }
-        if (min_variable_ratio >= 0.0 && ratio < min_variable_ratio) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 bool compatible_fragmentation_topology(
     const Fragmentation& source_fragmentation,
     const Fragmentation& target_fragmentation,
@@ -469,23 +422,31 @@ void add_candidate_if_allowed(
     }
 
     // MMPDB-style variable-fragment size bounds apply to each fragment
-    // independently, so both sides must pass for the pair to survive.
+    // independently (QueryOptions::AllowsVariableFragment is the shared
+    // predicate used by both the in-memory and DuckDB-backed query paths), so
+    // BOTH sides must pass for the pair to survive.
     //
-    // NOTE: this also gates the synthesized [*:1][H] hydrogen fragment (|V| = 0
-    // heavy atoms), which flows through this same path. Under a MAX bound (the
-    // shipped `--max-variable-heavies 10` benchmark config) |V| = 0 always
-    // passes, so hydrogen pairs are unaffected and behavior matches MMPDB. Under
-    // a MIN bound (`--min-variable-heavies >= 1` or `--min-variable-ratio > 0`)
-    // the hydrogen fragment is dropped here, which diverges from MMPDB — MMPDB
-    // appends [*][H] matches outside its allow_fragment filter, so it keeps them.
-    // This only affects explicit min bounds, not the default/benchmark path.
-    if (!passes_variable_fragment_filters(
-            options,
+    // The synthesized [*:1][H] hydrogen fragment is the one exception: MMPDB
+    // appends its [*][H] matches OUTSIDE the allow_fragment filter, so that
+    // pseudo-fragment is never size-gated (a min bound must not drop an
+    // H<->heavy substitution just because |V| = 0 for the H side). The HEAVY
+    // side of a hydrogen pair is still gated normally — verified against MMPDB:
+    // for [*:1]C >> [*:1][H], `--min-variable-heavies 1` keeps the pair but
+    // `--min-variable-heavies 2` drops it (the C side has |V| = 1). So the
+    // exemption is per-fragment, applied only to the [H] side, not the pair.
+    const bool source_is_hydrogen =
+        source_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
+    const bool target_is_hydrogen =
+        target_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
+    if (!source_is_hydrogen &&
+        !options.AllowsVariableFragment(
             source_variable_metrics.heavy_atom_count,
             source_record.GetHeavyAtomCount()
-        ) ||
-        !passes_variable_fragment_filters(
-            options,
+        )) {
+        return;
+    }
+    if (!target_is_hydrogen &&
+        !options.AllowsVariableFragment(
             target_variable_metrics.heavy_atom_count,
             target_record.GetHeavyAtomCount()
         )) {

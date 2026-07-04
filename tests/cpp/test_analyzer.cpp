@@ -154,6 +154,35 @@ TEST(AnalyzerTest, MinVariableHeaviesFiltersSmallerVariableFragments) {
     EXPECT_TRUE(analyzer.GetPairs(require_three).empty());
 }
 
+TEST(AnalyzerTest, HydrogenFragmentIsExemptFromVariableMinBounds) {
+    // Toluene -> benzene is an H substitution: the variable fragments are
+    // [*:1]C (|V| = 1) and the synthesized [*:1][H] (|V| = 0). MMPDB appends
+    // [H] matches outside its allow_fragment filter, so a min bound must not
+    // drop the pair on account of the H side; only the heavy C side is gated.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.Analyze();
+
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    ASSERT_FALSE(analyzer.GetPairs(asymmetric).empty());
+
+    // min = 1: the [H] side (|V| = 0) is exempt and the C side (|V| = 1)
+    // passes, so the pair survives.
+    QueryOptions min_one;
+    min_one.SetSymmetric(false);
+    min_one.SetMinVariableHeavies(1);
+    EXPECT_FALSE(analyzer.GetPairs(min_one).empty());
+
+    // min = 2: the heavy C side (|V| = 1) fails, so the pair is dropped -- the
+    // hydrogen exemption is per-fragment, it does not save the whole pair.
+    QueryOptions min_two;
+    min_two.SetSymmetric(false);
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_TRUE(analyzer.GetPairs(min_two).empty());
+}
+
 TEST(AnalyzerTest, MaxVariableRatioFiltersLargeVariableRegions) {
     // Ethylbenzene has 8 heavy atoms; [*:1]CC is 2, ratio 0.25. Propylbenzene
     // has 9 heavy atoms; [*:1]CCC is 3, ratio 0.333. A max ratio of 0.3 drops
