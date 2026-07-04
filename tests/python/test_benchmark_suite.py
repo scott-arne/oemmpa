@@ -566,3 +566,33 @@ def test_head_to_head_subcommand_smoke(tmp_path):
     assert out.exists()
     header = out.read_text(encoding="utf-8").splitlines()[0]
     assert "vs_mmpdb_wall_ratio" in header
+
+
+def test_regression_check_keeps_head_to_head_sizes_distinct(tmp_path):
+    import csv
+
+    from benchmarks.benchmark_suite import regression_check_rows
+
+    def write(path, s100_wall, s300_wall):
+        rows = [
+            {"benchmark": "head_to_head", "dataset": "d.smi", "size": 100,
+             "oemmpa_wall_seconds": s100_wall},
+            {"benchmark": "head_to_head", "dataset": "d.smi", "size": 300,
+             "oemmpa_wall_seconds": s300_wall},
+        ]
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(
+                fh, fieldnames=["benchmark", "dataset", "size", "oemmpa_wall_seconds"]
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+    base = tmp_path / "base.csv"
+    cur = tmp_path / "cur.csv"
+    write(base, 1.0, 1.0)
+    write(cur, 1.0, 5.0)  # size 100 unchanged; size 300 is 5x slower
+    report = regression_check_rows(str(base), str(cur), max_seconds_ratio=1.25)
+    by_size = {r["command"]: r for r in report if r["metric"] == "oemmpa_wall_seconds"}
+    assert set(by_size) == {"size=100", "size=300"}
+    assert by_size["size=100"]["status"] == "pass"
+    assert by_size["size=300"]["status"] == "regression"

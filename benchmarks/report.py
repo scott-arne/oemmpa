@@ -877,12 +877,13 @@ class MmpdbSection(Section):
         )
 
 
-def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, ...]:
     return (
         str(row.get("benchmark", "")),
         str(row.get("dataset", "")),
         str(row.get("command", "")),
         str(row.get("workers", "")),
+        str(row.get("size", "")),
     )
 
 
@@ -968,7 +969,7 @@ class BaselineDeltaSection(Section):
                 )
                 continue
             for column, baseline_value in baseline_row.items():
-                if column in {"benchmark", "dataset", "command", "workers", "status", "reason"}:
+                if column in {"benchmark", "dataset", "command", "workers", "status", "reason", "size"}:
                     continue
                 current_value = current_row.get(column)
                 baseline_num = _as_float(baseline_value)
@@ -1045,7 +1046,7 @@ def _worst(current: str, candidate: str) -> str:
     return current if _SEVERITY_RANK[current] >= _SEVERITY_RANK[candidate] else candidate
 
 
-def _format_where(key: tuple[str, str, str, str]) -> str:
+def _format_where(key: tuple[str, ...]) -> str:
     parts = [p for p in key if p]
     return " / ".join(parts) if parts else "(unknown)"
 

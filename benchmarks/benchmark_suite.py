@@ -1476,7 +1476,7 @@ def _read_csv_rows(path):
 
 
 def _regression_row_key(row):
-    return tuple(row.get(column, "") for column in ("benchmark", "dataset", "command", "workers"))
+    return tuple(row.get(column, "") for column in ("benchmark", "dataset", "command", "workers", "size"))
 
 
 def _regression_metric_columns(baseline_row, current_row):
@@ -1527,6 +1527,8 @@ def _regression_report_row(
     command = source_row.get("command", "")
     if not command and source_row.get("workers"):
         command = f"workers={source_row['workers']}"
+    elif not command and source_row.get("size") not in (None, ""):
+        command = f"size={source_row['size']}"
     return {
         "benchmark": source_row.get("benchmark", ""),
         "dataset": source_row.get("dataset", ""),
