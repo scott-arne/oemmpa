@@ -297,14 +297,28 @@ print(store.row_count("compound"), store.row_count("pair"))
 
 ## Benchmarks
 
-The benchmark suite writes CSV rows for repeated analysis throughput, DuckDB
-storage loading, and command-line runs:
+Run the full benchmark suite with one command:
+
+```bash
+invoke benchmark
+```
+
+Or run just the flagship three-way head-to-head comparison:
+
+```bash
+invoke benchmark --head-to-head
+```
+
+The benchmark suite writes CSV rows for OEMMPA vs RDKit vs MMPDB comparison,
+repeated analysis throughput, DuckDB storage loading, and command-line runs.
+
+For direct subcommand control or custom datasets, use the raw script:
 
 ```bash
 python -m benchmarks.benchmark_suite thread-scaling tests/data/mmpa_smiles.smi
 ```
 
-See [docs/benchmarks.md](docs/benchmarks.md) for the benchmark commands.
+See [docs/benchmarks.md](docs/benchmarks.md) for detailed benchmark documentation.
 
 ## Project Layout
 

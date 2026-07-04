@@ -596,3 +596,20 @@ def test_regression_check_keeps_head_to_head_sizes_distinct(tmp_path):
     assert set(by_size) == {"size=100", "size=300"}
     assert by_size["size=100"]["status"] == "pass"
     assert by_size["size=300"]["status"] == "regression"
+
+
+def test_invoke_benchmark_task_registered():
+    import sys
+    from pathlib import Path
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(REPO_ROOT))
+    import tasks
+    from invoke.tasks import Task
+    assert isinstance(tasks.benchmark, Task)
+    # The full suite must reject head-to-head-only options rather than build a
+    # bad argv.
+    from invoke import Context
+    from invoke.exceptions import Exit
+    import pytest as _pytest
+    with _pytest.raises(Exit):
+        tasks.benchmark(Context(), head_to_head=False, sizes="20")

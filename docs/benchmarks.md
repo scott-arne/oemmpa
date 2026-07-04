@@ -8,6 +8,32 @@ developer machine or benchmark job.
 ## Full Suite
 
 ```bash
+invoke benchmark
+```
+
+The one-command entry point for the full benchmark suite. This sets up the
+environment, PYTHONPATH, and PATH automatically for the current worktree and
+runs all default benchmarks: head-to-head comparison, RDKit comparison, thread
+scaling, storage loading, stateless CLI workflows, persisted CLI workflows, and
+the MMPDB baseline when a local MMPDB checkout is available.
+
+Flags:
+
+- `--head-to-head` - run only the flagship three-way head-to-head benchmark.
+- `--sizes N,N,...` - molecule counts for head-to-head (requires `--head-to-head`).
+- `--smiles PATH` - override SMILES corpus path for head-to-head (requires `--head-to-head`).
+- `--output PATH` - write benchmark rows to a CSV.
+- `--repeats N` - number of timed repeats.
+
+Example:
+
+```bash
+invoke benchmark --head-to-head --sizes 100,300,500 --repeats 3 --output h2h.csv
+```
+
+Raw invocation (when you need full subcommand control):
+
+```bash
 python benchmarks/benchmark_suite.py
 ```
 
@@ -48,6 +74,54 @@ The same benchmarks remain available as subcommands when you need custom
 input files or command-specific options; shared flags (`--baseline`,
 `--output`, `--verbose`, `--repeats`) are inherited from the
 top-level group.
+
+## Head-to-head (RDKit + MMPDB)
+
+```bash
+invoke benchmark --head-to-head
+```
+
+The flagship three-way comparison running OEMMPA, RDKit, and MMPDB against the
+same molecule corpus at multiple size points. This benchmark uses warm algorithm
+time for OEMMPA and RDKit, warmed-process time for MMPDB, and end-to-end wall
+time for all three tools to provide a comprehensive performance picture.
+
+By default it runs a size sweep at 100, 300, and 500 molecules using the
+public SureChEMBL corpus subset included in the repository. Override the sizes
+with `--sizes N,N,...` or the corpus path with `--smiles PATH`.
+
+Raw invocation:
+
+```bash
+python benchmarks/benchmark_suite.py head-to-head
+```
+
+Columns:
+
+- **Warm timings**: `oemmpa_warm_seconds`, `rdkit_warm_seconds`, and
+  `mmpdb_warm_process_seconds` measure the core algorithm time excluding
+  process/module startup. OEMMPA and RDKit timings exclude startup; MMPDB timing
+  is warmed-process time (excluding the subprocess spawn, but including the
+  mmpdb module import within that process).
+- **Wall timings**: `oemmpa_wall_seconds`, `rdkit_wall_seconds`, and
+  `mmpdb_wall_seconds` measure end-to-end wall time for each tool. OEMMPA and
+  RDKit wall times include in-process startup; MMPDB wall time includes the full
+  subprocess launch.
+- **Pair counts**: `oemmpa_pair_count`, `rdkit_pair_count`, and
+  `mmpdb_pair_count` report the total matched pairs found by each tool.
+- **Ratios**: `vs_rdkit_wall_ratio` and `vs_mmpdb_wall_ratio` compare OEMMPA's
+  wall time to RDKit and MMPDB. Ratios are shown as "X.Xx faster/slower".
+
+For startup-dominated sizes where absolute wall times are under 50ms, ratios
+become unreliable (a 20ms vs 40ms difference looks like "2x slower" but
+represents trivia on any realistic workload). The report suppresses ratios for
+these cases and prints a dim dash instead.
+
+Example with custom corpus and sizes:
+
+```bash
+invoke benchmark --head-to-head --smiles my-molecules.smi --sizes 50,100,200 --repeats 5
+```
 
 ## Reference Pair Baseline
 
