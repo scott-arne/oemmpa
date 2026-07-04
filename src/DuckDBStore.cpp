@@ -7,6 +7,8 @@
 
 #include <duckdb.hpp>
 
+#include <oechem.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -966,6 +968,103 @@ bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
         rhs.GetHeavyAtomDelta(),
         rhs.GetHeavyBondDelta()
     );
+}
+
+// The synthesized hydrogen pseudo-fragment. MMPDB (and the in-memory query
+// path) exempt this fragment from variable-size bounds, so the store must too.
+const char* const kHydrogenVariableSmiles = "[*:1][H]";
+
+// Heavy-atom count of a variable SMILES, counted the same way as the in-memory
+// path (OEChem OEIsHeavy). Cached by SMILES so the common case of many pairs
+// sharing a variable fragment parses each distinct fragment once.
+unsigned int variable_heavy_atom_count(
+    const std::string& variable_smiles,
+    std::unordered_map<std::string, unsigned int>& cache
+) {
+    const auto cached = cache.find(variable_smiles);
+    if (cached != cache.end()) {
+        return cached->second;
+    }
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
+        throw StorageError("invalid variable SMILES in store: " + variable_smiles);
+    }
+    const unsigned int count = OEChem::OECount(mol, OEChem::OEIsHeavy());
+    cache.emplace(variable_smiles, count);
+    return count;
+}
+
+// Apply the variable-fragment size bounds to already-materialized store pairs,
+// using the SAME QueryOptions::AllowsVariableFragment predicate as the
+// in-memory MemoryIndex path so both backends filter identically. |V| is
+// computed from the pair's variable SMILES; the ratio denominator is the whole
+// molecule's heavy count, fetched for the referenced compounds in one query.
+// The [*:1][H] pseudo-fragment is exempt per side (matching MMPDB), so a min
+// bound never drops an H<->heavy substitution.
+std::vector<MatchedPair> filter_pairs_by_variable_bounds(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::vector<MatchedPair> pairs,
+    const QueryOptions& options
+) {
+    if (!options.HasVariableFragmentBounds() || pairs.empty()) {
+        return pairs;
+    }
+
+    // Fetch whole-molecule heavy counts for every referenced compound in one
+    // query (mirrors read_pairs_with_properties' batched-lookup pattern).
+    std::set<std::uint64_t> compound_ids;
+    for (const MatchedPair& pair : pairs) {
+        compound_ids.insert(pair.GetSourceMoleculeId());
+        compound_ids.insert(pair.GetTargetMoleculeId());
+    }
+    std::ostringstream id_list;
+    bool first = true;
+    for (const std::uint64_t compound_id : compound_ids) {
+        if (!first) {
+            id_list << ",";
+        }
+        id_list << compound_id;
+        first = false;
+    }
+    const std::string heavies_sql =
+        "select id, clean_num_heavies from compound where id in (" +
+        id_list.str() + ")";
+    std::unique_ptr<duckdb::QueryResult> heavies_result =
+        connection->Query(heavies_sql);
+    if (!heavies_result) {
+        throw StorageError("DuckDB query returned no result: " + heavies_sql);
+    }
+    require_success(*heavies_result, heavies_sql);
+    std::unordered_map<std::uint64_t, unsigned int> heavies_by_compound;
+    for (const auto& row : *heavies_result) {
+        heavies_by_compound.emplace(
+            row.GetValue<std::uint64_t>(0),
+            static_cast<unsigned int>(row.GetValue<std::uint32_t>(1)));
+    }
+
+    std::unordered_map<std::string, unsigned int> variable_heavy_cache;
+    const auto side_allowed = [&](const std::string& variable_smiles,
+                                  std::uint64_t molecule_id) {
+        if (variable_smiles == kHydrogenVariableSmiles) {
+            return true;  // pseudo-fragment is exempt, matching MMPDB
+        }
+        const auto heavies = heavies_by_compound.find(molecule_id);
+        const unsigned int molecule_heavies =
+            heavies == heavies_by_compound.end() ? 0U : heavies->second;
+        return options.AllowsVariableFragment(
+            variable_heavy_atom_count(variable_smiles, variable_heavy_cache),
+            molecule_heavies);
+    };
+
+    std::vector<MatchedPair> kept;
+    kept.reserve(pairs.size());
+    for (MatchedPair& pair : pairs) {
+        if (side_allowed(pair.GetSourceVariableSmiles(), pair.GetSourceMoleculeId()) &&
+            side_allowed(pair.GetTargetVariableSmiles(), pair.GetTargetMoleculeId())) {
+            kept.push_back(std::move(pair));
+        }
+    }
+    return kept;
 }
 
 using PairScoringKey = std::tuple<std::string, unsigned int, unsigned int>;
@@ -2430,6 +2529,10 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
 
     std::vector<MatchedPair> pairs =
         read_pairs_with_properties(connection_, *result);
+    // Apply the variable-fragment size bounds with the SAME predicate as the
+    // in-memory path so the store-read and Analyzer query results match. Done
+    // before scoring, which collapses candidate groups.
+    pairs = filter_pairs_by_variable_bounds(connection_, std::move(pairs), options);
     return apply_pair_scoring(pairs, options.GetScoringOptions());
 }
 

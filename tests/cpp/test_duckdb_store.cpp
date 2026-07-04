@@ -778,6 +778,68 @@ TEST(DuckDBStoreTest, QueryOptionsFilterStoredPairsByRelativeHeavyAtomChange) {
     EXPECT_EQ(stored_transforms[0].GetTransformSmiles(), "CCCC[*:1]>>C[*:1]");
 }
 
+TEST(DuckDBStoreTest, QueryOptionsFilterStoredPairsByMaxVariableHeavies) {
+    // Store the full (unfiltered) pair set, then filter on read. The variable
+    // fragments are C[*:1] (|V| = 1) and CCCC[*:1] (|V| = 4); a max of 3 must
+    // drop the pair because the target side exceeds it (both sides must pass),
+    // matching the in-memory MemoryIndex behavior so the backend is invisible.
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddMethaneButaneMolecules(store);
+    store.AddPair(MakePair(1, 2, "methane", "butane", "C", "CCCC", "C[*:1]", "CCCC[*:1]", 3));
+
+    QueryOptions no_limit;
+    EXPECT_EQ(store.GetPairs(no_limit).size(), 1U);
+
+    QueryOptions keep;
+    keep.SetMaxVariableHeavies(4);
+    EXPECT_EQ(store.GetPairs(keep).size(), 1U);
+
+    QueryOptions drop;
+    drop.SetMaxVariableHeavies(3);
+    EXPECT_TRUE(store.GetPairs(drop).empty());
+    EXPECT_TRUE(store.GetTransforms(drop).empty());
+}
+
+TEST(DuckDBStoreTest, QueryOptionsFilterStoredPairsByMinVariableHeavies) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddMethaneButaneMolecules(store);
+    store.AddPair(MakePair(1, 2, "methane", "butane", "C", "CCCC", "C[*:1]", "CCCC[*:1]", 3));
+
+    // Source side C[*:1] has |V| = 1, so requiring >= 2 drops the pair.
+    QueryOptions require_two;
+    require_two.SetMinVariableHeavies(2);
+    EXPECT_TRUE(store.GetPairs(require_two).empty());
+
+    QueryOptions require_one;
+    require_one.SetMinVariableHeavies(1);
+    EXPECT_EQ(store.GetPairs(require_one).size(), 1U);
+}
+
+TEST(DuckDBStoreTest, StoredHydrogenPairIsExemptFromMinVariableBounds) {
+    // Toluene(C)->benzene(H): variable fragments C[*:1] (|V|=1) and [*:1][H]
+    // (|V|=0). MMPDB exempts the [H] pseudo-fragment from size bounds, so a min
+    // bound that the H side alone would fail must NOT drop the pair; only the
+    // heavy C side is gated. Mirrors AnalyzerTest's in-memory hydrogen test.
+    DuckDBStore store;
+    store.InitializeSchema();
+    store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+    store.AddMolecule(MoleculeRecord::FromSmiles(2, "c1ccccc1", "benzene"));
+    store.AddPair(MakePair(1, 2, "toluene", "benzene", "Cc1ccccc1", "c1ccccc1",
+                           "C[*:1]", "[*:1][H]", -1));
+
+    // min = 1: H side exempt, C side |V| = 1 passes -> kept.
+    QueryOptions min_one;
+    min_one.SetMinVariableHeavies(1);
+    EXPECT_EQ(store.GetPairs(min_one).size(), 1U);
+
+    // min = 2: C side |V| = 1 fails -> dropped (H exemption does not save it).
+    QueryOptions min_two;
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_TRUE(store.GetPairs(min_two).empty());
+}
+
 TEST(DuckDBStoreTest, QueryOptionsScoreStoredPairsWithinSourceTargetConstantGroup) {
     DuckDBStore store;
     store.InitializeSchema();
