@@ -556,6 +556,46 @@ TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     EXPECT_EQ(stored_pairs.front().GetTransformSmiles(), input_pairs.front().GetTransformSmiles());
 }
 
+TEST(DuckDBStoreTest, VariableBoundsMatchInMemoryAndStoreBackends) {
+    // The backend (in-memory MemoryIndex vs persisted DuckDB) must be an
+    // implementation detail: the same QueryOptions must select the same pairs
+    // from both. Build the analyzer, persist its FULL pair set, then compare
+    // in-memory GetPairs(options) against store GetPairs(options) for several
+    // active variable-fragment bounds. Locks the shared-predicate invariant.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.AddMolecule("CCCCc1ccccc1", "butylbenzene");
+    analyzer.Analyze();
+
+    // SaveTo persists the analyzer's molecules AND its full pair set (and
+    // initializes the schema itself), so read-time filtering has room to work;
+    // the query options below re-derive the filtered view on each read.
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const auto make_options = [](void (*configure)(QueryOptions&)) {
+        QueryOptions options;
+        options.SetSymmetric(false);
+        configure(options);
+        return options;
+    };
+    const std::vector<QueryOptions> cases = {
+        make_options([](QueryOptions&) {}),
+        make_options([](QueryOptions& o) { o.SetMaxVariableHeavies(3); }),
+        make_options([](QueryOptions& o) { o.SetMaxVariableHeavies(2); }),
+        make_options([](QueryOptions& o) { o.SetMinVariableHeavies(3); }),
+        make_options([](QueryOptions& o) { o.SetMaxVariableRatio(0.3); }),
+    };
+
+    for (const QueryOptions& options : cases) {
+        EXPECT_EQ(
+            store.GetPairs(options).size(),
+            analyzer.GetPairs(options).size()
+        );
+    }
+}
+
 TEST(DuckDBStoreTest, StoresRuleEnvironmentRowsForDefaultRadii) {
     const std::filesystem::path database_path = TemporaryDatabasePath();
     std::filesystem::remove(database_path);
