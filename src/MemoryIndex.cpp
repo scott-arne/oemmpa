@@ -470,6 +470,15 @@ void add_candidate_if_allowed(
 
     // MMPDB-style variable-fragment size bounds apply to each fragment
     // independently, so both sides must pass for the pair to survive.
+    //
+    // NOTE: this also gates the synthesized [*:1][H] hydrogen fragment (|V| = 0
+    // heavy atoms), which flows through this same path. Under a MAX bound (the
+    // shipped `--max-variable-heavies 10` benchmark config) |V| = 0 always
+    // passes, so hydrogen pairs are unaffected and behavior matches MMPDB. Under
+    // a MIN bound (`--min-variable-heavies >= 1` or `--min-variable-ratio > 0`)
+    // the hydrogen fragment is dropped here, which diverges from MMPDB — MMPDB
+    // appends [*][H] matches outside its allow_fragment filter, so it keeps them.
+    // This only affects explicit min bounds, not the default/benchmark path.
     if (!passes_variable_fragment_filters(
             options,
             source_variable_metrics.heavy_atom_count,
