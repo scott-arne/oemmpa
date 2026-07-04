@@ -254,34 +254,45 @@ def _as_truthy(value: Any) -> bool:
 
 
 def _ratio_cell(ratio):
-    """Render a wall-ratio cell: '<X>x faster/slower' or the startup sentinel."""
+    """Render a wall-ratio cell using the report's standard parity band.
+
+    ``ratio`` is ``other_wall / oemmpa_wall`` (``> 1`` means OEMMPA is faster).
+    Derives the label from :func:`verdict_for_seconds_ratio` via ``1 / ratio`` so
+    a near-parity ratio renders ``"parity"`` instead of a false win/loss, matching
+    every other section. ``None`` (suppressed / startup-dominated) and
+    non-positive ratios render a dim dash.
+    """
     value = _as_float(ratio)
-    if value is None:
+    if value is None or value <= 0:
         return "[dim]—[/dim]"
-    if value >= 1.0:
-        return f"{value:.1f}x faster"
-    return f"{1 / value:.1f}x slower" if value > 0 else "[dim]—[/dim]"
+    _, label = verdict_for_seconds_ratio(1.0 / value)
+    return label
 
 
 def _head_to_head_verdict(row):
-    """Return (severity, glance_verdict, headline) for the largest-size row."""
+    """Return ``(severity, glance_verdict, headline)`` for the largest-size row.
+
+    Prefers the vs-mmpdb wall ratio, falling back to vs-rdkit; both are compared
+    with the report's standard +/-10% parity band via
+    :func:`verdict_for_seconds_ratio` (``1 / ratio``), so a near-parity result is
+    reported as ``"parity"`` rather than a spurious faster/slower verdict. When
+    both ratios are suppressed the size is startup-dominated.
+    """
     size = int(_as_float(row.get("actual_molecule_count")) or 0)
-    vs_mmpdb = _as_float(row.get("vs_mmpdb_wall_ratio"))
-    vs_rdkit = _as_float(row.get("vs_rdkit_wall_ratio"))
-    if vs_mmpdb is not None:
-        faster = vs_mmpdb >= 1.0
-        return (
-            "good" if faster else "warning",
-            "faster than mmpdb" if faster else "slower than mmpdb",
-            f"{vs_mmpdb:.1f}x vs mmpdb at n={size}",
-        )
-    if vs_rdkit is not None:
-        faster = vs_rdkit >= 1.0
-        return (
-            "good" if faster else "warning",
-            "faster than rdkit" if faster else "slower than rdkit",
-            f"{vs_rdkit:.1f}x vs rdkit at n={size}",
-        )
+    for ratio_value, tool in (
+        (_as_float(row.get("vs_mmpdb_wall_ratio")), "mmpdb"),
+        (_as_float(row.get("vs_rdkit_wall_ratio")), "rdkit"),
+    ):
+        if ratio_value is None or ratio_value <= 0:
+            continue
+        severity, _ = verdict_for_seconds_ratio(1.0 / ratio_value)
+        if severity == "good":
+            verdict = f"faster than {tool}"
+        elif severity == "warning":
+            verdict = f"slower than {tool}"
+        else:
+            verdict = f"parity vs {tool}"
+        return (severity, verdict, f"{ratio_value:.1f}x vs {tool} at n={size}")
     return ("neutral", "startup-dominated", f"startup-dominated at n={size}")
 
 

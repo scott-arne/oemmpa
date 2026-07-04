@@ -727,6 +727,51 @@ def test_head_to_head_section_absent_without_rows():
     assert HeadToHeadSection.from_rows([{"benchmark": "storage"}]) is None
 
 
+def test_head_to_head_ratio_cell_parity_band():
+    from benchmarks.report import _ratio_cell
+    # Within +/-10% of parity -> "parity", not a false win/loss.
+    assert _ratio_cell(1.05) == "parity"
+    assert _ratio_cell(0.95) == "parity"
+    assert _ratio_cell(1.0) == "parity"
+    # Clear win / loss keep the standard labels.
+    assert "faster" in _ratio_cell(3.0)
+    assert "slower" in _ratio_cell(0.3)
+    # Suppressed / invalid -> dim dash.
+    assert _ratio_cell(None) == "[dim]—[/dim]"
+    assert _ratio_cell(0.0) == "[dim]—[/dim]"
+
+
+def test_head_to_head_verdict_uses_parity_band():
+    from benchmarks.report import _head_to_head_verdict
+    # Near-parity vs mmpdb -> neutral parity, not a spurious win.
+    sev, verdict, headline = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 1.05, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "neutral"
+    assert "parity" in verdict
+    assert "n=300" in headline
+    # Clear win vs mmpdb.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 3.0, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "good" and "faster than mmpdb" in verdict
+    # Clear loss vs mmpdb (we lag) -> warning.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 0.3, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "warning" and "slower than mmpdb" in verdict
+    # mmpdb suppressed -> falls back to rdkit.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": None, "vs_rdkit_wall_ratio": 3.0}
+    )
+    assert sev == "good" and "faster than rdkit" in verdict
+    # Both suppressed -> startup-dominated.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": None, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "neutral" and verdict == "startup-dominated"
+
+
 class TestReportFromRows:
     def test_orders_sections_canonical_when_all_present(self):
         rows = [
