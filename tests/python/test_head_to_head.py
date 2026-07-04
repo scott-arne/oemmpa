@@ -120,3 +120,39 @@ def test_head_to_head_mmpdb_non_executable_path(tmp_path):
     assert row["mmpdb_pair_count"] == 0
     assert row["vs_mmpdb_wall_ratio"] is None
     assert row["mmpdb_unavailable_reason"]  # non-empty reason retained
+
+
+def test_head_to_head_rdkit_wall_is_subprocess(tmp_path):
+    from benchmarks.head_to_head import head_to_head_rows
+    rows = head_to_head_rows(FIXTURE, sizes=[20], repeats=1, mmpdb_exe="mmpdb-does-not-exist")
+    row = rows[0]
+    # RDKit available in this env -> wall is a real (non-None) subprocess figure,
+    # and the wall ratio is populated (both oemmpa and rdkit walls are real).
+    assert row["rdkit_available"] is True
+    assert row["rdkit_wall_seconds"] is not None
+    assert row["rdkit_wall_seconds"] >= 0.0
+    assert row["vs_rdkit_wall_ratio"] is not None
+    # warm and wall are measured differently (wall includes process startup), so
+    # wall should be >= warm (subprocess adds interpreter + rdkit import).
+    assert row["rdkit_wall_seconds"] >= row["rdkit_warm_seconds"]
+
+
+def test_head_to_head_mmpdb_broken_executable_degrades(tmp_path):
+    import stat
+    from benchmarks.head_to_head import head_to_head_rows, _mmpdb_importable
+    # An executable that exists and is runnable but always fails (nonzero exit).
+    fake = tmp_path / "mmpdb"
+    fake.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    # It passes the importable/executable check (exists + X_OK)...
+    assert _mmpdb_importable(str(fake)) is True
+    # ...but running it fails -> the row must degrade, not crash.
+    rows = head_to_head_rows(FIXTURE, sizes=[20], repeats=1, mmpdb_exe=str(fake))
+    row = rows[0]
+    assert row["mmpdb_available"] is False
+    assert row["mmpdb_wall_seconds"] is None
+    assert row["mmpdb_pair_count"] == 0
+    assert row["vs_mmpdb_wall_ratio"] is None
+    assert "mmpdb run failed" in row["mmpdb_unavailable_reason"]
+    # oemmpa still reported.
+    assert row["oemmpa_wall_seconds"] >= 0.0

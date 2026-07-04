@@ -4,10 +4,11 @@ Measures, per dataset size, each tool turning molecules into matched pairs:
 
 - warm ALGORITHM time (in-process) for OEMMPA and RDKit,
 - a warmed-subprocess "process" time for MMPDB (no in-process API),
-- end-to-end WALL time for OEMMPA (subprocess `oemmpa build`) and MMPDB
-  (subprocess `fragment`+`index`). RDKit has no separate CLI, so its "wall"
-  column reuses its in-process warm time (documented; the wall column is the
-  apples-to-apples basis for OEMMPA vs MMPDB, and RDKit's warm/wall coincide),
+- end-to-end WALL time for all three tools, each as a fresh subprocess so the
+  wall basis is uniform (OEMMPA `oemmpa build`; MMPDB `fragment`+`index`; RDKit
+  a `python -c` process importing rdkit and running the pair pipeline, since
+  RDKit has no CLI). Warm (in-process) vs wall (subprocess) are reported
+  separately so startup cost is visible, not hidden.
 - an authoritative matched-pair count for each tool.
 
 Ratios compare wall time only and are suppressed for startup-dominated sizes
@@ -170,6 +171,39 @@ def _mmpdb_wall_and_count(subset_path, repeats, mmpdb_exe):
     return best, pair_count
 
 
+def _rdkit_wall(subset_path, repeats):
+    """End-to-end wall for RDKit's pair pipeline as a fresh subprocess.
+
+    RDKit has no CLI, so we time ``python -c`` importing the rdkit_compare
+    helper and running its pair pipeline on the subset. This wall includes
+    interpreter startup and the rdkit import, making it the same
+    startup-inclusive basis as the OEMMPA and MMPDB wall columns (unlike the
+    in-process warm number). Returns min elapsed seconds over repeats, or
+    raises RuntimeError on a nonzero subprocess.
+    """
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from benchmarks.rdkit_compare import run_rdkit; "
+        "r = run_rdkit(sys.argv[2]); "
+        "sys.exit(0 if r.get('available') else 3)"
+    )
+
+    def once():
+        env = os.environ.copy()
+        start = perf_counter()
+        completed = subprocess.run(
+            [sys.executable, "-c", code, str(REPO_ROOT), str(subset_path)],
+            env=env, text=True, capture_output=True,
+        )
+        elapsed = perf_counter() - start
+        if completed.returncode != 0:
+            raise RuntimeError(f"rdkit wall subprocess failed: {completed.stderr[-300:]}")
+        return elapsed, None
+
+    best, _ = _min_over_repeats(once, repeats)
+    return best
+
+
 def head_to_head_rows(smiles_path, sizes=DEFAULT_SIZES, repeats=3, mmpdb_exe=DEFAULT_MMPDB_EXE, oemmpa_exe=None):
     """Produce one head-to-head row per size. See module docstring for columns."""
     smiles_path = Path(smiles_path)
@@ -190,14 +224,24 @@ def head_to_head_rows(smiles_path, sizes=DEFAULT_SIZES, repeats=3, mmpdb_exe=DEF
             rdkit_available = rdkit_res.get("available", False)
             rdkit_reason = "" if rdkit_available else str(rdkit_res.get("error") or "rdkit unavailable")
             rdkit_pairs = int(rdkit_res.get("pair_count") or 0) if rdkit_available else 0
-            # RDKit wall = same in-process assembly re-run under subprocess is
-            # overkill; RDKit's realistic "run" is in-process, so wall == warm
-            # for RDKit (documented). Keep them equal for a consistent column.
-            rdkit_wall = rdkit_warm if rdkit_available else None
+            if rdkit_available:
+                try:
+                    rdkit_wall = _rdkit_wall(subset, repeats)
+                except Exception:  # noqa: BLE001 - a wall-subprocess failure only drops the wall figure
+                    rdkit_wall = None
+            else:
+                rdkit_wall = None
 
+            row_mmpdb_available = mmpdb_available
+            row_mmpdb_reason = mmpdb_reason
             if mmpdb_available:
-                mmpdb_wall, mmpdb_pairs = _mmpdb_wall_and_count(subset, repeats, mmpdb_exe)
-                mmpdb_process = mmpdb_wall  # warmed subprocess == its process time
+                try:
+                    mmpdb_wall, mmpdb_pairs = _mmpdb_wall_and_count(subset, repeats, mmpdb_exe)
+                    mmpdb_process = mmpdb_wall  # warmed subprocess == its process time
+                except Exception as exc:  # noqa: BLE001 - broken/incompatible mmpdb degrades this row
+                    row_mmpdb_available = False
+                    row_mmpdb_reason = f"mmpdb run failed: {exc}"
+                    mmpdb_wall, mmpdb_pairs, mmpdb_process = None, 0, None
             else:
                 mmpdb_wall, mmpdb_pairs, mmpdb_process = None, 0, None
 
@@ -219,9 +263,9 @@ def head_to_head_rows(smiles_path, sizes=DEFAULT_SIZES, repeats=3, mmpdb_exe=DEF
                 "rdkit_pair_count": rdkit_pairs,
                 "mmpdb_pair_count": mmpdb_pairs,
                 "rdkit_available": rdkit_available,
-                "mmpdb_available": mmpdb_available,
+                "mmpdb_available": row_mmpdb_available,
                 "rdkit_unavailable_reason": rdkit_reason,
-                "mmpdb_unavailable_reason": mmpdb_reason,
+                "mmpdb_unavailable_reason": row_mmpdb_reason,
                 "vs_rdkit_wall_ratio": vs_rdkit,
                 "vs_mmpdb_wall_ratio": vs_mmpdb,
             })

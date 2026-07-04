@@ -104,9 +104,12 @@ Columns:
   is warmed-process time (excluding the subprocess spawn, but including the
   mmpdb module import within that process).
 - **Wall timings**: `oemmpa_wall_seconds`, `rdkit_wall_seconds`, and
-  `mmpdb_wall_seconds` measure end-to-end wall time for each tool. OEMMPA and
-  RDKit wall times include in-process startup; MMPDB wall time includes the full
-  subprocess launch.
+  `mmpdb_wall_seconds` measure end-to-end wall time for each tool, each as a
+  fresh subprocess so the wall basis is uniform (OEMMPA `oemmpa build`; MMPDB
+  `fragment`+`index`; RDKit a `python -c` process importing rdkit and running
+  the pair pipeline, since RDKit has no CLI). All three wall figures include
+  interpreter/import startup and are directly comparable, unlike the warm
+  columns which report in-process algorithm-only times.
 - **Pair counts**: `oemmpa_pair_count`, `rdkit_pair_count`, and
   `mmpdb_pair_count` report the total matched pairs found by each tool.
 - **Ratios**: `vs_rdkit_wall_ratio` and `vs_mmpdb_wall_ratio` compare OEMMPA's
