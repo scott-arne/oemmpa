@@ -288,11 +288,14 @@ def _head_to_head_verdict(row):
         severity, _ = verdict_for_seconds_ratio(1.0 / ratio_value)
         if severity == "good":
             verdict = f"faster than {tool}"
+            headline = f"{ratio_value:.1f}x faster than {tool} at n={size}"
         elif severity == "warning":
             verdict = f"slower than {tool}"
+            headline = f"{1.0 / ratio_value:.1f}x slower than {tool} at n={size}"
         else:
             verdict = f"parity vs {tool}"
-        return (severity, verdict, f"{ratio_value:.1f}x vs {tool} at n={size}")
+            headline = f"parity vs {tool} at n={size}"
+        return (severity, verdict, headline)
     return ("neutral", "startup-dominated", f"startup-dominated at n={size}")
 
 

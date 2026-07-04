@@ -773,6 +773,14 @@ def test_head_to_head_verdict_uses_parity_band():
         {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": None, "vs_rdkit_wall_ratio": None}
     )
     assert sev == "neutral" and verdict == "startup-dominated"
+    # Lagging vs mmpdb (ratio < 1) -> headline shows inverted magnitude + slower.
+    sev, verdict, headline = _head_to_head_verdict(
+        {"actual_molecule_count": 500, "vs_mmpdb_wall_ratio": 0.25, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "warning"
+    assert "slower than mmpdb" in verdict
+    assert "4.0x slower than mmpdb" in headline  # 1/0.25 = 4.0
+    assert "n=500" in headline
 
 
 class TestReportFromRows:

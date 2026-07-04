@@ -78,6 +78,25 @@ def test_head_to_head_rdkit_unavailable(tmp_path, monkeypatch):
     assert row["rdkit_unavailable_reason"]  # non-empty reason retained
 
 
+def test_head_to_head_rdkit_raise_degrades(tmp_path, monkeypatch):
+    from benchmarks import head_to_head
+
+    def boom(path):
+        raise ValueError("simulated rdkit parse failure")
+
+    monkeypatch.setattr(head_to_head, "run_rdkit", boom)
+    rows = head_to_head.head_to_head_rows(FIXTURE, sizes=[20], repeats=1,
+                                          mmpdb_exe="mmpdb-does-not-exist")
+    row = rows[0]
+    assert row["rdkit_available"] is False
+    assert row["rdkit_warm_seconds"] is None
+    assert row["rdkit_wall_seconds"] is None
+    assert row["vs_rdkit_wall_ratio"] is None
+    assert "rdkit error" in row["rdkit_unavailable_reason"]
+    # oemmpa still reported.
+    assert row["oemmpa_wall_seconds"] >= 0.0
+
+
 def test_subset_caps_at_available(tmp_path):
     from benchmarks.head_to_head import _subset
     src = tmp_path / "src.smi"

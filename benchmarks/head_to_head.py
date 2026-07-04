@@ -83,13 +83,23 @@ def _oemmpa_warm(subset_path, repeats):
 
 
 def _rdkit_warm(subset_path, repeats):
-    probe = run_rdkit(subset_path)
+    # run_rdkit raises when RDKit cannot parse a SMILES that OEMMPA accepted; a
+    # bad user corpus must degrade to "unavailable", not crash the whole run.
+    try:
+        probe = run_rdkit(subset_path)
+    except Exception as exc:  # noqa: BLE001 - degrade any RDKit failure to unavailable
+        return None, {"available": False, "pair_count": 0, "error": f"rdkit error: {exc}"}
     if not probe.get("available", False):
         return None, probe
+
     def once():
         res = run_rdkit(subset_path)
         return res["elapsed_seconds"], res
-    return _min_over_repeats(once, repeats)
+
+    try:
+        return _min_over_repeats(once, repeats)
+    except Exception as exc:  # noqa: BLE001 - degrade a mid-run RDKit failure too
+        return None, {"available": False, "pair_count": 0, "error": f"rdkit error: {exc}"}
 
 
 def _mmpdb_importable(mmpdb_exe):

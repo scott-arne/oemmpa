@@ -110,7 +110,7 @@ Columns:
 - **Pair counts**: `oemmpa_pair_count`, `rdkit_pair_count`, and
   `mmpdb_pair_count` report the total matched pairs found by each tool.
 - **Ratios**: `vs_rdkit_wall_ratio` and `vs_mmpdb_wall_ratio` compare OEMMPA's
-  wall time to RDKit and MMPDB. Ratios are shown as "X.Xx faster/slower".
+  wall time to RDKit and MMPDB. Ratios are shown as "X.Xx faster" or "X.Xx slower"; comparisons within +/-10% show "parity", and startup-dominated or unavailable comparisons show a dash.
 
 For startup-dominated sizes where absolute wall times are under 50ms, ratios
 become unreliable (a 20ms vs 40ms difference looks like "2x slower" but
