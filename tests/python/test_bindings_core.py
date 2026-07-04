@@ -250,6 +250,52 @@ def test_query_options_and_scoring_options_binding():
     assert options.GetScoringOptions().GetMode() == _oemmpa.ScoringMode_KeepAll
 
 
+def test_query_options_variable_fragment_bounds_binding():
+    _oemmpa = import_worktree_raw_bindings()
+
+    options = _oemmpa.QueryOptions()
+    # Defaults are the "no limit" sentinels.
+    assert options.GetMaxVariableHeavies() == -1
+    assert options.GetMinVariableHeavies() == -1
+    assert options.GetMaxVariableRatio() == -1.0
+    assert options.GetMinVariableRatio() == -1.0
+
+    options.SetMaxVariableHeavies(10)
+    options.SetMinVariableHeavies(1)
+    options.SetMaxVariableRatio(0.99)
+    options.SetMinVariableRatio(0.1)
+    assert options.GetMaxVariableHeavies() == 10
+    assert options.GetMinVariableHeavies() == 1
+    assert options.GetMaxVariableRatio() == 0.99
+    assert options.GetMinVariableRatio() == 0.1
+
+    # Invalid bounds raise (surfaced as RuntimeError through SWIG).
+    with pytest.raises(RuntimeError):
+        options.SetMaxVariableHeavies(-2)
+    with pytest.raises(RuntimeError):
+        options.SetMinVariableRatio(-0.5)
+
+
+def test_query_options_variable_heavies_filters_pairs_binding():
+    _oemmpa = import_worktree_raw_bindings()
+
+    analyzer = _oemmpa.Analyzer()
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene")
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene")
+    analyzer.Analyze()
+
+    asymmetric = _oemmpa.QueryOptions()
+    asymmetric.SetSymmetric(False)
+    assert len(analyzer.GetPairs(asymmetric)) == 1
+
+    # The target variable fragment [*:1]CCC has 3 heavy atoms, so a max of 2
+    # drops the pair (both sides must satisfy the bound).
+    filtered = _oemmpa.QueryOptions()
+    filtered.SetSymmetric(False)
+    filtered.SetMaxVariableHeavies(2)
+    assert len(analyzer.GetPairs(filtered)) == 0
+
+
 def test_optional_duckdb_store_binding_loads_smiles_file(tmp_path):
     package = import_worktree_oemmpa()
     if not package.duckdb_available():
