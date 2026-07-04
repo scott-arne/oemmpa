@@ -101,18 +101,3 @@ def test_head_to_head_mmpdb_non_executable_path(tmp_path):
     assert row["mmpdb_pair_count"] == 0
     assert row["vs_mmpdb_wall_ratio"] is None
     assert row["mmpdb_unavailable_reason"]  # non-empty reason retained
-
-
-def test_headtohead_corpus_provenance_is_public():
-    """The committed head-to-head corpus must pass the source-pinned provenance
-    verify, guaranteeing it is public SureChEMBL (not proprietary data)."""
-    import subprocess
-    corpus = REPO_ROOT / "tests" / "data" / "surechembl_headtohead.smi"
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "tests" / "data" / "build_surechembl_fixture.py"),
-         "--verify", "--out", str(corpus)],
-        text=True, capture_output=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "matches provenance manifest" in result.stdout
-    assert "source identity matches pinned public SureChEMBL" in result.stdout

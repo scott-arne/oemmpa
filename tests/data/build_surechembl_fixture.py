@@ -34,8 +34,6 @@ import json
 import sys
 from pathlib import Path
 
-import pyarrow.parquet as pq
-
 # SHA256 of the pinned PUBLIC SureChEMBL source parquet. Regeneration fails
 # closed unless the --parquet input matches this digest, so the fixture can
 # only be produced from the known public source (positive identity, not a
@@ -141,6 +139,8 @@ def main() -> None:
     # Regeneration mode: require --parquet.
     if not args.parquet:
         parser.error("--parquet is required when not using --verify")
+
+    import pyarrow.parquet as pq
 
     # Fail-closed source guard: reject the known proprietary input by its
     # stable path token (kept out of committed provenance text). The positive
