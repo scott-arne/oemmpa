@@ -67,7 +67,7 @@ def run_oemmpa(path):
     }
 
 
-def run_oemmpa_pair_equivalent(path):
+def run_oemmpa_pair_equivalent(path, max_variable_heavies=None):
     """Run OEMMPA in the pair-only mode used for RDKit comparison.
 
     RDKit's ``rdMMPA`` harness emits one orientation per molecule pair and does
@@ -75,6 +75,10 @@ def run_oemmpa_pair_equivalent(path):
     surface aligned with that reference by querying non-symmetric pairs only.
 
     :param path: SMILES file path.
+    :param max_variable_heavies: Optional MMPDB-style variable-fragment
+        heavy-atom cap. ``None`` (the default) applies no limit and keeps the
+        RDKit-comparison surface unchanged; the head-to-head benchmark passes
+        MMPDB's default to make OEMMPA and MMPDB do equal work.
     :returns: Benchmark result dictionary.
     """
     oemmpa = _import_worktree_package()
@@ -83,6 +87,8 @@ def run_oemmpa_pair_equivalent(path):
     analyzer = oemmpa.Analyzer()
     options = oemmpa._oemmpa.QueryOptions()
     options.SetSymmetric(False)
+    if max_variable_heavies is not None:
+        options.SetMaxVariableHeavies(int(max_variable_heavies))
 
     start = perf_counter()
     report = analyzer.add_molecules(rows)

@@ -39,6 +39,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / "python"
 DEFAULT_HEADTOHEAD_SMILES = REPO_ROOT / "tests" / "data" / "surechembl_headtohead.smi"
 DEFAULT_SIZES = (100, 300, 500)
+# MMPDB's `mmpdb index` default is `--max-variable-heavies 10`. OEMMPA has no
+# variable-fragment cap by default, so without matching it OEMMPA would
+# enumerate and persist a much larger (roughly 2x base, ~14x persisted) pair set
+# than MMPDB — an unequal-work comparison that made the head-to-head ratio
+# misleading. The benchmark applies MMPDB's default to OEMMPA so both tools
+# turn molecules into the same matched-pair surface. RDKit's rdMMPA has no
+# equivalent variable-size gate, so its column is left unfiltered.
+MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES = 10
 # Prefer the mmpdb next to the running interpreter (the micromamba env) so the
 # flagship resolves it even when PATH is minimal; fall back to a bare "mmpdb"
 # for other environments. shutil.which(None-safe) handles both.
@@ -78,7 +86,10 @@ def _min_over_repeats(fn, repeats):
 
 def _oemmpa_warm(subset_path, repeats):
     def once():
-        res = run_oemmpa_pair_equivalent(subset_path)
+        res = run_oemmpa_pair_equivalent(
+            subset_path,
+            max_variable_heavies=MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES,
+        )
         return res["elapsed_seconds"], res
     return _min_over_repeats(once, repeats)
 
@@ -121,7 +132,15 @@ def _oemmpa_wall(subset_path, repeats, oemmpa_exe):
             cmd = (
                 [oemmpa_exe] if oemmpa_exe
                 else [sys.executable, "-m", "oemmpa"]
-            ) + ["build", "--smiles", str(subset_path), "--output", str(db), "--force"]
+            ) + [
+                "build",
+                "--smiles", str(subset_path),
+                "--output", str(db),
+                "--force",
+                # Match MMPDB's default variable-fragment cap so both tools
+                # persist an equal-work matched-pair surface.
+                "--max-variable-heavies", str(MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES),
+            ]
             env = os.environ.copy()
             env["PYTHONPATH"] = os.pathsep.join([str(PYTHON_ROOT), env.get("PYTHONPATH", "")])
             start = perf_counter()

@@ -552,6 +552,17 @@ def _build_query_options(args):
         options.SetMaxHeavyAtomChange(args.max_heavies_transf)
     if args.max_frac_trans is not None:
         options.SetMaxRelativeHeavyAtomChange(args.max_frac_trans)
+    # MMPDB-compatible variable-fragment size filters. ``--max-variable-heavies
+    # none`` parses to ``None`` (no limit), matching the other "no limit"
+    # defaults, so only concrete values are pushed to the query options.
+    if args.max_variable_heavies is not None:
+        options.SetMaxVariableHeavies(args.max_variable_heavies)
+    if args.min_variable_heavies is not None:
+        options.SetMinVariableHeavies(args.min_variable_heavies)
+    if args.max_variable_ratio is not None:
+        options.SetMaxVariableRatio(args.max_variable_ratio)
+    if args.min_variable_ratio is not None:
+        options.SetMinVariableRatio(args.min_variable_ratio)
     return options
 
 

@@ -111,6 +111,98 @@ TEST(AnalyzerTest, DefaultMethodIsFragmentation) {
     EXPECT_EQ(analyzer.GetMethodName(), "fragmentation");
 }
 
+TEST(AnalyzerTest, MaxVariableHeaviesFiltersLargerVariableFragments) {
+    // Ethylbenzene -> propylbenzene shares the phenyl constant; the variable
+    // fragments are [*:1]CC (2 heavies) and [*:1]CCC (3 heavies). A pair
+    // survives only when BOTH fragments satisfy the bound, matching MMPDB's
+    // per-fragment filter.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    ASSERT_EQ(analyzer.GetPairs(asymmetric).size(), 1U);
+
+    QueryOptions keep_three;
+    keep_three.SetSymmetric(false);
+    keep_three.SetMaxVariableHeavies(3);
+    EXPECT_EQ(analyzer.GetPairs(keep_three).size(), 1U);
+
+    QueryOptions drop_three;
+    drop_three.SetSymmetric(false);
+    drop_three.SetMaxVariableHeavies(2);
+    EXPECT_TRUE(analyzer.GetPairs(drop_three).empty());
+}
+
+TEST(AnalyzerTest, MinVariableHeaviesFiltersSmallerVariableFragments) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions keep_two;
+    keep_two.SetSymmetric(false);
+    keep_two.SetMinVariableHeavies(2);
+    EXPECT_EQ(analyzer.GetPairs(keep_two).size(), 1U);
+
+    // The source fragment [*:1]CC has 2 heavies, so requiring >= 3 drops it.
+    QueryOptions require_three;
+    require_three.SetSymmetric(false);
+    require_three.SetMinVariableHeavies(3);
+    EXPECT_TRUE(analyzer.GetPairs(require_three).empty());
+}
+
+TEST(AnalyzerTest, HydrogenFragmentIsExemptFromVariableMinBounds) {
+    // Toluene -> benzene is an H substitution: the variable fragments are
+    // [*:1]C (|V| = 1) and the synthesized [*:1][H] (|V| = 0). MMPDB appends
+    // [H] matches outside its allow_fragment filter, so a min bound must not
+    // drop the pair on account of the H side; only the heavy C side is gated.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.Analyze();
+
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    ASSERT_FALSE(analyzer.GetPairs(asymmetric).empty());
+
+    // min = 1: the [H] side (|V| = 0) is exempt and the C side (|V| = 1)
+    // passes, so the pair survives.
+    QueryOptions min_one;
+    min_one.SetSymmetric(false);
+    min_one.SetMinVariableHeavies(1);
+    EXPECT_FALSE(analyzer.GetPairs(min_one).empty());
+
+    // min = 2: the heavy C side (|V| = 1) fails, so the pair is dropped -- the
+    // hydrogen exemption is per-fragment, it does not save the whole pair.
+    QueryOptions min_two;
+    min_two.SetSymmetric(false);
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_TRUE(analyzer.GetPairs(min_two).empty());
+}
+
+TEST(AnalyzerTest, MaxVariableRatioFiltersLargeVariableRegions) {
+    // Ethylbenzene has 8 heavy atoms; [*:1]CC is 2, ratio 0.25. Propylbenzene
+    // has 9 heavy atoms; [*:1]CCC is 3, ratio 0.333. A max ratio of 0.3 drops
+    // the pair (the target side exceeds it); 0.4 keeps it.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    QueryOptions keep;
+    keep.SetSymmetric(false);
+    keep.SetMaxVariableRatio(0.4);
+    EXPECT_EQ(analyzer.GetPairs(keep).size(), 1U);
+
+    QueryOptions drop;
+    drop.SetSymmetric(false);
+    drop.SetMaxVariableRatio(0.3);
+    EXPECT_TRUE(analyzer.GetPairs(drop).empty());
+}
+
 TEST(AnalyzerTest, ExplicitFragmentationMethodUsesCommonResultModel) {
     Analyzer analyzer("fragmentation");
     analyzer.AddMolecule("Cc1ccccc1", "tol");

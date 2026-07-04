@@ -421,6 +421,38 @@ void add_candidate_if_allowed(
         return;
     }
 
+    // MMPDB-style variable-fragment size bounds apply to each fragment
+    // independently (QueryOptions::AllowsVariableFragment is the shared
+    // predicate used by both the in-memory and DuckDB-backed query paths), so
+    // BOTH sides must pass for the pair to survive.
+    //
+    // The synthesized [*:1][H] hydrogen fragment is the one exception: MMPDB
+    // appends its [*][H] matches OUTSIDE the allow_fragment filter, so that
+    // pseudo-fragment is never size-gated (a min bound must not drop an
+    // H<->heavy substitution just because |V| = 0 for the H side). The HEAVY
+    // side of a hydrogen pair is still gated normally — verified against MMPDB:
+    // for [*:1]C >> [*:1][H], `--min-variable-heavies 1` keeps the pair but
+    // `--min-variable-heavies 2` drops it (the C side has |V| = 1). So the
+    // exemption is per-fragment, applied only to the [H] side, not the pair.
+    const bool source_is_hydrogen =
+        source_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
+    const bool target_is_hydrogen =
+        target_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
+    if (!source_is_hydrogen &&
+        !options.AllowsVariableFragment(
+            source_variable_metrics.heavy_atom_count,
+            source_record.GetHeavyAtomCount()
+        )) {
+        return;
+    }
+    if (!target_is_hydrogen &&
+        !options.AllowsVariableFragment(
+            target_variable_metrics.heavy_atom_count,
+            target_record.GetHeavyAtomCount()
+        )) {
+        return;
+    }
+
     MatchedPair pair = make_pair(
         source_fragmentation,
         target_fragmentation,

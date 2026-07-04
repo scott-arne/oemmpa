@@ -61,12 +61,122 @@ void QueryOptions::SetMaxRelativeHeavyAtomChange(double value) {
     max_relative_heavy_atom_change_ = value;
 }
 
+int QueryOptions::GetMaxVariableHeavies() const {
+    return max_variable_heavies_;
+}
+
+void QueryOptions::SetMaxVariableHeavies(int value) {
+    // -1 is the "no limit" sentinel; a variable-fragment heavy-atom count
+    // cannot be negative otherwise.
+    if (value < -1) {
+        throw InvalidQueryError(
+            "max variable heavies must be non-negative or -1 for no limit"
+        );
+    }
+    max_variable_heavies_ = value;
+}
+
+int QueryOptions::GetMinVariableHeavies() const {
+    return min_variable_heavies_;
+}
+
+void QueryOptions::SetMinVariableHeavies(int value) {
+    if (value < -1) {
+        throw InvalidQueryError(
+            "min variable heavies must be non-negative or -1 for no limit"
+        );
+    }
+    min_variable_heavies_ = value;
+}
+
+double QueryOptions::GetMaxVariableRatio() const {
+    return max_variable_ratio_;
+}
+
+void QueryOptions::SetMaxVariableRatio(double value) {
+    // Reject NaN and infinities, which would corrupt the ratio comparison.
+    // -1 is the "no limit" sentinel; other negatives are invalid. The ratio is
+    // |V| / |molecule| and therefore lies in [0, 1], but the setter only
+    // enforces the sentinel/sign contract shared with the other bounds.
+    if (!std::isfinite(value)) {
+        throw InvalidQueryError(
+            "max variable ratio must be a finite number"
+        );
+    }
+    if (value < 0.0 && value != -1.0) {
+        throw InvalidQueryError(
+            "max variable ratio must be non-negative or -1 for no limit"
+        );
+    }
+    max_variable_ratio_ = value;
+}
+
+double QueryOptions::GetMinVariableRatio() const {
+    return min_variable_ratio_;
+}
+
+void QueryOptions::SetMinVariableRatio(double value) {
+    if (!std::isfinite(value)) {
+        throw InvalidQueryError(
+            "min variable ratio must be a finite number"
+        );
+    }
+    if (value < 0.0 && value != -1.0) {
+        throw InvalidQueryError(
+            "min variable ratio must be non-negative or -1 for no limit"
+        );
+    }
+    min_variable_ratio_ = value;
+}
+
 bool QueryOptions::GetSymmetric() const {
     return symmetric_;
 }
 
 void QueryOptions::SetSymmetric(bool value) {
     symmetric_ = value;
+}
+
+bool QueryOptions::AllowsVariableFragment(
+    unsigned int variable_heavy_atoms,
+    unsigned int molecule_heavy_atoms
+) const {
+    if (
+        max_variable_heavies_ >= 0 &&
+        static_cast<long long>(variable_heavy_atoms) > max_variable_heavies_
+    ) {
+        return false;
+    }
+    if (
+        min_variable_heavies_ >= 0 &&
+        static_cast<long long>(variable_heavy_atoms) < min_variable_heavies_
+    ) {
+        return false;
+    }
+
+    if (max_variable_ratio_ >= 0.0 || min_variable_ratio_ >= 0.0) {
+        // A zero-heavy molecule has no comparable variable region under a ratio
+        // bound, so reject rather than divide by zero.
+        if (molecule_heavy_atoms == 0) {
+            return false;
+        }
+        const double ratio =
+            static_cast<double>(variable_heavy_atoms) /
+            static_cast<double>(molecule_heavy_atoms);
+        if (max_variable_ratio_ >= 0.0 && ratio > max_variable_ratio_) {
+            return false;
+        }
+        if (min_variable_ratio_ >= 0.0 && ratio < min_variable_ratio_) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool QueryOptions::HasVariableFragmentBounds() const {
+    return max_variable_heavies_ >= 0 || min_variable_heavies_ >= 0 ||
+        max_variable_ratio_ >= 0.0 || min_variable_ratio_ >= 0.0;
 }
 
 void QueryOptions::SetScoringOptions(const ScoringOptions& scoring_options) {

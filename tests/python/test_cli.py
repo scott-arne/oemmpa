@@ -358,6 +358,10 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
 
 
 def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
+    # The bounds here are permissive for the 3-molecule fixture (1-heavy
+    # variable fragments), so they are accepted without changing the pair set.
+    # The filters' *reducing* effect is proven by
+    # test_cli_build_variable_heavies_filter_reduces_pairs below.
     database = _build_cli_store_with_args(
         tmp_path,
         "--min-variable-heavies",
@@ -384,6 +388,63 @@ def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
         {"metric": "rule_environments", "value": "36"},
         {"metric": "rule_environment_statistics", "value": "36"},
     ]
+
+
+def _build_alkylbenzene_store(tmp_path, *args):
+    """Build a store from ethyl/propyl/butylbenzene with extra build args.
+
+    The shared phenyl constant yields variable fragments of 2, 3, and 4 heavy
+    atoms, so variable-size filters have a measurable, provable effect.
+    """
+    smiles = tmp_path / "alkylbenzenes.smi"
+    smiles.write_text(
+        "CCc1ccccc1 ethylbenzene\n"
+        "CCCc1ccccc1 propylbenzene\n"
+        "CCCCc1ccccc1 butylbenzene\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / f"alkyl-{abs(hash(args))}.oemmpa.duckdb"
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        *args,
+        "--output",
+        str(output),
+    )
+    return output
+
+
+def _persisted_pair_count(database):
+    rows = {row["metric"]: row["value"] for row in _tsv_rows(
+        _run_cli("list", str(database), "--recount").stdout
+    )}
+    return int(rows["pairs"])
+
+
+def test_cli_build_variable_heavies_filter_reduces_pairs(tmp_path):
+    # max-variable-heavies is now wired through to real C++ filtering (it used
+    # to be parsed and silently ignored). A tighter bound must persist fewer
+    # pairs, matching MMPDB's per-fragment variable-size filter.
+    unfiltered = _persisted_pair_count(_build_alkylbenzene_store(tmp_path))
+    keep_three = _persisted_pair_count(
+        _build_alkylbenzene_store(tmp_path, "--max-variable-heavies", "3")
+    )
+    drop_all = _persisted_pair_count(
+        _build_alkylbenzene_store(tmp_path, "--max-variable-heavies", "2")
+    )
+
+    assert unfiltered > keep_three > drop_all
+    assert drop_all == 0
+
+
+def test_cli_build_min_variable_heavies_filter_reduces_pairs(tmp_path):
+    unfiltered = _persisted_pair_count(_build_alkylbenzene_store(tmp_path))
+    require_three = _persisted_pair_count(
+        _build_alkylbenzene_store(tmp_path, "--min-variable-heavies", "3")
+    )
+
+    assert unfiltered > require_three
 
 
 def test_cli_build_accepts_max_variable_heavies_none(tmp_path):
