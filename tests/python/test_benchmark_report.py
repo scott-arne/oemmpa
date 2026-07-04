@@ -877,3 +877,23 @@ def test_mmpdb_section_notes_startup_domination():
     console = Console(record=True, width=200)
     section.render(console)
     assert "startup" in console.export_text().lower()
+
+
+def test_thread_scaling_below_floor_renders_diagnosis():
+    from rich.console import Console
+    from benchmarks.report import ThreadScalingSection
+    # Below-floor 1-worker baseline -> guarded empty-rows section.
+    rows = [
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 1,
+         "jobs_completed": 1, "wall_seconds": 0.001, "jobs_per_second": 1000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 2,
+         "jobs_completed": 2, "wall_seconds": 0.0005, "jobs_per_second": 4000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+    ]
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)  # must not raise
+    text = console.export_text().lower()
+    assert "baseline too small to measure" in text

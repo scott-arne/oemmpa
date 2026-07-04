@@ -723,6 +723,12 @@ class ThreadScalingSection(Section):
     def render(self, console, *, verbose=False):
         console.print(Rule(self.title))
         console.print(f"[dim]{self.description}[/dim]")
+        if not self.rows:
+            # Guarded state (e.g. below-floor baseline): no per-worker table to
+            # show, so surface the headline diagnosis directly instead of an
+            # empty table (single-section runs have no at-a-glance summary).
+            console.print(f"[dim]{self.headline}[/dim]")
+            return
         table = Table()
         table.add_column("Workers", justify="right")
         table.add_column("Wall", justify="right")
