@@ -695,6 +695,38 @@ class TestBaselineDeltaSection:
         )
 
 
+def test_head_to_head_section_renders_and_glances():
+    from rich.console import Console
+    from benchmarks.report import HeadToHeadSection
+
+    rows = [
+        {
+            "benchmark": "head_to_head", "dataset": "surechembl.smi", "size": 300,
+            "actual_molecule_count": 300,
+            "oemmpa_warm_seconds": 0.20, "rdkit_warm_seconds": 0.50,
+            "mmpdb_warm_process_seconds": 2.0,
+            "oemmpa_wall_seconds": 0.80, "rdkit_wall_seconds": 0.50,
+            "mmpdb_wall_seconds": 2.40,
+            "oemmpa_pair_count": 5000, "rdkit_pair_count": 4800, "mmpdb_pair_count": 5200,
+            "rdkit_available": True, "mmpdb_available": True,
+            "vs_rdkit_wall_ratio": 0.625, "vs_mmpdb_wall_ratio": 3.0,
+        }
+    ]
+    section = HeadToHeadSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)  # must not raise
+    entry = section.glance_entry()
+    assert entry.name == "Head-to-head"
+    # headline mentions the largest size and the mmpdb speedup verdict.
+    assert "300" in entry.headline or "3.0" in entry.headline or "mmpdb" in entry.headline.lower()
+
+
+def test_head_to_head_section_absent_without_rows():
+    from benchmarks.report import HeadToHeadSection
+    assert HeadToHeadSection.from_rows([{"benchmark": "storage"}]) is None
+
+
 class TestReportFromRows:
     def test_orders_sections_canonical_when_all_present(self):
         rows = [

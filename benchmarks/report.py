@@ -253,6 +253,38 @@ def _as_truthy(value: Any) -> bool:
     return False
 
 
+def _ratio_cell(ratio):
+    """Render a wall-ratio cell: '<X>x faster/slower' or the startup sentinel."""
+    value = _as_float(ratio)
+    if value is None:
+        return "[dim]—[/dim]"
+    if value >= 1.0:
+        return f"{value:.1f}x faster"
+    return f"{1 / value:.1f}x slower" if value > 0 else "[dim]—[/dim]"
+
+
+def _head_to_head_verdict(row):
+    """Return (severity, glance_verdict, headline) for the largest-size row."""
+    size = int(_as_float(row.get("actual_molecule_count")) or 0)
+    vs_mmpdb = _as_float(row.get("vs_mmpdb_wall_ratio"))
+    vs_rdkit = _as_float(row.get("vs_rdkit_wall_ratio"))
+    if vs_mmpdb is not None:
+        faster = vs_mmpdb >= 1.0
+        return (
+            "good" if faster else "warning",
+            "faster than mmpdb" if faster else "slower than mmpdb",
+            f"{vs_mmpdb:.1f}x vs mmpdb at n={size}",
+        )
+    if vs_rdkit is not None:
+        faster = vs_rdkit >= 1.0
+        return (
+            "good" if faster else "warning",
+            "faster than rdkit" if faster else "slower than rdkit",
+            f"{vs_rdkit:.1f}x vs rdkit at n={size}",
+        )
+    return ("neutral", "startup-dominated", f"startup-dominated at n={size}")
+
+
 class RdkitSection(Section):
     """RDKit pair-extraction comparison.
 
@@ -392,6 +424,83 @@ class RdkitSection(Section):
         )
 
 
+class HeadToHeadSection(Section):
+    """Three-way OEMMPA vs RDKit vs MMPDB speed + pair-count comparison.
+
+    One row per dataset size: warm algorithm time (OEMMPA/RDKit in-process),
+    MMPDB warmed-process time, end-to-end wall time for all three, and the
+    matched-pair count each tool produces. Wall-time ratios are shown only for
+    sizes above the startup floor.
+    """
+
+    title = "Head-to-head"
+    description = (
+        "OEMMPA vs RDKit vs MMPDB turning molecules into matched pairs: warm "
+        "algorithm time, end-to-end wall time, and pair counts across a size "
+        "sweep. Ratios use wall time and are suppressed for startup-dominated "
+        "sizes."
+    )
+
+    def __init__(self, *, rows, severity, glance_verdict, headline):
+        self.rows = rows
+        self.severity = severity
+        self.glance_verdict = glance_verdict
+        self.headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        h2h = [r for r in rows if r.get("benchmark") == "head_to_head"]
+        if not h2h:
+            return None
+        rendered = sorted(h2h, key=lambda r: _as_float(r.get("size")) or 0.0)
+        # Verdict from the largest size's vs-mmpdb wall ratio when present, else
+        # vs-rdkit; parity/neutral when both suppressed.
+        largest = rendered[-1]
+        severity, verdict, headline = _head_to_head_verdict(largest)
+        return cls(rows=rendered, severity=severity, glance_verdict=verdict, headline=headline)
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("n", justify="right")
+        table.add_column("oemmpa warm", justify="right")
+        table.add_column("rdkit warm", justify="right")
+        table.add_column("mmpdb proc", justify="right")
+        table.add_column("oemmpa wall", justify="right")
+        table.add_column("rdkit wall", justify="right")
+        table.add_column("mmpdb wall", justify="right")
+        table.add_column("oe pairs", justify="right")
+        table.add_column("rd pairs", justify="right")
+        table.add_column("mm pairs", justify="right")
+        table.add_column("vs rdkit")
+        table.add_column("vs mmpdb")
+        for row in self.rows:
+            table.add_row(
+                str(int(_as_float(row.get("actual_molecule_count")) or 0)),
+                format_seconds(_as_float(row.get("oemmpa_warm_seconds"))),
+                format_seconds(_as_float(row.get("rdkit_warm_seconds"))),
+                format_seconds(_as_float(row.get("mmpdb_warm_process_seconds"))),
+                format_seconds(_as_float(row.get("oemmpa_wall_seconds"))),
+                format_seconds(_as_float(row.get("rdkit_wall_seconds"))),
+                format_seconds(_as_float(row.get("mmpdb_wall_seconds"))),
+                str(int(_as_float(row.get("oemmpa_pair_count")) or 0)),
+                str(int(_as_float(row.get("rdkit_pair_count")) or 0)),
+                str(int(_as_float(row.get("mmpdb_pair_count")) or 0)),
+                _ratio_cell(row.get("vs_rdkit_wall_ratio")),
+                _ratio_cell(row.get("vs_mmpdb_wall_ratio")),
+            )
+        console.print(table)
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=self.glance_verdict,
+            headline=self.headline,
+        )
+
+
 @dataclass
 class Report:
     """Aggregate of populated sections, skipped benchmarks, and baseline path.
@@ -426,6 +535,7 @@ class Report:
         :returns: A :class:`Report` with sections in canonical order.
         """
         ordered_classes: list[type[Section]] = [
+            HeadToHeadSection,
             RdkitSection,
             ThreadScalingSection,
             StorageSection,
