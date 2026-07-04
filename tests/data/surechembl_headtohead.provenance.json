@@ -5,11 +5,14 @@
   "source_parquet_sha256": "0882e2f670628d6aa9580a2b947684c8d90ac146ef98c596eb03a6bb1e73acb6",
   "sampling": {
     "row_group": 0,
-    "filters": ["no salts/disconnected (no '.' in SMILES)", "150 <= mol_weight <= 450"],
+    "filters": [
+      "no salts/disconnected (no '.' in SMILES)",
+      "150 <= mol_weight <= 450"
+    ],
     "selection": "first N passing rows (deterministic)",
-    "count": 40
+    "count": 500
   },
-  "fixture_file": "surechembl_mmp_fixture.smi",
-  "fixture_sha256": "8ea5cfac77ecfdc547c60d88c55c87669340ec3a80d31c70ff751699ec21c399",
+  "fixture_file": "surechembl_headtohead.smi",
+  "fixture_sha256": "46c7abf4a6656b203d6472b3cde3b57d7fd99daa371bc05954d849a355613ff1",
   "note": "Structures are public SureChEMBL only. NEVER regenerate from proprietary or non-public sources."
 }

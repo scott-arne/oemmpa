@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
@@ -182,3 +183,69 @@ def clean(ctx, pycache=False):
             print(f"  {item}")
     else:
         print("Nothing to clean.")
+
+
+# Local fallbacks used only when the corresponding env var is unset, so the
+# benchmark task works out-of-the-box here without hardcoding a personal path as
+# the sole option.
+_BENCHMARK_ENV_DEFAULTS = {
+    "OPENEYE_ROOT": "/Users/johnss51/Support/openeye/lib/openeye/toolkits",
+    "HTTP_PROXY": "http://proxy-server.bms.com:8080",
+    "HTTPS_PROXY": "http://proxy-server.bms.com:8080",
+    "NO_PROXY": "s3.amazonaws.com,bms.com,localhost,127.0.0.1,169.254.169.254",
+}
+
+
+@task(
+    help={
+        "head_to_head": "Run only the flagship three-way head-to-head benchmark.",
+        "sizes": "Comma-separated molecule counts for head-to-head.",
+        "smiles": "Override SMILES corpus path.",
+        "output": "Write benchmark rows to a CSV path.",
+        "repeats": "Number of timed repeats.",
+    }
+)
+def benchmark(c, head_to_head=False, sizes=None, smiles=None, output=None, repeats=None):
+    """Run the OEMMPA benchmark suite with the environment pre-set."""
+    from invoke.exceptions import Exit
+
+    # --sizes and --smiles only have meaning for the head-to-head subcommand
+    # (the full suite's per-benchmark datasets are fixed by the §6.1 matrix).
+    # Reject them for the full suite instead of building an argv the group CLI
+    # does not accept.
+    if not head_to_head and (sizes is not None or smiles is not None):
+        raise Exit(
+            "--sizes/--smiles require --head-to-head (the full suite uses fixed "
+            "per-benchmark datasets).",
+            code=2,
+        )
+
+    env = dict(os.environ)
+    for key, fallback in _BENCHMARK_ENV_DEFAULTS.items():
+        env.setdefault(key, fallback)
+    # Ensure the built worktree extension is importable by the suite and the
+    # oemmpa CLI it spawns, and that the env's mmpdb/oemmpa executables resolve.
+    python_root = str(PROJECT_ROOT / "python")
+    swig_root = str(PROJECT_ROOT / "build-debug" / "swig")
+    env["PYTHONPATH"] = os.pathsep.join(
+        [python_root, swig_root, env.get("PYTHONPATH", "")]
+    )
+    # Put the running interpreter's bin dir on PATH so the head-to-head
+    # subprocess can find `mmpdb`/`oemmpa` even under a minimal PATH.
+    interpreter_bin = str(Path(sys.executable).parent)
+    env["PATH"] = os.pathsep.join([interpreter_bin, env.get("PATH", "")])
+
+    script = str(PROJECT_ROOT / "benchmarks" / "benchmark_suite.py")
+    argv = [sys.executable, script]
+    if head_to_head:
+        argv.append("head-to-head")
+        if sizes is not None:
+            argv += ["--sizes", str(sizes)]
+        if smiles is not None:
+            argv += ["--smiles", str(smiles)]
+    if output is not None:
+        argv += ["--output", str(output)]
+    if repeats is not None:
+        argv += ["--repeats", str(repeats)]
+
+    c.run(shlex.join(argv), env=env, pty=False)

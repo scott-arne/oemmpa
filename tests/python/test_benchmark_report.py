@@ -49,6 +49,48 @@ class TestVerdictForSecondsRatio:
         assert severity == "warning"
 
 
+def test_wall_ratio_below_floor_is_startup_dominated():
+    from benchmarks.report import verdict_for_wall_ratio, RATIO_FLOOR_SECONDS
+    # oemmpa fast but below the 50ms floor -> no ratio, startup-dominated.
+    severity, label, ratio = verdict_for_wall_ratio(0.005, 0.004)
+    assert ratio is None
+    assert label == "startup-dominated"
+    assert severity == "neutral"
+    assert RATIO_FLOOR_SECONDS == 0.050
+
+
+def test_wall_ratio_above_floor_reports_faster():
+    from benchmarks.report import verdict_for_wall_ratio
+    # oemmpa 0.1s, other 0.5s, both above floor -> oemmpa 5x faster than other.
+    severity, label, ratio = verdict_for_wall_ratio(0.1, 0.5)
+    assert ratio == 5.0
+    assert severity == "good"
+    assert "faster" in label
+
+
+def test_wall_ratio_missing_side_is_startup_dominated():
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(0.1, None)
+    assert ratio is None
+    assert label == "startup-dominated"
+
+
+def test_wall_ratio_infinite_side_is_suppressed():
+    import math
+
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(0.1, math.inf)
+    assert (severity, label, ratio) == ("neutral", "startup-dominated", None)
+
+
+def test_wall_ratio_nan_side_is_suppressed():
+    import math
+
+    from benchmarks.report import verdict_for_wall_ratio
+    severity, label, ratio = verdict_for_wall_ratio(math.nan, 0.1)
+    assert (severity, label, ratio) == ("neutral", "startup-dominated", None)
+
+
 class TestVerdictForEfficiency:
     def test_eighty_percent_or_higher_is_good(self) -> None:
         severity, label = verdict_for_efficiency(0.85)
@@ -343,12 +385,15 @@ class TestRdkitSection:
 
 
 def _scaling_row(*, workers, jobs_per_second, molecule_count=10):
+    # Scale wall_seconds to ensure baseline (workers=1) is above the ratio floor (0.050s).
+    # Use a 10x multiplier so jobs_per_second=100 -> 0.1s wall, which is comfortably above floor.
+    wall_seconds = 10.0 / jobs_per_second if jobs_per_second else 0
     return {
         "benchmark": "thread_scaling",
         "dataset": "fixture",
         "workers": workers,
         "jobs_completed": workers,
-        "wall_seconds": 1.0 / jobs_per_second if jobs_per_second else 0,
+        "wall_seconds": wall_seconds,
         "jobs_per_second": jobs_per_second,
         "molecule_count": molecule_count,
         "pair_count": 0,
@@ -653,6 +698,91 @@ class TestBaselineDeltaSection:
         )
 
 
+def test_head_to_head_section_renders_and_glances():
+    from rich.console import Console
+    from benchmarks.report import HeadToHeadSection
+
+    rows = [
+        {
+            "benchmark": "head_to_head", "dataset": "surechembl.smi", "size": 300,
+            "actual_molecule_count": 300,
+            "oemmpa_warm_seconds": 0.20, "rdkit_warm_seconds": 0.50,
+            "mmpdb_warm_process_seconds": 2.0,
+            "oemmpa_wall_seconds": 0.80, "rdkit_wall_seconds": 0.50,
+            "mmpdb_wall_seconds": 2.40,
+            "oemmpa_pair_count": 5000, "rdkit_pair_count": 4800, "mmpdb_pair_count": 5200,
+            "rdkit_available": True, "mmpdb_available": True,
+            "vs_rdkit_wall_ratio": 0.625, "vs_mmpdb_wall_ratio": 3.0,
+        }
+    ]
+    section = HeadToHeadSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)  # must not raise
+    entry = section.glance_entry()
+    assert entry.name == "Head-to-head"
+    # headline mentions the largest size and the mmpdb speedup verdict.
+    assert "300" in entry.headline or "3.0" in entry.headline or "mmpdb" in entry.headline.lower()
+
+
+def test_head_to_head_section_absent_without_rows():
+    from benchmarks.report import HeadToHeadSection
+    assert HeadToHeadSection.from_rows([{"benchmark": "storage"}]) is None
+
+
+def test_head_to_head_ratio_cell_parity_band():
+    from benchmarks.report import _ratio_cell
+    # Within +/-10% of parity -> "parity", not a false win/loss.
+    assert _ratio_cell(1.05) == "parity"
+    assert _ratio_cell(0.95) == "parity"
+    assert _ratio_cell(1.0) == "parity"
+    # Clear win / loss keep the standard labels.
+    assert "faster" in _ratio_cell(3.0)
+    assert "slower" in _ratio_cell(0.3)
+    # Suppressed / invalid -> dim dash.
+    assert _ratio_cell(None) == "[dim]—[/dim]"
+    assert _ratio_cell(0.0) == "[dim]—[/dim]"
+
+
+def test_head_to_head_verdict_uses_parity_band():
+    from benchmarks.report import _head_to_head_verdict
+    # Near-parity vs mmpdb -> neutral parity, not a spurious win.
+    sev, verdict, headline = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 1.05, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "neutral"
+    assert "parity" in verdict
+    assert "n=300" in headline
+    # Clear win vs mmpdb.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 3.0, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "good" and "faster than mmpdb" in verdict
+    # Clear loss vs mmpdb (we lag) -> warning.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": 0.3, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "warning" and "slower than mmpdb" in verdict
+    # mmpdb suppressed -> falls back to rdkit.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": None, "vs_rdkit_wall_ratio": 3.0}
+    )
+    assert sev == "good" and "faster than rdkit" in verdict
+    # Both suppressed -> startup-dominated.
+    sev, verdict, _ = _head_to_head_verdict(
+        {"actual_molecule_count": 300, "vs_mmpdb_wall_ratio": None, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "neutral" and verdict == "startup-dominated"
+    # Lagging vs mmpdb (ratio < 1) -> headline shows inverted magnitude + slower.
+    sev, verdict, headline = _head_to_head_verdict(
+        {"actual_molecule_count": 500, "vs_mmpdb_wall_ratio": 0.25, "vs_rdkit_wall_ratio": None}
+    )
+    assert sev == "warning"
+    assert "slower than mmpdb" in verdict
+    assert "4.0x slower than mmpdb" in headline  # 1/0.25 = 4.0
+    assert "n=500" in headline
+
+
 class TestReportFromRows:
     def test_orders_sections_canonical_when_all_present(self):
         rows = [
@@ -692,3 +822,86 @@ class TestReportFromRows:
         baseline = [_cli_row(command="predict", seconds=0.2)]
         report = Report.from_rows(rows, baseline_rows=baseline, skipped=[], baseline_path=None)
         assert report.sections[-1].title == "Baseline comparison"
+
+
+def test_thread_scaling_baseline_below_floor_is_unmeasurable():
+    from benchmarks.report import ThreadScalingSection
+    # 1-worker baseline wall far below the ratio floor -> "baseline too small".
+    rows = [
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 1,
+         "jobs_completed": 1, "wall_seconds": 0.001, "jobs_per_second": 1000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 2,
+         "jobs_completed": 2, "wall_seconds": 0.0005, "jobs_per_second": 4000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+    ]
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    entry = section.glance_entry()
+    assert "too small" in entry.verdict.lower() or "too small" in entry.headline.lower()
+
+
+def test_cli_workflow_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import CliWorkflowSection
+    rows = [
+        {"benchmark": "cli_workflow", "command": "predict", "dataset": "mmpa_smiles.smi",
+         "returncode": 0, "seconds": 11.5, "stdout_lines": 1, "output_rows": 1, "stderr": ""},
+    ]
+    section = CliWorkflowSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()
+
+
+def test_rdkit_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import RdkitSection
+    rows = [
+        {"benchmark": "rdkit_report", "dataset": "rdkit_reference.smi", "molecule_count": 5,
+         "oemmpa_pair_count": 3, "oemmpa_pair_seconds": 0.01, "oemmpa_workflow_seconds": 0.02,
+         "oemmpa_cold_pair_seconds": 0.03, "rdkit_available": True, "rdkit_pair_count": 3,
+         "rdkit_seconds": 0.02, "rdkit_cold_seconds": 0.04, "oemmpa_hydrogen_expansion_only": 0},
+    ]
+    section = RdkitSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()
+
+
+def test_mmpdb_section_notes_startup_domination():
+    from rich.console import Console
+    from benchmarks.report import MmpdbSection
+    rows = [
+        {"benchmark": "mmpdb_workflow", "command": "list", "dataset": "d.mmpdb",
+         "available": True, "seconds": 0.5},
+        {"benchmark": "persisted_cli_workflow", "command": "list", "dataset": "d.duckdb",
+         "seconds": 0.4},
+    ]
+    section = MmpdbSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)
+    assert "startup" in console.export_text().lower()
+
+
+def test_thread_scaling_below_floor_renders_diagnosis():
+    from rich.console import Console
+    from benchmarks.report import ThreadScalingSection
+    # Below-floor 1-worker baseline -> guarded empty-rows section.
+    rows = [
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 1,
+         "jobs_completed": 1, "wall_seconds": 0.001, "jobs_per_second": 1000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+        {"benchmark": "thread_scaling", "dataset": "d", "workers": 2,
+         "jobs_completed": 2, "wall_seconds": 0.0005, "jobs_per_second": 4000.0,
+         "molecule_count": 300, "pair_count": 10, "transform_count": 5},
+    ]
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    console = Console(record=True, width=200)
+    section.render(console)  # must not raise
+    text = console.export_text().lower()
+    assert "baseline too small to measure" in text

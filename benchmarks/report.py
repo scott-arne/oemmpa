@@ -17,6 +17,7 @@ consumes already-collected row dictionaries.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,45 @@ _SEVERITY_RANK = {"good": 0, "neutral": 1, "warning": 2}
 # reference, yellow within +/-10%, red when at least 10% worse.
 TIER_BETTER = 0.90
 TIER_WORSE = 1.10
+
+
+# Wall times below this floor are dominated by process/import startup, not
+# algorithm cost. A "vs X" ratio computed from sub-floor times is noise, so it
+# is suppressed and labeled instead.
+RATIO_FLOOR_SECONDS = 0.050
+
+
+def verdict_for_wall_ratio(oemmpa_wall, other_wall):
+    """Return ``(severity, label, ratio)`` comparing another tool to OEMMPA.
+
+    ``ratio`` is ``other_wall / oemmpa_wall`` (how many times OEMMPA's wall time
+    fits into the other tool's), so ``ratio > 1`` means OEMMPA is faster. The
+    ratio is suppressed (``None``, ``"startup-dominated"``) when either wall time
+    is missing or below :data:`RATIO_FLOOR_SECONDS`, because sub-floor times
+    reflect startup rather than algorithm cost.
+
+    :param oemmpa_wall: OEMMPA end-to-end wall seconds, or ``None``.
+    :param other_wall: Comparison tool end-to-end wall seconds, or ``None``.
+    :returns: ``(severity, label, ratio_or_None)``.
+    """
+    if (
+        oemmpa_wall is None
+        or other_wall is None
+        or not math.isfinite(oemmpa_wall)
+        or not math.isfinite(other_wall)
+        or oemmpa_wall < RATIO_FLOOR_SECONDS
+        or other_wall < RATIO_FLOOR_SECONDS
+    ):
+        # None, non-finite (nan/inf from a failed or timed-out run), or
+        # sub-floor times cannot yield a meaningful ratio; suppress rather than
+        # divide (avoids ZeroDivisionError / bogus parity from nan/inf).
+        return ("neutral", "startup-dominated", None)
+    ratio = other_wall / oemmpa_wall
+    # verdict_for_seconds_ratio takes a current/reference ratio where lower is
+    # better; here oemmpa is "current", other is "reference", so pass
+    # oemmpa/other = 1/ratio.
+    severity, label = verdict_for_seconds_ratio(oemmpa_wall / other_wall)
+    return (severity, label, ratio)
 
 
 def verdict_for_seconds_ratio(ratio: float) -> tuple[str, str]:
@@ -213,6 +253,52 @@ def _as_truthy(value: Any) -> bool:
     return False
 
 
+def _ratio_cell(ratio):
+    """Render a wall-ratio cell using the report's standard parity band.
+
+    ``ratio`` is ``other_wall / oemmpa_wall`` (``> 1`` means OEMMPA is faster).
+    Derives the label from :func:`verdict_for_seconds_ratio` via ``1 / ratio`` so
+    a near-parity ratio renders ``"parity"`` instead of a false win/loss, matching
+    every other section. ``None`` (suppressed / startup-dominated) and
+    non-positive ratios render a dim dash.
+    """
+    value = _as_float(ratio)
+    if value is None or value <= 0:
+        return "[dim]—[/dim]"
+    _, label = verdict_for_seconds_ratio(1.0 / value)
+    return label
+
+
+def _head_to_head_verdict(row):
+    """Return ``(severity, glance_verdict, headline)`` for the largest-size row.
+
+    Prefers the vs-mmpdb wall ratio, falling back to vs-rdkit; both are compared
+    with the report's standard +/-10% parity band via
+    :func:`verdict_for_seconds_ratio` (``1 / ratio``), so a near-parity result is
+    reported as ``"parity"`` rather than a spurious faster/slower verdict. When
+    both ratios are suppressed the size is startup-dominated.
+    """
+    size = int(_as_float(row.get("actual_molecule_count")) or 0)
+    for ratio_value, tool in (
+        (_as_float(row.get("vs_mmpdb_wall_ratio")), "mmpdb"),
+        (_as_float(row.get("vs_rdkit_wall_ratio")), "rdkit"),
+    ):
+        if ratio_value is None or ratio_value <= 0:
+            continue
+        severity, _ = verdict_for_seconds_ratio(1.0 / ratio_value)
+        if severity == "good":
+            verdict = f"faster than {tool}"
+            headline = f"{ratio_value:.1f}x faster than {tool} at n={size}"
+        elif severity == "warning":
+            verdict = f"slower than {tool}"
+            headline = f"{1.0 / ratio_value:.1f}x slower than {tool} at n={size}"
+        else:
+            verdict = f"parity vs {tool}"
+            headline = f"parity vs {tool} at n={size}"
+        return (severity, verdict, headline)
+    return ("neutral", "startup-dominated", f"startup-dominated at n={size}")
+
+
 class RdkitSection(Section):
     """RDKit pair-extraction comparison.
 
@@ -327,6 +413,11 @@ class RdkitSection(Section):
                 "-",
             )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost. See the Head-to-head "
+            "section for a size-swept comparison.[/dim]"
+        )
         if verbose and self.hydrogen_only:
             console.print(
                 f"[dim]OEMMPA also reported {self.hydrogen_only} hydrogen-only "
@@ -349,6 +440,83 @@ class RdkitSection(Section):
             severity=self.severity,
             verdict=verdict,
             headline=f"{self.verdict_label} vs RDKit",
+        )
+
+
+class HeadToHeadSection(Section):
+    """Three-way OEMMPA vs RDKit vs MMPDB speed + pair-count comparison.
+
+    One row per dataset size: warm algorithm time (OEMMPA/RDKit in-process),
+    MMPDB warmed-process time, end-to-end wall time for all three, and the
+    matched-pair count each tool produces. Wall-time ratios are shown only for
+    sizes above the startup floor.
+    """
+
+    title = "Head-to-head"
+    description = (
+        "OEMMPA vs RDKit vs MMPDB turning molecules into matched pairs: warm "
+        "algorithm time, end-to-end wall time, and pair counts across a size "
+        "sweep. Ratios use wall time and are suppressed for startup-dominated "
+        "sizes."
+    )
+
+    def __init__(self, *, rows, severity, glance_verdict, headline):
+        self.rows = rows
+        self.severity = severity
+        self.glance_verdict = glance_verdict
+        self.headline = headline
+
+    @classmethod
+    def from_rows(cls, rows, baseline_rows=None):
+        h2h = [r for r in rows if r.get("benchmark") == "head_to_head"]
+        if not h2h:
+            return None
+        rendered = sorted(h2h, key=lambda r: _as_float(r.get("size")) or 0.0)
+        # Verdict from the largest size's vs-mmpdb wall ratio when present, else
+        # vs-rdkit; parity/neutral when both suppressed.
+        largest = rendered[-1]
+        severity, verdict, headline = _head_to_head_verdict(largest)
+        return cls(rows=rendered, severity=severity, glance_verdict=verdict, headline=headline)
+
+    def render(self, console, *, verbose=False):
+        console.print(Rule(self.title))
+        console.print(f"[dim]{self.description}[/dim]")
+        table = Table()
+        table.add_column("n", justify="right")
+        table.add_column("oemmpa warm", justify="right")
+        table.add_column("rdkit warm", justify="right")
+        table.add_column("mmpdb proc", justify="right")
+        table.add_column("oemmpa wall", justify="right")
+        table.add_column("rdkit wall", justify="right")
+        table.add_column("mmpdb wall", justify="right")
+        table.add_column("oe pairs", justify="right")
+        table.add_column("rd pairs", justify="right")
+        table.add_column("mm pairs", justify="right")
+        table.add_column("vs rdkit")
+        table.add_column("vs mmpdb")
+        for row in self.rows:
+            table.add_row(
+                str(int(_as_float(row.get("actual_molecule_count")) or 0)),
+                format_seconds(_as_float(row.get("oemmpa_warm_seconds"))),
+                format_seconds(_as_float(row.get("rdkit_warm_seconds"))),
+                format_seconds(_as_float(row.get("mmpdb_warm_process_seconds"))),
+                format_seconds(_as_float(row.get("oemmpa_wall_seconds"))),
+                format_seconds(_as_float(row.get("rdkit_wall_seconds"))),
+                format_seconds(_as_float(row.get("mmpdb_wall_seconds"))),
+                str(int(_as_float(row.get("oemmpa_pair_count")) or 0)),
+                str(int(_as_float(row.get("rdkit_pair_count")) or 0)),
+                str(int(_as_float(row.get("mmpdb_pair_count")) or 0)),
+                _ratio_cell(row.get("vs_rdkit_wall_ratio")),
+                _ratio_cell(row.get("vs_mmpdb_wall_ratio")),
+            )
+        console.print(table)
+
+    def glance_entry(self):
+        return GlanceEntry(
+            name=self.title,
+            severity=self.severity,
+            verdict=self.glance_verdict,
+            headline=self.headline,
         )
 
 
@@ -386,6 +554,7 @@ class Report:
         :returns: A :class:`Report` with sections in canonical order.
         """
         ordered_classes: list[type[Section]] = [
+            HeadToHeadSection,
             RdkitSection,
             ThreadScalingSection,
             StorageSection,
@@ -486,6 +655,17 @@ class ThreadScalingSection(Section):
         baseline = next((r for r in scaling if int(_as_float(r.get("workers")) or 0) == 1), None)
         if baseline is None:
             return None
+        baseline_wall = _as_float(baseline.get("wall_seconds"))
+        if baseline_wall is not None and baseline_wall < RATIO_FLOOR_SECONDS:
+            # The 1-worker baseline is dominated by warmup/startup, so speedup
+            # and efficiency numbers derived from it are meaningless.
+            return cls(
+                rows=[],
+                severity="neutral",
+                has_warmup_overrun=False,
+                glance_verdict="baseline too small to measure",
+                headline="baseline too small to measure",
+            )
         baseline_jps = _as_float(baseline.get("jobs_per_second"))
         if not baseline_jps:
             return None
@@ -546,6 +726,12 @@ class ThreadScalingSection(Section):
     def render(self, console, *, verbose=False):
         console.print(Rule(self.title))
         console.print(f"[dim]{self.description}[/dim]")
+        if not self.rows:
+            # Guarded state (e.g. below-floor baseline): no per-worker table to
+            # show, so surface the headline diagnosis directly instead of an
+            # empty table (single-section runs have no at-a-glance summary).
+            console.print(f"[dim]{self.headline}[/dim]")
+            return
         table = Table()
         table.add_column("Workers", justify="right")
         table.add_column("Wall", justify="right")
@@ -627,6 +813,10 @@ class StorageSection(Section):
             str(self.property_rows),
         )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost.[/dim]"
+        )
 
     def glance_entry(self):
         if not self.available:
@@ -709,6 +899,10 @@ class _CliSectionBase(Section):
                 cells.append(format_bytes(row["database_bytes"]))
             table.add_row(*cells)
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost.[/dim]"
+        )
 
     def glance_entry(self):
         return GlanceEntry(
@@ -827,6 +1021,11 @@ class MmpdbSection(Section):
                 f"[{color}]{row['verdict_label']}[/{color}]",
             )
         console.print(table)
+        console.print(
+            "[dim]Note: fixture-sized dataset — these times are dominated by "
+            "process/import startup, not algorithm cost. See the Head-to-head "
+            "section for a size-swept comparison.[/dim]"
+        )
 
     def glance_entry(self):
         return GlanceEntry(
@@ -837,12 +1036,13 @@ class MmpdbSection(Section):
         )
 
 
-def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, ...]:
     return (
         str(row.get("benchmark", "")),
         str(row.get("dataset", "")),
         str(row.get("command", "")),
         str(row.get("workers", "")),
+        str(row.get("size", "")),
     )
 
 
@@ -928,7 +1128,7 @@ class BaselineDeltaSection(Section):
                 )
                 continue
             for column, baseline_value in baseline_row.items():
-                if column in {"benchmark", "dataset", "command", "workers", "status", "reason"}:
+                if column in {"benchmark", "dataset", "command", "workers", "status", "reason", "size"}:
                     continue
                 current_value = current_row.get(column)
                 baseline_num = _as_float(baseline_value)
@@ -1005,7 +1205,7 @@ def _worst(current: str, candidate: str) -> str:
     return current if _SEVERITY_RANK[current] >= _SEVERITY_RANK[candidate] else candidate
 
 
-def _format_where(key: tuple[str, str, str, str]) -> str:
+def _format_where(key: tuple[str, ...]) -> str:
     parts = [p for p in key if p]
     return " / ".join(parts) if parts else "(unknown)"
 

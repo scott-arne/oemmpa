@@ -532,3 +532,117 @@ def test_subcommand_run_omits_at_a_glance():
     assert result.exit_code == 0, result.output
     assert "Storage" in result.output
     assert "At a glance" not in result.output
+
+
+def test_head_to_head_schema_registered():
+    from benchmarks.benchmark_suite import BENCHMARK_SCHEMAS
+    schema = BENCHMARK_SCHEMAS["head_to_head"]
+    assert schema[:4] == ["benchmark", "dataset", "size", "actual_molecule_count"]
+    assert "vs_rdkit_wall_ratio" in schema
+    assert "vs_mmpdb_wall_ratio" in schema
+    assert "mmpdb_warm_process_seconds" in schema
+
+
+def test_head_to_head_in_default_suite():
+    from benchmarks.benchmark_suite import DEFAULT_SUITE_BENCHMARKS
+    assert "head-to-head" in DEFAULT_SUITE_BENCHMARKS
+
+
+def test_head_to_head_subcommand_smoke(tmp_path):
+    from benchmarks.benchmark_suite import main
+    out = tmp_path / "h2h.csv"
+    # Tiny fixture + size + 1 repeat keeps it fast; exit code 0.
+    code = main(
+        [
+            "head-to-head",
+            "--smiles", "tests/data/surechembl_mmp_fixture.smi",
+            "--sizes", "20",
+            "--repeats", "1",
+            "--output", str(out),
+        ],
+        standalone_mode=False,
+    )
+    assert code == 0
+    assert out.exists()
+    header = out.read_text(encoding="utf-8").splitlines()[0]
+    assert "vs_mmpdb_wall_ratio" in header
+
+
+def test_regression_check_keeps_head_to_head_sizes_distinct(tmp_path):
+    import csv
+
+    from benchmarks.benchmark_suite import regression_check_rows
+
+    def write(path, s100_wall, s300_wall):
+        rows = [
+            {"benchmark": "head_to_head", "dataset": "d.smi", "size": 100,
+             "oemmpa_wall_seconds": s100_wall},
+            {"benchmark": "head_to_head", "dataset": "d.smi", "size": 300,
+             "oemmpa_wall_seconds": s300_wall},
+        ]
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(
+                fh, fieldnames=["benchmark", "dataset", "size", "oemmpa_wall_seconds"]
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+    base = tmp_path / "base.csv"
+    cur = tmp_path / "cur.csv"
+    write(base, 1.0, 1.0)
+    write(cur, 1.0, 5.0)  # size 100 unchanged; size 300 is 5x slower
+    report = regression_check_rows(str(base), str(cur), max_seconds_ratio=1.25)
+    by_size = {r["command"]: r for r in report if r["metric"] == "oemmpa_wall_seconds"}
+    assert set(by_size) == {"size=100", "size=300"}
+    assert by_size["size=100"]["status"] == "pass"
+    assert by_size["size=300"]["status"] == "regression"
+
+
+def test_invoke_benchmark_task_registered():
+    import sys
+    from pathlib import Path
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(REPO_ROOT))
+    import tasks
+    from invoke.tasks import Task
+    assert isinstance(tasks.benchmark, Task)
+    # The full suite must reject head-to-head-only options rather than build a
+    # bad argv.
+    from invoke import Context
+    from invoke.exceptions import Exit
+    import pytest as _pytest
+    with _pytest.raises(Exit):
+        tasks.benchmark(Context(), head_to_head=False, sizes="20")
+
+
+def test_invoke_benchmark_builds_absolute_quoted_command():
+    import sys
+    from pathlib import Path
+    REPO_ROOT = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(REPO_ROOT))
+    import tasks
+    from invoke import Context
+
+    class _StubContext(Context):
+        def __init__(self):
+            super().__init__()
+            self.command = None
+            self.env = None
+
+        def run(self, command, **kwargs):
+            self.command = command
+            self.env = kwargs.get("env")
+
+    ctx = _StubContext()
+    # Head-to-head with an output path containing a space — must survive as one
+    # quoted token and use the ABSOLUTE script path.
+    tasks.benchmark(ctx, head_to_head=True, sizes="20", output="out dir/res.csv", repeats=1)
+    assert ctx.command is not None
+    # Absolute script path (not a bare relative "benchmarks/benchmark_suite.py").
+    assert str((tasks.PROJECT_ROOT / "benchmarks" / "benchmark_suite.py")) in ctx.command
+    # The space-containing output path is preserved as a single shell token.
+    import shlex
+    tokens = shlex.split(ctx.command)
+    assert "out dir/res.csv" in tokens
+    assert "head-to-head" in tokens
+    assert "--sizes" in tokens and "20" in tokens
