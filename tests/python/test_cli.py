@@ -459,6 +459,50 @@ def test_cli_build_accepts_max_variable_heavies_none(tmp_path):
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def test_cli_build_defaults_max_variable_heavies_to_ten(tmp_path):
+    # A bare build (no filter flags) must apply mmpdb's default
+    # max-variable-heavies=10. 2-phenylnaphthalene vs 2-phenylanthracene share a
+    # phenyl constant; variable fragments are naphthyl (10 heavies) and
+    # anthracenyl (14 heavies). The default drops the pair (anthracenyl > 10);
+    # --max-variable-heavies none restores it. Rigid rings, so the max-heavies
+    # and max-rotatable-bonds defaults do not interfere.
+    smiles = tmp_path / "aryl.smi"
+    smiles.write_text(
+        "c1ccc(cc1)c1ccc2ccccc2c1 phenylnaphthalene\n"
+        "c1ccc(cc1)c1ccc2cc3ccccc3cc2c1 phenylanthracene\n",
+        encoding="utf-8",
+    )
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(default_db))
+    default_pairs = _persisted_pair_count(default_db)
+
+    unlimited_db = tmp_path / "unlimited.oemmpa.duckdb"
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--max-variable-heavies",
+        "none",
+        "--output",
+        str(unlimited_db),
+    )
+    unlimited_pairs = _persisted_pair_count(unlimited_db)
+
+    assert default_pairs == 0          # 14-heavy anthracenyl variable frag filtered
+    assert unlimited_pairs > 0         # escape hatch restores it
+
+
+def test_cli_build_max_variable_heavies_default_is_ten():
+    # Assert the default value directly (defense in depth beyond the behavioral
+    # test above): parsing a bare `build` argv yields max_variable_heavies == 10.
+    from oemmpa.cli import _build_parser
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb"]
+    )
+    assert args.max_variable_heavies == 10
+
+
 def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
     smiles, properties = _write_rgroup_cli_inputs(tmp_path)
     database = tmp_path / "analysis.oemmpa.duckdb"

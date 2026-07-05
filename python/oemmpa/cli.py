@@ -979,8 +979,8 @@ def _build_parser():
     build_parser.add_argument(
         "--max-variable-heavies",
         type=_optional_nonnegative_int,
-        default=None,
-        help="Compatibility parser for MMPDB maximum variable heavy atoms; use 'none' for no limit.",
+        default=10,
+        help="Maximum variable-fragment heavy atoms (MMPDB default 10); use 'none' for no limit.",
     )
     build_parser.add_argument(
         "--min-variable-ratio",
