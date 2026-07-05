@@ -471,17 +471,43 @@ def _load_properties(analyzer, path, id_column, property_name):
             raise ValueError(_format_row_error_summary(path, errors))
 
 
+# Sentinel distinguishing "arg not present on this subcommand" from an explicit
+# None ("no limit"). Fragment-size flags exist on `build` only, so other
+# subcommands' args namespace lacks them and their fragmentation is unchanged.
+_UNSET = object()
+
+
 def _configure_fragmentation(analyzer, args):
     cut_rgroups = getattr(args, "cut_rgroups", None)
     cut_rgroup_file = getattr(args, "cut_rgroup_file", None)
-    if cut_rgroups is None and cut_rgroup_file is None:
+
+    # Fragment-size guards are build-only. Absent attr -> not applied (leaves the
+    # neutral C++ default). Present int -> apply it. Present None ('none') ->
+    # explicitly clear the guard (no limit).
+    max_heavies = getattr(args, "max_heavies", _UNSET)
+    max_rotatable_bonds = getattr(args, "max_rotatable_bonds", _UNSET)
+
+    kwargs = {}
+    if cut_rgroups is not None:
+        kwargs["cut_rgroups"] = cut_rgroups
+    if cut_rgroup_file is not None:
+        kwargs["cut_rgroup_file"] = cut_rgroup_file
+    if max_heavies is not _UNSET:
+        if max_heavies is None:
+            kwargs["clear_max_heavy_atoms"] = True
+        else:
+            kwargs["max_heavy_atoms"] = max_heavies
+    if max_rotatable_bonds is not _UNSET:
+        if max_rotatable_bonds is None:
+            kwargs["clear_max_rotatable_bonds"] = True
+        else:
+            kwargs["max_rotatable_bonds"] = max_rotatable_bonds
+
+    if not kwargs:
         return
 
     try:
-        analyzer.configure_fragmentation(
-            cut_rgroups=cut_rgroups,
-            cut_rgroup_file=cut_rgroup_file,
-        )
+        analyzer.configure_fragmentation(**kwargs)
     except FileNotFoundError as exc:
         raise ValueError(f"missing cut R-group file: {cut_rgroup_file}") from exc
 
@@ -971,6 +997,18 @@ def _build_parser():
         help="Persist both transform orientations instead of the MMPDB-compatible one.",
     )
     build_parser.add_argument(
+        "--max-heavies",
+        type=_optional_nonnegative_int,
+        default=100,
+        help="Maximum molecule heavy atoms to fragment (MMPDB default 100); use 'none' for no limit.",
+    )
+    build_parser.add_argument(
+        "--max-rotatable-bonds",
+        type=_optional_nonnegative_int,
+        default=10,
+        help="Maximum rotatable bonds to fragment (MMPDB default 10); use 'none' for no limit.",
+    )
+    build_parser.add_argument(
         "--min-variable-heavies",
         type=_nonnegative_int,
         default=None,
@@ -979,8 +1017,8 @@ def _build_parser():
     build_parser.add_argument(
         "--max-variable-heavies",
         type=_optional_nonnegative_int,
-        default=None,
-        help="Compatibility parser for MMPDB maximum variable heavy atoms; use 'none' for no limit.",
+        default=10,
+        help="Maximum variable-fragment heavy atoms (MMPDB default 10); use 'none' for no limit.",
     )
     build_parser.add_argument(
         "--min-variable-ratio",

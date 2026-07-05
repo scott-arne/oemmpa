@@ -156,3 +156,24 @@ def test_head_to_head_mmpdb_broken_executable_degrades(tmp_path):
     assert "mmpdb run failed" in row["mmpdb_unavailable_reason"]
     # oemmpa still reported.
     assert row["oemmpa_wall_seconds"] >= 0.0
+
+
+def test_oemmpa_warm_passes_all_three_mmpdb_defaults(monkeypatch):
+    # Regression guard for the warm-vs-wall equal-work invariant: _oemmpa_warm
+    # must apply the SAME three mmpdb-parity filters that `oemmpa build` (the
+    # wall path) now defaults to, or the reported oemmpa_pair_count would
+    # diverge from the persisted wall count.
+    from benchmarks import head_to_head
+
+    captured = {}
+
+    def fake_run(path, **kwargs):
+        captured.update(kwargs)
+        return {"elapsed_seconds": 0.0, "pair_count": 0}
+
+    monkeypatch.setattr(head_to_head, "run_oemmpa_pair_equivalent", fake_run)
+    head_to_head._oemmpa_warm("ignored.smi", repeats=1)
+
+    assert captured.get("max_variable_heavies") == head_to_head.MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES == 10
+    assert captured.get("max_heavies") == head_to_head.MMPDB_DEFAULT_MAX_HEAVIES == 100
+    assert captured.get("max_rotatable_bonds") == head_to_head.MMPDB_DEFAULT_MAX_ROTATABLE_BONDS == 10

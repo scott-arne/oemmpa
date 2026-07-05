@@ -357,6 +357,25 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
     ]
 
 
+def test_cli_build_defaults_to_non_symmetric(tmp_path):
+    # mmpdb parity: a bare build indexes ONE transform orientation. The
+    # --symmetric flag doubles it. Assert the default persists strictly fewer
+    # pairs than --symmetric on the same input (i.e. non-symmetric by default).
+    smiles = tmp_path / "m.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(default_db))
+    default_pairs = _persisted_pair_count(default_db)
+
+    symmetric_db = tmp_path / "symmetric.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--symmetric", "--output", str(symmetric_db))
+    symmetric_pairs = _persisted_pair_count(symmetric_db)
+
+    assert default_pairs > 0
+    assert symmetric_pairs == 2 * default_pairs  # both orientations persisted
+
+
 def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
     # The bounds here are permissive for the 3-molecule fixture (1-heavy
     # variable fragments), so they are accepted without changing the pair set.
@@ -457,6 +476,50 @@ def test_cli_build_accepts_max_variable_heavies_none(tmp_path):
     result = _run_cli("list", str(database), "--recount")
 
     assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
+def test_cli_build_defaults_max_variable_heavies_to_ten(tmp_path):
+    # A bare build (no filter flags) must apply mmpdb's default
+    # max-variable-heavies=10. 2-phenylnaphthalene vs 2-phenylanthracene share a
+    # phenyl constant; variable fragments are naphthyl (10 heavies) and
+    # anthracenyl (14 heavies). The default drops the pair (anthracenyl > 10);
+    # --max-variable-heavies none restores it. Rigid rings, so the max-heavies
+    # and max-rotatable-bonds defaults do not interfere.
+    smiles = tmp_path / "aryl.smi"
+    smiles.write_text(
+        "c1ccc(cc1)c1ccc2ccccc2c1 phenylnaphthalene\n"
+        "c1ccc(cc1)c1ccc2cc3ccccc3cc2c1 phenylanthracene\n",
+        encoding="utf-8",
+    )
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(default_db))
+    default_pairs = _persisted_pair_count(default_db)
+
+    unlimited_db = tmp_path / "unlimited.oemmpa.duckdb"
+    _run_cli(
+        "build",
+        "--smiles",
+        str(smiles),
+        "--max-variable-heavies",
+        "none",
+        "--output",
+        str(unlimited_db),
+    )
+    unlimited_pairs = _persisted_pair_count(unlimited_db)
+
+    assert default_pairs == 0          # 14-heavy anthracenyl variable frag filtered
+    assert unlimited_pairs > 0         # escape hatch restores it
+
+
+def test_cli_build_max_variable_heavies_default_is_ten():
+    # Assert the default value directly (defense in depth beyond the behavioral
+    # test above): parsing a bare `build` argv yields max_variable_heavies == 10.
+    from oemmpa.cli import _build_parser
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb"]
+    )
+    assert args.max_variable_heavies == 10
 
 
 def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
@@ -1681,4 +1744,163 @@ def test_cli_stateless_generate_writes_gzip_output(tmp_path):
             "std": "",
             "p_value": "",
         },
+    ]
+
+
+def test_cli_build_max_heavies_flag_filters(tmp_path):
+    # Three 7-heavy benzenes form pairs. --max-heavies 6 drops all molecules
+    # (each has 7 heavies > 6) -> 0 pairs; --max-heavies 8 keeps them.
+    # Disable the orthogonal max-variable-heavies default so only max-heavies
+    # decides. (7-heavy benzenes are well under the rotatable default.)
+    smiles = tmp_path / "benzenes.smi"
+    smiles.write_text(
+        "Cc1ccccc1 tol\nOc1ccccc1 phenol\nNc1ccccc1 aniline\n", encoding="utf-8"
+    )
+
+    drop_db = tmp_path / "drop.oemmpa.duckdb"
+    _run_cli(
+        "build", "--smiles", str(smiles),
+        "--max-heavies", "6", "--max-variable-heavies", "none",
+        "--output", str(drop_db),
+    )
+    assert _persisted_pair_count(drop_db) == 0
+
+    keep_db = tmp_path / "keep.oemmpa.duckdb"
+    _run_cli(
+        "build", "--smiles", str(smiles),
+        "--max-heavies", "8", "--max-variable-heavies", "none",
+        "--output", str(keep_db),
+    )
+    assert _persisted_pair_count(keep_db) > 0
+
+
+def test_cli_build_max_rotatable_bonds_flag_filters(tmp_path):
+    # Propylbenzene (2 rotatable bonds) vs butylbenzene (3) form a pair.
+    # --max-rotatable-bonds 1 drops both molecules -> 0 pairs; 5 keeps them.
+    # Disable the orthogonal max-variable-heavies default.
+    smiles = tmp_path / "alkylbenzenes.smi"
+    smiles.write_text(
+        "CCCc1ccccc1 propylbenzene\nCCCCc1ccccc1 butylbenzene\n", encoding="utf-8"
+    )
+
+    drop_db = tmp_path / "drop.oemmpa.duckdb"
+    _run_cli(
+        "build", "--smiles", str(smiles),
+        "--max-rotatable-bonds", "1", "--max-variable-heavies", "none",
+        "--output", str(drop_db),
+    )
+    assert _persisted_pair_count(drop_db) == 0
+
+    keep_db = tmp_path / "keep.oemmpa.duckdb"
+    _run_cli(
+        "build", "--smiles", str(smiles),
+        "--max-rotatable-bonds", "5", "--max-variable-heavies", "none",
+        "--output", str(keep_db),
+    )
+    assert _persisted_pair_count(keep_db) > 0
+
+
+def test_cli_build_fragment_size_defaults_are_mmpdb_values():
+    # Assert the default VALUES directly (behavioral tests above cover the
+    # filtering mechanism; exceeding 100/10 with real pairs is impractical).
+    from oemmpa.cli import _build_parser
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb"]
+    )
+    assert args.max_heavies == 100
+    assert args.max_rotatable_bonds == 10
+
+
+def test_cli_build_max_heavies_is_distinct_from_max_heavies_transf():
+    # Regression: before --max-heavies existed, argparse accepted the bare
+    # string `--max-heavies` as a unique-prefix abbreviation of
+    # --max-heavies-transf. Now --max-heavies is a distinct molecule-size cap.
+    # Pin both spellings so a future edit cannot silently re-collide them.
+    from oemmpa.cli import _build_parser
+
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb", "--max-heavies", "25"]
+    )
+    assert args.max_heavies == 25
+    assert args.max_heavies_transf is None
+
+    args = _build_parser().parse_args(
+        [
+            "build", "--smiles", "x.smi", "--output", "y.duckdb",
+            "--max-heavies-transf", "25",
+        ]
+    )
+    assert args.max_heavies_transf == 25
+    assert args.max_heavies == 100
+
+
+def test_cli_build_fragment_size_none_restores_no_limit():
+    # 'none' escape hatch parses to None (mapped to clear_* in
+    # _configure_fragmentation), matching --max-variable-heavies' convention.
+    from oemmpa.cli import _build_parser
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb",
+         "--max-heavies", "none", "--max-rotatable-bonds", "none"]
+    )
+    assert args.max_heavies is None
+    assert args.max_rotatable_bonds is None
+
+
+def test_cli_refresh_stats_does_not_accept_fragment_size_flags(tmp_path):
+    # build-only scope: the fragment-size flags must NOT leak onto refresh-stats.
+    smiles = tmp_path / "m.smi"
+    props = tmp_path / "p.csv"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+    props.write_text("id,pIC50\ntol,6.0\nphenol,7.5\n", encoding="utf-8")
+    result = _run_cli(
+        "refresh-stats",
+        "--smiles", str(smiles),
+        "--properties", str(props),
+        "--property", "pIC50",
+        "--max-heavies", "100",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "unrecognized arguments: --max-heavies" in result.stderr
+
+
+def test_configure_fragmentation_ignores_absent_size_args():
+    # When an args namespace lacks max_heavies/max_rotatable_bonds (as for
+    # refresh-stats/predict/generate), _configure_fragmentation must not call
+    # configure_fragmentation with any size guard -> stateless commands unchanged.
+    import argparse
+    from oemmpa.cli import _configure_fragmentation
+
+    class _RecordingAnalyzer:
+        def __init__(self):
+            self.calls = []
+        def configure_fragmentation(self, **kwargs):
+            self.calls.append(kwargs)
+
+    # args namespace WITHOUT the build-only size attrs and without cut-rgroups.
+    args = argparse.Namespace(cut_rgroups=None, cut_rgroup_file=None)
+    analyzer = _RecordingAnalyzer()
+    _configure_fragmentation(analyzer, args)
+    assert analyzer.calls == []  # no configuration applied
+
+    # A build-style namespace WITH the size defaults applies exactly them.
+    build_args = argparse.Namespace(
+        cut_rgroups=None, cut_rgroup_file=None,
+        max_heavies=100, max_rotatable_bonds=10,
+    )
+    build_analyzer = _RecordingAnalyzer()
+    _configure_fragmentation(build_analyzer, build_args)
+    assert build_analyzer.calls == [
+        {"max_heavy_atoms": 100, "max_rotatable_bonds": 10}
+    ]
+
+    # 'none' -> None maps to the clear_* flags.
+    none_args = argparse.Namespace(
+        cut_rgroups=None, cut_rgroup_file=None,
+        max_heavies=None, max_rotatable_bonds=None,
+    )
+    none_analyzer = _RecordingAnalyzer()
+    _configure_fragmentation(none_analyzer, none_args)
+    assert none_analyzer.calls == [
+        {"clear_max_heavy_atoms": True, "clear_max_rotatable_bonds": True}
     ]

@@ -67,7 +67,12 @@ def run_oemmpa(path):
     }
 
 
-def run_oemmpa_pair_equivalent(path, max_variable_heavies=None):
+def run_oemmpa_pair_equivalent(
+    path,
+    max_variable_heavies=None,
+    max_heavies=None,
+    max_rotatable_bonds=None,
+):
     """Run OEMMPA in the pair-only mode used for RDKit comparison.
 
     RDKit's ``rdMMPA`` harness emits one orientation per molecule pair and does
@@ -79,12 +84,21 @@ def run_oemmpa_pair_equivalent(path, max_variable_heavies=None):
         heavy-atom cap. ``None`` (the default) applies no limit and keeps the
         RDKit-comparison surface unchanged; the head-to-head benchmark passes
         MMPDB's default to make OEMMPA and MMPDB do equal work.
+    :param max_heavies: Optional whole-molecule heavy-atom cap (fragment-time,
+        MMPDB-style). ``None`` applies no limit.
+    :param max_rotatable_bonds: Optional whole-molecule rotatable-bond cap
+        (fragment-time, MMPDB-style). ``None`` applies no limit.
     :returns: Benchmark result dictionary.
     """
     oemmpa = _import_worktree_package()
 
     rows = read_smiles(path)
     analyzer = oemmpa.Analyzer()
+    if max_heavies is not None or max_rotatable_bonds is not None:
+        analyzer.configure_fragmentation(
+            max_heavy_atoms=max_heavies,
+            max_rotatable_bonds=max_rotatable_bonds,
+        )
     options = oemmpa._oemmpa.QueryOptions()
     options.SetSymmetric(False)
     if max_variable_heavies is not None:
