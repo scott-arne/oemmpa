@@ -141,5 +141,27 @@ TEST(Desalter, SolventsStrippedOnlyWhenSolventFileLoaded) {
     EXPECT_EQ(CanonicalSmiles(with_solvents.mol).find('.'), std::string::npos);
 }
 
+TEST(Desalter, PreservesTitleAcrossDesalting) {
+    const auto desalter = MakeMiniDesalter();
+
+    // Single survivor: aspirin.HCl with title "aspirin_hcl" -> title preserved.
+    OEChem::OEGraphMol aspirin_hcl = MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O.Cl");
+    aspirin_hcl.SetTitle("aspirin_hcl");
+    const auto result1 = desalter.Desalt(aspirin_hcl);
+    EXPECT_EQ(result1.mol.GetTitle(), std::string("aspirin_hcl"));
+
+    // Multiple survivors: two non-salt fragments with title "cocrystal" -> title preserved.
+    OEChem::OEGraphMol cocrystal = MolFromSmiles("c1ccccc1CCN.c1ccccc1CCO");
+    cocrystal.SetTitle("cocrystal");
+    const auto result2 = desalter.Desalt(cocrystal);
+    EXPECT_EQ(result2.mol.GetTitle(), std::string("cocrystal"));
+
+    // All-salt input: titled molecule yields empty result with preserved title.
+    OEChem::OEGraphMol all_salt = MolFromSmiles("[Na].Cl");
+    all_salt.SetTitle("salt_only");
+    const auto result3 = desalter.Desalt(all_salt);
+    EXPECT_EQ(result3.mol.GetTitle(), std::string("salt_only"));
+}
+
 }  // namespace test
 }  // namespace OEMMPA

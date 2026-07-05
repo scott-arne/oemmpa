@@ -136,6 +136,7 @@ DesaltResult Desalter::Desalt(const OEChem::OEMolBase& mol) const {
         }
     }
 
+    result.mol.SetTitle(mol.GetTitle());
     return result;
 }
 
