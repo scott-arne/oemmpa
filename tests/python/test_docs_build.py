@@ -65,7 +65,7 @@ def test_strict_docs_build(tmp_path):
         ROOT / "docs",
         docs_copy,
         ignore=shutil.ignore_patterns(
-            "_build", "_doxygen", "cpp-api", "superpowers", "plans"
+            "_build", "_doxygen", "cpp-api", "superpowers", "plans", "hyperpowers"
         ),
     )
 
