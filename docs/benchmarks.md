@@ -90,6 +90,11 @@ By default it runs a size sweep at 100, 300, and 500 molecules using the
 public SureChEMBL corpus subset included in the repository. Override the sizes
 with `--sizes N,N,...` or the corpus path with `--smiles PATH`.
 
+OEMMPA's `build` command now applies mmpdb-equivalent defaults: `--max-heavies 100`,
+`--max-rotatable-bonds 10`, `--max-variable-heavies 10`, and non-symmetric indexing.
+These defaults can be overridden by passing `none` to any of the filter flags or
+`--symmetric` to enable bidirectional pair indexing.
+
 Raw invocation:
 
 ```bash

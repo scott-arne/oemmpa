@@ -115,6 +115,11 @@ oemmpa generate \
 oemmpa rgroup2smarts '*c1ccccc1O' '*F'
 ```
 
+The `oemmpa build` command applies mmpdb-equivalent defaults for fragment filtering:
+`--max-heavies 100`, `--max-rotatable-bonds 10`, `--max-variable-heavies 10`, and
+non-symmetric indexing. These defaults can be overridden by passing `none` to any
+of the filter flags or `--symmetric` to enable bidirectional pair indexing.
+
 See [docs/quickstart.md](docs/quickstart.md) for loading examples and
 [docs/python-api.md](docs/python-api.md) for the Python API and optional DuckDB
 storage notes.

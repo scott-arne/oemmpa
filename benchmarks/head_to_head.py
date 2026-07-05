@@ -47,6 +47,8 @@ DEFAULT_SIZES = (100, 300, 500)
 # turn molecules into the same matched-pair surface. RDKit's rdMMPA has no
 # equivalent variable-size gate, so its column is left unfiltered.
 MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES = 10
+MMPDB_DEFAULT_MAX_HEAVIES = 100
+MMPDB_DEFAULT_MAX_ROTATABLE_BONDS = 10
 # Prefer the mmpdb next to the running interpreter (the micromamba env) so the
 # flagship resolves it even when PATH is minimal; fall back to a bare "mmpdb"
 # for other environments. shutil.which(None-safe) handles both.
@@ -89,6 +91,8 @@ def _oemmpa_warm(subset_path, repeats):
         res = run_oemmpa_pair_equivalent(
             subset_path,
             max_variable_heavies=MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES,
+            max_heavies=MMPDB_DEFAULT_MAX_HEAVIES,
+            max_rotatable_bonds=MMPDB_DEFAULT_MAX_ROTATABLE_BONDS,
         )
         return res["elapsed_seconds"], res
     return _min_over_repeats(once, repeats)
@@ -129,6 +133,10 @@ def _oemmpa_wall(subset_path, repeats, oemmpa_exe):
     def once():
         with TemporaryDirectory(prefix="oemmpa-h2h-") as tmp:
             db = Path(tmp) / "out.duckdb"
+            # oemmpa build now applies mmpdb-equivalent defaults (max-heavies 100,
+            # max-rotatable-bonds 10, max-variable-heavies 10) itself, so no
+            # explicit filter flags are needed; the warm path sets them explicitly
+            # since the in-process C++ core default is no-limit.
             cmd = (
                 [oemmpa_exe] if oemmpa_exe
                 else [sys.executable, "-m", "oemmpa"]
@@ -137,9 +145,6 @@ def _oemmpa_wall(subset_path, repeats, oemmpa_exe):
                 "--smiles", str(subset_path),
                 "--output", str(db),
                 "--force",
-                # Match MMPDB's default variable-fragment cap so both tools
-                # persist an equal-work matched-pair surface.
-                "--max-variable-heavies", str(MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES),
             ]
             env = os.environ.copy()
             env["PYTHONPATH"] = os.pathsep.join([str(PYTHON_ROOT), env.get("PYTHONPATH", "")])
