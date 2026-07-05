@@ -357,6 +357,25 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
     ]
 
 
+def test_cli_build_defaults_to_non_symmetric(tmp_path):
+    # mmpdb parity: a bare build indexes ONE transform orientation. The
+    # --symmetric flag doubles it. Assert the default persists strictly fewer
+    # pairs than --symmetric on the same input (i.e. non-symmetric by default).
+    smiles = tmp_path / "m.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(default_db))
+    default_pairs = _persisted_pair_count(default_db)
+
+    symmetric_db = tmp_path / "symmetric.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--symmetric", "--output", str(symmetric_db))
+    symmetric_pairs = _persisted_pair_count(symmetric_db)
+
+    assert default_pairs > 0
+    assert symmetric_pairs == 2 * default_pairs  # both orientations persisted
+
+
 def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
     # The bounds here are permissive for the 3-molecule fixture (1-heavy
     # variable fragments), so they are accepted without changing the pair set.
