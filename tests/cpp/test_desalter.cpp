@@ -62,8 +62,15 @@ TEST(Desalter, CapturesMultiWordNameAsLineRemainder) {
 }
 
 TEST(Desalter, MalformedSmartsThrowsNamingFileAndLine) {
-    const std::string path = WriteTempSaltFile("[Cl        Halide\n");
-    EXPECT_THROW(load_salt_patterns(path), InvalidQueryError);
+    const std::string path = WriteTempSaltFile("// comment\n[Cl        Halide\n");
+    try {
+        load_salt_patterns(path);
+        FAIL() << "Expected InvalidQueryError to be thrown";
+    } catch (const InvalidQueryError& exc) {
+        const std::string message(exc.what());
+        EXPECT_NE(message.find(":2:"), std::string::npos)
+            << "Error message should contain line number ':2:' but got: " << message;
+    }
 }
 
 TEST(Desalter, MissingFileThrows) {

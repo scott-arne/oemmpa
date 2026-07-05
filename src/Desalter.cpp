@@ -39,7 +39,9 @@ std::vector<SaltPattern> load_salt_patterns(const std::string& path) {
 
     std::vector<SaltPattern> patterns;
     std::string line;
+    unsigned int line_number = 0;
     while (std::getline(input, line)) {
+        ++line_number;
         if (is_comment_or_blank(line)) {
             continue;
         }
@@ -55,7 +57,7 @@ std::vector<SaltPattern> load_salt_patterns(const std::string& path) {
         pattern.name = name;
         if (!pattern.search.Init(smarts.c_str())) {
             throw InvalidQueryError(
-                "invalid salt SMARTS in " + path + ": " + trimmed
+                "invalid salt SMARTS in " + path + ":" + std::to_string(line_number) + ": " + trimmed
             );
         }
         patterns.push_back(std::move(pattern));
