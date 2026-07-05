@@ -1811,6 +1811,29 @@ def test_cli_build_fragment_size_defaults_are_mmpdb_values():
     assert args.max_rotatable_bonds == 10
 
 
+def test_cli_build_max_heavies_is_distinct_from_max_heavies_transf():
+    # Regression: before --max-heavies existed, argparse accepted the bare
+    # string `--max-heavies` as a unique-prefix abbreviation of
+    # --max-heavies-transf. Now --max-heavies is a distinct molecule-size cap.
+    # Pin both spellings so a future edit cannot silently re-collide them.
+    from oemmpa.cli import _build_parser
+
+    args = _build_parser().parse_args(
+        ["build", "--smiles", "x.smi", "--output", "y.duckdb", "--max-heavies", "25"]
+    )
+    assert args.max_heavies == 25
+    assert args.max_heavies_transf is None
+
+    args = _build_parser().parse_args(
+        [
+            "build", "--smiles", "x.smi", "--output", "y.duckdb",
+            "--max-heavies-transf", "25",
+        ]
+    )
+    assert args.max_heavies_transf == 25
+    assert args.max_heavies == 100
+
+
 def test_cli_build_fragment_size_none_restores_no_limit():
     # 'none' escape hatch parses to None (mapped to clear_* in
     # _configure_fragmentation), matching --max-variable-heavies' convention.

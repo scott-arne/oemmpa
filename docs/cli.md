@@ -47,7 +47,9 @@ oemmpa build \
 By default, `build` writes the MMPDB-compatible non-symmetric orientation.
 `--symmetric` writes both directions. `--max-heavies-transf` limits the
 absolute heavy-atom change, and `--max-frac-trans` limits the relative
-heavy-atom change. OEMMPA also accepts the MMPDB variable-size spellings
+heavy-atom change. Note that `--max-heavies` (without `-transf`) is a distinct
+option that caps the size of whole molecules fragmented; write the transform
+cap in full as `--max-heavies-transf`. OEMMPA also accepts the MMPDB variable-size spellings
 `--min-variable-heavies`, `--max-variable-heavies`, `--min-variable-ratio`, and
 `--max-variable-ratio` so compatible build scripts can pass their option set;
 those values are validated at the CLI boundary. Use `--max-variable-heavies
