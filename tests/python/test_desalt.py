@@ -52,6 +52,38 @@ def test_configure_desalting_rejects_disabled_with_files(tmp_path):
         analyzer.configure_desalting(enabled=False, strip_solvents=True)
 
 
+def test_single_component_salt_former_survives_by_default():
+    # Functional desalting needs a counterion alongside the compound. A lone
+    # salt-former (pyridine matches the bundled "Pyridine" pattern) is the
+    # compound of interest, so a single-component input is ingested unchanged.
+    analyzer = Analyzer()
+    analyzer.add_molecule("c1ccncc1", id="pyridine")
+    assert analyzer.stripped_names("pyridine") == []
+
+
+def test_aggressive_strips_single_component_salt_former():
+    # Aggressive mode bypasses the single-component guard: the lone salt-former
+    # matches a pattern and its row is rejected as all-salt.
+    analyzer = Analyzer()
+    analyzer.configure_desalting(aggressive=True)
+    with pytest.raises((ValueError, RuntimeError)):
+        analyzer.add_molecule("c1ccncc1", id="pyridine")
+
+
+def test_aggressive_leaves_multi_component_desalting_intact():
+    # The guard must not change genuine desalting: a salted two-component input
+    # still strips the counterion in the default (non-aggressive) mode.
+    analyzer = Analyzer()
+    analyzer.add_molecule("CC(=O)Oc1ccccc1C(=O)O.Cl", id="aspirin")
+    assert "Halides" in analyzer.stripped_names("aspirin")
+
+
+def test_configure_desalting_rejects_disabled_with_aggressive():
+    analyzer = Analyzer()
+    with pytest.raises(ValueError):
+        analyzer.configure_desalting(enabled=False, aggressive=True)
+
+
 def test_generate_source_desalts_like_corpus(tmp_path):
     # A salted --source molecule must desalt to the same structure the corpus
     # would, so generation matches. Apply an identity-ish transform to

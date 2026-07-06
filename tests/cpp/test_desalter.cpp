@@ -127,6 +127,47 @@ TEST(Desalter, AllSaltYieldsEmptyMolecule) {
     EXPECT_EQ(result.stripped_names.size(), 2u);
 }
 
+TEST(Desalter, SingleComponentSaltFormerSurvivesByDefault) {
+    // Default (non-aggressive): lone formic acid — which the "C(=O)O"
+    // counterion pattern matches as a WHOLE fragment (3 heavy atoms) — is the
+    // compound of interest, not a salt, so it is returned untouched.
+    const std::string input = "OC=O";  // formic acid, single component
+    const auto result = MakeMiniDesalter().Desalt(MolFromSmiles(input));
+    EXPECT_EQ(CanonicalSmiles(result.mol), CanonicalSmiles(MolFromSmiles(input)));
+    EXPECT_TRUE(result.stripped_names.empty());
+}
+
+TEST(Desalter, AggressiveStripsSingleComponentSaltFormer) {
+    // Aggressive: the single-component guard is bypassed, so lone formic acid
+    // (a whole-fragment match for "C(=O)O") is stripped to an empty molecule.
+    const auto desalter = Desalter(
+        load_salt_patterns(WriteTempSaltFile(kMiniSalts)),
+        /*aggressive=*/true
+    );
+    const auto result = desalter.Desalt(MolFromSmiles("OC=O"));
+    EXPECT_EQ(result.mol.NumAtoms(), 0u);
+    ASSERT_EQ(result.stripped_names.size(), 1u);
+    EXPECT_EQ(result.stripped_names[0], "Carboxylate counterion");
+}
+
+TEST(Desalter, NonAggressiveStillDesaltsMultiComponentInputs) {
+    // The single-component guard must not disturb genuine desalting: a
+    // drug . HCl pair still strips the halide even in the default mode.
+    const auto result = MakeMiniDesalter().Desalt(MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O.Cl"));
+    EXPECT_EQ(CanonicalSmiles(result.mol), CanonicalSmiles(MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O")));
+    ASSERT_EQ(result.stripped_names.size(), 1u);
+    EXPECT_EQ(result.stripped_names[0], "Halides");
+}
+
+TEST(Desalter, IsAggressiveReflectsConstruction) {
+    EXPECT_FALSE(MakeMiniDesalter().IsAggressive());
+    const auto aggressive = Desalter(
+        load_salt_patterns(WriteTempSaltFile(kMiniSalts)),
+        /*aggressive=*/true
+    );
+    EXPECT_TRUE(aggressive.IsAggressive());
+}
+
 TEST(Desalter, SolventsStrippedOnlyWhenSolventFileLoaded) {
     const std::string salt_path = WriteTempSaltFile(kMiniSalts);
     const std::string solvent_path = std::string(::testing::TempDir()) + "/oemmpa_test_solvents.smarts";

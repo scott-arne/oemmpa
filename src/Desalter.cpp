@@ -65,10 +65,14 @@ std::vector<SaltPattern> load_salt_patterns(const std::string& path) {
     return patterns;
 }
 
-Desalter::Desalter(std::vector<SaltPattern> patterns)
-    : patterns_(std::move(patterns)) {}
+Desalter::Desalter(std::vector<SaltPattern> patterns, bool aggressive)
+    : patterns_(std::move(patterns)), aggressive_(aggressive) {}
 
-Desalter Desalter::FromFiles(const std::string& salt_path, const std::string& solvent_path) {
+Desalter Desalter::FromFiles(
+    const std::string& salt_path,
+    const std::string& solvent_path,
+    bool aggressive
+) {
     std::vector<SaltPattern> patterns = load_salt_patterns(salt_path);
     if (!solvent_path.empty()) {
         std::vector<SaltPattern> solvents = load_salt_patterns(solvent_path);
@@ -76,11 +80,15 @@ Desalter Desalter::FromFiles(const std::string& salt_path, const std::string& so
             patterns.push_back(std::move(solvent));
         }
     }
-    return Desalter(std::move(patterns));
+    return Desalter(std::move(patterns), aggressive);
 }
 
 std::size_t Desalter::PatternCount() const {
     return patterns_.size();
+}
+
+bool Desalter::IsAggressive() const {
+    return aggressive_;
 }
 
 DesaltResult Desalter::Desalt(const OEChem::OEMolBase& mol) const {
@@ -89,6 +97,16 @@ DesaltResult Desalter::Desalt(const OEChem::OEMolBase& mol) const {
     std::vector<unsigned int> parts(mol.GetMaxAtomIdx(), 0);
     const unsigned int part_count = OEChem::OEDetermineComponents(mol, parts.data());
     OEChem::OEPartPred part_pred(parts.data(), static_cast<unsigned int>(parts.size()));
+
+    // Functional desalting requires something to strip alongside the compound
+    // of interest. A single-component molecule IS the compound — even when it
+    // happens to match a salt-former pattern (pyridine, tosylic acid, a fatty
+    // acid) — so leave it untouched unless aggressive desalting is requested.
+    if (part_count <= 1 && !aggressive_) {
+        OEChem::OEAddMols(result.mol, mol);
+        result.mol.SetTitle(mol.GetTitle());
+        return result;
+    }
 
     // Build the surviving molecule from the components that no pattern matches
     // as a whole fragment. An empty result molecule when everything matched.

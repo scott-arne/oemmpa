@@ -95,7 +95,16 @@ public:
 
     /// \brief Configure the shared desalter from a salt file and optional
     /// solvent file. Applied to every molecule added afterward.
-    void ConfigureDesalting(const std::string& salt_path, const std::string& solvent_path = "");
+    ///
+    /// \param salt_path Required salt pattern file.
+    /// \param solvent_path Optional solvent pattern file.
+    /// \param aggressive When true, desalt single-component inputs too; when
+    ///   false (default), single-component molecules are ingested unchanged.
+    void ConfigureDesalting(
+        const std::string& salt_path,
+        const std::string& solvent_path = "",
+        bool aggressive = false
+    );
 
     /// \brief Remove the desalter so molecules are ingested unchanged.
     void ClearDesalting();

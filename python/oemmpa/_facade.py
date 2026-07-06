@@ -324,6 +324,7 @@ class Analyzer:
         strip_solvents=False,
         salt_file=None,
         solvent_file=None,
+        aggressive=False,
     ):
         """Configure salt/solvent removal applied to every added molecule.
 
@@ -333,17 +334,27 @@ class Analyzer:
         :param salt_file: Override path to the salt pattern file.
         :param solvent_file: Override path to the solvent pattern file
             (implies ``strip_solvents``).
+        :param aggressive: When true, desalt single-component inputs too. By
+            default a molecule with only one disconnected component is ingested
+            unchanged, since functional desalting only removes a counterion or
+            solvate alongside the compound of interest — a lone salt-former
+            (e.g. pyridine, tosylic acid) is the compound, not a salt.
         :returns: ``self`` for chaining.
-        :raises ValueError: If ``enabled`` is false and any pattern-file or
-            solvent argument is also supplied.
+        :raises ValueError: If ``enabled`` is false and any pattern-file,
+            solvent, or ``aggressive`` argument is also supplied.
         """
         from . import _oemmpa
 
         if not enabled:
-            if strip_solvents or salt_file is not None or solvent_file is not None:
+            if (
+                strip_solvents
+                or salt_file is not None
+                or solvent_file is not None
+                or aggressive
+            ):
                 raise ValueError(
                     "enabled=False cannot be combined with strip_solvents/"
-                    "salt_file/solvent_file"
+                    "salt_file/solvent_file/aggressive"
                 )
             self._raw_analyzer.ClearDesalting()
             self._active_desalter = None
@@ -358,11 +369,13 @@ class Analyzer:
                 else _bundled_data_path("solvents.smarts")
             )
         try:
-            self._raw_analyzer.ConfigureDesalting(salt_path, solvent_path)
+            self._raw_analyzer.ConfigureDesalting(salt_path, solvent_path, aggressive)
             # Also retain a standalone Desalter for the high-level query APIs
             # (AnalysisResult.generate/opportunities) whose free-function
             # generate_products calls cannot reach the analyzer-owned desalter.
-            self._active_desalter = _oemmpa.Desalter.FromFiles(salt_path, solvent_path)
+            self._active_desalter = _oemmpa.Desalter.FromFiles(
+                salt_path, solvent_path, aggressive
+            )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
         return self

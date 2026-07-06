@@ -16,6 +16,11 @@
 //       this file is unsafe as written — especially the SOLVENTS block.
 //   Order: simplest first so a "keep the last surviving fragment" guard behaves sensibly.
 //   Recommended pipeline: standardize/kekulize -> desalt (this file) -> re-neutralize/tautomer.
+//   Single-component safety: oemmpa does NOT desalt a molecule that has only one
+//   disconnected component, so a lone salt-former submitted as the compound of
+//   interest (pyridine, tosylic acid, a fatty acid) is kept intact. Only inputs
+//   with a counterion/solvate to strip are desalted. Bypass with aggressive mode
+//   (configure_desalting(aggressive=True)).
 //
 // oemmpa intentionally desalts MORE rigorously than mmpdb/RDKit's default SaltRemover
 // (~15 patterns). This is deliberate and scientifically motivated — do NOT revert toward
