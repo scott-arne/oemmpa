@@ -1,6 +1,7 @@
 """Pythonic facade for OEMMPA analysis."""
 
 import operator
+from importlib import resources
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
@@ -15,6 +16,15 @@ from ._smiles_file import iter_smiles_file
 
 
 _UINT_MAX = 2**32 - 1
+
+
+def _bundled_data_path(name):
+    """Resolve a bundled data file path under ``oemmpa/data``.
+
+    :param name: File name, e.g. ``"salts.smarts"``.
+    :returns: Filesystem path as a string.
+    """
+    return str(resources.files("oemmpa").joinpath("data", name))
 
 
 class Analyzer:
@@ -34,6 +44,11 @@ class Analyzer:
             raise
         self._used_external_ids = set()
         self._next_generated_id = 1
+        self._internal_id_by_external = {}
+        self._active_desalter = None  # set by configure_desalting; read by active_desalter()
+        # Desalt salts by default (spec §7). Callers override with
+        # configure_desalting(enabled=False) or a custom pattern set.
+        self.configure_desalting()
 
     @property
     def method(self):
@@ -55,8 +70,9 @@ class Analyzer:
         :returns: External molecule identifier used by the facade.
         """
         external_id = self._coerce_or_generate_id(id)
-        self._raw_analyzer.AddMolecule(molecule, external_id)
+        internal_id = self._raw_analyzer.AddMolecule(molecule, external_id)
         self._used_external_ids.add(external_id)
+        self._internal_id_by_external[external_id] = internal_id
         return external_id
 
     def add_molecules(self, molecules):
@@ -78,7 +94,7 @@ class Analyzer:
             except Exception as exc:
                 report.record_rejected(row_number, exc)
             else:
-                report.record_accepted(accepted_id)
+                report.record_accepted(accepted_id, self.stripped_names(accepted_id))
         return report
 
     def add_molecules_from_file(
@@ -106,7 +122,7 @@ class Analyzer:
             except Exception as exc:
                 report.record_rejected(row.row_number, exc)
             else:
-                report.record_accepted(accepted_id)
+                report.record_accepted(accepted_id, self.stripped_names(accepted_id))
         return report
 
     def add_molecules_from_dataframe(
@@ -300,6 +316,76 @@ class Analyzer:
         if isinstance(value, bool):
             return value
         raise ValueError(f"{name} must be a bool")
+
+    def configure_desalting(
+        self,
+        *,
+        enabled=True,
+        strip_solvents=False,
+        salt_file=None,
+        solvent_file=None,
+    ):
+        """Configure salt/solvent removal applied to every added molecule.
+
+        :param enabled: Desalt when true (default). When false, no other
+            argument may be supplied and molecules are ingested unchanged.
+        :param strip_solvents: Additionally apply the opt-in solvent set.
+        :param salt_file: Override path to the salt pattern file.
+        :param solvent_file: Override path to the solvent pattern file
+            (implies ``strip_solvents``).
+        :returns: ``self`` for chaining.
+        :raises ValueError: If ``enabled`` is false and any pattern-file or
+            solvent argument is also supplied.
+        """
+        from . import _oemmpa
+
+        if not enabled:
+            if strip_solvents or salt_file is not None or solvent_file is not None:
+                raise ValueError(
+                    "enabled=False cannot be combined with strip_solvents/"
+                    "salt_file/solvent_file"
+                )
+            self._raw_analyzer.ClearDesalting()
+            self._active_desalter = None
+            return self
+
+        salt_path = str(salt_file) if salt_file is not None else _bundled_data_path("salts.smarts")
+        use_solvents = strip_solvents or solvent_file is not None
+        solvent_path = ""
+        if use_solvents:
+            solvent_path = (
+                str(solvent_file) if solvent_file is not None
+                else _bundled_data_path("solvents.smarts")
+            )
+        try:
+            self._raw_analyzer.ConfigureDesalting(salt_path, solvent_path)
+            # Also retain a standalone Desalter for the high-level query APIs
+            # (AnalysisResult.generate/opportunities) whose free-function
+            # generate_products calls cannot reach the analyzer-owned desalter.
+            self._active_desalter = _oemmpa.Desalter.FromFiles(salt_path, solvent_path)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    def active_desalter(self):
+        """Return the standalone Desalter for the current configuration, or None.
+
+        Used by the high-level query APIs (AnalysisResult.generate/opportunities)
+        so a caller-supplied source molecule desalts consistently with the
+        stored corpus.
+
+        :returns: A ``_oemmpa.Desalter`` or ``None`` when desalting is disabled.
+        """
+        return getattr(self, "_active_desalter", None)
+
+    def stripped_names(self, molecule_id):
+        """Salt patterns that stripped a component from a molecule.
+
+        :param molecule_id: External molecule identifier returned by ``add_molecule``.
+        :returns: List of stripped pattern names (empty when nothing stripped).
+        """
+        internal_id = self._internal_id_by_external[str(molecule_id)]
+        return list(self._raw_analyzer.GetStrippedNames(internal_id))
 
     def analyze(self):
         """Run analysis and return this analyzer.

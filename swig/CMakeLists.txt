@@ -50,3 +50,9 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/python/oemmpa/cli.py
     DESTINATION oemmpa
 )
+
+install(FILES
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/data/salts.smarts
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/data/solvents.smarts
+    DESTINATION oemmpa/data
+)

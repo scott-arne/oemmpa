@@ -5,6 +5,12 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class AcceptedRow:
+    external_id: str
+    stripped_names: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RowError:
     """Per-row loading error.
 
@@ -25,6 +31,7 @@ class LoadReport:
     """
 
     accepted_ids: list[str] = field(default_factory=list)
+    accepted: list[AcceptedRow] = field(default_factory=list)
     errors: list[RowError] = field(default_factory=list)
 
     @property
@@ -37,14 +44,19 @@ class LoadReport:
         """Number of rejected rows or row-level failures."""
         return len(self.errors)
 
-    def record_accepted(self, molecule_id):
+    def record_accepted(self, molecule_id, stripped_names=None):
         """Record an accepted facade molecule identifier.
 
         :param molecule_id: Identifier returned by
             :meth:`oemmpa.Analyzer.add_molecule`.
+        :param stripped_names: Optional list of salt pattern names that were
+            stripped from this molecule.
         :returns: ``None``.
         """
         self.accepted_ids.append(str(molecule_id))
+        self.accepted.append(
+            AcceptedRow(external_id=str(molecule_id), stripped_names=list(stripped_names or []))
+        )
 
     def record_rejected(self, row, message):
         """Record a rejected source row.
@@ -214,7 +226,7 @@ def load_dataframe_rows(
             report.record_rejected(row_number, exc)
             continue
 
-        report.record_accepted(accepted_id)
+        report.record_accepted(accepted_id, analyzer.stripped_names(accepted_id))
         if molecule_smiles is not None and smiles_of is not None:
             molecule_smiles[str(accepted_id)] = smiles_of(molecule)
     return report
