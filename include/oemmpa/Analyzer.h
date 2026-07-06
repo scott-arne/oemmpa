@@ -2,6 +2,7 @@
 #define OEMMPA_ANALYZER_H
 
 #include "oemmpa/AnalysisMethod.h"
+#include "oemmpa/Desalter.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
@@ -92,6 +93,19 @@ public:
     /// \brief Configure fragmentation-method SMARTS used to select cut bonds.
     void SetFragmentationCutSmarts(const std::string& cut_smarts);
 
+    /// \brief Configure the shared desalter from a salt file and optional
+    /// solvent file. Applied to every molecule added afterward.
+    void ConfigureDesalting(const std::string& salt_path, const std::string& solvent_path = "");
+
+    /// \brief Remove the desalter so molecules are ingested unchanged.
+    void ClearDesalting();
+
+    /// \brief Names of the salt patterns that stripped a component from the
+    /// molecule with the given internal id.
+    ///
+    /// \raises InvalidMoleculeError When the internal id is unknown.
+    const std::vector<std::string>& GetStrippedNames(unsigned int internal_id) const;
+
     /// \brief Add a molecule from SMILES and return its assigned internal ID.
     ///
     /// Non-empty external IDs must be unique. Adding a molecule invalidates
@@ -176,6 +190,8 @@ private:
     std::vector<MoleculeRecord> molecules_;
     std::unordered_map<std::string, unsigned int> external_ids_;
     PropertyMap properties_;
+    std::shared_ptr<Desalter> desalter_;
+    std::unordered_map<unsigned int, std::vector<std::string>> stripped_names_by_id_;
     unsigned int next_internal_id_ = 1;
     bool analyzed_ = false;
 };
