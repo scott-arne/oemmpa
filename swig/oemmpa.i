@@ -344,6 +344,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(StringVector) std::vector<std::string>;
 %template(UnsignedIntVector) std::vector<unsigned int>;
 %template(LoadErrorVector) std::vector<OEMMPA::LoadError>;
+%template(AcceptedMoleculeVector) std::vector<OEMMPA::AcceptedMolecule>;
 %template(CutBondVector) std::vector<OEMMPA::CutBond>;
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
 %template(EnvironmentFingerprintVector) std::vector<OEMMPA::EnvironmentFingerprint>;
@@ -376,6 +377,11 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/Error.h"
 %include "../include/oemmpa/DatabaseSummary.h"
 %include "../include/oemmpa/EnvironmentFingerprint.h"
+%ignore OEMMPA::SaltPattern;
+%ignore OEMMPA::DesaltResult;
+%ignore OEMMPA::load_salt_patterns;
+%ignore OEMMPA::Desalter::Desalt;
+%include "../include/oemmpa/Desalter.h"
 %include "../include/oemmpa/QueryEnvironment.h"
 %include "../include/oemmpa/Fragmentation.h"
 %include "../include/oemmpa/MoleculeRecord.h"

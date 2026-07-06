@@ -1753,13 +1753,12 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
                     desalter
                 );
                 AddMolecule(molecule);
+                report.RecordAccepted(external_id, molecule.GetStrippedNames());
+                ++next_id;
             } catch (const std::exception& exc) {
                 report.RecordRejected(row_number, exc.what());
                 continue;
             }
-
-            report.RecordAccepted(external_id);
-            ++next_id;
         }
         Execute("commit");
     } catch (...) {
