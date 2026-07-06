@@ -1,9 +1,12 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/Desalter.h"
 #include "oemmpa/Error.h"
 
 #include <oechem.h>
+
+#include <fstream>
 
 namespace OEMMPA {
 namespace test {
@@ -70,6 +73,40 @@ TEST(MoleculeRecordTest, AllowsMissingExternalId) {
     EXPECT_FALSE(record.HasExternalId());
     EXPECT_EQ(record.GetExternalId(), "");
     EXPECT_EQ(record.GetHeavyAtomCount(), 6);
+}
+
+TEST(MoleculeRecordDesalt, DesaltsWhenDesalterProvided) {
+    const char* mini = "[F,Cl,Br,I]  Halides\n";
+    const std::string path = std::string(::testing::TempDir()) + "/mr_salts.smarts";
+    { std::ofstream out(path); out << mini; }
+    const Desalter desalter(load_salt_patterns(path));
+
+    const MoleculeRecord record =
+        MoleculeRecord::FromSmiles(1, "CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin", &desalter);
+    EXPECT_EQ(record.GetCanonicalSmiles().find("Cl"), std::string::npos);
+    ASSERT_EQ(record.GetStrippedNames().size(), 1u);
+    EXPECT_EQ(record.GetStrippedNames()[0], "Halides");
+}
+
+TEST(MoleculeRecordDesalt, NoDesalterLeavesMoleculeUnchanged) {
+    const MoleculeRecord record =
+        MoleculeRecord::FromSmiles(1, "CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin");
+    EXPECT_NE(record.GetCanonicalSmiles().find("Cl"), std::string::npos);
+    EXPECT_TRUE(record.GetStrippedNames().empty());
+}
+
+TEST(MoleculeRecordDesalt, AllSaltRejectsWithSaltMessage) {
+    const char* mini = "[F,Cl,Br,I]  Halides\n[Li,Na,K]  Alkali metals\n";
+    const std::string path = std::string(::testing::TempDir()) + "/mr_allsalt.smarts";
+    { std::ofstream out(path); out << mini; }
+    const Desalter desalter(load_salt_patterns(path));
+
+    try {
+        MoleculeRecord::FromSmiles(1, "[Na].Cl", "saltonly", &desalter);
+        FAIL() << "expected InvalidMoleculeError";
+    } catch (const InvalidMoleculeError& exc) {
+        EXPECT_NE(std::string(exc.what()).find("salt"), std::string::npos);
+    }
 }
 
 }  // namespace test
