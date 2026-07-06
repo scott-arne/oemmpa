@@ -922,21 +922,33 @@ class QueryEnvironmentMatchCollection(list):
         return [match.to_dict() for match in self]
 
 
-def compute_query_environments(smiles, min_radius=0, max_radius=5):
+def compute_query_environments(smiles, min_radius=0, max_radius=5, desalter=None):
     """Compute query environments for an input molecule SMILES.
 
     :param smiles: Query molecule SMILES.
     :param min_radius: Minimum environment radius, inclusive.
     :param max_radius: Maximum environment radius, inclusive.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to a caller-supplied
+        query molecule so its environments match the desalted corpus. Pass only
+        for user query molecules; leave ``None`` for stored references and
+        generated products.
     :returns: :class:`QueryEnvironmentCollection`.
     """
     from . import _oemmpa
 
-    raw_rows = _oemmpa.ComputeQueryEnvironments(
-        str(smiles),
-        _coerce_radius("min_radius", min_radius),
-        _coerce_radius("max_radius", max_radius),
-    )
+    if desalter is None:
+        raw_rows = _oemmpa.ComputeQueryEnvironments(
+            str(smiles),
+            _coerce_radius("min_radius", min_radius),
+            _coerce_radius("max_radius", max_radius),
+        )
+    else:
+        raw_rows = _oemmpa.ComputeQueryEnvironments(
+            str(smiles),
+            _coerce_radius("min_radius", min_radius),
+            _coerce_radius("max_radius", max_radius),
+            desalter,
+        )
     return QueryEnvironmentCollection(
         QueryEnvironmentResult.from_raw(row)
         for row in raw_rows
@@ -965,10 +977,14 @@ def _implicit_hydrogen_environment(row):
     )
 
 
-def _canonical_smiles(smiles):
+def _canonical_smiles(smiles, desalter=None):
     from . import _oemmpa
 
-    return _oemmpa.MoleculeRecord.FromSmiles(1, str(smiles)).GetCanonicalSmiles()
+    if desalter is None:
+        return _oemmpa.MoleculeRecord.FromSmiles(1, str(smiles)).GetCanonicalSmiles()
+    return _oemmpa.MoleculeRecord.FromSmiles(
+        1, str(smiles), "", desalter
+    ).GetCanonicalSmiles()
 
 
 def _hydrogen_transform_matches_source_environment(source, row):
@@ -1024,7 +1040,7 @@ def _index_statistics(statistics):
     return by_from, by_to, by_transform
 
 
-def find_query_environments(store, smiles, *, selection=None, **filters):
+def find_query_environments(store, smiles, *, selection=None, desalter=None, **filters):
     """Find stored transform statistics compatible with a query molecule.
 
     Unlike :func:`find_transform_environments`, which selects a caller-supplied
@@ -1034,6 +1050,8 @@ def find_query_environments(store, smiles, *, selection=None, **filters):
     :param store: :class:`oemmpa.DuckDBStore` or compatible object.
     :param smiles: Query molecule SMILES.
     :param selection: Optional :class:`RuleSelectionOptions`.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        query molecule so its environments match the desalted corpus.
     :param filters: Keyword filters accepted by :class:`RuleSelectionOptions`.
     :returns: :class:`QueryEnvironmentMatchCollection`.
     """
@@ -1042,6 +1060,7 @@ def find_query_environments(store, smiles, *, selection=None, **filters):
         smiles,
         options.min_radius,
         options.max_radius,
+        desalter,
     )
     statistics = _query_statistics(store, options)
     by_from, _, _ = _index_statistics(statistics)
@@ -1087,6 +1106,7 @@ def predict_query_property_delta(
     value=None,
     *,
     selection=None,
+    desalter=None,
     **filters,
 ):
     """Predict a property delta from query and reference molecule environments.
@@ -1098,6 +1118,9 @@ def predict_query_property_delta(
     :param property_name: Property name used for the prediction.
     :param value: Optional starting property value.
     :param selection: Optional :class:`RuleSelectionOptions`.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        query molecule ``smiles`` so it desalts consistently with the corpus.
+        The ``reference`` molecule is a library structure and is left raw.
     :param filters: Keyword filters accepted by :class:`RuleSelectionOptions`.
     :returns: :class:`RuleEnvironmentPredictionResult`.
     :raises KeyError: If no compatible rule environment is found.
@@ -1108,6 +1131,7 @@ def predict_query_property_delta(
         smiles,
         options.min_radius,
         options.max_radius,
+        desalter,
     )
     reference_environments = compute_query_environments(
         reference,
@@ -1125,7 +1149,7 @@ def predict_query_property_delta(
     statistics = _query_statistics(store, options)
     by_from, by_to, by_transform = _index_statistics(statistics)
 
-    query_canonical = _canonical_smiles(smiles)
+    query_canonical = _canonical_smiles(smiles, desalter)
 
     def maps_reference_to_query(transform):
         from ._transform import apply_variable_transform
