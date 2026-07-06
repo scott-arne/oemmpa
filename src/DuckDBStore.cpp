@@ -1745,6 +1745,7 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
                 external_id = make_generated_external_id(next_id);
             }
 
+            std::vector<std::string> stripped_names;
             try {
                 const MoleculeRecord molecule = MoleculeRecord::FromSmiles(
                     static_cast<unsigned int>(next_id),
@@ -1753,12 +1754,13 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
                     desalter
                 );
                 AddMolecule(molecule);
-                report.RecordAccepted(external_id, molecule.GetStrippedNames());
-                ++next_id;
+                stripped_names = molecule.GetStrippedNames();
             } catch (const std::exception& exc) {
                 report.RecordRejected(row_number, exc.what());
                 continue;
             }
+            report.RecordAccepted(external_id, std::move(stripped_names));
+            ++next_id;
         }
         Execute("commit");
     } catch (...) {
