@@ -25,6 +25,8 @@ class DuckDB;
 
 namespace OEMMPA {
 
+class Desalter;
+
 /// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
 ///
 /// The physical schema follows MMPDB's final database model: compounds,
@@ -79,7 +81,13 @@ public:
     /// first token is interpreted as SMILES and the optional second token is
     /// used as the external molecule identifier. Rows without identifiers
     /// receive stable ``molecule_<internal_id>`` identifiers.
-    LoadReport AddMoleculesFromSmilesFile(const std::string& smiles_path);
+    ///
+    /// \param smiles_path Path to the SMILES file.
+    /// \param desalter Optional desalter to strip salts before storing.
+    LoadReport AddMoleculesFromSmilesFile(
+        const std::string& smiles_path,
+        const Desalter* desalter = nullptr
+    );
 
     /// \brief Store numeric molecule properties from a CSV file.
     ///

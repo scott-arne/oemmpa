@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include "oemmpa/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/QueryEnvironment.h"
 
 #include <algorithm>
+#include <fstream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -198,6 +200,15 @@ TEST(QueryEnvironmentTest, InvalidSubstructureSmartsThrowsInvalidQueryError) {
         SmilesContainsSubstructure("[*:1]Cl", "ZZTop"),
         InvalidQueryError
     );
+}
+
+TEST(QueryEnvironmentDesalt, DesaltsQuerySmiles) {
+    const std::string path = std::string(::testing::TempDir()) + "/qe_salts.smarts";
+    { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
+    const Desalter desalter(load_salt_patterns(path));
+    const auto with_salt = ComputeQueryEnvironments("c1ccccc1CO.Cl", 0, 2, &desalter);
+    const auto without = ComputeQueryEnvironments("c1ccccc1CO", 0, 2);
+    EXPECT_EQ(with_salt.size(), without.size());
 }
 
 }  // namespace test

@@ -1,5 +1,6 @@
 #include "oemmpa/DuckDBStore.h"
 
+#include "oemmpa/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
@@ -1709,7 +1710,10 @@ void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {
     execute_prepared(connection_, sql, std::move(values));
 }
 
-LoadReport DuckDBStore::AddMoleculesFromSmilesFile(const std::string& smiles_path) {
+LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
+    const std::string& smiles_path,
+    const Desalter* desalter
+) {
     InitializeSchema();
 
     std::ifstream input(smiles_path);
@@ -1745,7 +1749,8 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(const std::string& smiles_pat
                 const MoleculeRecord molecule = MoleculeRecord::FromSmiles(
                     static_cast<unsigned int>(next_id),
                     smiles,
-                    external_id
+                    external_id,
+                    desalter
                 );
                 AddMolecule(molecule);
             } catch (const std::exception& exc) {

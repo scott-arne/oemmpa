@@ -1,5 +1,6 @@
 #include "oemmpa/QueryEnvironment.h"
 
+#include "oemmpa/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
@@ -60,7 +61,8 @@ const std::string& QueryEnvironment::GetParentSmarts() const {
 std::vector<QueryEnvironment> ComputeQueryEnvironments(
     const std::string& smiles,
     unsigned int min_radius,
-    unsigned int max_radius
+    unsigned int max_radius,
+    const Desalter* desalter
 ) {
     if (min_radius > max_radius) {
         throw EnvironmentFingerprintError(
@@ -71,7 +73,7 @@ std::vector<QueryEnvironment> ComputeQueryEnvironments(
         throw EnvironmentFingerprintError("max_radius must be between 0 and 5");
     }
 
-    const MoleculeRecord molecule = MoleculeRecord::FromSmiles(1, smiles);
+    const MoleculeRecord molecule = MoleculeRecord::FromSmiles(1, smiles, "", desalter);
     const Fragmenter fragmenter;
     const std::vector<Fragmentation> fragmentations =
         fragmenter.Fragment(molecule.GetInternalId(), molecule.GetMol());

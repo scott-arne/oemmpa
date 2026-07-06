@@ -6,6 +6,8 @@
 
 namespace OEMMPA {
 
+class Desalter;
+
 /// \brief Local environment observed while fragmenting a query molecule.
 class QueryEnvironment {
 public:
@@ -41,7 +43,8 @@ private:
 std::vector<QueryEnvironment> ComputeQueryEnvironments(
     const std::string& smiles,
     unsigned int min_radius = 0,
-    unsigned int max_radius = 5
+    unsigned int max_radius = 5,
+    const Desalter* desalter = nullptr
 );
 
 bool SmilesContainsSubstructure(
