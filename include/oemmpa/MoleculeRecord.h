@@ -7,7 +7,7 @@
 
 #include <oechem.h>
 
-#include "oemmpa/Desalter.h"
+#include "oedesalt/Desalter.h"
 
 namespace OEMMPA {
 
@@ -19,14 +19,14 @@ public:
         unsigned int internal_id,
         const std::string& smiles,
         const std::string& external_id = "",
-        const Desalter* desalter = nullptr
+        const OEDESALT::Desalter* desalter = nullptr
     );
 
     static MoleculeRecord FromMol(
         unsigned int internal_id,
         const OEChem::OEMolBase& mol,
         const std::string& external_id = "",
-        const Desalter* desalter = nullptr
+        const OEDESALT::Desalter* desalter = nullptr
     );
 
     unsigned int GetInternalId() const;

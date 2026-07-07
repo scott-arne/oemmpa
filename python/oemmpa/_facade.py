@@ -1,7 +1,6 @@
 """Pythonic facade for OEMMPA analysis."""
 
 import operator
-from importlib import resources
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
@@ -16,15 +15,6 @@ from ._smiles_file import iter_smiles_file
 
 
 _UINT_MAX = 2**32 - 1
-
-
-def _bundled_data_path(name):
-    """Resolve a bundled data file path under ``oemmpa/data``.
-
-    :param name: File name, e.g. ``"salts.smarts"``.
-    :returns: Filesystem path as a string.
-    """
-    return str(resources.files("oemmpa").joinpath("data", name))
 
 
 class Analyzer:
@@ -330,10 +320,14 @@ class Analyzer:
 
         :param enabled: Desalt when true (default). When false, no other
             argument may be supplied and molecules are ingested unchanged.
-        :param strip_solvents: Additionally apply the opt-in solvent set.
-        :param salt_file: Override path to the salt pattern file.
-        :param solvent_file: Override path to the solvent pattern file
-            (implies ``strip_solvents``).
+        :param strip_solvents: Additionally apply the opt-in solvent set. With
+            the bundled patterns this needs no file; with a custom ``salt_file``
+            it requires ``solvent_file``.
+        :param salt_file: Override path to the salt pattern file. Switches to
+            file mode, where both pattern sets come from files (oedesalt cannot
+            mix its bundled salts with a custom solvent file).
+        :param solvent_file: Override path to the solvent pattern file (implies
+            ``strip_solvents``). Requires ``salt_file``.
         :param aggressive: When true, desalt single-component inputs too. By
             default a molecule with only one disconnected component is ingested
             unchanged, since functional desalting only removes a counterion or
@@ -360,21 +354,40 @@ class Analyzer:
             self._active_desalter = None
             return self
 
-        salt_path = str(salt_file) if salt_file is not None else _bundled_data_path("salts.smarts")
-        use_solvents = strip_solvents or solvent_file is not None
-        solvent_path = ""
-        if use_solvents:
-            solvent_path = (
-                str(solvent_file) if solvent_file is not None
-                else _bundled_data_path("solvents.smarts")
+        # Two modes, mirroring oedesalt's factories. Default: the salt (and
+        # optional solvent) patterns compiled into the oedesalt library, so no
+        # data file is resolved on disk. File mode (triggered by ``salt_file``):
+        # both pattern sets come from files, since oedesalt cannot mix its
+        # bundled salts with a custom solvent file. The analyzer and the
+        # standalone query-side desalter are built identically so a
+        # caller-supplied source molecule desalts like the stored corpus.
+        if salt_file is None:
+            if solvent_file is not None:
+                raise ValueError(
+                    "solvent_file requires salt_file: the bundled salt patterns "
+                    "cannot be combined with a custom solvent file"
+                )
+            try:
+                self._raw_analyzer.ConfigureDesalting(strip_solvents, aggressive)
+                self._active_desalter = _oemmpa.Desalter.WithBundledPatterns(
+                    strip_solvents, aggressive
+                )
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+            return self
+
+        if strip_solvents and solvent_file is None:
+            raise ValueError(
+                "strip_solvents with a custom salt_file requires solvent_file: "
+                "the bundled solvent patterns are unavailable in file mode"
             )
+        solvent_path = str(solvent_file) if solvent_file is not None else ""
         try:
-            self._raw_analyzer.ConfigureDesalting(salt_path, solvent_path, aggressive)
-            # Also retain a standalone Desalter for the high-level query APIs
-            # (AnalysisResult.generate/opportunities) whose free-function
-            # generate_products calls cannot reach the analyzer-owned desalter.
+            self._raw_analyzer.ConfigureDesaltingFromFiles(
+                str(salt_file), solvent_path, aggressive
+            )
             self._active_desalter = _oemmpa.Desalter.FromFiles(
-                salt_path, solvent_path, aggressive
+                str(salt_file), solvent_path, aggressive
             )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc

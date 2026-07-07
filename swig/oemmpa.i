@@ -4,6 +4,7 @@
 
 %{
 #include "oemmpa/oemmpa.h"
+#include "oedesalt/Desalter.h"
 #include <oechem.h>
 
 using namespace OEMMPA;
@@ -377,11 +378,19 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/Error.h"
 %include "../include/oemmpa/DatabaseSummary.h"
 %include "../include/oemmpa/EnvironmentFingerprint.h"
-%ignore OEMMPA::SaltPattern;
-%ignore OEMMPA::DesaltResult;
-%ignore OEMMPA::load_salt_patterns;
-%ignore OEMMPA::Desalter::Desalt;
-%include "../include/oemmpa/Desalter.h"
+// Desalting lives in the standalone oedesalt library. oemmpa wraps its
+// OEDESALT::Desalter into this single SWIG module so the facade can construct a
+// desalter and thread it through the C++ operations. SaltPattern/DesaltResult
+// hold OpenEye types with no cross-runtime typemap, and Desalt() returns an
+// OEGraphMol by value that cannot be handed back safely, so only the factories
+// (WithBundledPatterns / FromFiles), PatternCount, and IsAggressive are exposed.
+// The raw vector<SaltPattern> constructor is unusable from Python and ignored.
+%ignore OEDESALT::SaltPattern;
+%ignore OEDESALT::DesaltResult;
+%ignore OEDESALT::load_salt_patterns;
+%ignore OEDESALT::Desalter::Desalt;
+%ignore OEDESALT::Desalter::Desalter;
+%include "oedesalt/Desalter.h"
 %include "../include/oemmpa/QueryEnvironment.h"
 %include "../include/oemmpa/Fragmentation.h"
 %include "../include/oemmpa/MoleculeRecord.h"

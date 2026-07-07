@@ -1,6 +1,6 @@
 #include "oemmpa/QueryEnvironment.h"
 
-#include "oemmpa/Desalter.h"
+#include "oedesalt/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
@@ -62,7 +62,7 @@ std::vector<QueryEnvironment> ComputeQueryEnvironments(
     const std::string& smiles,
     unsigned int min_radius,
     unsigned int max_radius,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     if (min_radius > max_radius) {
         throw EnvironmentFingerprintError(

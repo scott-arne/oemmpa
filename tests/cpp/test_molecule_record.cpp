@@ -1,8 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/MoleculeRecord.h"
-#include "oemmpa/Desalter.h"
 #include "oemmpa/Error.h"
+
+#include "oedesalt/Desalter.h"
 
 #include <oechem.h>
 
@@ -79,7 +80,7 @@ TEST(MoleculeRecordDesalt, DesaltsWhenDesalterProvided) {
     const char* mini = "[F,Cl,Br,I]  Halides\n";
     const std::string path = std::string(::testing::TempDir()) + "/mr_salts.smarts";
     { std::ofstream out(path); out << mini; }
-    const Desalter desalter(load_salt_patterns(path));
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
 
     const MoleculeRecord record =
         MoleculeRecord::FromSmiles(1, "CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin", &desalter);
@@ -99,7 +100,7 @@ TEST(MoleculeRecordDesalt, AllSaltRejectsWithSaltMessage) {
     const char* mini = "[F,Cl,Br,I]  Halides\n[Li,Na,K]  Alkali metals\n";
     const std::string path = std::string(::testing::TempDir()) + "/mr_allsalt.smarts";
     { std::ofstream out(path); out << mini; }
-    const Desalter desalter(load_salt_patterns(path));
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
 
     try {
         MoleculeRecord::FromSmiles(1, "[Na].Cl", "saltonly", &desalter);

@@ -1,6 +1,6 @@
 #include "oemmpa/TransformApplication.h"
 
-#include "oemmpa/Desalter.h"
+#include "oedesalt/Desalter.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 
@@ -340,7 +340,7 @@ unsigned int GeneratedProduct::GetEvidenceCount() const {
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
     const std::string& source_smiles,
     const std::string& transform_smirks,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles, "", desalter);
     return ApplySmirks(source_record.GetMol(), transform_smirks);
@@ -349,7 +349,7 @@ std::vector<TransformProduct> TransformApplicator::ApplySmirks(
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
     const OEChem::OEMolBase& source_mol,
     const std::string& transform_smirks,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     OEChem::OEGraphMol working(source_mol);
     if (desalter != nullptr) {
@@ -401,7 +401,7 @@ std::string TransformApplicator::BuildVariableTransformSmirks(
 std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(
     const std::string& source_smiles,
     const std::string& variable_transform_smiles,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     return ApplySmirks(
         source_smiles,
@@ -413,7 +413,7 @@ std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(
 std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(
     const OEChem::OEMolBase& source_mol,
     const std::string& variable_transform_smiles,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     return ApplySmirks(
         source_mol,
@@ -432,7 +432,7 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
     const std::string& source_smiles,
     const std::vector<Transform>& transforms,
     const GenerationOptions& options,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles, "", desalter);
     return GenerateProducts(source_record.GetMol(), transforms, options);
@@ -442,7 +442,7 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
     const OEChem::OEMolBase& source_mol,
     const std::vector<Transform>& transforms,
     const GenerationOptions& options,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     OEChem::OEGraphMol working(source_mol);
     if (desalter != nullptr) {

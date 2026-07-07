@@ -23,9 +23,11 @@ class Connection;
 class DuckDB;
 }  // namespace duckdb
 
-namespace OEMMPA {
-
+namespace OEDESALT {
 class Desalter;
+}  // namespace OEDESALT
+
+namespace OEMMPA {
 
 /// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
 ///
@@ -86,7 +88,7 @@ public:
     /// \param desalter Optional desalter to strip salts before storing.
     LoadReport AddMoleculesFromSmilesFile(
         const std::string& smiles_path,
-        const Desalter* desalter = nullptr
+        const OEDESALT::Desalter* desalter = nullptr
     );
 
     /// \brief Store numeric molecule properties from a CSV file.

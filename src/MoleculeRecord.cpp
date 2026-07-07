@@ -27,7 +27,7 @@ MoleculeRecord MoleculeRecord::FromSmiles(
     unsigned int internal_id,
     const std::string& smiles,
     const std::string& external_id,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     OEChem::OEGraphMol mol;
     OEChem::OEGraphMol strict_mol;
@@ -49,7 +49,7 @@ MoleculeRecord MoleculeRecord::FromMol(
     unsigned int internal_id,
     const OEChem::OEMolBase& mol,
     const std::string& external_id,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     if (mol.NumAtoms() == 0) {
         throw InvalidMoleculeError("molecule has no atoms");
@@ -60,7 +60,7 @@ MoleculeRecord MoleculeRecord::FromMol(
     record.external_id_ = external_id;
 
     if (desalter != nullptr) {
-        DesaltResult desalted = desalter->Desalt(mol);
+        OEDESALT::DesaltResult desalted = desalter->Desalt(mol);
         record.stripped_names_ = std::move(desalted.stripped_names);
         if (desalted.mol.NumAtoms() == 0) {
             throw InvalidMoleculeError(

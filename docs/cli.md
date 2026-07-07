@@ -82,26 +82,33 @@ molecule is never touched). A molecule with only one component is ingested
 unchanged, since functional desalting only removes a counterion or solvate
 alongside the compound of interest.
 
-OEMMPA intentionally desalts **more rigorously than mmpdb/RDKit's default
-SaltRemover** (~15 patterns): it ships 103 default salt patterns and 45 opt-in
-solvent patterns. This is the one sanctioned divergence from the mmpdb
-benchmark; it is deliberate and scientifically motivated. Do not "correct" it
-toward RDKit parity — use `--no-desalt` or `--salt-file` for a strict mmpdb
-comparison instead.
+Desalting is provided by the standalone
+[oedesalt](https://github.com/scott-arne/oedesalt) library, which OEMMPA links
+statically. Its 103 default salt patterns and 45 opt-in solvent patterns are
+compiled into the library, so no data file is resolved at runtime. OEMMPA
+intentionally desalts **more rigorously than mmpdb/RDKit's default SaltRemover**
+(~15 patterns). This is the one sanctioned divergence from the mmpdb benchmark;
+it is deliberate and scientifically motivated. Do not "correct" it toward RDKit
+parity — use `--no-desalt` or `--salt-file` for a strict mmpdb comparison
+instead.
 
 The same flags are available on every molecule-ingesting subcommand (`build`,
 `refresh-stats`, `predict`, and `generate`):
 
 - `--no-desalt` — ingest molecules unchanged.
 - `--strip-solvents` — also remove the opt-in solvent/water set.
-- `--salt-file PATH` — replace the bundled salt patterns.
-- `--solvent-file PATH` — replace the bundled solvent patterns (implies
-  `--strip-solvents`).
+- `--salt-file PATH` — replace the compiled-in salt patterns with a SMARTS
+  file. This switches to file mode, where all patterns come from files (the
+  compiled-in patterns cannot be mixed with a custom file).
+- `--solvent-file PATH` — add a solvent SMARTS file (implies `--strip-solvents`).
+  Requires `--salt-file`.
 - `--aggressive` — desalt single-component inputs too (a lone salt-former is
   otherwise kept as the compound of interest); this can wholly empty a molecule
   that is entirely salt, whose row is then rejected.
 
-`--no-desalt` cannot be combined with any of the other desalting flags.
+`--no-desalt` cannot be combined with any of the other desalting flags. In file
+mode, `--strip-solvents` requires `--solvent-file` because the compiled-in
+solvent patterns are unavailable once a custom salt file is supplied.
 
 ## Convert R-Groups To SMARTS
 

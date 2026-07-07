@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/Analyzer.h"
-#include "oemmpa/Desalter.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/oemmpa.h"
 
@@ -512,7 +511,7 @@ TEST(AnalyzerDesalt, ConfiguredDesalterStripsOnAddMolecule) {
     { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
 
     Analyzer analyzer;
-    analyzer.ConfigureDesalting(path);
+    analyzer.ConfigureDesaltingFromFiles(path);
     const unsigned int id = analyzer.AddMolecule("CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin");
     ASSERT_EQ(analyzer.GetStrippedNames(id).size(), 1u);
     EXPECT_EQ(analyzer.GetStrippedNames(id)[0], "Halides");
@@ -529,7 +528,7 @@ TEST(AnalyzerDesalt, ClearResetsStrippedNamesButKeepsDesalter) {
     { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
 
     Analyzer analyzer;
-    analyzer.ConfigureDesalting(path);
+    analyzer.ConfigureDesaltingFromFiles(path);
     const unsigned int id = analyzer.AddMolecule("CCO.Cl", "m1");
     EXPECT_EQ(analyzer.GetStrippedNames(id).size(), 1u);
 

@@ -208,7 +208,10 @@ def _add_desalting_arguments(parser):
     group.add_argument(
         "--salt-file",
         default=None,
-        help="Override the bundled salt SMARTS file.",
+        help=(
+            "Replace the compiled-in salt patterns with a SMARTS file. Switches "
+            "to file mode: --strip-solvents then requires --solvent-file."
+        ),
     )
     parser.add_argument(
         "--strip-solvents",
@@ -218,7 +221,10 @@ def _add_desalting_arguments(parser):
     parser.add_argument(
         "--solvent-file",
         default=None,
-        help="Override the bundled solvent SMARTS file (implies --strip-solvents).",
+        help=(
+            "Add a solvent SMARTS file (implies --strip-solvents). Requires "
+            "--salt-file, since the compiled-in salts cannot mix with a file."
+        ),
     )
     parser.add_argument(
         "--aggressive",
@@ -608,8 +614,6 @@ def _resolve_desalter(args):
     :raises ValueError: On the same ``--no-desalt`` conflict as
         :func:`_configure_desalting`.
     """
-    from oemmpa._facade import _bundled_data_path
-
     no_desalt = getattr(args, "no_desalt", False)
     strip_solvents = getattr(args, "strip_solvents", False)
     salt_file = getattr(args, "salt_file", None)
@@ -618,15 +622,22 @@ def _resolve_desalter(args):
     if no_desalt:
         _reject_no_desalt_combination(strip_solvents, salt_file, solvent_file, aggressive)
         return None
-    salt_path = str(salt_file) if salt_file is not None else _bundled_data_path("salts.smarts")
-    use_solvents = strip_solvents or solvent_file is not None
-    solvent_path = ""
-    if use_solvents:
-        solvent_path = (
-            str(solvent_file) if solvent_file is not None
-            else _bundled_data_path("solvents.smarts")
+    # Default to oedesalt's compiled-in patterns; a custom salt file switches to
+    # the file loader (see Analyzer.configure_desalting for the file-mode rules).
+    if salt_file is None:
+        if solvent_file is not None:
+            raise ValueError(
+                "--solvent-file requires --salt-file: the bundled salt patterns "
+                "cannot be combined with a custom solvent file"
+            )
+        return _oemmpa.Desalter.WithBundledPatterns(strip_solvents, aggressive)
+    if strip_solvents and solvent_file is None:
+        raise ValueError(
+            "--strip-solvents with a custom --salt-file requires --solvent-file: "
+            "the bundled solvent patterns are unavailable in file mode"
         )
-    return _oemmpa.Desalter.FromFiles(salt_path, solvent_path, aggressive)
+    solvent_path = str(solvent_file) if solvent_file is not None else ""
+    return _oemmpa.Desalter.FromFiles(str(salt_file), solvent_path, aggressive)
 
 
 def _validate_property_file_pair(args, command):

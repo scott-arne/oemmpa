@@ -2096,3 +2096,46 @@ def test_resolve_desalter_returns_none_when_disabled():
     )
     with pytest.raises(ValueError, match="cannot be combined"):
         _resolve_desalter(conflict_args)
+
+
+
+def test_resolve_desalter_solvent_file_requires_salt_file():
+    # oedesalt cannot mix its compiled-in salts with a custom solvent file, so a
+    # bare --solvent-file (no --salt-file) is rejected rather than silently
+    # dropping the bundled salts.
+    import argparse
+
+    from oemmpa.cli import _resolve_desalter
+
+    args = argparse.Namespace(
+        no_desalt=False, strip_solvents=True,
+        salt_file=None, solvent_file="s.smarts", aggressive=False,
+    )
+    with pytest.raises(ValueError, match="requires --salt-file"):
+        _resolve_desalter(args)
+
+
+def test_resolve_desalter_strip_solvents_with_salt_file_requires_solvent_file():
+    # In file mode the bundled solvent patterns are unavailable, so
+    # --strip-solvents alongside a custom --salt-file needs an explicit
+    # --solvent-file rather than falling back to a removed data file.
+    import argparse
+
+    from oemmpa.cli import _resolve_desalter
+
+    args = argparse.Namespace(
+        no_desalt=False, strip_solvents=True,
+        salt_file="my.smarts", solvent_file=None, aggressive=False,
+    )
+    with pytest.raises(ValueError, match="requires --solvent-file"):
+        _resolve_desalter(args)
+
+
+def test_configure_desalting_bundled_default_uses_bundled_patterns():
+    # The default facade configuration desalts a salted two-component molecule
+    # with the compiled-in patterns — no data file on disk.
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()  # configure_desalting() runs in __init__
+    analyzer.add_molecule("CC(=O)Oc1ccccc1C(=O)O.Cl", id="aspirin")
+    assert "Halides" in analyzer.stripped_names("aspirin")

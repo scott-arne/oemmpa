@@ -89,10 +89,9 @@ def test_generate_source_desalts_like_corpus(tmp_path):
     # would, so generation matches. Apply an identity-ish transform to
     # "CCO.Cl" with desalting and compare to the same transform on "CCO".
     from oemmpa import _oemmpa
-    from oemmpa._facade import _bundled_data_path
     from oemmpa._transform import apply_transform_smirks
 
-    desalter = _oemmpa.Desalter.FromFiles(_bundled_data_path("salts.smarts"), "")
+    desalter = _oemmpa.Desalter.WithBundledPatterns(False, False)
     salted = apply_transform_smirks("CCO.Cl", "[C:1]>>[N:1]", desalter=desalter)
     clean = apply_transform_smirks("CCO", "[C:1]>>[N:1]")
     assert salted == clean
@@ -173,9 +172,8 @@ def test_desalting_recovers_clean_parent_from_salted_surechembl():
     # canonical parent — this exercises the strip path on drug-like scaffolds,
     # which the (clean, single-component) corpus alone never does.
     from oemmpa import _oemmpa
-    from oemmpa._facade import _bundled_data_path
 
-    desalter = _oemmpa.Desalter.FromFiles(_bundled_data_path("salts.smarts"), "")
+    desalter = _oemmpa.Desalter.WithBundledPatterns(False, False)
 
     def canonical(smiles, *, desalt=False):
         if desalt:

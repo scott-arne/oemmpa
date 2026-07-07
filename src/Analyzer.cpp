@@ -258,13 +258,20 @@ void Analyzer::SetFragmentationCutSmarts(const std::string& cut_smarts) {
     CommitFragmenter(fragmenter);
 }
 
-void Analyzer::ConfigureDesalting(
+void Analyzer::ConfigureDesalting(bool strip_solvents, bool aggressive) {
+    desalter_ = std::make_shared<OEDESALT::Desalter>(
+        OEDESALT::Desalter::WithBundledPatterns(strip_solvents, aggressive)
+    );
+    analyzed_ = false;
+}
+
+void Analyzer::ConfigureDesaltingFromFiles(
     const std::string& salt_path,
     const std::string& solvent_path,
     bool aggressive
 ) {
-    desalter_ = std::make_shared<Desalter>(
-        Desalter::FromFiles(salt_path, solvent_path, aggressive)
+    desalter_ = std::make_shared<OEDESALT::Desalter>(
+        OEDESALT::Desalter::FromFiles(salt_path, solvent_path, aggressive)
     );
     analyzed_ = false;
 }

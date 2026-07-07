@@ -1,6 +1,6 @@
 #include "oemmpa/DuckDBStore.h"
 
-#include "oemmpa/Desalter.h"
+#include "oedesalt/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
@@ -1712,7 +1712,7 @@ void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {
 
 LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
     const std::string& smiles_path,
-    const Desalter* desalter
+    const OEDESALT::Desalter* desalter
 ) {
     InitializeSchema();
 

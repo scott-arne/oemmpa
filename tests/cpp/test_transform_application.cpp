@@ -1,10 +1,11 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/Analyzer.h"
-#include "oemmpa/Desalter.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"
+
+#include "oedesalt/Desalter.h"
 
 #include <oechem.h>
 
@@ -549,7 +550,7 @@ TEST(TransformApplicationTest, RejectsMultiCutHydrogenVariableTransform) {
 TEST(TransformApplicationDesalt, DesaltsSourceSmilesBeforeApplying) {
     const std::string path = std::string(::testing::TempDir()) + "/ta_salts.smarts";
     { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
-    const Desalter desalter(load_salt_patterns(path));
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
 
     // Source "CCO.Cl" desalts to "CCO"; a C>>N SMIRKS on the desalted source
     // must behave the same as calling with a pre-desalted "CCO".
@@ -566,7 +567,7 @@ TEST(TransformApplicationDesalt, DesaltsObjectOverloadInputs) {
     // object overload matches its pre-desalted object result.
     const std::string path = std::string(::testing::TempDir()) + "/ta_obj_salts.smarts";
     { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
-    const Desalter desalter(load_salt_patterns(path));
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
 
     OEChem::OEGraphMol salted;
     ASSERT_TRUE(OEChem::OESmilesToMol(salted, "CCO.Cl"));

@@ -10,6 +10,11 @@ if(OEMMPA_HAS_OEMEDCHEM)
 endif()
 
 set(OEMMPA_SWIG_FLAGS "-doxygen")
+# SWIG %includes oedesalt's Desalter.h to wrap OEDESALT::Desalter into this
+# module; the fetched headers are not on SWIG's default search path, so add
+# them explicitly. (The generated wrapper's C++ compile already sees them
+# transitively through the oemmpa target's link to oedesalt.)
+list(APPEND OEMMPA_SWIG_FLAGS "-I${oedesalt_SOURCE_DIR}/include")
 if(OEMMPA_HAS_DUCKDB)
     list(APPEND OEMMPA_SWIG_FLAGS "-DOEMMPA_HAS_DUCKDB=1")
 else()
@@ -49,10 +54,4 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_transform.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/cli.py
     DESTINATION oemmpa
-)
-
-install(FILES
-    ${CMAKE_SOURCE_DIR}/python/oemmpa/data/salts.smarts
-    ${CMAKE_SOURCE_DIR}/python/oemmpa/data/solvents.smarts
-    DESTINATION oemmpa/data
 )

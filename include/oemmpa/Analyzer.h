@@ -1,8 +1,8 @@
 #ifndef OEMMPA_ANALYZER_H
 #define OEMMPA_ANALYZER_H
 
+#include "oedesalt/Desalter.h"
 #include "oemmpa/AnalysisMethod.h"
-#include "oemmpa/Desalter.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
@@ -93,6 +93,18 @@ public:
     /// \brief Configure fragmentation-method SMARTS used to select cut bonds.
     void SetFragmentationCutSmarts(const std::string& cut_smarts);
 
+    /// \brief Configure the shared desalter from oedesalt's compiled-in salt
+    /// (and optional solvent) patterns. Applied to every molecule added
+    /// afterward.
+    ///
+    /// This is the default, no-file path — the bundled patterns live inside the
+    /// oedesalt library, so nothing needs to be resolved on disk.
+    ///
+    /// \param strip_solvents When true, also apply the bundled solvent set.
+    /// \param aggressive When true, desalt single-component inputs too; when
+    ///   false (default), single-component molecules are ingested unchanged.
+    void ConfigureDesalting(bool strip_solvents = false, bool aggressive = false);
+
     /// \brief Configure the shared desalter from a salt file and optional
     /// solvent file. Applied to every molecule added afterward.
     ///
@@ -100,7 +112,7 @@ public:
     /// \param solvent_path Optional solvent pattern file.
     /// \param aggressive When true, desalt single-component inputs too; when
     ///   false (default), single-component molecules are ingested unchanged.
-    void ConfigureDesalting(
+    void ConfigureDesaltingFromFiles(
         const std::string& salt_path,
         const std::string& solvent_path = "",
         bool aggressive = false
@@ -199,7 +211,7 @@ private:
     std::vector<MoleculeRecord> molecules_;
     std::unordered_map<std::string, unsigned int> external_ids_;
     PropertyMap properties_;
-    std::shared_ptr<Desalter> desalter_;
+    std::shared_ptr<OEDESALT::Desalter> desalter_;
     std::unordered_map<unsigned int, std::vector<std::string>> stripped_names_by_id_;
     unsigned int next_internal_id_ = 1;
     bool analyzed_ = false;
