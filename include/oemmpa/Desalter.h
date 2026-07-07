@@ -43,6 +43,12 @@ std::vector<SaltPattern> load_salt_patterns(const std::string& path);
 /// pattern's match covers all of its heavy atoms. Pure removal — never keeps a
 /// last fragment, never neutralizes.
 ///
+/// oemmpa intentionally desalts MORE rigorously than mmpdb/RDKit's default
+/// SaltRemover (~15 patterns): the bundled set carries 103 salt patterns. This
+/// divergence from the mmpdb benchmark is deliberate and scientifically
+/// motivated — do NOT revert toward RDKit parity. Callers wanting a strict
+/// mmpdb comparison should disable desalting or supply mmpdb's pattern file.
+///
 /// By default the desalter is *non-aggressive*: a single-component molecule is
 /// returned untouched, because functional desalting only makes sense when there
 /// is a counterion or solvate to remove — a molecule that IS a salt-former

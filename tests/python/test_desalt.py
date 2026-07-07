@@ -113,3 +113,94 @@ def test_analysis_generate_desalts_salted_source():
     salted = analysis.generate("c1ccccc1CC.Cl", min_evidence=0)
     clean = analysis.generate("c1ccccc1CC", min_evidence=0)
     assert {p.smiles for p in salted} == {p.smiles for p in clean}
+
+
+# Public SureChEMBL fixture only — never the proprietary dhu_glu_ymin.smi.
+_SURECHEMBL_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "data" / "surechembl_headtohead.smi"
+)
+
+
+def _surechembl_smiles():
+    if not _SURECHEMBL_FIXTURE.exists():
+        pytest.skip("SureChEMBL fixture not present")
+    return [
+        line.split()[0]
+        for line in _SURECHEMBL_FIXTURE.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_desalting_surechembl_reports_strips_by_category(capsys):
+    # Desalt the public SureChEMBL corpus and REPORT strips by category rather
+    # than overclaiming "no API damage". These are curated drug-like structures:
+    # each is a single whole component, so the single-component guard leaves them
+    # untouched. The test asserts desalting ran and produced a well-formed
+    # provenance report — never that a specific number of components was removed.
+    from collections import Counter
+
+    _surechembl_smiles()  # skip early if the fixture is absent
+
+    analyzer = Analyzer()
+    analyzer.configure_desalting()
+    report = analyzer.add_molecules_from_file(str(_SURECHEMBL_FIXTURE))
+
+    by_category = Counter(
+        name for row in report.accepted for name in row.stripped_names
+    )
+    stripped_rows = sum(1 for row in report.accepted if row.stripped_names)
+    print(
+        f"desalted {report.accepted_count} molecules; "
+        f"{stripped_rows} had a component stripped; "
+        f"{report.rejected_count} all-salt rejects"
+    )
+    for name, count in by_category.most_common():
+        print(f"  stripped [{name}]: {count}")
+
+    # Assert only that desalting ran and its provenance is well-formed.
+    assert report.accepted_count > 0
+    for row in report.accepted:
+        assert isinstance(row.stripped_names, list)
+        assert all(isinstance(name, str) and name for name in row.stripped_names)
+
+    # Ensure the by-category report is actually emitted for the developer.
+    assert "desalted" in capsys.readouterr().out
+
+
+def test_desalting_recovers_clean_parent_from_salted_surechembl():
+    # Stronger machinery check on public structures: salting a real SureChEMBL
+    # molecule with a chloride counterion and desalting it must recover the exact
+    # canonical parent — this exercises the strip path on drug-like scaffolds,
+    # which the (clean, single-component) corpus alone never does.
+    from oemmpa import _oemmpa
+    from oemmpa._facade import _bundled_data_path
+
+    desalter = _oemmpa.Desalter.FromFiles(_bundled_data_path("salts.smarts"), "")
+
+    def canonical(smiles, *, desalt=False):
+        if desalt:
+            return _oemmpa.MoleculeRecord.FromSmiles(
+                0, smiles, "", desalter
+            ).GetCanonicalSmiles()
+        return _oemmpa.MoleculeRecord.FromSmiles(0, smiles).GetCanonicalSmiles()
+
+    recovered = 0
+    lone_salt_formers = 0
+    for smiles in _surechembl_smiles()[:60]:
+        clean = canonical(smiles)
+        try:
+            desalted = canonical(smiles + ".Cl", desalt=True)
+        except (ValueError, RuntimeError):
+            # A molecule that is itself a lone salt-former (e.g. tosylic acid)
+            # becomes all-salt once a counterion is added, and is rejected.
+            lone_salt_formers += 1
+            continue
+        assert desalted == clean, (
+            f"desalting {smiles}.Cl gave {desalted!r}, expected clean parent {clean!r}"
+        )
+        recovered += 1
+
+    # The vast majority of real drug-like molecules recover their exact parent;
+    # the machinery must have actually run on the strip path, not no-opped.
+    assert recovered > 0
+    assert recovered >= lone_salt_formers

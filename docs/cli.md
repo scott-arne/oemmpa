@@ -73,6 +73,36 @@ file. The resulting cut SMARTS are part of the analysis inputs; persisted
 `predict` and persisted `generate` read the stored rule environments and reject
 fragmentation options at report time.
 
+### Salt And Solvent Removal
+
+By default, `oemmpa` desalts every input molecule: it splits disconnected
+components and deletes any component that a curated salt pattern matches as a
+whole fragment (charge-agnostic — a covalent halogen on a single-component
+molecule is never touched). A molecule with only one component is ingested
+unchanged, since functional desalting only removes a counterion or solvate
+alongside the compound of interest.
+
+OEMMPA intentionally desalts **more rigorously than mmpdb/RDKit's default
+SaltRemover** (~15 patterns): it ships 103 default salt patterns and 45 opt-in
+solvent patterns. This is the one sanctioned divergence from the mmpdb
+benchmark; it is deliberate and scientifically motivated. Do not "correct" it
+toward RDKit parity — use `--no-desalt` or `--salt-file` for a strict mmpdb
+comparison instead.
+
+The same flags are available on every molecule-ingesting subcommand (`build`,
+`refresh-stats`, `predict`, and `generate`):
+
+- `--no-desalt` — ingest molecules unchanged.
+- `--strip-solvents` — also remove the opt-in solvent/water set.
+- `--salt-file PATH` — replace the bundled salt patterns.
+- `--solvent-file PATH` — replace the bundled solvent patterns (implies
+  `--strip-solvents`).
+- `--aggressive` — desalt single-component inputs too (a lone salt-former is
+  otherwise kept as the compound of interest); this can wholly empty a molecule
+  that is entirely salt, whose row is then rejected.
+
+`--no-desalt` cannot be combined with any of the other desalting flags.
+
 ## Convert R-Groups To SMARTS
 
 ```bash
