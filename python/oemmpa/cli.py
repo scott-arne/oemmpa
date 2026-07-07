@@ -190,6 +190,46 @@ def _add_input_arguments(
     )
 
 
+def _add_desalting_arguments(parser):
+    """Add the salt/solvent-removal flag group to a molecule-ingesting parser.
+
+    ``--no-desalt`` and ``--salt-file`` are mutually exclusive at the argparse
+    level. ``--strip-solvents``/``--solvent-file``/``--aggressive`` compose with
+    ``--salt-file`` but not with ``--no-desalt``; argparse cannot express that
+    partial exclusion, so :func:`_configure_desalting`/:func:`_resolve_desalter`
+    reject those ``--no-desalt`` combinations.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--no-desalt",
+        action="store_true",
+        help="Disable salt/solvent removal (ingest molecules unchanged).",
+    )
+    group.add_argument(
+        "--salt-file",
+        default=None,
+        help="Override the bundled salt SMARTS file.",
+    )
+    parser.add_argument(
+        "--strip-solvents",
+        action="store_true",
+        help="Additionally strip the opt-in solvent/water set.",
+    )
+    parser.add_argument(
+        "--solvent-file",
+        default=None,
+        help="Override the bundled solvent SMARTS file (implies --strip-solvents).",
+    )
+    parser.add_argument(
+        "--aggressive",
+        action="store_true",
+        help=(
+            "Desalt single-component inputs too (a lone salt-former is otherwise "
+            "kept, since functional desalting only removes a counterion)."
+        ),
+    )
+
+
 def _nonnegative_int(value):
     try:
         parsed = int(value)
@@ -512,6 +552,83 @@ def _configure_fragmentation(analyzer, args):
         raise ValueError(f"missing cut R-group file: {cut_rgroup_file}") from exc
 
 
+def _reject_no_desalt_combination(strip_solvents, salt_file, solvent_file, aggressive):
+    """Raise if --no-desalt is paired with any desalting-configuration flag.
+
+    ``--no-desalt`` turns desalting off entirely, so the pattern-file,
+    solvent, and aggressive flags have no meaning alongside it. Shared by
+    :func:`_configure_desalting` and :func:`_resolve_desalter` so both paths
+    reject the same combination with an identical message.
+
+    :raises ValueError: When any configuration flag accompanies ``--no-desalt``.
+    """
+    if strip_solvents or salt_file is not None or solvent_file is not None or aggressive:
+        raise ValueError(
+            "--no-desalt cannot be combined with --strip-solvents/"
+            "--salt-file/--solvent-file/--aggressive"
+        )
+
+
+def _configure_desalting(analyzer, args):
+    """Apply the desalting CLI flags to a facade :class:`Analyzer`.
+
+    Mirrors :func:`_resolve_desalter`'s flag logic for the ingestion paths that
+    own an ``Analyzer`` (``build``/``refresh-stats``/``predict``/``generate``
+    corpora). Absent flags leave the facade default (desalting on, salts only).
+
+    :raises ValueError: When ``--no-desalt`` is combined with another desalting
+        flag; :func:`main` surfaces it as a usage error (exit code 2).
+    """
+    no_desalt = getattr(args, "no_desalt", False)
+    strip_solvents = getattr(args, "strip_solvents", False)
+    salt_file = getattr(args, "salt_file", None)
+    solvent_file = getattr(args, "solvent_file", None)
+    aggressive = getattr(args, "aggressive", False)
+    if no_desalt:
+        _reject_no_desalt_combination(strip_solvents, salt_file, solvent_file, aggressive)
+        analyzer.configure_desalting(enabled=False)
+        return
+    analyzer.configure_desalting(
+        enabled=True,
+        strip_solvents=strip_solvents,
+        salt_file=salt_file,
+        solvent_file=solvent_file,
+        aggressive=aggressive,
+    )
+
+
+def _resolve_desalter(args):
+    """Build the standalone ``Desalter`` implied by the desalting CLI flags.
+
+    Mirrors :func:`_configure_desalting` but returns a raw ``_oemmpa.Desalter``
+    (or ``None``) for the source/query paths that generate from a
+    caller-supplied ``--source`` molecule without an ``Analyzer`` to configure.
+
+    :returns: A ``_oemmpa.Desalter`` or ``None`` when desalting is disabled.
+    :raises ValueError: On the same ``--no-desalt`` conflict as
+        :func:`_configure_desalting`.
+    """
+    from oemmpa._facade import _bundled_data_path
+
+    no_desalt = getattr(args, "no_desalt", False)
+    strip_solvents = getattr(args, "strip_solvents", False)
+    salt_file = getattr(args, "salt_file", None)
+    solvent_file = getattr(args, "solvent_file", None)
+    aggressive = getattr(args, "aggressive", False)
+    if no_desalt:
+        _reject_no_desalt_combination(strip_solvents, salt_file, solvent_file, aggressive)
+        return None
+    salt_path = str(salt_file) if salt_file is not None else _bundled_data_path("salts.smarts")
+    use_solvents = strip_solvents or solvent_file is not None
+    solvent_path = ""
+    if use_solvents:
+        solvent_path = (
+            str(solvent_file) if solvent_file is not None
+            else _bundled_data_path("solvents.smarts")
+        )
+    return _oemmpa.Desalter.FromFiles(salt_path, solvent_path, aggressive)
+
+
 def _validate_property_file_pair(args, command):
     has_properties = args.properties is not None
     has_property = args.property is not None
@@ -525,6 +642,7 @@ def _validate_property_file_pair(args, command):
 def _build_analyzer(args, *, load_properties=None):
     analyzer = Analyzer()
     _configure_fragmentation(analyzer, args)
+    _configure_desalting(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
     if molecule_report.rejected_count:
         first_error = molecule_report.errors[0]
@@ -894,6 +1012,7 @@ def _generate_no_properties(args):
         _stateless_generation_transforms(transforms, args.transform),
         min_evidence=min_evidence,
         skip_unsupported=not args.strict,
+        desalter=_resolve_desalter(args),
     )
     _write_tsv_output(
         _no_property_generation_rows(products),
@@ -916,6 +1035,7 @@ def _generate_stateless(args):
         min_evidence=min_evidence,
         skip_unsupported=not args.strict,
         statistics=statistics,
+        desalter=_resolve_desalter(args),
     )
     _write_tsv_output(
         _stateless_generation_rows(products, args.aggregation),
@@ -943,6 +1063,7 @@ def _generate_persisted(args):
         matches,
         min_evidence=min_pairs,
         skip_unsupported=not args.strict,
+        desalter=_resolve_desalter(args),
     )
     rows = _persisted_generation_rows(products, matches, args.aggregation)
     _write_tsv_output(rows, PERSISTED_GENERATION_COLUMNS, args.output)
@@ -1044,6 +1165,7 @@ def _build_parser():
         default=None,
         help="Maximum relative heavy-atom change for persisted pairs.",
     )
+    _add_desalting_arguments(build_parser)
     build_parser.set_defaults(func=_build_store)
 
     rgroup_parser = subparsers.add_parser(
@@ -1111,6 +1233,7 @@ def _build_parser():
             "Use .gz for gzip output."
         ),
     )
+    _add_desalting_arguments(stats_parser)
     stats_parser.set_defaults(func=_refresh_stats)
 
     predict_parser = subparsers.add_parser(
@@ -1171,6 +1294,7 @@ def _build_parser():
         default=None,
         help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
     )
+    _add_desalting_arguments(predict_parser)
     predict_parser.set_defaults(func=_predict)
 
     generate_parser = subparsers.add_parser(
@@ -1245,6 +1369,7 @@ def _build_parser():
         default=None,
         help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
     )
+    _add_desalting_arguments(generate_parser)
     generate_parser.set_defaults(func=_generate)
 
     return parser
