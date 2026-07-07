@@ -258,6 +258,37 @@ void Analyzer::SetFragmentationCutSmarts(const std::string& cut_smarts) {
     CommitFragmenter(fragmenter);
 }
 
+void Analyzer::ConfigureDesalting(bool strip_solvents, bool aggressive) {
+    desalter_ = std::make_shared<OEDESALT::Desalter>(
+        OEDESALT::Desalter::WithBundledPatterns(strip_solvents, aggressive)
+    );
+    analyzed_ = false;
+}
+
+void Analyzer::ConfigureDesaltingFromFiles(
+    const std::string& salt_path,
+    const std::string& solvent_path,
+    bool aggressive
+) {
+    desalter_ = std::make_shared<OEDESALT::Desalter>(
+        OEDESALT::Desalter::FromFiles(salt_path, solvent_path, aggressive)
+    );
+    analyzed_ = false;
+}
+
+void Analyzer::ClearDesalting() {
+    desalter_.reset();
+    analyzed_ = false;
+}
+
+const std::vector<std::string>& Analyzer::GetStrippedNames(unsigned int internal_id) const {
+    const auto it = stripped_names_by_id_.find(internal_id);
+    if (it == stripped_names_by_id_.end()) {
+        throw InvalidMoleculeError("unknown molecule id: " + std::to_string(internal_id));
+    }
+    return it->second;
+}
+
 unsigned int Analyzer::AddMolecule(
     const std::string& smiles,
     const std::string& external_id
@@ -265,7 +296,9 @@ unsigned int Analyzer::AddMolecule(
     RejectDuplicateExternalId(external_id);
 
     const unsigned int internal_id = next_internal_id_;
-    const MoleculeRecord record = MoleculeRecord::FromSmiles(internal_id, smiles, external_id);
+    const MoleculeRecord record =
+        MoleculeRecord::FromSmiles(internal_id, smiles, external_id, desalter_.get());
+    stripped_names_by_id_[internal_id] = record.GetStrippedNames();
 
     method_->AddMolecule(record);
     molecules_.push_back(record);
@@ -284,7 +317,9 @@ unsigned int Analyzer::AddMolecule(
     RejectDuplicateExternalId(external_id);
 
     const unsigned int internal_id = next_internal_id_;
-    const MoleculeRecord record = MoleculeRecord::FromMol(internal_id, mol, external_id);
+    const MoleculeRecord record =
+        MoleculeRecord::FromMol(internal_id, mol, external_id, desalter_.get());
+    stripped_names_by_id_[internal_id] = record.GetStrippedNames();
 
     method_->AddMolecule(record);
     molecules_.push_back(record);
@@ -385,6 +420,7 @@ void Analyzer::Clear() {
     molecules_.clear();
     external_ids_.clear();
     properties_.clear();
+    stripped_names_by_id_.clear();
     next_internal_id_ = 1;
     analyzed_ = false;
 }

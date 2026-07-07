@@ -1,5 +1,6 @@
 #include "oemmpa/DuckDBStore.h"
 
+#include "oedesalt/Desalter.h"
 #include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
@@ -1709,7 +1710,10 @@ void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {
     execute_prepared(connection_, sql, std::move(values));
 }
 
-LoadReport DuckDBStore::AddMoleculesFromSmilesFile(const std::string& smiles_path) {
+LoadReport DuckDBStore::AddMoleculesFromSmilesFile(
+    const std::string& smiles_path,
+    const OEDESALT::Desalter* desalter
+) {
     InitializeSchema();
 
     std::ifstream input(smiles_path);
@@ -1741,19 +1745,20 @@ LoadReport DuckDBStore::AddMoleculesFromSmilesFile(const std::string& smiles_pat
                 external_id = make_generated_external_id(next_id);
             }
 
+            MoleculeRecord molecule;
             try {
-                const MoleculeRecord molecule = MoleculeRecord::FromSmiles(
+                molecule = MoleculeRecord::FromSmiles(
                     static_cast<unsigned int>(next_id),
                     smiles,
-                    external_id
+                    external_id,
+                    desalter
                 );
                 AddMolecule(molecule);
             } catch (const std::exception& exc) {
                 report.RecordRejected(row_number, exc.what());
                 continue;
             }
-
-            report.RecordAccepted(external_id);
+            report.RecordAccepted(external_id, molecule.GetStrippedNames());
             ++next_id;
         }
         Execute("commit");

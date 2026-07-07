@@ -26,7 +26,8 @@ unsigned int count_heavy_bonds(const OEChem::OEMolBase& mol) {
 MoleculeRecord MoleculeRecord::FromSmiles(
     unsigned int internal_id,
     const std::string& smiles,
-    const std::string& external_id
+    const std::string& external_id,
+    const OEDESALT::Desalter* desalter
 ) {
     OEChem::OEGraphMol mol;
     OEChem::OEGraphMol strict_mol;
@@ -41,13 +42,14 @@ MoleculeRecord MoleculeRecord::FromSmiles(
         throw InvalidMoleculeError("invalid SMILES: " + smiles);
     }
 
-    return FromMol(internal_id, strict_mol, external_id);
+    return FromMol(internal_id, strict_mol, external_id, desalter);
 }
 
 MoleculeRecord MoleculeRecord::FromMol(
     unsigned int internal_id,
     const OEChem::OEMolBase& mol,
-    const std::string& external_id
+    const std::string& external_id,
+    const OEDESALT::Desalter* desalter
 ) {
     if (mol.NumAtoms() == 0) {
         throw InvalidMoleculeError("molecule has no atoms");
@@ -56,8 +58,22 @@ MoleculeRecord MoleculeRecord::FromMol(
     MoleculeRecord record;
     record.internal_id_ = internal_id;
     record.external_id_ = external_id;
-    record.title_ = mol.GetTitle();
-    record.mol_ = std::make_shared<OEChem::OEGraphMol>(mol);
+
+    if (desalter != nullptr) {
+        OEDESALT::DesaltResult desalted = desalter->Desalt(mol);
+        record.stripped_names_ = std::move(desalted.stripped_names);
+        if (desalted.mol.NumAtoms() == 0) {
+            throw InvalidMoleculeError(
+                "all fragments removed as salts: " + external_id
+            );
+        }
+        record.title_ = desalted.mol.GetTitle();
+        record.mol_ = std::make_shared<OEChem::OEGraphMol>(desalted.mol);
+    } else {
+        record.title_ = mol.GetTitle();
+        record.mol_ = std::make_shared<OEChem::OEGraphMol>(mol);
+    }
+
     record.canonical_smiles_ = OEChem::OEMolToSmiles(*record.mol_);
     record.heavy_atom_count_ = OEChem::OECount(*record.mol_, OEChem::OEIsHeavy());
     record.heavy_bond_count_ = count_heavy_bonds(*record.mol_);
@@ -99,6 +115,10 @@ const OEChem::OEGraphMol& MoleculeRecord::GetMol() const {
     }
 
     return *mol_;
+}
+
+const std::vector<std::string>& MoleculeRecord::GetStrippedNames() const {
+    return stripped_names_;
 }
 
 }  // namespace OEMMPA

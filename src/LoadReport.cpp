@@ -2,8 +2,14 @@
 
 namespace OEMMPA {
 
-void LoadReport::RecordAccepted(const std::string& external_id) {
-    accepted_ids_.push_back(external_id);
+void LoadReport::RecordAccepted(const std::string& external_id, const std::vector<std::string>& stripped_names) {
+    accepted_molecules_.push_back({external_id, stripped_names});
+    try {
+        accepted_ids_.push_back(external_id);
+    } catch (...) {
+        accepted_molecules_.pop_back();
+        throw;
+    }
 }
 
 void LoadReport::RecordRejected(unsigned int row, const std::string& message) {
@@ -20,6 +26,10 @@ unsigned int LoadReport::GetRejectedCount() const {
 
 const std::vector<std::string>& LoadReport::GetAcceptedIds() const {
     return accepted_ids_;
+}
+
+const std::vector<AcceptedMolecule>& LoadReport::GetAcceptedMolecules() const {
+    return accepted_molecules_;
 }
 
 const std::vector<LoadError>& LoadReport::GetErrors() const {

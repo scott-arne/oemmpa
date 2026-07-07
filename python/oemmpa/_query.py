@@ -630,6 +630,7 @@ class AnalysisResult:
             skip_unsupported=skip_unsupported,
             statistics=query.statistics,
             aggregation=query._aggregation,
+            desalter=self.analyzer.active_desalter(),
         )
         return products.with_known_products(self._known_product_ids_by_smiles)
 

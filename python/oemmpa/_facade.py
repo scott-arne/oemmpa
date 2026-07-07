@@ -34,6 +34,11 @@ class Analyzer:
             raise
         self._used_external_ids = set()
         self._next_generated_id = 1
+        self._internal_id_by_external = {}
+        self._active_desalter = None  # set by configure_desalting; read by active_desalter()
+        # Desalt salts by default (spec §7). Callers override with
+        # configure_desalting(enabled=False) or a custom pattern set.
+        self.configure_desalting()
 
     @property
     def method(self):
@@ -55,8 +60,9 @@ class Analyzer:
         :returns: External molecule identifier used by the facade.
         """
         external_id = self._coerce_or_generate_id(id)
-        self._raw_analyzer.AddMolecule(molecule, external_id)
+        internal_id = self._raw_analyzer.AddMolecule(molecule, external_id)
         self._used_external_ids.add(external_id)
+        self._internal_id_by_external[external_id] = internal_id
         return external_id
 
     def add_molecules(self, molecules):
@@ -78,7 +84,7 @@ class Analyzer:
             except Exception as exc:
                 report.record_rejected(row_number, exc)
             else:
-                report.record_accepted(accepted_id)
+                report.record_accepted(accepted_id, self.stripped_names(accepted_id))
         return report
 
     def add_molecules_from_file(
@@ -106,7 +112,7 @@ class Analyzer:
             except Exception as exc:
                 report.record_rejected(row.row_number, exc)
             else:
-                report.record_accepted(accepted_id)
+                report.record_accepted(accepted_id, self.stripped_names(accepted_id))
         return report
 
     def add_molecules_from_dataframe(
@@ -300,6 +306,112 @@ class Analyzer:
         if isinstance(value, bool):
             return value
         raise ValueError(f"{name} must be a bool")
+
+    def configure_desalting(
+        self,
+        *,
+        enabled=True,
+        strip_solvents=False,
+        salt_file=None,
+        solvent_file=None,
+        aggressive=False,
+    ):
+        """Configure salt/solvent removal applied to every added molecule.
+
+        :param enabled: Desalt when true (default). When false, no other
+            argument may be supplied and molecules are ingested unchanged.
+        :param strip_solvents: Additionally apply the opt-in solvent set. With
+            the bundled patterns this needs no file; with a custom ``salt_file``
+            it requires ``solvent_file``.
+        :param salt_file: Override path to the salt pattern file. Switches to
+            file mode, where both pattern sets come from files (oedesalt cannot
+            mix its bundled salts with a custom solvent file).
+        :param solvent_file: Override path to the solvent pattern file (implies
+            ``strip_solvents``). Requires ``salt_file``.
+        :param aggressive: When true, desalt single-component inputs too. By
+            default a molecule with only one disconnected component is ingested
+            unchanged, since functional desalting only removes a counterion or
+            solvate alongside the compound of interest — a lone salt-former
+            (e.g. pyridine, tosylic acid) is the compound, not a salt.
+        :returns: ``self`` for chaining.
+        :raises ValueError: If ``enabled`` is false and any pattern-file,
+            solvent, or ``aggressive`` argument is also supplied.
+        """
+        from . import _oemmpa
+
+        if not enabled:
+            if (
+                strip_solvents
+                or salt_file is not None
+                or solvent_file is not None
+                or aggressive
+            ):
+                raise ValueError(
+                    "enabled=False cannot be combined with strip_solvents/"
+                    "salt_file/solvent_file/aggressive"
+                )
+            self._raw_analyzer.ClearDesalting()
+            self._active_desalter = None
+            return self
+
+        # Two modes, mirroring oedesalt's factories. Default: the salt (and
+        # optional solvent) patterns compiled into the oedesalt library, so no
+        # data file is resolved on disk. File mode (triggered by ``salt_file``):
+        # both pattern sets come from files, since oedesalt cannot mix its
+        # bundled salts with a custom solvent file. The analyzer and the
+        # standalone query-side desalter are built identically so a
+        # caller-supplied source molecule desalts like the stored corpus.
+        if salt_file is None:
+            if solvent_file is not None:
+                raise ValueError(
+                    "solvent_file requires salt_file: the bundled salt patterns "
+                    "cannot be combined with a custom solvent file"
+                )
+            try:
+                self._raw_analyzer.ConfigureDesalting(strip_solvents, aggressive)
+                self._active_desalter = _oemmpa.Desalter.WithBundledPatterns(
+                    strip_solvents, aggressive
+                )
+            except RuntimeError as exc:
+                raise ValueError(str(exc)) from exc
+            return self
+
+        if strip_solvents and solvent_file is None:
+            raise ValueError(
+                "strip_solvents with a custom salt_file requires solvent_file: "
+                "the bundled solvent patterns are unavailable in file mode"
+            )
+        solvent_path = str(solvent_file) if solvent_file is not None else ""
+        try:
+            self._raw_analyzer.ConfigureDesaltingFromFiles(
+                str(salt_file), solvent_path, aggressive
+            )
+            self._active_desalter = _oemmpa.Desalter.FromFiles(
+                str(salt_file), solvent_path, aggressive
+            )
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    def active_desalter(self):
+        """Return the standalone Desalter for the current configuration, or None.
+
+        Used by the high-level query APIs (AnalysisResult.generate/opportunities)
+        so a caller-supplied source molecule desalts consistently with the
+        stored corpus.
+
+        :returns: A ``_oemmpa.Desalter`` or ``None`` when desalting is disabled.
+        """
+        return getattr(self, "_active_desalter", None)
+
+    def stripped_names(self, molecule_id):
+        """Salt patterns that stripped a component from a molecule.
+
+        :param molecule_id: External molecule identifier returned by ``add_molecule``.
+        :returns: List of stripped pattern names (empty when nothing stripped).
+        """
+        internal_id = self._internal_id_by_external[str(molecule_id)]
+        return list(self._raw_analyzer.GetStrippedNames(internal_id))
 
     def analyze(self):
         """Run analysis and return this analyzer.

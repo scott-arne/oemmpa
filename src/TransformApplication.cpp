@@ -1,5 +1,6 @@
 #include "oemmpa/TransformApplication.h"
 
+#include "oedesalt/Desalter.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 
@@ -338,17 +339,23 @@ unsigned int GeneratedProduct::GetEvidenceCount() const {
 
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
     const std::string& source_smiles,
-    const std::string& transform_smirks
+    const std::string& transform_smirks,
+    const OEDESALT::Desalter* desalter
 ) {
-    const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles);
+    const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles, "", desalter);
     return ApplySmirks(source_record.GetMol(), transform_smirks);
 }
 
 std::vector<TransformProduct> TransformApplicator::ApplySmirks(
     const OEChem::OEMolBase& source_mol,
-    const std::string& transform_smirks
+    const std::string& transform_smirks,
+    const OEDESALT::Desalter* desalter
 ) {
-    if (source_mol.NumAtoms() == 0) {
+    OEChem::OEGraphMol working(source_mol);
+    if (desalter != nullptr) {
+        working = desalter->Desalt(source_mol).mol;
+    }
+    if (working.NumAtoms() == 0) {
         throw InvalidMoleculeError("molecule has no atoms");
     }
 
@@ -357,7 +364,7 @@ std::vector<TransformProduct> TransformApplicator::ApplySmirks(
 
     std::set<std::string> unique_smiles;
     OESystem::OEIter<OEChem::OEMolBase> products(
-        OEChem::OEGetUniMolecularRxnIter(source_mol, query, options)
+        OEChem::OEGetUniMolecularRxnIter(working, query, options)
     );
     for (; products; ++products) {
         const std::string smiles = canonical_product_smiles(*products);
@@ -393,21 +400,25 @@ std::string TransformApplicator::BuildVariableTransformSmirks(
 
 std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(
     const std::string& source_smiles,
-    const std::string& variable_transform_smiles
+    const std::string& variable_transform_smiles,
+    const OEDESALT::Desalter* desalter
 ) {
     return ApplySmirks(
         source_smiles,
-        BuildVariableTransformSmirks(variable_transform_smiles)
+        BuildVariableTransformSmirks(variable_transform_smiles),
+        desalter
     );
 }
 
 std::vector<TransformProduct> TransformApplicator::ApplyVariableTransform(
     const OEChem::OEMolBase& source_mol,
-    const std::string& variable_transform_smiles
+    const std::string& variable_transform_smiles,
+    const OEDESALT::Desalter* desalter
 ) {
     return ApplySmirks(
         source_mol,
-        BuildVariableTransformSmirks(variable_transform_smiles)
+        BuildVariableTransformSmirks(variable_transform_smiles),
+        desalter
     );
 }
 
@@ -420,18 +431,24 @@ std::vector<TransformProduct> TransformApplicator::ApplyPairTransform(
 std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
     const std::string& source_smiles,
     const std::vector<Transform>& transforms,
-    const GenerationOptions& options
+    const GenerationOptions& options,
+    const OEDESALT::Desalter* desalter
 ) {
-    const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles);
+    const MoleculeRecord source_record = MoleculeRecord::FromSmiles(0, source_smiles, "", desalter);
     return GenerateProducts(source_record.GetMol(), transforms, options);
 }
 
 std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
     const OEChem::OEMolBase& source_mol,
     const std::vector<Transform>& transforms,
-    const GenerationOptions& options
+    const GenerationOptions& options,
+    const OEDESALT::Desalter* desalter
 ) {
-    if (source_mol.NumAtoms() == 0) {
+    OEChem::OEGraphMol working(source_mol);
+    if (desalter != nullptr) {
+        working = desalter->Desalt(source_mol).mol;
+    }
+    if (working.NumAtoms() == 0) {
         throw InvalidMoleculeError("molecule has no atoms");
     }
 
@@ -446,7 +463,7 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
 
         std::vector<TransformProduct> products;
         try {
-            products = ApplyVariableTransform(source_mol, transform.GetTransformSmiles());
+            products = ApplyVariableTransform(working, transform.GetTransformSmiles());
         } catch (const InvalidQueryError&) {
             if (options.GetSkipUnsupportedTransforms()) {
                 continue;

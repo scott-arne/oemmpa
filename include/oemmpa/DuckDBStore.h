@@ -23,6 +23,10 @@ class Connection;
 class DuckDB;
 }  // namespace duckdb
 
+namespace OEDESALT {
+class Desalter;
+}  // namespace OEDESALT
+
 namespace OEMMPA {
 
 /// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
@@ -79,7 +83,13 @@ public:
     /// first token is interpreted as SMILES and the optional second token is
     /// used as the external molecule identifier. Rows without identifiers
     /// receive stable ``molecule_<internal_id>`` identifiers.
-    LoadReport AddMoleculesFromSmilesFile(const std::string& smiles_path);
+    ///
+    /// \param smiles_path Path to the SMILES file.
+    /// \param desalter Optional desalter to strip salts before storing.
+    LoadReport AddMoleculesFromSmilesFile(
+        const std::string& smiles_path,
+        const OEDESALT::Desalter* desalter = nullptr
+    );
 
     /// \brief Store numeric molecule properties from a CSV file.
     ///

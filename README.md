@@ -120,6 +120,10 @@ The `oemmpa build` command applies mmpdb-equivalent defaults for fragment filter
 non-symmetric indexing. These defaults can be overridden by passing `none` to any
 of the filter flags or `--symmetric` to enable bidirectional pair indexing.
 
+Every input is also desalted by default — deliberately more rigorously than
+mmpdb/RDKit's default SaltRemover. Use `--no-desalt` or `--salt-file` for a
+strict mmpdb comparison. See [docs/cli.md](docs/cli.md) for the full flag set.
+
 See [docs/quickstart.md](docs/quickstart.md) for loading examples and
 [docs/python-api.md](docs/python-api.md) for the Python API and optional DuckDB
 storage notes.

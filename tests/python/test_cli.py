@@ -1904,3 +1904,238 @@ def test_configure_fragmentation_ignores_absent_size_args():
     assert none_analyzer.calls == [
         {"clear_max_heavy_atoms": True, "clear_max_rotatable_bonds": True}
     ]
+
+
+def _stored_clean_smiles(database):
+    """Return {public_id: clean_smiles} from a persisted store's compound table."""
+    import duckdb
+
+    connection = duckdb.connect(str(database), read_only=True)
+    try:
+        rows = connection.execute(
+            "select public_id, clean_smiles from compound order by public_id"
+        ).fetchall()
+    finally:
+        connection.close()
+    return {public_id: clean_smiles for public_id, clean_smiles in rows}
+
+
+def _write_amine_salt_corpus(tmp_path):
+    # Propyl/butylammonium chloride: both survive fragmentation whether the
+    # counterion is stripped (default) or retained (--no-desalt), so the two
+    # modes differ only in the stored SMILES rather than in analysis success.
+    smiles = tmp_path / "amine_salts.smi"
+    smiles.write_text(
+        "CCCN.Cl propylamine\nCCCCN.Cl butylamine\n",
+        encoding="utf-8",
+    )
+    return smiles
+
+
+def test_cli_build_desalts_by_default(tmp_path):
+    smiles = _write_amine_salt_corpus(tmp_path)
+    database = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(database))
+    stored = _stored_clean_smiles(database)
+    assert stored == {"propylamine": "CCCN", "butylamine": "CCCCN"}
+
+
+def test_cli_build_no_desalt_preserves_salt(tmp_path):
+    smiles = _write_amine_salt_corpus(tmp_path)
+    database = tmp_path / "raw.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(database), "--no-desalt")
+    stored = _stored_clean_smiles(database)
+    assert stored == {"propylamine": "CCCN.Cl", "butylamine": "CCCCN.Cl"}
+
+
+def test_cli_build_no_desalt_conflicts_with_salt_file(tmp_path):
+    # --no-desalt vs --salt-file is enforced by argparse's mutually-exclusive
+    # group, so it fails at parse time with the usage exit code.
+    smiles = _write_amine_salt_corpus(tmp_path)
+    database = tmp_path / "out.oemmpa.duckdb"
+    result = _run_cli(
+        "build", "--smiles", str(smiles), "--output", str(database),
+        "--no-desalt", "--salt-file", str(tmp_path / "salts.smarts"),
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "not allowed with" in result.stderr
+
+
+def test_cli_build_no_desalt_conflicts_with_strip_solvents(tmp_path):
+    # --strip-solvents cannot share the argparse mutex group with --no-desalt
+    # (it must stay compatible with --salt-file), so _configure_desalting
+    # rejects the combination and main() maps it to exit code 2.
+    smiles = _write_amine_salt_corpus(tmp_path)
+    database = tmp_path / "out.oemmpa.duckdb"
+    result = _run_cli(
+        "build", "--smiles", str(smiles), "--output", str(database),
+        "--no-desalt", "--strip-solvents",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--no-desalt cannot be combined with" in result.stderr
+
+
+def test_cli_build_no_desalt_conflicts_with_aggressive(tmp_path):
+    smiles = _write_amine_salt_corpus(tmp_path)
+    database = tmp_path / "out.oemmpa.duckdb"
+    result = _run_cli(
+        "build", "--smiles", str(smiles), "--output", str(database),
+        "--no-desalt", "--aggressive",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--no-desalt cannot be combined with" in result.stderr
+
+
+def test_cli_build_aggressive_strips_single_component_salt_former(tmp_path):
+    # Tosylic acid is a single-component salt-former: the default guard keeps it
+    # (it is the compound of interest), while --aggressive desalts single
+    # components too, leaving nothing and rejecting the row.
+    smiles = tmp_path / "tosylic.smi"
+    smiles.write_text(
+        "Cc1ccc(cc1)S(=O)(=O)O tosylic\nCCCCN butylamine\n",
+        encoding="utf-8",
+    )
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(default_db))
+    assert "tosylic" in _stored_clean_smiles(default_db)
+
+    aggressive_db = tmp_path / "aggressive.oemmpa.duckdb"
+    result = _run_cli(
+        "build", "--smiles", str(smiles), "--output", str(aggressive_db),
+        "--aggressive", check=False,
+    )
+    assert result.returncode == 2
+    assert "all fragments removed as salts" in result.stderr
+
+
+def test_cli_generate_no_desalt_keeps_salted_source_unmatched(tmp_path):
+    # A salted --source desalts by default so it matches the (desalted) corpus
+    # transforms; --no-desalt leaves the counterion attached so nothing matches.
+    smiles = tmp_path / "amines.smi"
+    smiles.write_text(
+        "CCCN propylamine\nCCCCN butylamine\nCCCCCN pentylamine\n",
+        encoding="utf-8",
+    )
+    common = ["generate", "--smiles", str(smiles), "--source", "CCCN.Cl", "--output", "-"]
+    desalted = _tsv_rows(_run_cli(*common).stdout)
+    assert {row["smiles"] for row in desalted} == {"CCCCN", "CCCCCN"}
+    raw = _run_cli(*common, "--no-desalt")
+    assert _tsv_rows(raw.stdout) == []
+
+
+def test_configure_desalting_maps_cli_flags(tmp_path):
+    import argparse
+
+    from oemmpa.cli import _configure_desalting
+
+    class _RecordingAnalyzer:
+        def __init__(self):
+            self.calls = []
+
+        def configure_desalting(self, **kwargs):
+            self.calls.append(kwargs)
+
+    # Default flags -> desalting on, salts only, non-aggressive.
+    default_args = argparse.Namespace(
+        no_desalt=False, strip_solvents=False,
+        salt_file=None, solvent_file=None, aggressive=False,
+    )
+    default_analyzer = _RecordingAnalyzer()
+    _configure_desalting(default_analyzer, default_args)
+    assert default_analyzer.calls == [
+        {
+            "enabled": True, "strip_solvents": False,
+            "salt_file": None, "solvent_file": None, "aggressive": False,
+        }
+    ]
+
+    # --no-desalt -> a single enabled=False call.
+    off_args = argparse.Namespace(
+        no_desalt=True, strip_solvents=False,
+        salt_file=None, solvent_file=None, aggressive=False,
+    )
+    off_analyzer = _RecordingAnalyzer()
+    _configure_desalting(off_analyzer, off_args)
+    assert off_analyzer.calls == [{"enabled": False}]
+
+    # --no-desalt with any configuration flag is rejected before configuring.
+    conflict_args = argparse.Namespace(
+        no_desalt=True, strip_solvents=True,
+        salt_file=None, solvent_file=None, aggressive=False,
+    )
+    conflict_analyzer = _RecordingAnalyzer()
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _configure_desalting(conflict_analyzer, conflict_args)
+    assert conflict_analyzer.calls == []
+
+
+def test_resolve_desalter_returns_none_when_disabled():
+    import argparse
+
+    from oemmpa.cli import _resolve_desalter
+
+    off_args = argparse.Namespace(
+        no_desalt=True, strip_solvents=False,
+        salt_file=None, solvent_file=None, aggressive=False,
+    )
+    assert _resolve_desalter(off_args) is None
+
+    on_args = argparse.Namespace(
+        no_desalt=False, strip_solvents=False,
+        salt_file=None, solvent_file=None, aggressive=False,
+    )
+    assert _resolve_desalter(on_args) is not None
+
+    conflict_args = argparse.Namespace(
+        no_desalt=True, strip_solvents=False,
+        salt_file=None, solvent_file="x.smarts", aggressive=False,
+    )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        _resolve_desalter(conflict_args)
+
+
+
+def test_resolve_desalter_solvent_file_requires_salt_file():
+    # oedesalt cannot mix its compiled-in salts with a custom solvent file, so a
+    # bare --solvent-file (no --salt-file) is rejected rather than silently
+    # dropping the bundled salts.
+    import argparse
+
+    from oemmpa.cli import _resolve_desalter
+
+    args = argparse.Namespace(
+        no_desalt=False, strip_solvents=True,
+        salt_file=None, solvent_file="s.smarts", aggressive=False,
+    )
+    with pytest.raises(ValueError, match="requires --salt-file"):
+        _resolve_desalter(args)
+
+
+def test_resolve_desalter_strip_solvents_with_salt_file_requires_solvent_file():
+    # In file mode the bundled solvent patterns are unavailable, so
+    # --strip-solvents alongside a custom --salt-file needs an explicit
+    # --solvent-file rather than falling back to a removed data file.
+    import argparse
+
+    from oemmpa.cli import _resolve_desalter
+
+    args = argparse.Namespace(
+        no_desalt=False, strip_solvents=True,
+        salt_file="my.smarts", solvent_file=None, aggressive=False,
+    )
+    with pytest.raises(ValueError, match="requires --solvent-file"):
+        _resolve_desalter(args)
+
+
+def test_configure_desalting_bundled_default_uses_bundled_patterns():
+    # The default facade configuration desalts a salted two-component molecule
+    # with the compiled-in patterns — no data file on disk.
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()  # configure_desalting() runs in __init__
+    analyzer.add_molecule("CC(=O)Oc1ccccc1C(=O)O.Cl", id="aspirin")
+    assert "Halides" in analyzer.stripped_names("aspirin")

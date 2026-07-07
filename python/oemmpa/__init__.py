@@ -690,12 +690,15 @@ except ImportError as exc:
 from . import oemmpa as _swig_proxy
 
 _RAW_BINDING_EXPORTS = (
+    "AcceptedMolecule",
+    "AcceptedMoleculeVector",
     "AnalysisMethod",
     "AnalysisStateError",
     "Analyzer",
     "BondIndexFragmentationStrategy",
     "CutBond",
     "CutBondVector",
+    "Desalter",
     "DuplicateIdError",
     "Fragmentation",
     "FragmentationError",

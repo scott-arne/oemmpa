@@ -5,9 +5,12 @@
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"
 
+#include "oedesalt/Desalter.h"
+
 #include <oechem.h>
 
 #include <algorithm>
+#include <fstream>
 
 namespace OEMMPA {
 namespace test {
@@ -542,6 +545,51 @@ TEST(TransformApplicationTest, RejectsMultiCutHydrogenVariableTransform) {
             "variable transform components must be connected: [*:1][H].O[*:2]"
         );
     }
+}
+
+TEST(TransformApplicationDesalt, DesaltsSourceSmilesBeforeApplying) {
+    const std::string path = std::string(::testing::TempDir()) + "/ta_salts.smarts";
+    { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
+
+    // Source "CCO.Cl" desalts to "CCO"; a C>>N SMIRKS on the desalted source
+    // must behave the same as calling with a pre-desalted "CCO".
+    const auto with_salt =
+        TransformApplicator::ApplySmirks("CCO.Cl", "[C:1]>>[N:1]", &desalter);
+    const auto pre_desalted =
+        TransformApplicator::ApplySmirks("CCO", "[C:1]>>[N:1]");
+    EXPECT_EQ(with_salt.size(), pre_desalted.size());
+}
+
+TEST(TransformApplicationDesalt, DesaltsObjectOverloadInputs) {
+    // The const OEMolBase& overloads (M3) bypass MoleculeRecord and must desalt
+    // the incoming object directly. Build a salted OEGraphMol and confirm each
+    // object overload matches its pre-desalted object result.
+    const std::string path = std::string(::testing::TempDir()) + "/ta_obj_salts.smarts";
+    { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
+    const OEDESALT::Desalter desalter(OEDESALT::load_salt_patterns(path));
+
+    OEChem::OEGraphMol salted;
+    ASSERT_TRUE(OEChem::OESmilesToMol(salted, "CCO.Cl"));
+    OEChem::OEGraphMol clean;
+    ASSERT_TRUE(OEChem::OESmilesToMol(clean, "CCO"));
+
+    EXPECT_EQ(
+        TransformApplicator::ApplySmirks(salted, "[C:1]>>[N:1]", &desalter).size(),
+        TransformApplicator::ApplySmirks(clean, "[C:1]>>[N:1]").size()
+    );
+    EXPECT_EQ(
+        TransformApplicator::ApplyVariableTransform(salted, "[*:1]O>>[*:1]N", &desalter).size(),
+        TransformApplicator::ApplyVariableTransform(clean, "[*:1]O>>[*:1]N").size()
+    );
+    // GenerateProducts(OEMolBase) with an empty transform set: both return 0,
+    // but the salted-object call must NOT throw "molecule has no atoms" (it
+    // desalts to CCO, which is non-empty).
+    std::vector<Transform> no_transforms;
+    EXPECT_EQ(
+        TransformApplicator::GenerateProducts(salted, no_transforms, GenerationOptions(), &desalter).size(),
+        TransformApplicator::GenerateProducts(clean, no_transforms).size()
+    );
 }
 
 }  // namespace test

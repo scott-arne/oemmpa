@@ -95,6 +95,12 @@ OEMMPA's `build` command now applies mmpdb-equivalent defaults: `--max-heavies 1
 These defaults can be overridden by passing `none` to any of the filter flags or
 `--symmetric` to enable bidirectional pair indexing.
 
+One default is *deliberately* not mmpdb-equivalent: OEMMPA desalts every input
+with a curated 103-pattern set, far more rigorously than mmpdb/RDKit's default
+SaltRemover (~15 patterns). This is a sanctioned, scientifically motivated
+divergence. For a strict like-for-like pair-count comparison against mmpdb,
+pass `--no-desalt` (or `--salt-file` with mmpdb's pattern set) to both tools.
+
 Raw invocation:
 
 ```bash

@@ -5,6 +5,7 @@
 #include "oemmpa/oemmpa.h"
 
 #include <algorithm>
+#include <fstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -503,6 +504,40 @@ TEST(AnalyzerTest, GetTransformsHonorsAsymmetricQueryOptions) {
             );
         }
     }
+}
+
+TEST(AnalyzerDesalt, ConfiguredDesalterStripsOnAddMolecule) {
+    const std::string path = std::string(::testing::TempDir()) + "/an_salts.smarts";
+    { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
+
+    Analyzer analyzer;
+    analyzer.ConfigureDesaltingFromFiles(path);
+    const unsigned int id = analyzer.AddMolecule("CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin");
+    ASSERT_EQ(analyzer.GetStrippedNames(id).size(), 1u);
+    EXPECT_EQ(analyzer.GetStrippedNames(id)[0], "Halides");
+}
+
+TEST(AnalyzerDesalt, NoDesalterByDefault) {
+    Analyzer analyzer;
+    const unsigned int id = analyzer.AddMolecule("CC(=O)Oc1ccccc1C(=O)O.Cl", "aspirin");
+    EXPECT_TRUE(analyzer.GetStrippedNames(id).empty());
+}
+
+TEST(AnalyzerDesalt, ClearResetsStrippedNamesButKeepsDesalter) {
+    const std::string path = std::string(::testing::TempDir()) + "/an_clear_salts.smarts";
+    { std::ofstream out(path); out << "[F,Cl,Br,I]  Halides\n"; }
+
+    Analyzer analyzer;
+    analyzer.ConfigureDesaltingFromFiles(path);
+    const unsigned int id = analyzer.AddMolecule("CCO.Cl", "m1");
+    EXPECT_EQ(analyzer.GetStrippedNames(id).size(), 1u);
+
+    analyzer.Clear();
+    // Old id is gone (map cleared)...
+    EXPECT_THROW(analyzer.GetStrippedNames(id), InvalidMoleculeError);
+    // ...but the desalter still applies to the next molecule (reused id 1).
+    const unsigned int id2 = analyzer.AddMolecule("CCO.Cl", "m2");
+    EXPECT_EQ(analyzer.GetStrippedNames(id2).size(), 1u);
 }
 
 }  // namespace test

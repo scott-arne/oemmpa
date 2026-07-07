@@ -36,6 +36,24 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # instructions.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake-openeye")
 
+# Desalting is provided by the standalone oedesalt library, fetched and linked
+# statically. Its own build reuses our OpenEye/Python discovery (the imported
+# targets are created idempotently). The fetch needs GitHub access at configure
+# time; behind the corporate proxy, export HTTP(S)_PROXY before configuring
+# (mirrors how oedesalt itself fetches cmake-openeye). We disable oedesalt's
+# tests and Python bindings — oemmpa links only the C++ static library and wraps
+# the Desalter through its own SWIG module.
+include(FetchContent)
+set(OEDESALT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(OEDESALT_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    oedesalt
+    GIT_REPOSITORY https://github.com/scott-arne/oedesalt.git
+    GIT_TAG v0.1.0
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(oedesalt)
+
 if(OEMMPA_BUILD_PYTHON)
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
     # Python bindings cannot be built without SWIG, so fail fast with an
@@ -119,6 +137,11 @@ target_include_directories(oemmpa
 target_link_libraries(oemmpa
     PUBLIC
         OpenEye::OEChem
+        # oedesalt is a fetched static library. Scope the link to the build tree
+        # with BUILD_INTERFACE so it (and its own OpenEye usage requirements)
+        # applies to the in-tree SWIG module and tests, while staying out of the
+        # installed oemmpa-targets export set — oedesalt manages its own export.
+        $<BUILD_INTERFACE:oedesalt>
 )
 
 if(OEMMPA_HAS_OEMEDCHEM)

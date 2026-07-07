@@ -33,17 +33,24 @@ def _raw_transform_vector(transforms):
     return raw_transforms
 
 
-def apply_transform_smirks(source, smirks):
+def apply_transform_smirks(source, smirks, *, desalter=None):
     """Apply an explicit unimolecular SMIRKS transform.
 
     :param source: Source molecule as a SMILES string or supported OpenEye
         molecule object.
     :param smirks: Chemically explicit unimolecular transform SMIRKS.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        source molecule so it desalts consistently with the stored corpus.
     :returns: Deduplicated canonical product SMILES.
     :raises ValueError: If the source molecule or transform SMIRKS is invalid.
     """
     try:
-        products = _oemmpa.TransformApplicator.ApplySmirks(source, str(smirks))
+        if desalter is None:
+            products = _oemmpa.TransformApplicator.ApplySmirks(source, str(smirks))
+        else:
+            products = _oemmpa.TransformApplicator.ApplySmirks(
+                source, str(smirks), desalter
+            )
     except RuntimeError as exc:
         _transform_error_to_value_error(exc)
 
@@ -68,21 +75,30 @@ def build_variable_transform_smirks(transform):
         _transform_error_to_value_error(exc)
 
 
-def apply_variable_transform(source, transform):
+def apply_variable_transform(source, transform, *, desalter=None):
     """Apply an observed variable transform.
 
     :param source: Source molecule as a SMILES string or supported OpenEye
         molecule object.
     :param transform: Transform string in
         ``source_variable>>target_variable`` form.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        source molecule so it desalts consistently with the stored corpus.
     :returns: Deduplicated canonical product SMILES.
     :raises ValueError: If the source molecule or transform is invalid.
     """
     try:
-        products = _oemmpa.TransformApplicator.ApplyVariableTransform(
-            source,
-            str(transform),
-        )
+        if desalter is None:
+            products = _oemmpa.TransformApplicator.ApplyVariableTransform(
+                source,
+                str(transform),
+            )
+        else:
+            products = _oemmpa.TransformApplicator.ApplyVariableTransform(
+                source,
+                str(transform),
+                desalter,
+            )
     except RuntimeError as exc:
         _transform_error_to_value_error(exc)
 
@@ -112,6 +128,8 @@ def generate_products(
     skip_unsupported=True,
     statistics=None,
     aggregation="avg",
+    *,
+    desalter=None,
 ):
     """Generate products from a collection of observed transforms.
 
@@ -128,6 +146,8 @@ def generate_products(
         metadata to generated products.
     :param aggregation: Statistic used for predicted-delta metadata on the
         generated products.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        source molecule so it desalts consistently with the stored corpus.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
     :raises ValueError: If the source molecule is invalid, ``min_evidence`` is
         negative, or unsupported transforms are not skipped.
@@ -141,11 +161,19 @@ def generate_products(
     options.SetSkipUnsupportedTransforms(bool(skip_unsupported))
 
     try:
-        products = _oemmpa.TransformApplicator.GenerateProducts(
-            source,
-            _raw_transform_vector(transforms),
-            options,
-        )
+        if desalter is None:
+            products = _oemmpa.TransformApplicator.GenerateProducts(
+                source,
+                _raw_transform_vector(transforms),
+                options,
+            )
+        else:
+            products = _oemmpa.TransformApplicator.GenerateProducts(
+                source,
+                _raw_transform_vector(transforms),
+                options,
+                desalter,
+            )
     except RuntimeError as exc:
         _transform_error_to_value_error(exc)
 
@@ -171,6 +199,7 @@ def generate_products_from_rule_environments(
     min_evidence=None,
     skip_unsupported=True,
     statistics=None,
+    desalter=None,
     **filters,
 ):
     """Generate products from selected rule-environment rows.
@@ -190,6 +219,8 @@ def generate_products_from_rule_environments(
     :param skip_unsupported: Whether unsupported observed transforms should be
         skipped.
     :param statistics: Optional statistics override for prediction metadata.
+    :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
+        source molecule so it desalts consistently with the stored corpus.
     :param filters: Keyword filters accepted by ``RuleSelectionOptions``.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
     """
@@ -217,4 +248,5 @@ def generate_products_from_rule_environments(
         min_evidence=min_evidence,
         skip_unsupported=skip_unsupported,
         statistics=statistics,
+        desalter=desalter,
     )

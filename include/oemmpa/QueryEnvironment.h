@@ -4,6 +4,10 @@
 #include <string>
 #include <vector>
 
+namespace OEDESALT {
+class Desalter;
+}  // namespace OEDESALT
+
 namespace OEMMPA {
 
 /// \brief Local environment observed while fragmenting a query molecule.
@@ -41,7 +45,8 @@ private:
 std::vector<QueryEnvironment> ComputeQueryEnvironments(
     const std::string& smiles,
     unsigned int min_radius = 0,
-    unsigned int max_radius = 5
+    unsigned int max_radius = 5,
+    const OEDESALT::Desalter* desalter = nullptr
 );
 
 bool SmilesContainsSubstructure(
