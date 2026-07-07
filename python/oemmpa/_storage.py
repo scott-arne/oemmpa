@@ -25,6 +25,59 @@ def _string_vector(values):
     return vector
 
 
+def _apply_variable_fragment_filters(
+    options,
+    *,
+    max_variable_heavies=None,
+    min_variable_heavies=None,
+    max_variable_ratio=None,
+    min_variable_ratio=None,
+):
+    """Push any supplied variable-fragment bounds onto ``options``.
+
+    Bounds left as ``None`` are not applied, so the neutral query default (no
+    limit) is preserved. Heavy-atom bounds must be non-negative and the minimum
+    must not exceed the maximum; ratio bounds must lie in ``[0, 1]``.
+
+    :param options: Raw ``_oemmpa.QueryOptions`` to mutate in place.
+    :raises ValueError: If a bound is out of range or the min/max pair is
+        inconsistent.
+    """
+    if max_variable_heavies is not None and min_variable_heavies is not None:
+        if int(min_variable_heavies) > int(max_variable_heavies):
+            raise ValueError(
+                "min_variable_heavies must be less than or equal to "
+                "max_variable_heavies"
+            )
+    if max_variable_ratio is not None and min_variable_ratio is not None:
+        if float(min_variable_ratio) > float(max_variable_ratio):
+            raise ValueError(
+                "min_variable_ratio must be less than or equal to "
+                "max_variable_ratio"
+            )
+
+    if max_variable_heavies is not None:
+        value = int(max_variable_heavies)
+        if value < 0:
+            raise ValueError("max_variable_heavies must be non-negative")
+        options.SetMaxVariableHeavies(value)
+    if min_variable_heavies is not None:
+        value = int(min_variable_heavies)
+        if value < 0:
+            raise ValueError("min_variable_heavies must be non-negative")
+        options.SetMinVariableHeavies(value)
+    if max_variable_ratio is not None:
+        value = float(max_variable_ratio)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("max_variable_ratio must be between 0 and 1")
+        options.SetMaxVariableRatio(value)
+    if min_variable_ratio is not None:
+        value = float(min_variable_ratio)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("min_variable_ratio must be between 0 and 1")
+        options.SetMinVariableRatio(value)
+
+
 class DuckDBStore:
     """Pythonic wrapper around the optional raw C++ ``DuckDBStore``.
 
@@ -101,7 +154,17 @@ class DuckDBStore:
             )
         return load_report_from_raw(raw_report)
 
-    def save_analyzer(self, analyzer, index_mode="mmpdb", query_options=None):
+    def save_analyzer(
+        self,
+        analyzer,
+        index_mode="mmpdb",
+        query_options=None,
+        *,
+        max_variable_heavies=None,
+        min_variable_heavies=None,
+        max_variable_ratio=None,
+        min_variable_ratio=None,
+    ):
         """Persist an analyzed Python facade or raw analyzer into this store.
 
         :param analyzer: :class:`oemmpa.Analyzer` facade or raw
@@ -111,23 +174,57 @@ class DuckDBStore:
             stores the raw analyzer's default symmetric pair set.
         :param query_options: Optional raw ``_oemmpa.QueryOptions``. When
             supplied, it selects the persisted pair set directly and
-            ``index_mode`` is ignored.
+            ``index_mode`` and the ``*_variable_*`` filters are ignored.
+        :param max_variable_heavies: Optional maximum variable-fragment heavy
+            atom count. MMPDB defaults this to ``10`` when indexing; the library
+            applies no bound unless one is passed here. Large real-world stores
+            typically want ``10`` to avoid persisting the many uninteresting
+            large-fragment pairs that dominate build size.
+        :param min_variable_heavies: Optional minimum variable-fragment heavy
+            atom count.
+        :param max_variable_ratio: Optional maximum variable-to-molecule heavy
+            atom ratio.
+        :param min_variable_ratio: Optional minimum variable-to-molecule heavy
+            atom ratio.
+        :raises ValueError: If a ``*_variable_*`` filter is combined with an
+            explicit ``query_options``, or if ``index_mode`` is unsupported.
         :returns: ``self`` for chaining.
         """
         raw_analyzer = getattr(analyzer, "raw", analyzer)
+        variable_filters = {
+            "max_variable_heavies": max_variable_heavies,
+            "min_variable_heavies": min_variable_heavies,
+            "max_variable_ratio": max_variable_ratio,
+            "min_variable_ratio": min_variable_ratio,
+        }
+        has_variable_filter = any(
+            value is not None for value in variable_filters.values()
+        )
         if query_options is not None:
+            if has_variable_filter:
+                raise ValueError(
+                    "variable-fragment filters cannot be combined with an "
+                    "explicit query_options"
+                )
             raw_analyzer.SaveTo(self._raw_store, query_options)
             return self
 
         index_mode = str(index_mode)
         if index_mode == "mmpdb":
-            options = _oemmpa.QueryOptions()
-            options.SetSymmetric(False)
-            raw_analyzer.SaveTo(self._raw_store, options)
+            symmetric = False
         elif index_mode == "openeye-native":
-            raw_analyzer.SaveTo(self._raw_store)
+            symmetric = True
         else:
             raise ValueError(f"unsupported index_mode: {index_mode}")
+
+        if not has_variable_filter and index_mode == "openeye-native":
+            raw_analyzer.SaveTo(self._raw_store)
+            return self
+
+        options = _oemmpa.QueryOptions()
+        options.SetSymmetric(symmetric)
+        _apply_variable_fragment_filters(options, **variable_filters)
+        raw_analyzer.SaveTo(self._raw_store, options)
         return self
 
     def pairs(self, options=None):

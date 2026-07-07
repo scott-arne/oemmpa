@@ -361,7 +361,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 #define OEMMPA_VERSION_MAJOR 1
 #define OEMMPA_VERSION_MINOR 1
-#define OEMMPA_VERSION_PATCH 3
+#define OEMMPA_VERSION_PATCH 4
 
 // ============================================================================
 // Phase 1 public headers

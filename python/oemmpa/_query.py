@@ -722,12 +722,33 @@ class AnalysisResult:
             raise ValueError("objective or property_name is required")
         return ObjectiveAnalysis(self, objective)
 
-    def save(self, path, *, index_mode="mmpdb", query_options=None):
+    def save(
+        self,
+        path,
+        *,
+        index_mode="mmpdb",
+        query_options=None,
+        max_variable_heavies=None,
+        min_variable_heavies=None,
+        max_variable_ratio=None,
+        min_variable_ratio=None,
+    ):
         """Persist this analysis to a DuckDB store.
 
         :param path: Output DuckDB database path.
         :param index_mode: Persisted pair orientation mode.
-        :param query_options: Optional raw query options.
+        :param query_options: Optional raw query options. When supplied, the
+            ``*_variable_*`` filters must not also be set.
+        :param max_variable_heavies: Optional maximum variable-fragment heavy
+            atom count. No bound is applied unless set; pass ``10`` to match
+            MMPDB's index default and avoid persisting the many large-fragment
+            pairs that inflate real-world stores.
+        :param min_variable_heavies: Optional minimum variable-fragment heavy
+            atom count.
+        :param max_variable_ratio: Optional maximum variable-to-molecule heavy
+            atom ratio.
+        :param min_variable_ratio: Optional minimum variable-to-molecule heavy
+            atom ratio.
         :returns: Open :class:`oemmpa.DuckDBStore` wrapper for the saved store.
         """
         from ._storage import DuckDBStore
@@ -736,6 +757,10 @@ class AnalysisResult:
             self.analyzer,
             index_mode=index_mode,
             query_options=query_options,
+            max_variable_heavies=max_variable_heavies,
+            min_variable_heavies=min_variable_heavies,
+            max_variable_ratio=max_variable_ratio,
+            min_variable_ratio=min_variable_ratio,
         )
 
 

@@ -198,3 +198,76 @@ def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
     ]
     assert len(store.pairs()) == 1
     assert store.row_count("pair") > len(store.pairs())
+
+
+# A congeneric trio whose transforms straddle a variable-fragment size bound:
+# swapping the decyl chain (10 heavy atoms) against methyl/ethyl produces two
+# large-variable pairs, while the methyl<->ethyl pair has a tiny variable
+# fragment. A ``max_variable_heavies`` bound below 10 keeps only the small one.
+_VARIABLE_FILTER_MOLECULES = (
+    ("c1ccc(CCCCCCCCCC)cc1", "decyl"),
+    ("c1ccc(C)cc1", "methyl"),
+    ("c1ccc(CC)cc1", "ethyl"),
+)
+
+
+def _variable_filter_analyzer():
+    from oemmpa import Analyzer
+
+    analyzer = Analyzer()
+    for smiles, identifier in _VARIABLE_FILTER_MOLECULES:
+        analyzer.add_molecule(smiles, id=identifier)
+    analyzer.analyze()
+    return analyzer
+
+
+def test_save_analyzer_applies_max_variable_heavies_filter(tmp_path):
+    from oemmpa import DuckDBStore
+
+    analyzer = _variable_filter_analyzer()
+
+    unfiltered = DuckDBStore(tmp_path / "unfiltered.duckdb")
+    unfiltered.save_analyzer(analyzer)
+
+    filtered = DuckDBStore(tmp_path / "filtered.duckdb")
+    filtered.save_analyzer(analyzer, max_variable_heavies=3)
+
+    # Six radii per base pair: three base pairs unfiltered, one when the two
+    # decyl transforms (10 heavy atoms) are dropped by the size bound.
+    assert unfiltered.row_count("pair") == 18
+    assert filtered.row_count("pair") == 6
+    assert len(filtered.pairs()) == 1
+
+
+def test_analysis_result_save_applies_variable_fragment_filters(tmp_path):
+    import oemmpa
+
+    frame = [
+        {"compound_id": identifier, "smiles": smiles}
+        for smiles, identifier in _VARIABLE_FILTER_MOLECULES
+    ]
+    result = oemmpa.analyze_dataframe(frame, smiles="smiles", id="compound_id")
+
+    unfiltered = result.save(tmp_path / "unfiltered.duckdb")
+    filtered = result.save(
+        tmp_path / "filtered.duckdb",
+        max_variable_heavies=3,
+    )
+
+    assert unfiltered.row_count("pair") == 18
+    assert filtered.row_count("pair") == 6
+
+
+def test_save_analyzer_rejects_variable_filter_with_explicit_query_options(tmp_path):
+    from oemmpa import DuckDBStore, _oemmpa
+
+    analyzer = _variable_filter_analyzer()
+    options = _oemmpa.QueryOptions()
+
+    store = DuckDBStore(tmp_path / "conflict.duckdb")
+    with pytest.raises(ValueError):
+        store.save_analyzer(
+            analyzer,
+            query_options=options,
+            max_variable_heavies=3,
+        )

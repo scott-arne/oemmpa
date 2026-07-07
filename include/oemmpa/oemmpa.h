@@ -4,7 +4,7 @@
 // Version information
 #define OEMMPA_VERSION_MAJOR 1
 #define OEMMPA_VERSION_MINOR 1
-#define OEMMPA_VERSION_PATCH 3
+#define OEMMPA_VERSION_PATCH 4
 
 #include "oemmpa/AnalysisMethod.h"
 #include "oemmpa/Analyzer.h"

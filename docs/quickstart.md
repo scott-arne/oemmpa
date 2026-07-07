@@ -246,6 +246,15 @@ store = open_oemmpa("analysis.oemmpa.duckdb")
 print(store.summary())
 ```
 
+By default `save()` persists every analyzed pair, which is convenient for small
+datasets but can produce very large stores when molecules carry big variable
+fragments. Pass a variable-fragment bound to keep only the more interesting
+transformations, matching the filter the `oemmpa build` CLI applies:
+
+```python
+analysis.save("analysis.oemmpa.duckdb", max_variable_heavies=10)
+```
+
 ## Results
 
 Run `analyze()` before asking for pairs or transformations. If you add more
