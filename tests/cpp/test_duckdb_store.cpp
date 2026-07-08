@@ -166,6 +166,7 @@ void ExpectBaseSchema(const DuckDBStore& store) {
 
     EXPECT_TRUE(ContainsTable(tables, "compound"));
     EXPECT_TRUE(ContainsTable(tables, "compound_property"));
+    EXPECT_TRUE(ContainsTable(tables, "constant_environment"));
     EXPECT_TRUE(ContainsTable(tables, "constant_smiles"));
     EXPECT_TRUE(ContainsTable(tables, "dataset"));
     EXPECT_TRUE(ContainsTable(tables, "environment_fingerprint"));
@@ -264,6 +265,13 @@ TEST(DuckDBStoreTest, SchemaIncludesRuleEnvironmentStatisticsAndSummaryCounts) {
     EXPECT_EQ(summary.GetNumPairs(), 0U);
     EXPECT_EQ(summary.GetNumRuleEnvironments(), 0U);
     EXPECT_EQ(summary.GetNumRuleEnvironmentStatistics(), 0U);
+}
+
+TEST(DuckDBStoreTest, SchemaIncludesConstantEnvironmentTable) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    EXPECT_TRUE(store.HasTable("constant_environment"));
+    EXPECT_EQ(store.GetRowCount("constant_environment"), 0U);
 }
 
 TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithSchema) {

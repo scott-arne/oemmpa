@@ -37,6 +37,7 @@ const std::vector<std::string>& base_table_names() {
     static const std::vector<std::string> tables = {
         "compound",
         "compound_property",
+        "constant_environment",
         "constant_smiles",
         "dataset",
         "environment_fingerprint",
@@ -1639,6 +1640,15 @@ void DuckDBStore::InitializeSchema() {
             "create table if not exists constant_smiles ("
             "id ubigint primary key,"
             "smiles varchar not null unique"
+            ")"
+        );
+        Execute(
+            "create table if not exists constant_environment ("
+            "constant_id ubigint not null references constant_smiles(id),"
+            "radius integer not null,"
+            "environment_fingerprint_id ubigint not null "
+            "references environment_fingerprint(id),"
+            "unique (constant_id, radius)"
             ")"
         );
         Execute(
