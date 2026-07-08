@@ -1778,6 +1778,48 @@ TEST(DuckDBStoreTest, AddPairsRejectsConflictingPayloadForSameIdentity) {
     );
 }
 
+TEST(DuckDBStoreTest, CallerOwnedTransactionRecoversAfterConflictReject) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    // Create two pairs with the same identity but different payload (same as the
+    // conflict-guard test above uses), so the guard throws on the batch.
+    const MatchedPair pair1 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        -1,  // heavy_atom_delta
+        0    // heavy_bond_delta
+    );
+    const MatchedPair conflicting_pair2 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        999,  // DIFFERENT heavy_atom_delta -> conflict
+        0
+    );
+
+    // Begin a caller-owned transaction, then call AddPairs with a conflicting
+    // batch. The guard throws StorageError, but the transaction remains open
+    // (AppendBulk's guard fires before any DB write).
+    store.Execute("begin transaction");
+    EXPECT_THROW(store.AddPairs({pair1, conflicting_pair2}), StorageError);
+
+    // Retry with only the valid pair1 in the SAME still-open transaction. Before
+    // the fix, AddPairs' caller-owned branch did not clear pair_identity_cache_
+    // on the throw, so the retry saw stale identity from the failed call, treated
+    // pair1 as a persisted duplicate, and staged nothing -> silent data loss on
+    // commit (GetRowCount("pair") == 0). After the fix, the cache is cleared on
+    // throw, so the retry correctly stages pair1.
+    EXPECT_NO_THROW(store.AddPairs({pair1}));
+    store.Execute("commit");
+
+    // Assert the retried pair is actually persisted.
+    EXPECT_EQ(store.GetRowCount("pair"), 1U);
+    EXPECT_EQ(store.GetPairs().size(), 1U);
+}
+
 TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
     DuckDBStore store;
     store.InitializeSchema();

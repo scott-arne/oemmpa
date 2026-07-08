@@ -2075,8 +2075,18 @@ void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
     if (!owns_transaction) {
         // Molecule existence is enforced by the pair FKs; no molecules here.
         // AppendBulk reconciles id sequences itself, so the caller-owned
-        // transaction gets consistent sequences on commit too.
-        AppendBulk({}, pairs);
+        // transaction gets consistent sequences on commit too. On failure we
+        // must clear the id caches: AppendBulk mutates member caches (e.g.
+        // pair_identity_cache_) as it stages rows, and a throw leaves them
+        // holding entries for rows that were never committed. A caller that
+        // catches the error and retries in the same transaction would otherwise
+        // see stale identities and silently skip valid pairs.
+        try {
+            AppendBulk({}, pairs);
+        } catch (...) {
+            ClearIdCaches();
+            throw;
+        }
         return;
     }
 
