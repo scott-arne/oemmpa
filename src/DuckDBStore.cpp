@@ -1506,10 +1506,10 @@ DuckDBStore::DuckDBStore(const std::string& database_path)
 DuckDBStore::~DuckDBStore() = default;
 
 void DuckDBStore::RequireCompatibleSchemaOrThrow() {
-    // A pre-existing store must be exactly the current revision. Read the
-    // persisted version; absence of a dataset version row on a non-empty store
-    // means a pre-versioned legacy store (e.g. one written only via AddPairs,
-    // which never inserts the dataset row).
+    // A versioned store always has a dataset row carrying oemmpa_schema_version;
+    // a populated store with a `pair` table but no such row is a pre-versioned
+    // legacy store (e.g. one written only via AddPairs, which never inserts the
+    // dataset row).
     auto result = connection_->Query(
         "select oemmpa_schema_version from dataset where id = 1");
     require_success(*result, "read schema version");
@@ -1530,10 +1530,10 @@ void DuckDBStore::RequireCompatibleSchemaOrThrow() {
 }
 
 void DuckDBStore::InitializeSchema() {
-    // Gate BEFORE any v2 DDL. An existing store (its `pair` table already
-    // present) must be validated first, so a legacy store fails with the
-    // deterministic rebuild-required error rather than erroring later on
-    // v2-only index/column DDL.
+    // Gate BEFORE any DDL. An existing store must be validated first, so a
+    // legacy store fails with a deterministic rebuild-required error rather than
+    // erroring on future version-specific DDL (e.g. columns or indexes added in
+    // a later revision).
     const bool fresh_database = !HasTable("pair");
     if (!fresh_database) {
         RequireCompatibleSchemaOrThrow();
@@ -1689,7 +1689,7 @@ void DuckDBStore::InitializeSchema() {
 
         if (fresh_database) {
             // Stamp the version eagerly (not lazily via refresh_dataset_counts) so
-            // every v2 store carries its revision even before any counts refresh.
+            // every store carries its revision even before any counts refresh.
             Execute(
                 "insert into dataset (id, oemmpa_schema_version, title, "
                 "fragment_options, index_options, is_symmetric) "
