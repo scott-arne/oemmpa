@@ -1184,6 +1184,35 @@ TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
     EXPECT_EQ(store.GetRowCount("pair"), 0U);
 }
 
+TEST(DuckDBStoreTest, ConstantEnvironmentInvariantsHold) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    store.AddPairs(AnalyzeToluenePhenolPairs());
+
+    // Invariant 1: (constant_id, radius) -> exactly one fingerprint, i.e. exactly
+    // 6 constant_environment rows per constant.
+    EXPECT_EQ(store.GetRowCount("constant_environment"),
+              store.GetRowCount("constant_smiles") * 6U);
+    // Reconstruction returns the fixture's 2 distinct physical pairs.
+    EXPECT_EQ(store.GetPairs().size(), 2U);
+    // Each rule_environment reconstructs to >=1 contributing pair.
+    EXPECT_GE(store.GetPairsForRuleEnvironment(1).size(), 1U);
+}
+
+TEST(DuckDBStoreTest, RepeatedAddPairsAcrossCallsDoesNotDuplicate) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+
+    store.AddPairs(input_pairs);
+    const std::uint64_t after_first = store.GetRowCount("pair");
+    // Replaying the same physical pairs must not add rows or throw.
+    EXPECT_NO_THROW(store.AddPairs(input_pairs));
+    EXPECT_EQ(store.GetRowCount("pair"), after_first);
+    EXPECT_EQ(store.GetPairs().size(), 2U);
+}
 
 TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache) {
     // A first save rolls back partway (duplicate molecule id), discarding the
