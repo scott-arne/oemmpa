@@ -1738,27 +1738,16 @@ void DuckDBStore::Execute(const std::string& sql) {
     if (!connection_) {
         throw StorageError("DuckDB connection is not open");
     }
-    // A rollback discards rows whose ids may be cached, so invalidate the
-    // in-memory id caches to avoid handing out stale ids (or, since the
-    // per-radius-pair-storage branch, stale pair identities that would make a
-    // retried pair silently vanish). Match case-insensitively and tolerate a
-    // trailing ';' / surrounding whitespace, because DuckDB accepts ROLLBACK /
-    // rollback; / rollback transaction / ABORT, not just the exact lowercase
-    // literal.
-    {
-        std::string normalized = trim_copy(sql);
-        if (!normalized.empty() && normalized.back() == ';') {
-            normalized.pop_back();
-            normalized = trim_copy(normalized);
-        }
-        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        if (normalized == "rollback" || normalized == "rollback transaction" ||
-            normalized == "abort") {
-            ClearIdCaches();
-        }
-    }
-
+    // Execute is a thin SQL executor and intentionally has NO id-cache side
+    // effects. Cache coherence after a rollback (stale ids, or pair identities
+    // that would make a retried pair silently vanish) is handled authoritatively
+    // by PreloadIdCaches, which clears and reloads from the transaction-visible
+    // DB at the top of every AppendBulk -- the caches' only consumer. Keying
+    // invalidation on rollback SQL text or transaction state here was both
+    // fragile (DuckDB accepts rollback spellings no literal match enumerates:
+    // ROLLBACK;;, ABORT TRANSACTION, trailing clauses) and incomplete (a
+    // ROLLBACK; BEGIN TRANSACTION batch ends one transaction while staying "in a
+    // transaction"), so that responsibility lives at the consumer, not here.
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
@@ -2122,6 +2111,17 @@ void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
 }
 
 void DuckDBStore::PreloadIdCaches() {
+    // Reset before reloading so the caches are an authoritative mirror of the
+    // committed (transaction-visible) DB, never a superset polluted by rows a
+    // prior transaction rolled back. Because this runs at the top of every
+    // AppendBulk and same-connection SELECTs see this transaction's own
+    // uncommitted rows, it closes the rollback-cache-poisoning class at its only
+    // consumer -- independent of how a rollback was spelled, batched, or whether
+    // it arrived via a failed statement. Without the clear, emplace() keeps stale
+    // identities (it never overwrites), and a retried pair would be skipped as a
+    // phantom duplicate.
+    ClearIdCaches();
+
     // Populate member id caches from existing rows so a non-empty store reuses
     // ids. On a fresh store these queries return nothing (cheap).
     auto load_named = [&](const char* table,

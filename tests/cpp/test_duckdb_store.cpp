@@ -1848,6 +1848,77 @@ TEST(DuckDBStoreTest, CallerOwnedUppercaseRollbackClearsPairCacheForRetry) {
     EXPECT_EQ(store.GetPairs().size(), 2u);
 }
 
+// Rollback cache invalidation must be spelling-immune: DuckDB accepts rollback
+// statements a fixed string match cannot enumerate (double semicolons, trailing
+// clauses, ABORT TRANSACTION). Each of these ends the caller-owned transaction,
+// so the pair-identity cache staged during the rolled-back AddPairs must be
+// cleared or a retry silently stages nothing. Parameterized over the accepted
+// spellings so the guarantee is keyed to transaction state, not literals.
+class DuckDBStoreExoticRollbackTest
+    : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(DuckDBStoreExoticRollbackTest, RolledBackPairsRetrySuccessfully) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    store.Execute("begin transaction");
+    store.AddPairs(pairs);
+    store.Execute(GetParam());
+
+    // Retry the same pairs after the rollback. If the rollback spelling did not
+    // clear pair_identity_cache_, the retry sees stale identities and stages
+    // zero rows -> silent data loss.
+    store.AddPairs(pairs);
+
+    EXPECT_GT(store.GetRowCount("pair"), 0u);
+    EXPECT_EQ(store.GetPairs().size(), 2u);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AcceptedRollbackSpellings,
+    DuckDBStoreExoticRollbackTest,
+    ::testing::Values(
+        std::string("ROLLBACK;;"),
+        std::string("ROLLBACK; "),
+        std::string("  rollback  "),
+        std::string("ABORT"),
+        // Multi-statement batch that ends one transaction and reopens another:
+        // the connection is in a transaction both before and after, so a
+        // final-state active/inactive check cannot detect the rollback. The
+        // authoritative cache reload at the top of AddPairs must still discard
+        // the poisoned identities.
+        std::string("ROLLBACK; BEGIN TRANSACTION")
+    )
+);
+
+TEST(DuckDBStoreTest, CallerOwnedRollbackThenFailedStatementStillClearsPairCache) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    store.Execute("begin transaction");
+    store.AddPairs(pairs);
+    // Roll back AND fail within a single Execute() call: DuckDB rolls back the
+    // first statement, then the missing-table select makes Execute() throw
+    // before returning. This is the motivating path that no Execute()-side
+    // rollback detection can cover (it throws before any post-statement hook),
+    // so the authoritative PreloadIdCaches reload is what must protect the retry.
+    EXPECT_THROW(
+        store.Execute("rollback; select * from definitely_missing_table"),
+        StorageError);
+
+    store.AddPairs(pairs);
+    EXPECT_GT(store.GetRowCount("pair"), 0u);
+    EXPECT_EQ(store.GetPairs().size(), 2u);
+}
+
 TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
     DuckDBStore store;
     store.InitializeSchema();
