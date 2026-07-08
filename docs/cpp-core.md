@@ -234,10 +234,14 @@ analyzer.Analyze();
 analyzer.SaveTo(store);
 ```
 
-`DuckDBStore` keeps both molecule-level records and rule-environment records.
-The `pair` table follows MMPDB's convention: a chemical pair can appear once for
-each environment radius, while the C++ and Python pair APIs return distinct
-chemical pairs for ordinary analysis workflows.
+`DuckDBStore` stores each matched molecular pair as a single `pair` row keyed by
+`(rule_id, constant_id, compound1_id, compound2_id)`. Per-radius rule environments
+live in `rule_environment`, and the `constant_environment(constant_id, radius,
+environment_fingerprint_id)` lookup maps a constant to its environment at each
+radius. To reconstruct the pairs contributing to a rule environment, join
+`pair -> constant_environment (on constant_id) -> rule_environment (on rule_id,
+environment_fingerprint_id, radius)`. This replaces the earlier layout that stored
+one `pair` row per radius (and an obsolete `pair.rule_environment_id` column).
 `RefreshRuleEnvironmentStatistics()` recomputes property-change summaries from
 the stored pair rows and molecule properties. `GetSummary(true)` recounts the
 main database tables directly.

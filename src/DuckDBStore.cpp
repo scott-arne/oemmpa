@@ -37,6 +37,7 @@ const std::vector<std::string>& base_table_names() {
     static const std::vector<std::string> tables = {
         "compound",
         "compound_property",
+        "constant_environment",
         "constant_smiles",
         "dataset",
         "environment_fingerprint",
@@ -114,13 +115,19 @@ struct NewRuleEnvironment {
 
 struct PairRow {
     std::uint64_t id;
-    std::uint64_t rule_environment_id;
+    std::uint64_t rule_id;
+    std::uint64_t constant_id;
     std::uint64_t compound1_id;
     std::uint64_t compound2_id;
-    std::uint64_t constant_id;
     unsigned int cut_count;
     int heavy_atom_delta;
     int heavy_bond_delta;
+};
+
+struct NewConstantEnvironment {
+    std::uint64_t constant_id;
+    int radius;
+    std::uint64_t fingerprint_id;
 };
 
 std::string trim_copy(const std::string& text) {
@@ -849,16 +856,21 @@ collect_rule_environment_property_deltas(
 ) {
     const std::string sql =
         "select "
-        "pair.rule_environment_id, "
+        "rule_env.id as rule_environment_id, "
         "source_property.property_name_id, "
         "target_property.value - source_property.value "
         "from pair "
+        "join constant_environment ce on ce.constant_id = pair.constant_id "
+        "join rule_environment rule_env "
+        "on rule_env.rule_id = pair.rule_id "
+        "and rule_env.environment_fingerprint_id = ce.environment_fingerprint_id "
+        "and rule_env.radius = ce.radius "
         "join compound_property source_property "
         "on source_property.compound_id = pair.compound1_id "
         "join compound_property target_property "
         "on target_property.compound_id = pair.compound2_id "
         "and target_property.property_name_id = source_property.property_name_id "
-        "order by pair.rule_environment_id, source_property.property_name_id, pair.id";
+        "order by rule_env.id, source_property.property_name_id, pair.id";
     std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
@@ -881,7 +893,8 @@ void refresh_dataset_counts(
     const std::string insert_sql =
         "insert into dataset ("
         "id, oemmpa_schema_version, title, fragment_options, index_options, is_symmetric"
-        ") values (1, 1, '', '', '', true) "
+        ") values (1, " + std::to_string(DuckDBStore::kOemmpaSchemaVersion) +
+        ", '', '', '', true) "
         "on conflict (id) do nothing";
     std::unique_ptr<duckdb::QueryResult> insert_result = connection->Query(insert_sql);
     if (!insert_result) {
@@ -1099,17 +1112,7 @@ std::string build_pair_query(
     std::uint64_t rule_environment_id = 0
 ) {
     std::ostringstream sql;
-    sql
-        << "select "
-        << "compound1_id, compound2_id, "
-        << "source_public_id, target_public_id, "
-        << "source_smiles, target_smiles, "
-        << "constant_smiles, "
-        << "source_variable_smiles, target_variable_smiles, "
-        << "cut_count, heavy_atom_delta, heavy_bond_delta "
-        << "from ("
-        << "select "
-        << "min(p.id) as sort_id, "
+    sql << "select "
         << "p.compound1_id, p.compound2_id, "
         << "coalesce(source_molecule.public_id, '') as source_public_id, "
         << "coalesce(target_molecule.public_id, '') as target_public_id, "
@@ -1123,24 +1126,33 @@ std::string build_pair_query(
         << "join compound source_molecule on source_molecule.id = p.compound1_id "
         << "join compound target_molecule on target_molecule.id = p.compound2_id "
         << "join constant_smiles c on c.id = p.constant_id "
-        << "join rule_environment rule_env on rule_env.id = p.rule_environment_id "
-        << "join rule r on r.id = rule_env.rule_id "
+        << "join rule r on r.id = p.rule_id "
         << "join rule_smiles source_variable on source_variable.id = r.from_smiles_id "
-        << "join rule_smiles target_variable on target_variable.id = r.to_smiles_id "
-        << "where true ";
+        << "join rule_smiles target_variable on target_variable.id = r.to_smiles_id ";
 
+    if (rule_environment_id > 0) {
+        // Restrict to physical pairs whose (rule, constant) resolve to this
+        // environment's fingerprint at its radius.
+        sql << "join constant_environment ce on ce.constant_id = p.constant_id "
+            << "join rule_environment rule_env "
+            << "on rule_env.rule_id = p.rule_id "
+            << "and rule_env.environment_fingerprint_id = ce.environment_fingerprint_id "
+            << "and rule_env.radius = ce.radius ";
+    }
+
+    sql << "where true ";
+    if (rule_environment_id > 0) {
+        sql << "and rule_env.id = " << rule_environment_id << " ";
+    }
     if (!options.GetSymmetric()) {
         sql << "and p.compound1_id < p.compound2_id ";
     }
-    if (rule_environment_id > 0) {
-        sql << "and p.rule_environment_id = " << rule_environment_id << " ";
-    }
     if (options.GetMaxHeavyAtomChange() >= 0) {
-        sql << "and abs(p.heavy_atom_delta) <= " << options.GetMaxHeavyAtomChange() << " ";
+        sql << "and abs(p.heavy_atom_delta) <= "
+            << options.GetMaxHeavyAtomChange() << " ";
     }
     if (options.GetMaxRelativeHeavyAtomChange() >= 0.0) {
-        sql
-            << "and case "
+        sql << "and case "
             << "when source_molecule.clean_num_heavies = 0 "
             << "then abs(p.heavy_atom_delta) = 0 "
             << "else cast(abs(p.heavy_atom_delta) as double) / "
@@ -1148,18 +1160,7 @@ std::string build_pair_query(
             << options.GetMaxRelativeHeavyAtomChange() << " "
             << "end ";
     }
-
-    sql
-        << "group by "
-        << "p.compound1_id, p.compound2_id, "
-        << "coalesce(source_molecule.public_id, ''), "
-        << "coalesce(target_molecule.public_id, ''), "
-        << "source_molecule.clean_smiles, target_molecule.clean_smiles, "
-        << "c.smiles, "
-        << "source_variable.smiles, target_variable.smiles, "
-        << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta"
-        << ") distinct_pairs "
-        << "order by sort_id";
+    sql << "order by p.id";
     return sql.str();
 }
 
@@ -1459,6 +1460,24 @@ void AppendRuleEnvironments(
     appender.Close();
 }
 
+void AppendConstantEnvironments(
+    duckdb::Connection& connection,
+    const std::vector<NewConstantEnvironment>& rows
+) {
+    if (rows.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "constant_environment");
+    for (const NewConstantEnvironment& row : rows) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.constant_id));
+        appender.Append(duckdb::Value::INTEGER(row.radius));
+        appender.Append(duckdb::Value::UBIGINT(row.fingerprint_id));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
 void AppendPairs(
     duckdb::Connection& connection,
     const std::vector<PairRow>& pair_rows
@@ -1470,10 +1489,10 @@ void AppendPairs(
     for (const PairRow& row : pair_rows) {
         appender.BeginRow();
         appender.Append(duckdb::Value::UBIGINT(row.id));
-        appender.Append(duckdb::Value::UBIGINT(row.rule_environment_id));
+        appender.Append(duckdb::Value::UBIGINT(row.rule_id));
+        appender.Append(duckdb::Value::UBIGINT(row.constant_id));
         appender.Append(duckdb::Value::UBIGINT(row.compound1_id));
         appender.Append(duckdb::Value::UBIGINT(row.compound2_id));
-        appender.Append(duckdb::Value::UBIGINT(row.constant_id));
         appender.Append(duckdb::Value::UINTEGER(row.cut_count));
         appender.Append(duckdb::Value::INTEGER(row.heavy_atom_delta));
         appender.Append(duckdb::Value::INTEGER(row.heavy_bond_delta));
@@ -1505,7 +1524,40 @@ DuckDBStore::DuckDBStore(const std::string& database_path)
 
 DuckDBStore::~DuckDBStore() = default;
 
+void DuckDBStore::RequireCompatibleSchemaOrThrow() {
+    // A versioned store always has a dataset row carrying oemmpa_schema_version;
+    // a populated store with a `pair` table but no such row is a pre-versioned
+    // legacy store (e.g. one written only via AddPairs, which never inserts the
+    // dataset row).
+    auto result = connection_->Query(
+        "select oemmpa_schema_version from dataset where id = 1");
+    require_success(*result, "read schema version");
+    for (const auto& row : *result) {
+        const std::uint32_t version = row.GetValue<std::uint32_t>(0);
+        if (version != kOemmpaSchemaVersion) {
+            throw StorageError(
+                "DuckDB store was written by oemmpa schema version " +
+                std::to_string(version) + " but this build requires version " +
+                std::to_string(kOemmpaSchemaVersion) +
+                "; rebuild the store from source");
+        }
+        return;
+    }
+    throw StorageError(
+        "DuckDB store predates schema versioning (no dataset version row); "
+        "rebuild the store from source");
+}
+
 void DuckDBStore::InitializeSchema() {
+    // Gate BEFORE any DDL. An existing store must be validated first, so a
+    // legacy store fails with a deterministic rebuild-required error rather than
+    // erroring on future version-specific DDL (e.g. columns or indexes added in
+    // a later revision).
+    const bool fresh_database = !HasTable("pair");
+    if (!fresh_database) {
+        RequireCompatibleSchemaOrThrow();
+    }
+
     Execute("begin transaction");
     try {
         Execute(
@@ -1609,32 +1661,41 @@ void DuckDBStore::InitializeSchema() {
             ")"
         );
         Execute(
+            "create table if not exists constant_environment ("
+            "constant_id ubigint not null references constant_smiles(id),"
+            "radius integer not null,"
+            "environment_fingerprint_id ubigint not null "
+            "references environment_fingerprint(id),"
+            "unique (constant_id, radius)"
+            ")"
+        );
+        Execute(
             "create table if not exists pair ("
             "id ubigint primary key,"
-            "rule_environment_id ubigint not null references rule_environment(id),"
+            "rule_id ubigint not null references rule(id),"
+            "constant_id ubigint not null references constant_smiles(id),"
             "compound1_id ubigint not null references compound(id),"
             "compound2_id ubigint not null references compound(id),"
-            "constant_id ubigint not null references constant_smiles(id),"
             "cut_count uinteger not null,"
             "heavy_atom_delta integer not null,"
-            "heavy_bond_delta integer not null"
+            "heavy_bond_delta integer not null,"
+            "unique (compound1_id, compound2_id, rule_id, constant_id)"
             ")"
         );
         // The pair foreign keys back the hot pair-query joins and the
         // per-pair lookups during bulk loads; the unique constraints on the
         // other tables already provide their backing indexes.
         Execute(
-            "create index if not exists pair_rule_environment_idx "
-            "on pair(rule_environment_id)"
+            "create index if not exists pair_rule_idx on pair(rule_id)"
+        );
+        Execute(
+            "create index if not exists pair_constant_idx on pair(constant_id)"
         );
         Execute(
             "create index if not exists pair_compound1_idx on pair(compound1_id)"
         );
         Execute(
             "create index if not exists pair_compound2_idx on pair(compound2_id)"
-        );
-        Execute(
-            "create index if not exists pair_constant_idx on pair(constant_id)"
         );
 
         // Back each id column with a DuckDB sequence instead of recomputing
@@ -1653,6 +1714,16 @@ void DuckDBStore::InitializeSchema() {
                 " start " + std::to_string(get_max_id(connection_, table_name) + 1)
             );
         }
+
+        if (fresh_database) {
+            // Stamp the version eagerly (not lazily via refresh_dataset_counts) so
+            // every store carries its revision even before any counts refresh.
+            Execute(
+                "insert into dataset (id, oemmpa_schema_version, title, "
+                "fragment_options, index_options, is_symmetric) "
+                "values (1, " + std::to_string(kOemmpaSchemaVersion) +
+                ", '', '', '', true) on conflict (id) do nothing");
+        }
         Execute("commit");
     } catch (...) {
         try {
@@ -1668,9 +1739,24 @@ void DuckDBStore::Execute(const std::string& sql) {
         throw StorageError("DuckDB connection is not open");
     }
     // A rollback discards rows whose ids may be cached, so invalidate the
-    // in-memory id caches to avoid handing out stale ids afterwards.
-    if (sql == "rollback") {
-        ClearIdCaches();
+    // in-memory id caches to avoid handing out stale ids (or, since the
+    // per-radius-pair-storage branch, stale pair identities that would make a
+    // retried pair silently vanish). Match case-insensitively and tolerate a
+    // trailing ';' / surrounding whitespace, because DuckDB accepts ROLLBACK /
+    // rollback; / rollback transaction / ABORT, not just the exact lowercase
+    // literal.
+    {
+        std::string normalized = trim_copy(sql);
+        if (!normalized.empty() && normalized.back() == ';') {
+            normalized.pop_back();
+            normalized = trim_copy(normalized);
+        }
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (normalized == "rollback" || normalized == "rollback transaction" ||
+            normalized == "abort") {
+            ClearIdCaches();
+        }
     }
 
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
@@ -1949,6 +2035,8 @@ void DuckDBStore::ClearIdCaches() {
     rule_id_cache_.clear();
     fingerprint_id_cache_.clear();
     rule_environment_id_cache_.clear();
+    pair_identity_cache_.clear();
+    constant_environment_ids_.clear();
 }
 
 std::uint64_t DuckDBStore::seed_counter(const std::string& table_name) {
@@ -2002,8 +2090,18 @@ void DuckDBStore::AddPairs(const std::vector<MatchedPair>& pairs) {
     if (!owns_transaction) {
         // Molecule existence is enforced by the pair FKs; no molecules here.
         // AppendBulk reconciles id sequences itself, so the caller-owned
-        // transaction gets consistent sequences on commit too.
-        AppendBulk({}, pairs);
+        // transaction gets consistent sequences on commit too. On failure we
+        // must clear the id caches: AppendBulk mutates member caches (e.g.
+        // pair_identity_cache_) as it stages rows, and a throw leaves them
+        // holding entries for rows that were never committed. A caller that
+        // catches the error and retries in the same transaction would otherwise
+        // see stale identities and silently skip valid pairs.
+        try {
+            AppendBulk({}, pairs);
+        } catch (...) {
+            ClearIdCaches();
+            throw;
+        }
         return;
     }
 
@@ -2068,16 +2166,21 @@ void DuckDBStore::PreloadIdCaches() {
                             row.GetValue<std::int32_t>(2)),
             row.GetValue<std::uint64_t>(3));
     }
-}
 
-std::uint64_t DuckDBStore::existing_num_pairs(std::uint64_t rule_environment_id) {
-    const std::string sql = "select num_pairs from rule_environment where id = ?";
-    duckdb::vector<duckdb::Value> values = {duckdb::Value::UBIGINT(rule_environment_id)};
-    auto result = execute_prepared(connection_, sql, std::move(values));
-    for (const auto& row : *result) {
-        return row.GetValue<std::uint32_t>(0);
+    auto pairs_existing = connection_->Query(
+        "select compound1_id, compound2_id, rule_id, constant_id from pair");
+    require_success(*pairs_existing, "preload pair identities");
+    for (const auto& row : *pairs_existing) {
+        pair_identity_cache_.emplace(std::make_tuple(
+            row.GetValue<std::uint64_t>(0), row.GetValue<std::uint64_t>(1),
+            row.GetValue<std::uint64_t>(2), row.GetValue<std::uint64_t>(3)));
     }
-    return 0;
+    auto ce_existing = connection_->Query(
+        "select distinct constant_id from constant_environment");
+    require_success(*ce_existing, "preload constant_environment ids");
+    for (const auto& row : *ce_existing) {
+        constant_environment_ids_.emplace(row.GetValue<std::uint64_t>(0));
+    }
 }
 
 void DuckDBStore::AppendBulk(
@@ -2154,15 +2257,19 @@ void DuckDBStore::AppendBulk(
     std::vector<NewRule> new_rules;
     std::vector<NewFingerprint> new_fingerprints;
     std::vector<NewRuleEnvironment> new_rule_environments;
+    std::vector<NewConstantEnvironment> new_constant_environments;
 
-    // Accumulate num_pairs per rule_environment id, seeded from any existing row.
-    std::unordered_map<std::uint64_t, std::uint64_t> rule_environment_pair_count;
-    // Track which rule_environment ids already existed before this load: those
-    // rows are NOT appended (they exist) but their num_pairs must be UPDATEd to
-    // the new accumulated total. New ids get their total written at append time.
-    std::unordered_set<std::uint64_t> preexisting_rule_environment_ids;
+    // One physical pair row per (compound1, compound2, rule, constant) identity.
     std::vector<PairRow> pair_rows;
-    pair_rows.reserve(pairs.size() * 6);
+    pair_rows.reserve(pairs.size());
+
+    // Local payload map to detect conflicting payloads for the same identity
+    // within this batch. The identity cache (pair_identity_cache_) is also seeded
+    // from persisted rows, but PreloadIdCaches does not load payloads, so we can
+    // only verify payload consistency for identities seen THIS call.
+    std::unordered_map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+        std::uint64_t>, std::tuple<unsigned int, int, int>, PairIdentityHash>
+        seen_payload;
 
     // Wrap the whole resolve-then-append body so every failure mode presents the
     // store's StorageError contract to callers. The resolve phase can throw
@@ -2226,6 +2333,38 @@ void DuckDBStore::AppendBulk(
                 new_rules.push_back({rule_id, from_id, to_id});
             }
         }
+        // Materialize this constant's per-radius environment memberships once.
+        // constant_environment is what the read/statistics joins use to derive
+        // each pair's rule_environments from its single physical row, so it must
+        // be populated the first time a constant's fingerprints are resolved.
+        // Idempotent across reloads via constant_environment_ids_.
+        if (constant_environment_ids_.find(constant_id) ==
+            constant_environment_ids_.end()) {
+            constant_environment_ids_.insert(constant_id);
+            for (const EnvironmentFingerprint& fingerprint :
+                 constant_fingerprints(pair.GetConstantSmiles())) {
+                // fingerprint_id resolution below already caches ids; reuse it.
+                const std::string key = fingerprint.GetSmarts() + "\x1f" +
+                    fingerprint.GetPseudoSmiles() + "\x1f" +
+                    fingerprint.GetParentSmarts();
+                std::uint64_t fingerprint_id;
+                auto it = fingerprint_id_cache_.find(key);
+                if (it != fingerprint_id_cache_.end()) {
+                    fingerprint_id = it->second;
+                } else {
+                    fingerprint_id = fingerprint_counter();
+                    fingerprint_id_cache_.emplace(key, fingerprint_id);
+                    new_fingerprints.push_back({
+                        fingerprint_id, fingerprint.GetSmarts(),
+                        fingerprint.GetPseudoSmiles(),
+                        fingerprint.GetParentSmarts()});
+                }
+                new_constant_environments.push_back({
+                    constant_id,
+                    static_cast<int>(fingerprint.GetRadius()),
+                    fingerprint_id});
+            }
+        }
         // fan out over radius 0..5 fingerprints (cached per constant)
         for (const EnvironmentFingerprint& fingerprint :
              constant_fingerprints(pair.GetConstantSmiles())) {
@@ -2245,48 +2384,60 @@ void DuckDBStore::AppendBulk(
                         fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
                 }
             }
-            std::uint64_t rule_environment_id;
-            {
-                const std::tuple<std::uint64_t, std::uint64_t, int> key{
+            // Ensure the (rule, fingerprint, radius) rule_environment row
+            // exists. num_pairs is left 0 here and set by the post-append
+            // set-based UPDATE, which derives each environment's count from the
+            // physical pairs via the constant_environment reconstruction join.
+            const std::tuple<std::uint64_t, std::uint64_t, int>
+                rule_environment_key{
                     rule_id, fingerprint_id,
                     static_cast<int>(fingerprint.GetRadius())};
-                auto it = rule_environment_id_cache_.find(key);
-                if (it != rule_environment_id_cache_.end()) {
-                    rule_environment_id = it->second;
-                    // The cache is preloaded from existing rows, so a hit that
-                    // is NOT one we minted this call is a pre-existing DB row.
-                    if (!rule_environment_pair_count.count(rule_environment_id)) {
-                        // First time we touch this existing row this call: seed
-                        // its running total from the persisted num_pairs and
-                        // remember it needs an UPDATE (not an append).
-                        rule_environment_pair_count[rule_environment_id] =
-                            existing_num_pairs(rule_environment_id);
-                        preexisting_rule_environment_ids.insert(rule_environment_id);
-                    }
-                } else {
-                    rule_environment_id = rule_environment_counter();
-                    rule_environment_id_cache_.emplace(key, rule_environment_id);
-                    // Fresh row: count starts at 0 and is finalized into the
-                    // appended row's num_pairs column below.
-                    rule_environment_pair_count[rule_environment_id] = 0;
-                    new_rule_environments.push_back({
-                        rule_environment_id, rule_id, fingerprint_id,
-                        static_cast<int>(fingerprint.GetRadius()), 0});
-                }
+            if (rule_environment_id_cache_.find(rule_environment_key) ==
+                rule_environment_id_cache_.end()) {
+                const std::uint64_t rule_environment_id =
+                    rule_environment_counter();
+                rule_environment_id_cache_.emplace(
+                    rule_environment_key, rule_environment_id);
+                new_rule_environments.push_back({
+                    rule_environment_id, rule_id, fingerprint_id,
+                    static_cast<int>(fingerprint.GetRadius()), 0});
             }
-            rule_environment_pair_count[rule_environment_id]++;
-            pair_rows.push_back({
-                pair_counter(), rule_environment_id,
-                pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
-                constant_id, pair.GetCutCount(),
-                pair.GetHeavyAtomDelta(), pair.GetHeavyBondDelta()});
         }
-    }
-
-    // Finalize num_pairs for the NEW rule_environment rows from the accumulated
-    // counts (existing rows are handled by the UPDATE after append).
-    for (NewRuleEnvironment& row : new_rule_environments) {
-        row.num_pairs = rule_environment_pair_count[row.id];
+        // One physical pair row per (compound1, compound2, rule, constant)
+        // identity. Dedup via the seeded identity cache so a duplicate pair in a
+        // later AddPairs call (or a reopened store) is skipped rather than
+        // tripping the unique constraint.
+        const std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+            std::uint64_t> identity{
+            pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
+            rule_id, constant_id};
+        const std::tuple<unsigned int, int, int> payload{
+            pair.GetCutCount(), pair.GetHeavyAtomDelta(),
+            pair.GetHeavyBondDelta()};
+        if (pair_identity_cache_.insert(identity).second) {
+            // First sight this load AND not persisted: stage the pair and record
+            // its payload so later same-identity pairs can be validated.
+            pair_rows.push_back({
+                pair_counter(), rule_id, constant_id,
+                pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
+                pair.GetCutCount(), pair.GetHeavyAtomDelta(),
+                pair.GetHeavyBondDelta()});
+            seen_payload.emplace(identity, payload);
+        } else {
+            // Identity already known (either staged earlier this call or preloaded
+            // from disk). If staged this call, verify payload consistency.
+            auto it = seen_payload.find(identity);
+            if (it != seen_payload.end() && it->second != payload) {
+                // Same identity but DIFFERENT payload within this batch: reject
+                // loudly rather than silently dropping the second pair.
+                throw StorageError(
+                    "conflicting matched-pair payload for identical "
+                    "(compound1, compound2, rule, constant): "
+                    "cut_count/heavy_atom_delta/heavy_bond_delta mismatch");
+            }
+            // Otherwise: either exact duplicate (same identity, same payload) or
+            // persisted identity we can't verify -> skip silently as before.
+        }
     }
 
     // --- Phase B: append everything in FK-dependency order via Appenders.
@@ -2296,24 +2447,21 @@ void DuckDBStore::AppendBulk(
     AppendRuleSmiles(*connection_, new_rule_smiles);
     AppendRules(*connection_, new_rules);
     AppendFingerprints(*connection_, new_fingerprints);
+    AppendConstantEnvironments(*connection_, new_constant_environments);
     AppendRuleEnvironments(*connection_, new_rule_environments);
     AppendPairs(*connection_, pair_rows);
 
-    // Existing rule_environment rows gained pairs this call: set their num_pairs
-    // to the accumulated total. Set-based (one prepared UPDATE per id) -- still
-    // off the per-pair hot path; there are at most a handful on the common
-    // fresh-store path (zero), and only re-loads touch this branch.
-    for (const std::uint64_t rule_environment_id :
-         preexisting_rule_environment_ids) {
-        const std::string sql =
-            "update rule_environment set num_pairs = ? where id = ?";
-        duckdb::vector<duckdb::Value> values = {
-            duckdb::Value::UINTEGER(static_cast<std::uint32_t>(
-                rule_environment_pair_count[rule_environment_id])),
-            duckdb::Value::UBIGINT(rule_environment_id),
-        };
-        execute_prepared(connection_, sql, std::move(values));
-    }
+    // num_pairs is derived: count physical pairs whose (rule, constant) resolve to
+    // each environment's fingerprint at its radius. Set-based, off the per-pair
+    // hot path; recompute (not accumulate) so incremental reloads stay correct.
+    // MUST run after AppendPairs so newly appended pairs are counted.
+    Execute(
+        "update rule_environment re set num_pairs = ("
+        "select count(*) from pair p "
+        "join constant_environment ce "
+        "on ce.constant_id = p.constant_id and ce.radius = re.radius "
+        "where p.rule_id = re.rule_id "
+        "and ce.environment_fingerprint_id = re.environment_fingerprint_id)");
 
     // Reconcile id sequences to max(id)+1 inside this (possibly caller-owned)
     // transaction, so a later legacy nextval insert cannot collide with the

@@ -246,6 +246,10 @@ store = open_oemmpa("analysis.oemmpa.duckdb")
 print(store.summary())
 ```
 
+Stores are versioned. A store written by an older oemmpa (schema version 1, which
+stored one `pair` row per environment radius) is not read in place — rebuild it
+from source with the current version.
+
 By default `save()` persists every analyzed pair, which is convenient for small
 datasets but can produce very large stores when molecules carry big variable
 fragments. Pass a variable-fragment bound to keep only the more interesting

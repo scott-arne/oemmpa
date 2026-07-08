@@ -166,6 +166,7 @@ void ExpectBaseSchema(const DuckDBStore& store) {
 
     EXPECT_TRUE(ContainsTable(tables, "compound"));
     EXPECT_TRUE(ContainsTable(tables, "compound_property"));
+    EXPECT_TRUE(ContainsTable(tables, "constant_environment"));
     EXPECT_TRUE(ContainsTable(tables, "constant_smiles"));
     EXPECT_TRUE(ContainsTable(tables, "dataset"));
     EXPECT_TRUE(ContainsTable(tables, "environment_fingerprint"));
@@ -264,6 +265,105 @@ TEST(DuckDBStoreTest, SchemaIncludesRuleEnvironmentStatisticsAndSummaryCounts) {
     EXPECT_EQ(summary.GetNumPairs(), 0U);
     EXPECT_EQ(summary.GetNumRuleEnvironments(), 0U);
     EXPECT_EQ(summary.GetNumRuleEnvironmentStatistics(), 0U);
+}
+
+TEST(DuckDBStoreTest, SchemaIncludesConstantEnvironmentTable) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    EXPECT_TRUE(store.HasTable("constant_environment"));
+    EXPECT_EQ(store.GetRowCount("constant_environment"), 0U);
+}
+
+TEST(DuckDBStoreTest, PairTableHasRuleIdAndUniqueIdentity) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    // rule_id column exists (query would error otherwise); rule_environment_id gone.
+    EXPECT_NO_THROW(store.Execute("select rule_id, constant_id from pair limit 0"));
+    EXPECT_THROW(
+        store.Execute("select rule_environment_id from pair limit 0"),
+        StorageError);
+}
+
+TEST(DuckDBStoreTest, AppendBulkPopulatesConstantEnvironmentAndDedupsPairs) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(input_pairs.empty());
+
+    // Append the whole batch, then append a duplicate of the first pair: the
+    // identity dedup must collapse it, so the physical row count is unchanged.
+    store.AddPairs(input_pairs);
+    const std::uint64_t physical_pairs = store.GetRowCount("pair");
+    std::vector<MatchedPair> duplicate = {input_pairs.front()};
+    store.AddPairs(duplicate);
+    EXPECT_EQ(store.GetRowCount("pair"), physical_pairs);
+
+    // Six constant_environment rows per distinct constant.
+    const std::uint64_t constants = store.GetRowCount("constant_smiles");
+    EXPECT_EQ(store.GetRowCount("constant_environment"), constants * 6U);
+}
+
+TEST(DuckDBStoreTest, GetPairsReturnsDistinctPhysicalPairsAfterReshape) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+    store.AddPairs(input_pairs);
+
+    // The toluene/phenol fixture yields 2 distinct physical pairs (verified:
+    // the pre-change suite stored 12 pair rows = 2 pairs x 6 radii and
+    // GetPairs()==2). After normalization: 2 physical rows, GetPairs() still 2.
+    EXPECT_EQ(store.GetRowCount("pair"), 2U);
+    EXPECT_EQ(store.GetPairs().size(), 2U);
+    EXPECT_EQ(store.GetTransforms().size(), 2U);
+}
+
+TEST(DuckDBStoreTest, NumPairsAndStatisticsMatchAfterNormalization) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+    store.AddMoleculeProperty(1, "pIC50", 6.0);
+    store.AddMoleculeProperty(2, "pIC50", 7.5);
+    // Store a SINGLE directional pair so this is genuinely a
+    // 1-pair/6-environment scenario (AddPairs would store both directions -> 2
+    // physical pairs / 12 environments; that path is covered by Task 5/7).
+    store.AddPair(AnalyzeToluenePhenolPairs().front());
+    store.RefreshRuleEnvironmentStatistics();
+
+    // One physical pair -> 6 rule_environments (radii 0-5), each num_pairs == 1.
+    EXPECT_EQ(store.GetRowCount("rule_environment"), 6U);
+    EXPECT_EQ(store.GetRowCount("rule_environment_statistics"), 6U);
+    // The single delta is +1.5 at every radius.
+    for (const auto& stat : store.GetRuleEnvironmentStatistics("pIC50")) {
+        EXPECT_EQ(stat.GetCount(), 1U);
+        EXPECT_NEAR(stat.GetAvg(), 1.5, 1e-9);
+    }
+}
+
+TEST(DuckDBStoreTest, NumPairsEqualsReconstructionJoinCount) {
+    // Guards the set-based num_pairs UPDATE against drift: for the
+    // toluene/phenol fixture every rule_environment supports exactly one
+    // physical pair, so every stored num_pairs must read back as 1 (which is
+    // the reconstruction-join count for this single-pair-per-environment set).
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        store.AddPairs(AnalyzeToluenePhenolPairs());
+        EXPECT_EQ(store.GetRowCount("rule_environment"), 12U);
+    }
+
+    const std::vector<RuleEnvironmentRow> rows =
+        ReadRuleEnvironmentRows(database_path);
+    ASSERT_EQ(rows.size(), 12U);
+    for (const RuleEnvironmentRow& row : rows) {
+        EXPECT_EQ(row.num_pairs, 1U);
+    }
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithSchema) {
@@ -544,7 +644,8 @@ TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     ASSERT_EQ(stored_pairs.size(), input_pairs.size());
     EXPECT_EQ(store.GetRowCount("constant_smiles"), 1U);
     EXPECT_EQ(store.GetRowCount("environment_fingerprint"), 6U);
-    EXPECT_EQ(store.GetRowCount("pair"), input_pairs.size() * 6U);
+    // one physical row per pair after normalization
+    EXPECT_EQ(store.GetRowCount("pair"), input_pairs.size());
     EXPECT_EQ(store.GetRowCount("rule"), input_pairs.size());
     EXPECT_EQ(store.GetRowCount("rule_environment"), input_pairs.size() * 6U);
     EXPECT_EQ(store.GetRowCount("rule_smiles"), 2U);
@@ -611,7 +712,8 @@ TEST(DuckDBStoreTest, StoresRuleEnvironmentRowsForDefaultRadii) {
         store.AddPair(input_pairs.front());
 
         EXPECT_EQ(store.GetRowCount("rule_environment"), 6U);
-        EXPECT_EQ(store.GetRowCount("pair"), 6U);
+        // one physical row per pair after normalization
+        EXPECT_EQ(store.GetRowCount("pair"), 1U);
         EXPECT_GE(store.GetRowCount("environment_fingerprint"), 1U);
 
         const std::vector<MatchedPair> stored_pairs = store.GetPairs();
@@ -639,7 +741,8 @@ TEST(DuckDBStoreTest, MultiCutPairsCreateMultiAttachmentRuleEnvironments) {
         store.AddPair(MakeMultiCutArylPair());
 
         EXPECT_EQ(store.GetRowCount("rule_environment"), 6U);
-        EXPECT_EQ(store.GetRowCount("pair"), 6U);
+        // one physical row per pair after normalization
+        EXPECT_EQ(store.GetRowCount("pair"), 1U);
         EXPECT_EQ(store.GetPairs().size(), 1U);
     }
 
@@ -912,7 +1015,8 @@ TEST(DuckDBStoreTest, ReopensFileBackedDatabaseWithStoredPairs) {
     }
 
     DuckDBStore reopened(database_path.string());
-    EXPECT_EQ(reopened.GetRowCount("pair"), 12U);
+    // one physical row per pair after normalization (was 12 = 2 pairs x 6 radii)
+    EXPECT_EQ(reopened.GetRowCount("pair"), 2U);
     EXPECT_EQ(reopened.GetRowCount("rule"), 2U);
     EXPECT_EQ(reopened.GetRowCount("rule_environment"), 12U);
     EXPECT_EQ(reopened.GetPairs().size(), 2U);
@@ -962,7 +1066,8 @@ TEST(DuckDBStoreTest, AnalyzerSavesMoleculesPropertiesAndPairsToStore) {
 
     EXPECT_EQ(store.GetRowCount("compound"), 2U);
     EXPECT_EQ(store.GetRowCount("compound_property"), 2U);
-    EXPECT_EQ(store.GetRowCount("pair"), analyzer.GetPairs().size() * 6U);
+    // one physical row per pair after normalization
+    EXPECT_EQ(store.GetRowCount("pair"), analyzer.GetPairs().size());
     EXPECT_EQ(store.GetRowCount("rule"), analyzer.GetPairs().size());
     const std::vector<MatchedPair> stored_pairs = store.GetPairs();
     const auto pair_iter = std::find_if(
@@ -1079,12 +1184,110 @@ TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
     EXPECT_EQ(store.GetRowCount("pair"), 0U);
 }
 
+TEST(DuckDBStoreTest, ConstantEnvironmentInvariantsHold) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        store.AddPairs(AnalyzeToluenePhenolPairs());
+
+        // Invariant 1: (constant_id, radius) -> exactly one fingerprint, i.e. exactly
+        // 6 constant_environment rows per constant.
+        EXPECT_EQ(store.GetRowCount("constant_environment"),
+                  store.GetRowCount("constant_smiles") * 6U);
+        // Each physical pair spans 6 radii.
+        EXPECT_EQ(store.GetRowCount("rule_environment"), store.GetRowCount("pair") * 6U);
+        // Reconstruction returns the fixture's 2 distinct physical pairs.
+        EXPECT_EQ(store.GetPairs().size(), 2U);
+    }
+
+    // Query the normalized environment directly to validate each constant has
+    // exactly radii 0..5 and each rule_environment reconstructs to >=1 pair.
+    duckdb::DuckDB database(database_path.string());
+    duckdb::Connection connection(database);
+
+    // Assert every constant has exactly radii 0..5.
+    std::unique_ptr<duckdb::QueryResult> const_result = connection.Query(
+        "select constant_id, count(distinct radius), min(radius), max(radius) "
+        "from constant_environment group by constant_id");
+    ASSERT_FALSE(const_result->HasError());
+    for (const auto& row : *const_result) {
+        EXPECT_EQ(row.GetValue<std::uint64_t>(1), 6U);
+        EXPECT_EQ(row.GetValue<int>(2), 0);
+        EXPECT_EQ(row.GetValue<int>(3), 5);
+    }
+
+    // Assert no constant_environment row has radius outside [0, 5].
+    std::unique_ptr<duckdb::QueryResult> range_result = connection.Query(
+        "select count(*) from constant_environment where radius < 0 or radius > 5");
+    ASSERT_FALSE(range_result->HasError());
+    const std::uint64_t out_of_range =
+        range_result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+    EXPECT_EQ(out_of_range, 0U);
+
+    // Enumerate all rule_environment ids and assert each reconstructs to >=1 pair.
+    std::unique_ptr<duckdb::QueryResult> re_result = connection.Query(
+        "select id from rule_environment");
+    ASSERT_FALSE(re_result->HasError());
+    DuckDBStore reopened(database_path.string());
+    for (const auto& row : *re_result) {
+        const std::uint64_t re_id = row.GetValue<std::uint64_t>(0);
+        EXPECT_GE(reopened.GetPairsForRuleEnvironment(re_id).size(), 1U);
+    }
+
+    std::filesystem::remove(database_path);
+}
+
+TEST(DuckDBStoreTest, RepeatedAddPairsAcrossCallsDoesNotDuplicate) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+
+        store.AddPairs(input_pairs);
+        const std::uint64_t after_first = store.GetRowCount("pair");
+        const std::uint64_t rule_env_after_first = store.GetRowCount("rule_environment");
+        const std::uint64_t const_env_after_first = store.GetRowCount("constant_environment");
+
+        // Snapshot sum(num_pairs) before replay.
+        duckdb::DuckDB database(database_path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> sum_before = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        ASSERT_FALSE(sum_before->HasError());
+        const std::uint64_t num_pairs_before =
+            sum_before->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+
+        // Replaying the same physical pairs must not add rows or throw.
+        EXPECT_NO_THROW(store.AddPairs(input_pairs));
+        EXPECT_EQ(store.GetRowCount("pair"), after_first);
+        EXPECT_EQ(store.GetRowCount("rule_environment"), rule_env_after_first);
+        EXPECT_EQ(store.GetRowCount("constant_environment"), const_env_after_first);
+        EXPECT_EQ(store.GetPairs().size(), 2U);
+
+        // Snapshot sum(num_pairs) after replay; must be unchanged.
+        std::unique_ptr<duckdb::QueryResult> sum_after = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        ASSERT_FALSE(sum_after->HasError());
+        const std::uint64_t num_pairs_after =
+            sum_after->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(num_pairs_after, num_pairs_before);
+    }
+    std::filesystem::remove(database_path);
+}
 
 TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache) {
     // A first save rolls back partway (duplicate molecule id), discarding the
     // rule/fingerprint/rule_environment rows it had begun inserting. Reusing a
-    // store must not reference cached ids from the rolled-back attempt: a clean
-    // save\x27s sum(num_pairs) must equal its pair row count.
+    // store must not reference cached ids from the rolled-back attempt: after
+    // normalization each physical pair maps to one rule_environment per radius
+    // (six radii), so a clean save\x27s sum(num_pairs) must equal six times its
+    // physical pair row count.
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "tol");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
@@ -1112,7 +1315,8 @@ TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache)
     for (const RuleEnvironmentRow& row : ReadRuleEnvironmentRows(database_path)) {
         total_num_pairs += row.num_pairs;
     }
-    EXPECT_EQ(total_num_pairs, pair_rows);
+    // Six rule_environments (radii 0-5) per physical pair after normalization.
+    EXPECT_EQ(total_num_pairs, pair_rows * 6u);
 
     std::filesystem::remove(database_path);
 }
@@ -1257,28 +1461,33 @@ TEST(DuckDBStoreBulk, AddPairInsideCallerOwnedTransactionDoesNotNest) {
     store.AddPair(pairs.front());
     store.Execute("commit");
 
-    // The pair rows are visible after the caller commits (6 radius rows/pair).
-    EXPECT_EQ(store.GetRowCount("pair"), 6u);
+    // One physical row per pair after normalization.
+    EXPECT_EQ(store.GetRowCount("pair"), 1u);
     EXPECT_EQ(store.GetPairs().size(), 1u);
 
     // AppendBulk reconciles id sequences even on the caller-owned path, so a
     // subsequent legacy nextval insert must allocate past the bulk-assigned max
     // id, not collide with it. Exercise the constant_smiles and pair sequences.
-    const std::uint64_t max_pair_id_before = store.GetRowCount("pair");
+    const std::uint64_t pair_rows_before = store.GetRowCount("pair");
     store.Execute(
         "insert into constant_smiles (id, smiles) "
         "values (nextval('seq_constant_smiles_id'), '[*:1]CCCCCCCC')"
     );
+    // Copy the stored pair but point it at the constant just allocated (now the
+    // max constant id) so the (compound1, compound2, rule, constant) identity is
+    // unique; the id comes from nextval to prove seq_pair_id was reconciled past
+    // the bulk-assigned max.
     store.Execute(
-        "insert into pair (id, rule_environment_id, compound1_id, compound2_id, "
-        "constant_id, cut_count, heavy_atom_delta, heavy_bond_delta) "
-        "select nextval('seq_pair_id'), rule_environment_id, compound1_id, "
-        "compound2_id, constant_id, cut_count, heavy_atom_delta, heavy_bond_delta "
+        "insert into pair (id, rule_id, constant_id, compound1_id, compound2_id, "
+        "cut_count, heavy_atom_delta, heavy_bond_delta) "
+        "select nextval('seq_pair_id'), rule_id, "
+        "(select max(id) from constant_smiles), compound1_id, "
+        "compound2_id, cut_count, heavy_atom_delta, heavy_bond_delta "
         "from pair limit 1"
     );
     // No primary-key collision means the sequences were reconciled past the
     // bulk-assigned ids; both inserts added exactly one row.
-    EXPECT_EQ(store.GetRowCount("pair"), max_pair_id_before + 1u);
+    EXPECT_EQ(store.GetRowCount("pair"), pair_rows_before + 1u);
 }
 
 // An orphan pair (referencing a molecule id that neither exists nor is in the
@@ -1348,14 +1557,13 @@ TEST(DuckDBStoreBulk, AddPairsRejectsInvalidConstantSmilesAsStorageError) {
     std::filesystem::remove(path);
 }
 
-// Re-loading the same pairs must reuse dimension rows (no UNIQUE violation) and
-// UPDATE the existing rule_environment.num_pairs to the new total rather than
-// leaving it stale. Each stored pair row increments exactly one
-// rule_environment's num_pairs, so sum(num_pairs) must equal the pair row count
-// after each load. This exercises the AppendBulk existing-row seeding +
-// preexisting-id UPDATE path (the bulk equivalent of the legacy per-row
-// increment).
-TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndAccumulatesNumPairs) {
+// Re-loading the same pairs must reuse dimension rows (no UNIQUE violation) AND,
+// after normalization, dedup by physical-pair identity so the pair table does
+// not grow. num_pairs is derived set-based from the (rule, constant) ->
+// environment reconstruction join, so each physical pair contributes to exactly
+// one environment per radius (six radii), giving sum(num_pairs) == pairs * 6.
+// Re-adding the same pairs must leave both the pair count and num_pairs stable.
+TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndDedupsPairs) {
     const std::filesystem::path path = TemporaryDatabasePath();
     std::filesystem::remove(path);
 
@@ -1380,23 +1588,22 @@ TEST(DuckDBStoreBulk, RepeatedAddPairsReusesDimensionsAndAccumulatesNumPairs) {
         const std::uint64_t re_after_first = store.GetRowCount("rule_environment");
         pairs_after_first = store.GetRowCount("pair");
         EXPECT_GT(pairs_after_first, 0u);
-        // After the first load, each stored pair row incremented exactly one
-        // rule_environment's num_pairs, so the sum equals the pair row count.
-        EXPECT_EQ(sum_num_pairs(), pairs_after_first);
+        // Each physical pair maps to one rule_environment per radius (six
+        // radii), so sum(num_pairs) is six times the physical-pair count.
+        EXPECT_EQ(sum_num_pairs(), pairs_after_first * 6u);
 
-        // Re-add the same pairs: dimension rows are reused (counts unchanged),
-        // pair rows are appended again (pair has no unique key), and num_pairs
-        // on the existing rule_environment rows is updated to the new total.
+        // Re-add the same pairs: dimension rows are reused (counts unchanged)
+        // and the physical-pair identity dedup keeps the pair table stable, so
+        // num_pairs recomputes to the same total rather than doubling.
         store.AddPairs(pairs);
         EXPECT_EQ(store.GetRowCount("rule"), rules_after_first);
         EXPECT_EQ(store.GetRowCount("rule_environment"), re_after_first);
-        EXPECT_EQ(store.GetRowCount("pair"), pairs_after_first * 2u);
+        EXPECT_EQ(store.GetRowCount("pair"), pairs_after_first);
     }
 
-    // sum(num_pairs) must have doubled with the pair rows -- the existing
-    // rule_environment rows were UPDATEd to the new total, not left stale.
-    // Compare to the observed pair count, not a fixture-specific constant.
-    EXPECT_EQ(sum_num_pairs(), pairs_after_first * 2u);
+    // sum(num_pairs) is unchanged after the duplicate load -- the pairs were
+    // deduped and num_pairs was recomputed, not doubled.
+    EXPECT_EQ(sum_num_pairs(), pairs_after_first * 6u);
 
     std::filesystem::remove(path);
 }
@@ -1473,6 +1680,187 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
         EXPECT_GT(allocated_id, 1000u);
     }
     std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionTwo) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_fresh_v2.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+    }
+    // A fresh store must be stamped with the current schema version (2).
+    {
+        duckdb::DuckDB database(path);
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select oemmpa_schema_version from dataset where id = 1");
+        ASSERT_FALSE(result->HasError());
+        const std::uint64_t version =
+            result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(version, 2u);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsVersionOneStoreAfterBump) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_v1_after_bump.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+        store.Execute("update dataset set oemmpa_schema_version = 1");
+    }
+    EXPECT_THROW({ DuckDBStore reopened(path); }, StorageError);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsLegacyStoreStampedOldVersion) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_legacy_v1.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+        // Force the persisted version below the current constant to simulate a
+        // store written by an older schema revision.
+        store.Execute("update dataset set oemmpa_schema_version = 0");
+    }
+    EXPECT_THROW({ DuckDBStore reopened(path); }, StorageError);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsLegacyStoreWithPairTableButNoVersionRow) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_legacy_novers.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+        // Simulate an AddPairs-only legacy store: pair table populated, no
+        // dataset version row.
+        store.Execute("delete from dataset");
+    }
+    EXPECT_THROW({ DuckDBStore reopened(path); }, StorageError);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, AddPairsRejectsConflictingPayloadForSameIdentity) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    // Create two pairs with identical physical identity (same source, target,
+    // constant, and variable SMILES) but different heavy_atom_delta payloads.
+    // Both use the simplified MakePair which hardcodes constant to "[*:1]".
+    const MatchedPair pair1 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        -1,  // heavy_atom_delta
+        0    // heavy_bond_delta
+    );
+    const MatchedPair pair2 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        999,  // DIFFERENT heavy_atom_delta (same identity, different payload)
+        0
+    );
+
+    // AddPairs with both pairs in the same batch must throw StorageError
+    // because the second pair has the same identity but conflicting payload.
+    EXPECT_THROW(
+        store.AddPairs({pair1, pair2}),
+        StorageError
+    );
+}
+
+TEST(DuckDBStoreTest, CallerOwnedTransactionRecoversAfterConflictReject) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    // Create two pairs with the same identity but different payload (same as the
+    // conflict-guard test above uses), so the guard throws on the batch.
+    const MatchedPair pair1 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        -1,  // heavy_atom_delta
+        0    // heavy_bond_delta
+    );
+    const MatchedPair conflicting_pair2 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        999,  // DIFFERENT heavy_atom_delta -> conflict
+        0
+    );
+
+    // Begin a caller-owned transaction, then call AddPairs with a conflicting
+    // batch. The guard throws StorageError, but the transaction remains open
+    // (AppendBulk's guard fires before any DB write).
+    store.Execute("begin transaction");
+    EXPECT_THROW(store.AddPairs({pair1, conflicting_pair2}), StorageError);
+
+    // Retry with only the valid pair1 in the SAME still-open transaction. Before
+    // the fix, AddPairs' caller-owned branch did not clear pair_identity_cache_
+    // on the throw, so the retry saw stale identity from the failed call, treated
+    // pair1 as a persisted duplicate, and staged nothing -> silent data loss on
+    // commit (GetRowCount("pair") == 0). After the fix, the cache is cleared on
+    // throw, so the retry correctly stages pair1.
+    EXPECT_NO_THROW(store.AddPairs({pair1}));
+    store.Execute("commit");
+
+    // Assert the retried pair is actually persisted.
+    EXPECT_EQ(store.GetRowCount("pair"), 1U);
+    EXPECT_EQ(store.GetPairs().size(), 1U);
+}
+
+TEST(DuckDBStoreTest, CallerOwnedUppercaseRollbackClearsPairCacheForRetry) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    // Begin a caller-owned transaction, add pairs (populates pair_identity_cache_),
+    // then issue an uppercase ROLLBACK. Before the fix, Execute's rollback
+    // detection only matched the exact lowercase literal "rollback", so "ROLLBACK"
+    // (uppercase) did not clear pair_identity_cache_. A retry of the same pairs
+    // would then see stale identities, treat them as persisted duplicates, and
+    // stage nothing -> silent data loss (GetRowCount("pair") == 0 after retry).
+    store.Execute("begin transaction");
+    store.AddPairs(pairs);
+    store.Execute("ROLLBACK");
+
+    // Retry the same pairs (auto-owns a new transaction). Before the fix, the
+    // uncleaned pair_identity_cache_ caused the retry to stage zero rows. After
+    // the fix, the uppercase ROLLBACK clears the cache, so the retry succeeds.
+    store.AddPairs(pairs);
+
+    // Assert the retried pairs ARE persisted.
+    EXPECT_GT(store.GetRowCount("pair"), 0u);
+    EXPECT_EQ(store.GetPairs().size(), 2u);
+}
+
+TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+    const MatchedPair& pair = pairs.front();
+
+    // Exact duplicate within batch: same identity AND same payload. This must
+    // NOT throw (legitimate dedup case) and must result in a single physical row.
+    EXPECT_NO_THROW(store.AddPairs({pair, pair}));
+    EXPECT_EQ(store.GetRowCount("pair"), 1u);
 }
 
 }  // namespace test

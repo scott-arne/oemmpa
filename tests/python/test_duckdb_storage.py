@@ -84,7 +84,9 @@ def test_duckdb_store_saves_analyzer_and_returns_wrapped_pairs():
     assert "rule_environment_statistics" in store.table_names()
     assert store.row_count("compound") == 2
     assert store.row_count("rule") == 1
-    assert store.row_count("pair") == 6
+    # Normalized storage: one physical pair row per (compound1, compound2, rule,
+    # constant); the six per-radius memberships live in rule_environment.
+    assert store.row_count("pair") == 1
     assert store.row_count("rule_environment") == 6
     assert len(pairs) == 1
     assert any(
@@ -168,9 +170,11 @@ def test_duckdb_store_defaults_to_mmpdb_compatible_orientation():
 
     assert len(analyzer.pairs()) == 2
     assert mmpdb_store.row_count("rule") == 1
-    assert mmpdb_store.row_count("pair") == 6
+    # Physical pair rows: one per distinct (compound1, compound2, rule, constant)
+    # identity, no longer fanned across the six environment radii.
+    assert mmpdb_store.row_count("pair") == 1
     assert native_store.row_count("rule") == 2
-    assert native_store.row_count("pair") == 12
+    assert native_store.row_count("pair") == 2
 
 
 def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
@@ -197,7 +201,10 @@ def test_duckdb_store_summary_and_statistics_refresh_use_rule_environments():
         "rule_environment_statistics"
     ]
     assert len(store.pairs()) == 1
-    assert store.row_count("pair") > len(store.pairs())
+    # Normalization: pair now stores one physical row per distinct pair, so the
+    # physical row count equals the number of distinct pairs (previously the
+    # table was fanned six-fold across environment radii).
+    assert store.row_count("pair") == len(store.pairs())
 
 
 # A congeneric trio whose transforms straddle a variable-fragment size bound:
@@ -232,10 +239,11 @@ def test_save_analyzer_applies_max_variable_heavies_filter(tmp_path):
     filtered = DuckDBStore(tmp_path / "filtered.duckdb")
     filtered.save_analyzer(analyzer, max_variable_heavies=3)
 
-    # Six radii per base pair: three base pairs unfiltered, one when the two
-    # decyl transforms (10 heavy atoms) are dropped by the size bound.
-    assert unfiltered.row_count("pair") == 18
-    assert filtered.row_count("pair") == 6
+    # Normalized storage: one physical pair row per base pair. Three base pairs
+    # unfiltered; one remains when the two decyl transforms (10 heavy atoms) are
+    # dropped by the size bound. (Previously fanned six-fold: 18 and 6.)
+    assert unfiltered.row_count("pair") == 3
+    assert filtered.row_count("pair") == 1
     assert len(filtered.pairs()) == 1
 
 
@@ -254,8 +262,10 @@ def test_analysis_result_save_applies_variable_fragment_filters(tmp_path):
         max_variable_heavies=3,
     )
 
-    assert unfiltered.row_count("pair") == 18
-    assert filtered.row_count("pair") == 6
+    # Normalized storage: one physical pair row per base pair (previously fanned
+    # six-fold across environment radii: 18 and 6).
+    assert unfiltered.row_count("pair") == 3
+    assert filtered.row_count("pair") == 1
 
 
 def test_save_analyzer_rejects_variable_filter_with_explicit_query_options(tmp_path):
