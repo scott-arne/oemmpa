@@ -1587,11 +1587,25 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
 }
 
 TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionTwo) {
-    DuckDBStore store;
-    store.InitializeSchema();
-    // GetSummary or a direct read exposes the stamped version; read via dataset.
-    // A fresh store is version 2 and reopens cleanly.
-    EXPECT_NO_THROW({ DuckDBStore reopen(":memory:"); });
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_fresh_v2.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+    }
+    // A fresh store must be stamped with the current schema version (2).
+    {
+        duckdb::DuckDB database(path);
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+            "select oemmpa_schema_version from dataset where id = 1");
+        ASSERT_FALSE(result->HasError());
+        const std::uint64_t version =
+            result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(version, 2u);
+    }
+    std::filesystem::remove(path);
 }
 
 TEST(DuckDBStoreTest, RejectsVersionOneStoreAfterBump) {
