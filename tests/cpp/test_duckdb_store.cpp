@@ -1185,33 +1185,100 @@ TEST(DuckDBStoreTest, AnalyzerSaveRollsBackPartialWritesOnFailure) {
 }
 
 TEST(DuckDBStoreTest, ConstantEnvironmentInvariantsHold) {
-    DuckDBStore store;
-    store.InitializeSchema();
-    AddToluenePhenolMolecules(store);
-    store.AddPairs(AnalyzeToluenePhenolPairs());
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        store.AddPairs(AnalyzeToluenePhenolPairs());
 
-    // Invariant 1: (constant_id, radius) -> exactly one fingerprint, i.e. exactly
-    // 6 constant_environment rows per constant.
-    EXPECT_EQ(store.GetRowCount("constant_environment"),
-              store.GetRowCount("constant_smiles") * 6U);
-    // Reconstruction returns the fixture's 2 distinct physical pairs.
-    EXPECT_EQ(store.GetPairs().size(), 2U);
-    // Each rule_environment reconstructs to >=1 contributing pair.
-    EXPECT_GE(store.GetPairsForRuleEnvironment(1).size(), 1U);
+        // Invariant 1: (constant_id, radius) -> exactly one fingerprint, i.e. exactly
+        // 6 constant_environment rows per constant.
+        EXPECT_EQ(store.GetRowCount("constant_environment"),
+                  store.GetRowCount("constant_smiles") * 6U);
+        // Each physical pair spans 6 radii.
+        EXPECT_EQ(store.GetRowCount("rule_environment"), store.GetRowCount("pair") * 6U);
+        // Reconstruction returns the fixture's 2 distinct physical pairs.
+        EXPECT_EQ(store.GetPairs().size(), 2U);
+    }
+
+    // Query the normalized environment directly to validate each constant has
+    // exactly radii 0..5 and each rule_environment reconstructs to >=1 pair.
+    duckdb::DuckDB database(database_path.string());
+    duckdb::Connection connection(database);
+
+    // Assert every constant has exactly radii 0..5.
+    std::unique_ptr<duckdb::QueryResult> const_result = connection.Query(
+        "select constant_id, count(distinct radius), min(radius), max(radius) "
+        "from constant_environment group by constant_id");
+    ASSERT_FALSE(const_result->HasError());
+    for (const auto& row : *const_result) {
+        EXPECT_EQ(row.GetValue<std::uint64_t>(1), 6U);
+        EXPECT_EQ(row.GetValue<int>(2), 0);
+        EXPECT_EQ(row.GetValue<int>(3), 5);
+    }
+
+    // Assert no constant_environment row has radius outside [0, 5].
+    std::unique_ptr<duckdb::QueryResult> range_result = connection.Query(
+        "select count(*) from constant_environment where radius < 0 or radius > 5");
+    ASSERT_FALSE(range_result->HasError());
+    const std::uint64_t out_of_range =
+        range_result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+    EXPECT_EQ(out_of_range, 0U);
+
+    // Enumerate all rule_environment ids and assert each reconstructs to >=1 pair.
+    std::unique_ptr<duckdb::QueryResult> re_result = connection.Query(
+        "select id from rule_environment");
+    ASSERT_FALSE(re_result->HasError());
+    DuckDBStore reopened(database_path.string());
+    for (const auto& row : *re_result) {
+        const std::uint64_t re_id = row.GetValue<std::uint64_t>(0);
+        EXPECT_GE(reopened.GetPairsForRuleEnvironment(re_id).size(), 1U);
+    }
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, RepeatedAddPairsAcrossCallsDoesNotDuplicate) {
-    DuckDBStore store;
-    store.InitializeSchema();
-    AddToluenePhenolMolecules(store);
-    const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+    {
+        DuckDBStore store(database_path.string());
+        store.InitializeSchema();
+        AddToluenePhenolMolecules(store);
+        const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
 
-    store.AddPairs(input_pairs);
-    const std::uint64_t after_first = store.GetRowCount("pair");
-    // Replaying the same physical pairs must not add rows or throw.
-    EXPECT_NO_THROW(store.AddPairs(input_pairs));
-    EXPECT_EQ(store.GetRowCount("pair"), after_first);
-    EXPECT_EQ(store.GetPairs().size(), 2U);
+        store.AddPairs(input_pairs);
+        const std::uint64_t after_first = store.GetRowCount("pair");
+        const std::uint64_t rule_env_after_first = store.GetRowCount("rule_environment");
+        const std::uint64_t const_env_after_first = store.GetRowCount("constant_environment");
+
+        // Snapshot sum(num_pairs) before replay.
+        duckdb::DuckDB database(database_path.string());
+        duckdb::Connection connection(database);
+        std::unique_ptr<duckdb::QueryResult> sum_before = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        ASSERT_FALSE(sum_before->HasError());
+        const std::uint64_t num_pairs_before =
+            sum_before->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+
+        // Replaying the same physical pairs must not add rows or throw.
+        EXPECT_NO_THROW(store.AddPairs(input_pairs));
+        EXPECT_EQ(store.GetRowCount("pair"), after_first);
+        EXPECT_EQ(store.GetRowCount("rule_environment"), rule_env_after_first);
+        EXPECT_EQ(store.GetRowCount("constant_environment"), const_env_after_first);
+        EXPECT_EQ(store.GetPairs().size(), 2U);
+
+        // Snapshot sum(num_pairs) after replay; must be unchanged.
+        std::unique_ptr<duckdb::QueryResult> sum_after = connection.Query(
+            "select coalesce(sum(num_pairs), 0) from rule_environment");
+        ASSERT_FALSE(sum_after->HasError());
+        const std::uint64_t num_pairs_after =
+            sum_after->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+        EXPECT_EQ(num_pairs_after, num_pairs_before);
+    }
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, RolledBackSaveDoesNotCorruptSubsequentSaveViaStaleIdCache) {
