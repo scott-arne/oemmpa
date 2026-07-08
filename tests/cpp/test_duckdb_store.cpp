@@ -1820,6 +1820,34 @@ TEST(DuckDBStoreTest, CallerOwnedTransactionRecoversAfterConflictReject) {
     EXPECT_EQ(store.GetPairs().size(), 1U);
 }
 
+TEST(DuckDBStoreTest, CallerOwnedUppercaseRollbackClearsPairCacheForRetry) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    // Begin a caller-owned transaction, add pairs (populates pair_identity_cache_),
+    // then issue an uppercase ROLLBACK. Before the fix, Execute's rollback
+    // detection only matched the exact lowercase literal "rollback", so "ROLLBACK"
+    // (uppercase) did not clear pair_identity_cache_. A retry of the same pairs
+    // would then see stale identities, treat them as persisted duplicates, and
+    // stage nothing -> silent data loss (GetRowCount("pair") == 0 after retry).
+    store.Execute("begin transaction");
+    store.AddPairs(pairs);
+    store.Execute("ROLLBACK");
+
+    // Retry the same pairs (auto-owns a new transaction). Before the fix, the
+    // uncleaned pair_identity_cache_ caused the retry to stage zero rows. After
+    // the fix, the uppercase ROLLBACK clears the cache, so the retry succeeds.
+    store.AddPairs(pairs);
+
+    // Assert the retried pairs ARE persisted.
+    EXPECT_GT(store.GetRowCount("pair"), 0u);
+    EXPECT_EQ(store.GetPairs().size(), 2u);
+}
+
 TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
     DuckDBStore store;
     store.InitializeSchema();

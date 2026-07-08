@@ -1739,9 +1739,24 @@ void DuckDBStore::Execute(const std::string& sql) {
         throw StorageError("DuckDB connection is not open");
     }
     // A rollback discards rows whose ids may be cached, so invalidate the
-    // in-memory id caches to avoid handing out stale ids afterwards.
-    if (sql == "rollback") {
-        ClearIdCaches();
+    // in-memory id caches to avoid handing out stale ids (or, since the
+    // per-radius-pair-storage branch, stale pair identities that would make a
+    // retried pair silently vanish). Match case-insensitively and tolerate a
+    // trailing ';' / surrounding whitespace, because DuckDB accepts ROLLBACK /
+    // rollback; / rollback transaction / ABORT, not just the exact lowercase
+    // literal.
+    {
+        std::string normalized = trim_copy(sql);
+        if (!normalized.empty() && normalized.back() == ';') {
+            normalized.pop_back();
+            normalized = trim_copy(normalized);
+        }
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (normalized == "rollback" || normalized == "rollback transaction" ||
+            normalized == "abort") {
+            ClearIdCaches();
+        }
     }
 
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
