@@ -66,7 +66,15 @@ _QUERIES = {
         "join constant_smiles c on c.id = p.constant_id "
         "join compound src on src.id = p.compound1_id "
         "join compound tgt on tgt.id = p.compound2_id "
-        "join rule_environment re on re.id = p.rule_environment_id "
+        # Per-radius environment membership is now derived: pair stores one
+        # physical row per (compound1, compound2, rule, constant), so the fanned
+        # per-radius view is reconstructed by joining through constant_environment
+        # to rule_environment on (rule, fingerprint, radius). This reproduces the
+        # memberships the dropped pair.rule_environment_id column used to encode.
+        "join constant_environment ce on ce.constant_id = p.constant_id "
+        "join rule_environment re on re.rule_id = p.rule_id "
+        "and re.environment_fingerprint_id = ce.environment_fingerprint_id "
+        "and re.radius = ce.radius "
         "join rule r on r.id = re.rule_id "
         "join rule_smiles f on f.id = r.from_smiles_id "
         "join rule_smiles t on t.id = r.to_smiles_id "

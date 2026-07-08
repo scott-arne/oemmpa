@@ -104,7 +104,11 @@ MMPDB_PHASE9_REFERENCE_STATS_BY_PROPERTY = {
 OEMMPA_PHASE9_OBSERVED_COUNTS = {
     "compound": 9,
     "rule": 46,
-    "pair": 336,
+    # Physical pairs: one row per distinct (compound1, compound2, rule, constant)
+    # identity. Previously the pair table was fanned six-fold across environment
+    # radii (336 = 56 x 6); normalized storage keeps the 56 physical rows and
+    # derives per-radius membership via constant_environment/rule_environment.
+    "pair": 56,
     "environment_fingerprint": 29,
     "rule_environment": 315,
     "rule_environment_statistics": 527,
@@ -629,7 +633,11 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     assert observed_counts["compound_property"] == MMPDB_PHASE9_REFERENCE_COUNTS[
         "compound_property"
     ]
-    assert observed_counts["pair"] > len(analyzer.pairs())
+    # Physical-pair meaning after normalization: the pair table holds one row
+    # per distinct stored pair (56 == len(store.pairs())), no longer fanned
+    # across radii. analyzer.pairs() is 112 (both directional orientations); the
+    # mmpdb-mode store dedups them 2:1, asserted below.
+    assert observed_counts["pair"] == len(store.pairs())
     assert observed_counts["rule_environment"] >= observed_counts["rule"]
     assert len(store.pairs()) * 2 == len(analyzer.pairs())
     assert observed_counts != MMPDB_PHASE9_REFERENCE_COUNTS

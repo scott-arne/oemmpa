@@ -14,10 +14,14 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
 
 
+# pairs is the physical pair-row count (one row per distinct pair). Normalized
+# storage no longer fans pair rows across the six environment radii, so pairs
+# (3) is now decoupled from rule_environments (18 = 3 x 6), which retain the
+# per-radius memberships.
 EXPECTED_PERSISTED_SUMMARY = [
     {"metric": "compounds", "value": "3"},
     {"metric": "rules", "value": "3"},
-    {"metric": "pairs", "value": "18"},
+    {"metric": "pairs", "value": "3"},
     {"metric": "rule_environments", "value": "18"},
     {"metric": "rule_environment_statistics", "value": "18"},
 ]
@@ -25,7 +29,7 @@ EXPECTED_PERSISTED_SUMMARY = [
 EXPECTED_NO_PROPERTY_SUMMARY = [
     {"metric": "compounds", "value": "3"},
     {"metric": "rules", "value": "3"},
-    {"metric": "pairs", "value": "18"},
+    {"metric": "pairs", "value": "3"},
     {"metric": "rule_environments", "value": "18"},
     {"metric": "rule_environment_statistics", "value": "0"},
 ]
@@ -239,7 +243,9 @@ def _assert_rgroup_store_summary(database):
     assert _tsv_rows(result.stdout) == [
         {"metric": "compounds", "value": "2"},
         {"metric": "rules", "value": "1"},
-        {"metric": "pairs", "value": "6"},
+        # One physical pair row (normalized); the six per-radius memberships
+        # remain in rule_environment(_statistics).
+        {"metric": "pairs", "value": "1"},
         {"metric": "rule_environments", "value": "6"},
         {"metric": "rule_environment_statistics", "value": "6"},
     ]
@@ -351,7 +357,9 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
     assert _tsv_rows(result.stdout) == [
         {"metric": "compounds", "value": "3"},
         {"metric": "rules", "value": "6"},
-        {"metric": "pairs", "value": "36"},
+        # Physical pairs (6): one row per distinct pair. rule_environments (36 =
+        # 6 x 6) still carry the per-radius memberships after normalization.
+        {"metric": "pairs", "value": "6"},
         {"metric": "rule_environments", "value": "36"},
         {"metric": "rule_environment_statistics", "value": "36"},
     ]
@@ -403,7 +411,9 @@ def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
     assert _tsv_rows(result.stdout) == [
         {"metric": "compounds", "value": "3"},
         {"metric": "rules", "value": "6"},
-        {"metric": "pairs", "value": "36"},
+        # Physical pairs (6): one row per distinct pair. rule_environments (36 =
+        # 6 x 6) still carry the per-radius memberships after normalization.
+        {"metric": "pairs", "value": "6"},
         {"metric": "rule_environments", "value": "36"},
         {"metric": "rule_environment_statistics", "value": "36"},
     ]

@@ -59,9 +59,16 @@ def test_bulk_save_matches_golden(tmp_path):
             golden = _load_golden(table)
             # Multiset comparison: sorted lists, duplicates preserved.
             assert sorted(actual) == sorted(golden), f"table {table} differs from golden"
-        # Explicit row-count guards (independent of tuple comparison).
+        # Explicit row-count guards (independent of tuple comparison). pair is
+        # now normalized to one physical row per (compound1, compound2, rule,
+        # constant); its golden is the per-radius fanned view, so guard the
+        # reconstructed dump count for pair and the independent physical
+        # count(*) for the tables that are not fanned by the dump query.
         for table in ("pair", "rule_environment", "rule_environment_statistics"):
-            count = con.execute(f"select count(*) from {table}").fetchone()[0]
+            if table == "pair":
+                count = len(dump.natural_key_rows(con, table))
+            else:
+                count = con.execute(f"select count(*) from {table}").fetchone()[0]
             assert count == len(_load_golden(table)), f"{table} row count changed"
     finally:
         con.close()
