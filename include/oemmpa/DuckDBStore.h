@@ -56,6 +56,13 @@ class DuckDBStore {
     friend class Analyzer;
 
 public:
+    // Physical schema revision. Stores are stamped at InitializeSchema time;
+    // opening a store written by an older revision is a hard error (no in-place
+    // migration). Held at 1 here (matching the current physical layout); the
+    // Task 3-6 tranche bumps it to 2 atomically with the new pair/
+    // constant_environment shape so no committed state stamps 2 on a v1 table.
+    static constexpr std::uint32_t kOemmpaSchemaVersion = 1;
+
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
 
@@ -216,6 +223,12 @@ private:
 
     // Seed member id caches from existing rows so a non-empty store reuses ids.
     void PreloadIdCaches();
+
+    // Reject stores written by an older schema revision. A v2 store always has a
+    // dataset row carrying oemmpa_schema_version; a populated store with a `pair`
+    // table but no such row is a pre-versioned legacy store. Either legacy shape
+    // raises StorageError. Called by InitializeSchema after table creation.
+    void RequireCompatibleSchemaOrThrow();
 
     // Current num_pairs for an existing rule_environment (0 if none).
     std::uint64_t existing_num_pairs(std::uint64_t rule_environment_id);

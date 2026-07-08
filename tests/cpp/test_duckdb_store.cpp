@@ -1475,5 +1475,35 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
     std::filesystem::remove(path);
 }
 
+TEST(DuckDBStoreTest, RejectsLegacyStoreStampedOldVersion) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_legacy_v1.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+        // Force the persisted version below the current constant to simulate a
+        // store written by an older schema revision.
+        store.Execute("update dataset set oemmpa_schema_version = 0");
+    }
+    EXPECT_THROW({ DuckDBStore reopened(path); }, StorageError);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsLegacyStoreWithPairTableButNoVersionRow) {
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_legacy_novers.duckdb").string();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path);
+        store.InitializeSchema();
+        // Simulate an AddPairs-only legacy store: pair table populated, no
+        // dataset version row.
+        store.Execute("delete from dataset");
+    }
+    EXPECT_THROW({ DuckDBStore reopened(path); }, StorageError);
+    std::filesystem::remove(path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

@@ -1505,7 +1505,40 @@ DuckDBStore::DuckDBStore(const std::string& database_path)
 
 DuckDBStore::~DuckDBStore() = default;
 
+void DuckDBStore::RequireCompatibleSchemaOrThrow() {
+    // A pre-existing store must be exactly the current revision. Read the
+    // persisted version; absence of a dataset version row on a non-empty store
+    // means a pre-versioned legacy store (e.g. one written only via AddPairs,
+    // which never inserts the dataset row).
+    auto result = connection_->Query(
+        "select oemmpa_schema_version from dataset where id = 1");
+    require_success(*result, "read schema version");
+    for (const auto& row : *result) {
+        const std::uint32_t version = row.GetValue<std::uint32_t>(0);
+        if (version != kOemmpaSchemaVersion) {
+            throw StorageError(
+                "DuckDB store was written by oemmpa schema version " +
+                std::to_string(version) + " but this build requires version " +
+                std::to_string(kOemmpaSchemaVersion) +
+                "; rebuild the store from source");
+        }
+        return;
+    }
+    throw StorageError(
+        "DuckDB store predates schema versioning (no dataset version row); "
+        "rebuild the store from source");
+}
+
 void DuckDBStore::InitializeSchema() {
+    // Gate BEFORE any v2 DDL. An existing store (its `pair` table already
+    // present) must be validated first, so a legacy store fails with the
+    // deterministic rebuild-required error rather than erroring later on
+    // v2-only index/column DDL.
+    const bool fresh_database = !HasTable("pair");
+    if (!fresh_database) {
+        RequireCompatibleSchemaOrThrow();
+    }
+
     Execute("begin transaction");
     try {
         Execute(
@@ -1652,6 +1685,16 @@ void DuckDBStore::InitializeSchema() {
                 "create sequence if not exists " + id_sequence_name(table_name) +
                 " start " + std::to_string(get_max_id(connection_, table_name) + 1)
             );
+        }
+
+        if (fresh_database) {
+            // Stamp the version eagerly (not lazily via refresh_dataset_counts) so
+            // every v2 store carries its revision even before any counts refresh.
+            Execute(
+                "insert into dataset (id, oemmpa_schema_version, title, "
+                "fragment_options, index_options, is_symmetric) "
+                "values (1, " + std::to_string(kOemmpaSchemaVersion) +
+                ", '', '', '', true) on conflict (id) do nothing");
         }
         Execute("commit");
     } catch (...) {
