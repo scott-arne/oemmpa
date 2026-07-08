@@ -2238,6 +2238,14 @@ void DuckDBStore::AppendBulk(
     std::vector<PairRow> pair_rows;
     pair_rows.reserve(pairs.size());
 
+    // Local payload map to detect conflicting payloads for the same identity
+    // within this batch. The identity cache (pair_identity_cache_) is also seeded
+    // from persisted rows, but PreloadIdCaches does not load payloads, so we can
+    // only verify payload consistency for identities seen THIS call.
+    std::unordered_map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+        std::uint64_t>, std::tuple<unsigned int, int, int>, PairIdentityHash>
+        seen_payload;
+
     // Wrap the whole resolve-then-append body so every failure mode presents the
     // store's StorageError contract to callers. The resolve phase can throw
     // sibling OEMMPAError types that are NOT StorageError -- e.g.
@@ -2378,12 +2386,32 @@ void DuckDBStore::AppendBulk(
             std::uint64_t> identity{
             pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
             rule_id, constant_id};
+        const std::tuple<unsigned int, int, int> payload{
+            pair.GetCutCount(), pair.GetHeavyAtomDelta(),
+            pair.GetHeavyBondDelta()};
         if (pair_identity_cache_.insert(identity).second) {
+            // First sight this load AND not persisted: stage the pair and record
+            // its payload so later same-identity pairs can be validated.
             pair_rows.push_back({
                 pair_counter(), rule_id, constant_id,
                 pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
                 pair.GetCutCount(), pair.GetHeavyAtomDelta(),
                 pair.GetHeavyBondDelta()});
+            seen_payload.emplace(identity, payload);
+        } else {
+            // Identity already known (either staged earlier this call or preloaded
+            // from disk). If staged this call, verify payload consistency.
+            auto it = seen_payload.find(identity);
+            if (it != seen_payload.end() && it->second != payload) {
+                // Same identity but DIFFERENT payload within this batch: reject
+                // loudly rather than silently dropping the second pair.
+                throw StorageError(
+                    "conflicting matched-pair payload for identical "
+                    "(compound1, compound2, rule, constant): "
+                    "cut_count/heavy_atom_delta/heavy_bond_delta mismatch");
+            }
+            // Otherwise: either exact duplicate (same identity, same payload) or
+            // persisted identity we can't verify -> skip silently as before.
         }
     }
 

@@ -1747,5 +1747,51 @@ TEST(DuckDBStoreTest, RejectsLegacyStoreWithPairTableButNoVersionRow) {
     std::filesystem::remove(path);
 }
 
+TEST(DuckDBStoreTest, AddPairsRejectsConflictingPayloadForSameIdentity) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    // Create two pairs with identical physical identity (same source, target,
+    // constant, and variable SMILES) but different heavy_atom_delta payloads.
+    // Both use the simplified MakePair which hardcodes constant to "[*:1]".
+    const MatchedPair pair1 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        -1,  // heavy_atom_delta
+        0    // heavy_bond_delta
+    );
+    const MatchedPair pair2 = MakePair(
+        1, 2, "tol", "phenol",
+        "Cc1ccccc1", "Oc1ccccc1",
+        "C[*:1]", "O[*:1]",
+        999,  // DIFFERENT heavy_atom_delta (same identity, different payload)
+        0
+    );
+
+    // AddPairs with both pairs in the same batch must throw StorageError
+    // because the second pair has the same identity but conflicting payload.
+    EXPECT_THROW(
+        store.AddPairs({pair1, pair2}),
+        StorageError
+    );
+}
+
+TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(pairs.empty());
+    const MatchedPair& pair = pairs.front();
+
+    // Exact duplicate within batch: same identity AND same payload. This must
+    // NOT throw (legitimate dedup case) and must result in a single physical row.
+    EXPECT_NO_THROW(store.AddPairs({pair, pair}));
+    EXPECT_EQ(store.GetRowCount("pair"), 1u);
+}
+
 }  // namespace test
 }  // namespace OEMMPA
