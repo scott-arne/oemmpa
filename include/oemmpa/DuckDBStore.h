@@ -6,6 +6,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -52,16 +53,29 @@ struct TupleHash {
     }
 };
 
+struct PairIdentityHash {
+    std::size_t operator()(
+        const std::tuple<std::uint64_t, std::uint64_t,
+            std::uint64_t, std::uint64_t>& key) const {
+        std::size_t h = std::hash<std::uint64_t>()(std::get<0>(key));
+        h = h * 1000003u ^ std::hash<std::uint64_t>()(std::get<1>(key));
+        h = h * 1000003u ^ std::hash<std::uint64_t>()(std::get<2>(key));
+        h = h * 1000003u ^ std::hash<std::uint64_t>()(std::get<3>(key));
+        return h;
+    }
+};
+
 class DuckDBStore {
     friend class Analyzer;
 
 public:
     // Physical schema revision. Stores are stamped at InitializeSchema time;
     // opening a store written by an older revision is a hard error (no in-place
-    // migration). Held at 1 here (matching the current physical layout); the
-    // Task 3-6 tranche bumps it to 2 atomically with the new pair/
-    // constant_environment shape so no committed state stamps 2 on a v1 table.
-    static constexpr std::uint32_t kOemmpaSchemaVersion = 1;
+    // migration). Bumped to 2 atomically with the normalized pair layout (one
+    // physical row per matched pair, with per-radius memberships derived through
+    // constant_environment), so no committed state stamps 2 on a pre-normalized
+    // v1 table.
+    static constexpr std::uint32_t kOemmpaSchemaVersion = 2;
 
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
@@ -230,9 +244,6 @@ private:
     // raises StorageError. Called by InitializeSchema after table creation.
     void RequireCompatibleSchemaOrThrow();
 
-    // Current num_pairs for an existing rule_environment (0 if none).
-    std::uint64_t existing_num_pairs(std::uint64_t rule_environment_id);
-
     // Seed a bulk counter from the table's current max(id) (0 -> next is 1).
     std::uint64_t seed_counter(const std::string& table_name);
 
@@ -255,6 +266,16 @@ private:
     std::unordered_map<std::string, std::uint64_t> fingerprint_id_cache_;
     std::unordered_map<std::tuple<std::uint64_t, std::uint64_t, int>,
         std::uint64_t, TupleHash> rule_environment_id_cache_;
+
+    // Physical-pair identity dedup key set: (compound1, compound2, rule, constant).
+    // Seeded from persisted pair rows in PreloadIdCaches so a duplicate pair in a
+    // later AddPairs call (or reopened store) is skipped rather than tripping the
+    // unique constraint.
+    std::unordered_set<std::tuple<std::uint64_t, std::uint64_t,
+        std::uint64_t, std::uint64_t>, PairIdentityHash> pair_identity_cache_;
+    // Constant ids whose constant_environment rows already exist (persisted or
+    // written this load), so populating them is idempotent across reloads.
+    std::unordered_set<std::uint64_t> constant_environment_ids_;
 };
 
 }  // namespace OEMMPA
