@@ -893,7 +893,8 @@ void refresh_dataset_counts(
     const std::string insert_sql =
         "insert into dataset ("
         "id, oemmpa_schema_version, title, fragment_options, index_options, is_symmetric"
-        ") values (1, 1, '', '', '', true) "
+        ") values (1, " + std::to_string(DuckDBStore::kOemmpaSchemaVersion) +
+        ", '', '', '', true) "
         "on conflict (id) do nothing";
     std::unique_ptr<duckdb::QueryResult> insert_result = connection->Query(insert_sql);
     if (!insert_result) {
