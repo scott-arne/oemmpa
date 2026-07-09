@@ -565,6 +565,47 @@ These commands currently read the input files, run the analysis in memory, and
 write results to the terminal. The same file formats can also be loaded into
 DuckDB for persistent storage.
 
+## Concurrent Analysis (Thread Safety)
+
+`Analyzer` and `DuckDBStore` can run concurrently across Python threads when each
+thread uses its own independent instance. The analysis and storage operations release
+the Python GIL, so parallelism scales with CPU count.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from oemmpa import Analyzer
+
+def analyze_subset(molecule_batch):
+    """Each thread creates its own Analyzer instance."""
+    analyzer = Analyzer()
+    analyzer.add_molecules(molecule_batch)
+    analyzer.analyze(threads=1)  # Single-threaded per analyzer
+    return list(analyzer.pairs())
+
+all_pairs = []
+with ThreadPoolExecutor(max_workers=4) as executor:
+    batches = [molecules[i::4] for i in range(4)]
+    for pairs in executor.map(analyze_subset, batches):
+        all_pairs.extend(pairs)
+```
+
+**Important:** Do not share a single `Analyzer` or `DuckDBStore` instance across
+threads. The GIL is released during analysis and storage operations, so concurrent
+access to the same instance will cause data races. Create one instance per thread.
+
+The `threads` parameter to `analyze()` parallelizes within a single analyzer. When
+`threads` is omitted (`None`, the default), the worker count is taken from the
+`OEMMPA_ANALYZE_THREADS` environment variable when it is set, and otherwise falls back
+to a single thread. Pass an explicit count (e.g., `threads=4`) to use multiple cores,
+or `threads=1` to force single-threaded analysis regardless of the environment; an
+explicit `threads=` argument always takes precedence over `OEMMPA_ANALYZE_THREADS`.
+See the `analyze()` docstring for full details.
+
+**Warning:** Avoid combining high `threads=` values with many concurrent jobs (e.g.,
+`ThreadPoolExecutor` with many workers). This can oversubscribe CPU cores and degrade
+performance. Prefer either many single-threaded analyzers across workers, or fewer
+analyzers with moderate `threads=` counts.
+
 ## Persistent Storage
 
 When OEMMPA is built with DuckDB support, `DuckDBStore` can save molecules,

@@ -113,7 +113,7 @@ def dump_all(con: duckdb.DuckDBPyConnection) -> dict[str, list[tuple]]:
 
 
 def build_store_from_fixture(
-    smiles_path: str, db_path: str, *, with_properties: bool
+    smiles_path: str, db_path: str, *, with_properties: bool, threads: int | None = None
 ) -> None:
     from oemmpa import Analyzer, DuckDBStore, _oemmpa
 
@@ -131,7 +131,10 @@ def build_store_from_fixture(
         for index, molecule_id in enumerate(ids):
             analyzer.add_property(molecule_id, "pIC50", 5.0 + (index % 7) * 0.1)
 
-    analyzer.analyze()
+    if threads is None:
+        analyzer.analyze()
+    else:
+        analyzer.analyze(threads)
 
     options = _oemmpa.QueryOptions()
     options.SetSymmetric(False)

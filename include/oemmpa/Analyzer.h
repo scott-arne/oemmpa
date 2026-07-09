@@ -11,11 +11,18 @@
 #include <oechem.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace OEMMPA {
+
+/// \brief Resolve the effective analyze() worker count.
+/// \param explicit_threads Set when the caller passed an explicit count (the
+///        presence channel); empty means resolve from the environment.
+/// \returns A count >= 1, clamped to hardware_concurrency() when known.
+unsigned int resolve_analyze_threads(std::optional<unsigned int> explicit_threads);
 
 class DuckDBStore;
 
@@ -152,7 +159,13 @@ public:
     /// \brief Run matched-pair analysis for the current molecule set.
     ///
     /// Successful analysis is required before querying pairs or transforms.
+    /// Run analysis; resolves worker count from OEMMPA_ANALYZE_THREADS (else 1).
     void Analyze();
+    /// Run analysis with an explicit worker count (opt-in parallelism).
+    void Analyze(unsigned int threads);
+
+    /// \brief Return the number of workers the last Analyze() spawned (1 for serial path).
+    unsigned int LastAnalyzeWorkerCount() const;
 
     /// \brief Return all analyzed matched pairs with default query options.
     ///

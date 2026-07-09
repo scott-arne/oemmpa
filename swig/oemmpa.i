@@ -1,6 +1,15 @@
 // swig/oemmpa.i
 // SWIG interface file for oemmpa Python bindings
-%module _oemmpa
+%module("threads"=1) _oemmpa
+
+// ============================================================================
+// GIL release configuration (MUST be here, before any wrapper-generating directives)
+// ============================================================================
+// Release the GIL only around the long, Python-free C++ calls; keep the many
+// tiny getters GIL-held. In SWIG 4.4 the executable feature is `nothreadallow`
+// (%threadallow == %feature("nothreadallow","0")).
+// This global default turns release OFF for ALL wrappers.
+%feature("nothreadallow", "1");
 
 %{
 #include "oemmpa/oemmpa.h"
@@ -360,8 +369,19 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Version macros
 // ============================================================================
 #define OEMMPA_VERSION_MAJOR 2
-#define OEMMPA_VERSION_MINOR 1
+#define OEMMPA_VERSION_MINOR 2
 #define OEMMPA_VERSION_PATCH 0
+
+// ============================================================================
+// GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
+// ============================================================================
+// These 6 methods are the ONLY wrappers that release the GIL.
+%threadallow OEMMPA::Analyzer::Analyze;
+%threadallow OEMMPA::Analyzer::GetPairs;
+%threadallow OEMMPA::Analyzer::GetTransforms;
+%threadallow OEMMPA::Analyzer::SaveTo;
+%threadallow OEMMPA::DuckDBStore::AddMoleculesFromSmilesFile;
+%threadallow OEMMPA::DuckDBStore::AddPropertiesFromCsvFile;
 
 // ============================================================================
 // Phase 1 public headers
@@ -416,5 +436,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Module-level Python convenience code
 // ============================================================================
 %pythoncode %{
-__version__ = "0.1.0"
+# Derive the proxy module's __version__ from the compiled OEMMPA_VERSION_*
+# macros (wrapped from oemmpa.h) so it never drifts from the released version.
+__version__ = "%d.%d.%d" % (OEMMPA_VERSION_MAJOR, OEMMPA_VERSION_MINOR, OEMMPA_VERSION_PATCH)
 %}

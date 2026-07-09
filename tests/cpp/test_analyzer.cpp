@@ -4,10 +4,14 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/oemmpa.h"
 
+#include <oesystem.h>
+
 #include <algorithm>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace OEMMPA {
@@ -538,6 +542,133 @@ TEST(AnalyzerDesalt, ClearResetsStrippedNamesButKeepsDesalter) {
     // ...but the desalter still applies to the next molecule (reused id 1).
     const unsigned int id2 = analyzer.AddMolecule("CCO.Cl", "m2");
     EXPECT_EQ(analyzer.GetStrippedNames(id2).size(), 1u);
+}
+
+TEST(AnalyzerThreadResolutionTest, ExplicitCountWinsAndClamps) {
+    ::setenv("OEMMPA_ANALYZE_THREADS", "999999", 1);
+    EXPECT_EQ(resolve_analyze_threads(std::optional<unsigned int>(1)), 1u);  // explicit beats env
+    const unsigned int hw = std::thread::hardware_concurrency();
+    if (hw > 0) {
+        EXPECT_EQ(resolve_analyze_threads(std::optional<unsigned int>(999999u)), hw);  // clamp
+    }
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
+}
+
+TEST(AnalyzerThreadResolutionTest, EnvFallbackAndDefensiveParsing) {
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
+    EXPECT_EQ(resolve_analyze_threads(std::nullopt), 1u);            // unset -> 1
+    ::setenv("OEMMPA_ANALYZE_THREADS", "3", 1);
+    EXPECT_EQ(resolve_analyze_threads(std::nullopt), 3u);            // valid env
+    for (const char* bad : {"0", "-2", "abc", ""}) {
+        ::setenv("OEMMPA_ANALYZE_THREADS", bad, 1);
+        EXPECT_EQ(resolve_analyze_threads(std::nullopt), 1u) << bad; // defensive -> 1
+    }
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
+}
+
+TEST(AnalyzerThreadsPlumbingTest, ExplicitThreadsAcceptedAndSerialResultUnchanged) {
+    Analyzer a("fragmentation");
+    a.AddMolecule("Cc1ccccc1", "tol");
+    a.AddMolecule("Oc1ccccc1", "phenol");
+    a.Analyze();                 // env/default path
+    const auto baseline = a.GetPairs();
+    Analyzer b("fragmentation");
+    b.AddMolecule("Cc1ccccc1", "tol");
+    b.AddMolecule("Oc1ccccc1", "phenol");
+    b.Analyze(4);                // explicit (still serial in this task)
+    EXPECT_EQ(b.GetPairs().size(), baseline.size());
+}
+
+// Spec requirement: dmcss/oemedchem accept and IGNORE threads>1 (no error,
+// identical output). Availability-gate if a backend is compiled out.
+TEST(AnalyzerThreadsPlumbingTest, NonFragmentationBackendsIgnoreThreads) {
+    for (const char* method : {"dmcss", "oemedchem"}) {
+        Analyzer one(method), many(method);
+        for (Analyzer* a : {&one, &many}) {
+            a->AddMolecule("Cc1ccccc1", "tol");
+            a->AddMolecule("Oc1ccccc1", "phenol");
+        }
+        one.Analyze(1);
+        many.Analyze(4);          // must not throw; must match
+        EXPECT_EQ(one.GetPairs().size(), many.GetPairs().size()) << method;
+    }
+}
+
+TEST(ParallelAnalyzeTest, ParallelPathActuallySpawnsWorkers) {
+    Analyzer a("fragmentation");
+    a.AddMolecule("Cc1ccccc1", "m1");
+    a.AddMolecule("Oc1ccccc1", "m2");
+    a.AddMolecule("Nc1ccccc1", "m3");
+    a.AddMolecule("Clc1ccccc1", "m4");
+    a.AddMolecule("CCc1ccccc1", "m5");
+    a.AddMolecule("CCCc1ccccc1", "m6");
+    a.AddMolecule("c1ccccc1C(C)C", "m7");
+    a.AddMolecule("c1ccccc1CC(C)C", "m8");
+    a.AddMolecule("c1ccccc1O", "m9");
+    a.AddMolecule("Oc1ccc(O)cc1", "m10");
+    a.AddMolecule("Nc1ccc(N)cc1", "m11");
+    a.AddMolecule("c1ccccc1N", "m12");
+    a.Analyze(4);
+    EXPECT_GT(a.LastAnalyzeWorkerCount(), 1u);
+}
+
+TEST(ParallelAnalyzeTest, ParallelPathSetsSystemMemPoolMode) {
+    Analyzer serial("fragmentation");
+    serial.AddMolecule("Cc1ccccc1", "s1");
+    serial.AddMolecule("Oc1ccccc1", "s2");
+    serial.Analyze(1);
+    Analyzer parallel("fragmentation");
+    parallel.AddMolecule("Cc1ccccc1", "p1");
+    parallel.AddMolecule("Oc1ccccc1", "p2");
+    parallel.Analyze(2);
+    EXPECT_EQ(OESystem::OEGetMemPoolMode(), OESystem::OEMemPoolMode::System);
+}
+
+TEST(ParallelAnalyzeTest, OutputIdenticalAcrossThreadCounts) {
+    auto build = [](unsigned int threads) {
+        Analyzer a("fragmentation");
+        a.AddMolecule("Cc1ccccc1", "tol");
+        a.AddMolecule("Oc1ccccc1", "phenol");
+        a.AddMolecule("Nc1ccccc1", "aniline");
+        a.AddMolecule("Clc1ccccc1", "chlorobenzene");
+        a.AddMolecule("CCc1ccccc1", "ethylbenzene");
+        a.AddMolecule("CCCc1ccccc1", "propylbenzene");
+        a.AddMolecule("c1ccccc1C(C)C", "cumene");
+        a.AddMolecule("c1ccccc1CC(C)C", "isobutylbenzene");
+        a.AddMolecule("c1ccccc1O", "phenol2");
+        a.AddMolecule("Oc1ccc(O)cc1", "hydroquinone");
+        a.AddMolecule("Nc1ccc(N)cc1", "p-phenylenediamine");
+        a.AddMolecule("c1ccccc1N", "aniline2");
+        a.Analyze(threads);
+        return a.GetPairs();
+    };
+    const auto one = build(1);
+    const auto many = build(8);
+    ASSERT_EQ(one.size(), many.size());
+    for (size_t i = 0; i < one.size(); ++i) {
+        EXPECT_EQ(one[i].GetConstantSmiles(), many[i].GetConstantSmiles()) << "index " << i;
+        EXPECT_EQ(one[i].GetSourceMoleculeId(), many[i].GetSourceMoleculeId()) << "index " << i;
+        EXPECT_EQ(one[i].GetTargetMoleculeId(), many[i].GetTargetMoleculeId()) << "index " << i;
+        EXPECT_EQ(one[i].GetTransformSmiles(), many[i].GetTransformSmiles()) << "index " << i;
+    }
+}
+
+TEST(ParallelAnalyzeTest, ParallelPathThrowsDuplicateIdErrorBeforeFragmentation) {
+    FragmentationMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(100, "Cc1ccccc1", "m1"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(101, "Oc1ccccc1", "m2"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(100, "Nc1ccccc1", "m3"));
+    EXPECT_THROW(
+        {
+            try {
+                method.Analyze(4);
+            } catch (const DuplicateIdError& e) {
+                EXPECT_STREQ(e.what(), "duplicate molecule internal id: 100");
+                throw;
+            }
+        },
+        DuplicateIdError
+    );
 }
 
 }  // namespace test

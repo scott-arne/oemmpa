@@ -637,8 +637,9 @@ class ThreadScalingSection(Section):
         "by worker count."
     )
 
-    def __init__(self, *, rows: list[dict[str, Any]], severity: str, has_warmup_overrun: bool, glance_verdict: str, headline: str) -> None:
-        self.rows = rows
+    def __init__(self, *, concurrent_rows: list[dict[str, Any]], single_job_rows: list[dict[str, Any]], severity: str, has_warmup_overrun: bool, glance_verdict: str, headline: str) -> None:
+        self.concurrent_rows = concurrent_rows
+        self.single_job_rows = single_job_rows
         self.severity = severity
         self.has_warmup_overrun = has_warmup_overrun
         self.glance_verdict = glance_verdict
@@ -649,62 +650,96 @@ class ThreadScalingSection(Section):
         scaling = [r for r in rows if r.get("benchmark") == "thread_scaling"]
         if not scaling:
             return None
+
+        # Separate concurrent and single-job rows
+        concurrent = [r for r in scaling if r.get("mode") == "concurrent"]
+        single_job = [r for r in scaling if r.get("mode") == "single_job"]
+
+        # If no mode field, assume legacy concurrent-only format
+        if not concurrent and not single_job:
+            concurrent = scaling
+
         # Largest dataset only.
         target_count = max((_as_float(r.get("molecule_count")) or 0.0) for r in scaling)
-        scaling = [r for r in scaling if (_as_float(r.get("molecule_count")) or 0.0) == target_count]
-        baseline = next((r for r in scaling if int(_as_float(r.get("workers")) or 0) == 1), None)
-        if baseline is None:
-            return None
-        baseline_wall = _as_float(baseline.get("wall_seconds"))
-        if baseline_wall is not None and baseline_wall < RATIO_FLOOR_SECONDS:
-            # The 1-worker baseline is dominated by warmup/startup, so speedup
-            # and efficiency numbers derived from it are meaningless.
-            return cls(
-                rows=[],
-                severity="neutral",
-                has_warmup_overrun=False,
-                glance_verdict="baseline too small to measure",
-                headline="baseline too small to measure",
-            )
-        baseline_jps = _as_float(baseline.get("jobs_per_second"))
-        if not baseline_jps:
-            return None
+        concurrent = [r for r in concurrent if (_as_float(r.get("molecule_count")) or 0.0) == target_count]
+        single_job = [r for r in single_job if (_as_float(r.get("molecule_count")) or 0.0) == target_count]
+
+        # Process concurrent mode (backward-compatible with legacy format)
+        rendered_concurrent: list[dict[str, Any]] = []
         worst_severity = "good"
         worst_efficiency = 1.0
         worst_workers = 1
         best_efficiency = 0.0
         best_workers = 1
         has_overrun = False
-        rendered: list[dict[str, Any]] = []
-        for row in sorted(scaling, key=lambda r: _as_float(r.get("workers")) or 0.0):
-            workers = int(_as_float(row.get("workers")) or 0)
-            jps = _as_float(row.get("jobs_per_second")) or 0.0
-            speedup = jps / baseline_jps if baseline_jps else 0.0
-            efficiency = speedup / workers if workers else 0.0
-            if efficiency > 1.0:
-                has_overrun = True
-                row_severity = "neutral"
-            elif workers == 1:
-                row_severity = "neutral"
-            else:
-                row_severity, _ = verdict_for_efficiency(efficiency)
-            if workers != 1:
-                if _SEVERITY_RANK[row_severity] > _SEVERITY_RANK[worst_severity]:
-                    worst_severity = row_severity
-                    worst_efficiency = efficiency
-                    worst_workers = workers
-                if efficiency > best_efficiency:
-                    best_efficiency = efficiency
-                    best_workers = workers
-            rendered.append(
+
+        if concurrent:
+            baseline = next((r for r in concurrent if int(_as_float(r.get("workers")) or 0) == 1), None)
+            if baseline is None:
+                return None
+            baseline_wall = _as_float(baseline.get("wall_seconds"))
+            if baseline_wall is not None and baseline_wall < RATIO_FLOOR_SECONDS:
+                return cls(
+                    concurrent_rows=[],
+                    single_job_rows=[],
+                    severity="neutral",
+                    has_warmup_overrun=False,
+                    glance_verdict="baseline too small to measure",
+                    headline="baseline too small to measure",
+                )
+            baseline_jps = _as_float(baseline.get("jobs_per_second"))
+            if not baseline_jps:
+                return None
+
+            for row in sorted(concurrent, key=lambda r: _as_float(r.get("workers")) or 0.0):
+                workers = int(_as_float(row.get("workers")) or 0)
+                jps = _as_float(row.get("jobs_per_second")) or 0.0
+                # Fallback handles legacy rows lacking speedup/efficiency fields.
+                speedup = _as_float(row.get("speedup")) or (jps / baseline_jps if baseline_jps else 0.0)
+                efficiency = _as_float(row.get("efficiency")) or (speedup / workers if workers else 0.0)
+                if efficiency > 1.0:
+                    has_overrun = True
+                    row_severity = "neutral"
+                elif workers == 1:
+                    row_severity = "neutral"
+                else:
+                    row_severity, _ = verdict_for_efficiency(efficiency)
+                if workers != 1:
+                    if _SEVERITY_RANK[row_severity] > _SEVERITY_RANK[worst_severity]:
+                        worst_severity = row_severity
+                        worst_efficiency = efficiency
+                        worst_workers = workers
+                    if efficiency > best_efficiency:
+                        best_efficiency = efficiency
+                        best_workers = workers
+                rendered_concurrent.append(
+                    {
+                        "workers": workers,
+                        "wall_seconds": _as_float(row.get("wall_seconds")),
+                        "speedup": speedup,
+                        "efficiency": efficiency,
+                        "severity": row_severity,
+                    }
+                )
+
+        # Process single-job mode
+        rendered_single_job: list[dict[str, Any]] = []
+        single_job_baseline = next((r for r in single_job if int(_as_float(r.get("threads")) or 0) == 1), None)
+        single_job_baseline_wall = _as_float(single_job_baseline.get("wall_seconds")) if single_job_baseline else None
+        for row in sorted(single_job, key=lambda r: _as_float(r.get("threads")) or 0.0):
+            threads = int(_as_float(row.get("threads")) or 0)
+            wall = _as_float(row.get("wall_seconds")) or 0.0
+            speedup = _as_float(row.get("speedup"))
+            if speedup is None and single_job_baseline_wall is not None:
+                speedup = single_job_baseline_wall / wall if wall else 0.0
+            rendered_single_job.append(
                 {
-                    "workers": workers,
-                    "wall_seconds": _as_float(row.get("wall_seconds")),
-                    "speedup": speedup,
-                    "efficiency": efficiency,
-                    "severity": row_severity,
+                    "threads": threads,
+                    "wall_seconds": wall,
+                    "speedup": speedup or 0.0,
                 }
             )
+
         if worst_severity == "warning":
             verdict = "low efficiency"
             headline = f"{worst_efficiency * 100:.0f}% at {worst_workers} workers"
@@ -713,10 +748,11 @@ class ThreadScalingSection(Section):
             headline = f"{best_efficiency * 100:.0f}% at {best_workers} workers"
         else:
             verdict = "-"
-            largest_workers = max((row["workers"] for row in rendered), default=1)
+            largest_workers = max((row["workers"] for row in rendered_concurrent), default=1)
             headline = f"{largest_workers} workers measured"
         return cls(
-            rows=rendered,
+            concurrent_rows=rendered_concurrent,
+            single_job_rows=rendered_single_job,
             severity=worst_severity,
             has_warmup_overrun=has_overrun,
             glance_verdict=verdict,
@@ -726,31 +762,47 @@ class ThreadScalingSection(Section):
     def render(self, console, *, verbose=False):
         console.print(Rule(self.title))
         console.print(f"[dim]{self.description}[/dim]")
-        if not self.rows:
-            # Guarded state (e.g. below-floor baseline): no per-worker table to
-            # show, so surface the headline diagnosis directly instead of an
-            # empty table (single-section runs have no at-a-glance summary).
+        if not self.concurrent_rows and not self.single_job_rows:
             console.print(f"[dim]{self.headline}[/dim]")
             return
-        table = Table()
-        table.add_column("Workers", justify="right")
-        table.add_column("Wall", justify="right")
-        table.add_column("Speedup", justify="right")
-        table.add_column("Efficiency", justify="right")
-        for row in self.rows:
-            color = SEVERITY_COLOR[row["severity"]]
-            table.add_row(
-                str(row["workers"]),
-                format_seconds(row["wall_seconds"]),
-                f"{row['speedup']:.2f}x",
-                f"[{color}]{row['efficiency'] * 100:.0f}%[/{color}]",
-            )
-        console.print(table)
-        if self.has_warmup_overrun:
-            console.print(
-                "[dim]Note: efficiencies above 100% indicate the 1-worker "
-                "baseline includes warmup overhead.[/dim]"
-            )
+
+        # Render concurrent mode table
+        if self.concurrent_rows:
+            console.print("\n[bold]Concurrent mode:[/bold] independent jobs, each analyze(threads=1)")
+            table = Table()
+            table.add_column("Workers", justify="right")
+            table.add_column("Wall", justify="right")
+            table.add_column("Speedup", justify="right")
+            table.add_column("Efficiency", justify="right")
+            for row in self.concurrent_rows:
+                color = SEVERITY_COLOR[row["severity"]]
+                table.add_row(
+                    str(row["workers"]),
+                    format_seconds(row["wall_seconds"]),
+                    f"{row['speedup']:.2f}x",
+                    f"[{color}]{row['efficiency'] * 100:.0f}%[/{color}]",
+                )
+            console.print(table)
+            if self.has_warmup_overrun:
+                console.print(
+                    "[dim]Note: efficiencies above 100% indicate the 1-worker "
+                    "baseline includes warmup overhead.[/dim]"
+                )
+
+        # Render single-job mode table
+        if self.single_job_rows:
+            console.print("\n[bold]Single-job mode:[/bold] one analyze(threads=k)")
+            table = Table()
+            table.add_column("Threads", justify="right")
+            table.add_column("Wall", justify="right")
+            table.add_column("Speedup", justify="right")
+            for row in self.single_job_rows:
+                table.add_row(
+                    str(row["threads"]),
+                    format_seconds(row["wall_seconds"]),
+                    f"{row['speedup']:.2f}x" if row["speedup"] else "-",
+                )
+            console.print(table)
 
     def glance_entry(self):
         return GlanceEntry(
@@ -1041,7 +1093,9 @@ def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, ...]:
         str(row.get("benchmark", "")),
         str(row.get("dataset", "")),
         str(row.get("command", "")),
+        str(row.get("mode", "")),
         str(row.get("workers", "")),
+        str(row.get("threads", "")),
         str(row.get("size", "")),
     )
 
@@ -1090,8 +1144,8 @@ class BaselineDeltaSection(Section):
     def from_rows(cls, rows, baseline_rows=None, baseline_path=None):
         """Construct a populated section from current and baseline rows.
 
-        Joins on ``(benchmark, dataset, command, workers)``. Each baseline
-        metric column is classified by name (seconds / throughput / count)
+        Joins on ``(benchmark, dataset, command, mode, workers, threads, size)``.
+        Each baseline metric column is classified by name (seconds / throughput / count)
         and compared via the corresponding verdict helper. Neutral rows are
         omitted from the rendered table; baseline rows with no matching
         current row become a synthesized ``"missing"`` warning.
@@ -1128,7 +1182,7 @@ class BaselineDeltaSection(Section):
                 )
                 continue
             for column, baseline_value in baseline_row.items():
-                if column in {"benchmark", "dataset", "command", "workers", "status", "reason", "size"}:
+                if column in {"benchmark", "dataset", "command", "mode", "workers", "threads", "status", "reason", "size"}:
                     continue
                 current_value = current_row.get(column)
                 baseline_num = _as_float(baseline_value)

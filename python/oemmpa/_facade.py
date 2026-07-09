@@ -413,12 +413,25 @@ class Analyzer:
         internal_id = self._internal_id_by_external[str(molecule_id)]
         return list(self._raw_analyzer.GetStrippedNames(internal_id))
 
-    def analyze(self):
+    def analyze(self, threads=None):
         """Run analysis and return this analyzer.
 
+        :param threads: Optional worker count. ``None`` resolves from the
+            ``OEMMPA_ANALYZE_THREADS`` environment variable (else single-threaded);
+            an explicit int (including ``1``) is used as-is (clamped to the CPU
+            count). Parallelism is opt-in; the default is single-threaded.
         :returns: ``self`` for chaining.
+
+        **Thread safety:** The underlying C++ analysis releases the Python GIL when
+        ``threads`` is greater than 1, enabling concurrent execution across Python
+        threads. However, a single ``Analyzer`` instance is **not safe** to use from
+        multiple threads at once. For concurrent analysis jobs, create one ``Analyzer``
+        instance per thread.
         """
-        self._raw_analyzer.Analyze()
+        if threads is None:
+            self._raw_analyzer.Analyze()
+        else:
+            self._raw_analyzer.Analyze(int(threads))
         return self
 
     def pairs(self, options=None):
@@ -426,6 +439,10 @@ class Analyzer:
 
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`PairCollection` of wrapped pair results.
+
+        **Thread safety:** This method releases the Python GIL when called on an
+        ``Analyzer`` configured with multiple threads. Do not call from multiple
+        threads on the same ``Analyzer`` instance; use one instance per thread.
         """
         if options is None:
             raw_pairs = self._raw_analyzer.GetPairs()
@@ -438,6 +455,10 @@ class Analyzer:
 
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`TransformCollection` of wrapped transform results.
+
+        **Thread safety:** This method releases the Python GIL when called on an
+        ``Analyzer`` configured with multiple threads. Do not call from multiple
+        threads on the same ``Analyzer`` instance; use one instance per thread.
         """
         if options is None:
             raw_transforms = self._raw_analyzer.GetTransforms()

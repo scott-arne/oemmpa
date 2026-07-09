@@ -349,3 +349,12 @@ def test_returned_pair_vector_elements_expose_getters():
     assert len(transforms) > 0
     assert len(list(transforms)) == len(transforms)
     assert transforms[0].GetEvidenceCount() > 0
+
+
+def test_explicit_threads_matches_default():
+    import pandas as pd
+    import oemmpa
+    df = pd.DataFrame({"smiles": ["Cc1ccccc1", "Oc1ccccc1"], "id": ["tol", "phenol"]})
+    a = oemmpa.analyze_dataframe(df, smiles="smiles", id="id")
+    b = oemmpa.analyze_dataframe(df, smiles="smiles", id="id", threads=2)
+    assert len(a.pairs) == len(b.pairs)

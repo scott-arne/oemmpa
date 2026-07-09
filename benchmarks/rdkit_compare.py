@@ -35,10 +35,11 @@ def read_smiles(path):
     return rows
 
 
-def run_oemmpa(path):
+def run_oemmpa(path, threads=None):
     """Run the full local OEMMPA facade workflow on benchmark data.
 
     :param path: SMILES file path.
+    :param threads: Optional thread count for parallelism (``None`` = default).
     :returns: Benchmark result dictionary.
     """
     Analyzer = _import_worktree_analyzer()
@@ -51,7 +52,7 @@ def run_oemmpa(path):
     if report.rejected_count:
         messages = "; ".join(error.message for error in report.errors)
         raise RuntimeError(f"OEMMPA rejected benchmark rows: {messages}")
-    analyzer.analyze()
+    analyzer.analyze(threads=threads)
     pairs = analyzer.pairs().to_dicts()
     transforms = analyzer.transforms().to_dicts()
     elapsed = perf_counter() - start

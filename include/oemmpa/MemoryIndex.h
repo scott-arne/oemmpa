@@ -26,6 +26,18 @@ public:
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
 private:
+    // The parallel analyzer validates and measures every fragmentation in its
+    // parallel phase, then merges the results serially. AddValidatedFragmentation
+    // lets that trusted merge skip a redundant re-parse of the variable SMILES
+    // (the dominant save-time cost). It is intentionally private so external
+    // callers always go through AddFragmentation, which validates its input.
+    friend class FragmentationMethod;
+    void AddValidatedFragmentation(const Fragmentation& fragmentation);
+
+    // Shared insertion (dedup key + per-constant bucket). Assumes `stored`
+    // already carries its variable metrics.
+    void InsertFragmentation(Fragmentation stored);
+
     using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
 
     std::unordered_map<unsigned int, MoleculeRecord> molecules_;

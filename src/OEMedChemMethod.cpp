@@ -461,7 +461,7 @@ void OEMedChemMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
-void OEMedChemMethod::Analyze() {
+void OEMedChemMethod::Analyze(unsigned int /*threads*/) {
     analyzed_ = false;
 
     OEMedChem::OEMatchedPairAnalyzer analyzer(make_analyzer_options());

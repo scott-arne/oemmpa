@@ -3,6 +3,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MemoryIndex.h"
+#include "oemmpa/VariableFragmentMetrics.h"
 #include "oemmpa/oemmpa.h"
 
 #include <algorithm>
@@ -326,6 +327,44 @@ TEST(MemoryIndexTest, InvalidUserAddedFragmentationsThrowInvalidQueryError) {
     );
 }
 
+TEST(MemoryIndexTest, PresetVariableMetricsDoNotBypassValidation) {
+    // Fragmentation::SetVariableMetrics is public, so a caller can flip the
+    // has-metrics flag. AddFragmentation must still validate the shape and
+    // reject malformed fragmentations rather than trusting supplied metrics.
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
+
+    auto with_metrics = [](Fragmentation fragmentation) {
+        fragmentation.SetVariableMetrics(1, 0, {1});
+        return fragmentation;
+    };
+
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "C[*:1]", 0))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "", "C[*:1]"))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", ""))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "CC"))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C([*:1])[*:2]", "C[*:1]", 2))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "C[*:2]", 1))),
+        InvalidQueryError
+    );
+}
+
 TEST(MemoryIndexTest, MixedCutCountsInSharedConstantDoNotPair) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
@@ -492,6 +531,24 @@ TEST(MemoryIndexTest, FragmenterOutputCanBeInsertedIntoMemoryIndex) {
             << " variable=" << fragmentation.GetVariableSmiles()
             << " cuts=" << fragmentation.GetCutCount();
     }
+}
+
+TEST(MemoryIndexTest, PreValidatedFragmentationSkipsReparseAndMatches) {
+    // A fragmentation carrying metrics must produce the same bucketed result as
+    // one validated inline.
+    MemoryIndex plain;
+    plain.AddMolecule(MoleculeRecord::FromSmiles(1, "c1ccccc1C"));
+    plain.AddFragmentation(Fragmentation(1, "c1ccccc1[*:1]", "C[*:1]", 1));
+
+    Fragmentation pre(1, "c1ccccc1[*:1]", "C[*:1]", 1);
+    const VariableFragmentMetrics m = validate_and_measure_fragmentation(pre);
+    pre.SetVariableMetrics(m.heavy_atom_count, m.heavy_bond_count, m.attachment_labels);
+    MemoryIndex fast;
+    fast.AddMolecule(MoleculeRecord::FromSmiles(1, "c1ccccc1C"));
+    fast.AddFragmentation(pre);
+
+    EXPECT_EQ(plain.GetPairs(QueryOptions()).size(),
+              fast.GetPairs(QueryOptions()).size());
 }
 
 }  // namespace test

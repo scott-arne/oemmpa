@@ -88,6 +88,10 @@ class DuckDBStore:
     :param path: Optional DuckDB database path. When omitted, an in-memory
         database is opened.
     :raises RuntimeError: If OEMMPA was built without DuckDB support.
+
+    **Thread safety:** A single ``DuckDBStore`` instance is **not safe** to use
+    from multiple threads at once. For concurrent jobs, create one ``DuckDBStore``
+    instance per thread.
     """
 
     def __init__(self, path=None):
@@ -189,6 +193,10 @@ class DuckDBStore:
         :raises ValueError: If a ``*_variable_*`` filter is combined with an
             explicit ``query_options``, or if ``index_mode`` is unsupported.
         :returns: ``self`` for chaining.
+
+        **Thread safety:** This method releases the Python GIL, so do not call it
+        from multiple threads on the same ``DuckDBStore`` instance. Use one store
+        instance per thread.
         """
         raw_analyzer = getattr(analyzer, "raw", analyzer)
         variable_filters = {
