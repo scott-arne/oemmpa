@@ -593,11 +593,13 @@ with ThreadPoolExecutor(max_workers=4) as executor:
 threads. The GIL is released during analysis and storage operations, so concurrent
 access to the same instance will cause data races. Create one instance per thread.
 
-The `threads` parameter to `analyze()` parallelizes within a single analyzer. Pass
-`threads=None` (default) for single-threaded analysis or an explicit count (e.g.,
-`threads=4`) to use multiple cores. An explicit `threads=` argument takes precedence
-over the `OEMMPA_ANALYZE_THREADS` environment variable. See the `analyze()` docstring
-for full details.
+The `threads` parameter to `analyze()` parallelizes within a single analyzer. When
+`threads` is omitted (`None`, the default), the worker count is taken from the
+`OEMMPA_ANALYZE_THREADS` environment variable when it is set, and otherwise falls back
+to a single thread. Pass an explicit count (e.g., `threads=4`) to use multiple cores,
+or `threads=1` to force single-threaded analysis regardless of the environment; an
+explicit `threads=` argument always takes precedence over `OEMMPA_ANALYZE_THREADS`.
+See the `analyze()` docstring for full details.
 
 **Warning:** Avoid combining high `threads=` values with many concurrent jobs (e.g.,
 `ThreadPoolExecutor` with many workers). This can oversubscribe CPU cores and degrade

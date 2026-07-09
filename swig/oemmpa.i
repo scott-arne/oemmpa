@@ -436,5 +436,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Module-level Python convenience code
 // ============================================================================
 %pythoncode %{
-__version__ = "0.1.0"
+# Derive the proxy module's __version__ from the compiled OEMMPA_VERSION_*
+# macros (wrapped from oemmpa.h) so it never drifts from the released version.
+__version__ = "%d.%d.%d" % (OEMMPA_VERSION_MAJOR, OEMMPA_VERSION_MINOR, OEMMPA_VERSION_PATCH)
 %}
