@@ -4,6 +4,8 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/oemmpa.h"
 
+#include <oesystem.h>
+
 #include <algorithm>
 #include <fstream>
 #include <optional>
@@ -589,6 +591,65 @@ TEST(AnalyzerThreadsPlumbingTest, NonFragmentationBackendsIgnoreThreads) {
         one.Analyze(1);
         many.Analyze(4);          // must not throw; must match
         EXPECT_EQ(one.GetPairs().size(), many.GetPairs().size()) << method;
+    }
+}
+
+TEST(ParallelAnalyzeTest, ParallelPathActuallySpawnsWorkers) {
+    Analyzer a("fragmentation");
+    a.AddMolecule("Cc1ccccc1", "m1");
+    a.AddMolecule("Oc1ccccc1", "m2");
+    a.AddMolecule("Nc1ccccc1", "m3");
+    a.AddMolecule("Clc1ccccc1", "m4");
+    a.AddMolecule("CCc1ccccc1", "m5");
+    a.AddMolecule("CCCc1ccccc1", "m6");
+    a.AddMolecule("c1ccccc1C(C)C", "m7");
+    a.AddMolecule("c1ccccc1CC(C)C", "m8");
+    a.AddMolecule("c1ccccc1O", "m9");
+    a.AddMolecule("Oc1ccc(O)cc1", "m10");
+    a.AddMolecule("Nc1ccc(N)cc1", "m11");
+    a.AddMolecule("c1ccccc1N", "m12");
+    a.Analyze(4);
+    EXPECT_GT(a.LastAnalyzeWorkerCount(), 1u);
+}
+
+TEST(ParallelAnalyzeTest, ParallelPathSetsSystemMemPoolMode) {
+    Analyzer serial("fragmentation");
+    serial.AddMolecule("Cc1ccccc1", "s1");
+    serial.AddMolecule("Oc1ccccc1", "s2");
+    serial.Analyze(1);
+    Analyzer parallel("fragmentation");
+    parallel.AddMolecule("Cc1ccccc1", "p1");
+    parallel.AddMolecule("Oc1ccccc1", "p2");
+    parallel.Analyze(2);
+    EXPECT_EQ(OESystem::OEGetMemPoolMode(), OESystem::OEMemPoolMode::System);
+}
+
+TEST(ParallelAnalyzeTest, OutputIdenticalAcrossThreadCounts) {
+    auto build = [](unsigned int threads) {
+        Analyzer a("fragmentation");
+        a.AddMolecule("Cc1ccccc1", "tol");
+        a.AddMolecule("Oc1ccccc1", "phenol");
+        a.AddMolecule("Nc1ccccc1", "aniline");
+        a.AddMolecule("Clc1ccccc1", "chlorobenzene");
+        a.AddMolecule("CCc1ccccc1", "ethylbenzene");
+        a.AddMolecule("CCCc1ccccc1", "propylbenzene");
+        a.AddMolecule("c1ccccc1C(C)C", "cumene");
+        a.AddMolecule("c1ccccc1CC(C)C", "isobutylbenzene");
+        a.AddMolecule("c1ccccc1O", "phenol2");
+        a.AddMolecule("Oc1ccc(O)cc1", "hydroquinone");
+        a.AddMolecule("Nc1ccc(N)cc1", "p-phenylenediamine");
+        a.AddMolecule("c1ccccc1N", "aniline2");
+        a.Analyze(threads);
+        return a.GetPairs();
+    };
+    const auto one = build(1);
+    const auto many = build(8);
+    ASSERT_EQ(one.size(), many.size());
+    for (size_t i = 0; i < one.size(); ++i) {
+        EXPECT_EQ(one[i].GetConstantSmiles(), many[i].GetConstantSmiles()) << "index " << i;
+        EXPECT_EQ(one[i].GetSourceMoleculeId(), many[i].GetSourceMoleculeId()) << "index " << i;
+        EXPECT_EQ(one[i].GetTargetMoleculeId(), many[i].GetTargetMoleculeId()) << "index " << i;
+        EXPECT_EQ(one[i].GetTransformSmiles(), many[i].GetTransformSmiles()) << "index " << i;
     }
 }
 

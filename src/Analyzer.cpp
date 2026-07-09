@@ -385,6 +385,10 @@ void Analyzer::Analyze(unsigned int threads) {
     analyzed_ = true;
 }
 
+unsigned int Analyzer::LastAnalyzeWorkerCount() const {
+    return method_->LastAnalyzeWorkerCount();
+}
+
 std::vector<MatchedPair> Analyzer::GetPairs() const {
     return GetPairs(QueryOptions());
 }

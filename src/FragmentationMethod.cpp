@@ -1,10 +1,29 @@
 #include "oemmpa/FragmentationMethod.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/VariableFragmentMetrics.h"
 
+#include <oesystem.h>
+
+#include <algorithm>
+#include <atomic>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace OEMMPA {
+namespace {
+
+void ensure_thread_safe_mempool() {
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        OESystem::OESetMemPoolMode(OESystem::OEMemPoolMode::System);
+    });
+}
+
+}  // namespace
 
 void FragmentationMethod::Clear() {
     molecules_.clear();
@@ -17,18 +36,77 @@ void FragmentationMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
-void FragmentationMethod::Analyze(unsigned int /*threads*/) {
+void FragmentationMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
     MemoryIndex next_index;
+    const std::size_t molecule_count = molecules_.size();
 
-    for (const MoleculeRecord& molecule : molecules_) {
-        next_index.AddMolecule(molecule);
-        for (const Fragmentation& fragmentation :
-             fragmenter_.Fragment(molecule.GetInternalId(), molecule.GetMol())) {
-            next_index.AddFragmentation(fragmentation);
+    if (threads <= 1 || molecule_count <= 1) {
+        last_analyze_worker_count_ = 1;
+        for (const MoleculeRecord& molecule : molecules_) {
+            next_index.AddMolecule(molecule);
+            for (const Fragmentation& fragmentation :
+                 fragmenter_.Fragment(molecule.GetInternalId(), molecule.GetMol())) {
+                next_index.AddFragmentation(fragmentation);
+            }
+        }
+        index_ = std::move(next_index);
+        analyzed_ = true;
+        return;
+    }
+
+    ensure_thread_safe_mempool();
+
+    struct MoleculeResult {
+        std::vector<Fragmentation> fragmentations;
+        std::exception_ptr error;
+    };
+    std::vector<MoleculeResult> results(molecule_count);
+    std::atomic<std::size_t> cursor{0};
+    const unsigned int worker_count =
+        std::min<unsigned int>(threads, static_cast<unsigned int>(molecule_count));
+    last_analyze_worker_count_ = worker_count;
+
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (unsigned int w = 0; w < worker_count; ++w) {
+        workers.emplace_back([&]() {
+            Fragmenter worker_fragmenter = fragmenter_;
+            std::size_t i;
+            while ((i = cursor.fetch_add(1)) < molecule_count) {
+                try {
+                    const MoleculeRecord& molecule = molecules_[i];
+                    std::vector<Fragmentation> frags =
+                        worker_fragmenter.Fragment(molecule.GetInternalId(), molecule.GetMol());
+                    for (Fragmentation& frag : frags) {
+                        const VariableFragmentMetrics m =
+                            validate_and_measure_fragmentation(frag);
+                        frag.SetVariableMetrics(
+                            m.heavy_atom_count, m.heavy_bond_count, m.attachment_labels);
+                    }
+                    results[i].fragmentations = std::move(frags);
+                } catch (...) {
+                    results[i].error = std::current_exception();
+                }
+            }
+        });
+    }
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+
+    for (std::size_t i = 0; i < molecule_count; ++i) {
+        if (results[i].error) {
+            std::rethrow_exception(results[i].error);
         }
     }
 
+    for (std::size_t i = 0; i < molecule_count; ++i) {
+        next_index.AddMolecule(molecules_[i]);
+        for (const Fragmentation& fragmentation : results[i].fragmentations) {
+            next_index.AddFragmentation(fragmentation);
+        }
+    }
     index_ = std::move(next_index);
     analyzed_ = true;
 }

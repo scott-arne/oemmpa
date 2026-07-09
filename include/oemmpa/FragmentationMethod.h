@@ -19,6 +19,7 @@ public:
     void Analyze(unsigned int threads) override;
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const override;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
+    unsigned int LastAnalyzeWorkerCount() const override { return last_analyze_worker_count_; }
 
 private:
     Fragmenter* GetFragmenter() override;
@@ -29,6 +30,7 @@ private:
     Fragmenter fragmenter_;
     MemoryIndex index_;
     bool analyzed_ = false;
+    unsigned int last_analyze_worker_count_ = 1;
 };
 
 }  // namespace OEMMPA

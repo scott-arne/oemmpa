@@ -164,6 +164,9 @@ public:
     /// Run analysis with an explicit worker count (opt-in parallelism).
     void Analyze(unsigned int threads);
 
+    /// \brief Return the number of workers the last Analyze() spawned (1 for serial path).
+    unsigned int LastAnalyzeWorkerCount() const;
+
     /// \brief Return all analyzed matched pairs with default query options.
     ///
     /// Throws if Analyze() has not succeeded since the last mutation.

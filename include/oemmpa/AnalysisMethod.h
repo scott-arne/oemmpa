@@ -22,6 +22,7 @@ public:
     virtual std::vector<Transform> GetTransforms(const QueryOptions& options) const = 0;
     virtual Fragmenter* GetFragmenter() { return nullptr; }
     virtual void SetFragmenter(const Fragmenter&) {}
+    virtual unsigned int LastAnalyzeWorkerCount() const { return 1; }
 };
 
 }  // namespace OEMMPA
