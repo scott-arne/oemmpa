@@ -38,12 +38,29 @@ private:
     // already carries its variable metrics.
     void InsertFragmentation(Fragmentation stored);
 
+    // Pair enumeration, split so the result can be memoized. ComputePairs holds
+    // the actual O(k^2) work; CachedPairs returns the most-recent result when the
+    // options match, recomputing only on a miss. GetPairs is pure given the index
+    // contents + options, so both public GetPairs and GetTransforms (and repeated
+    // queries) reuse one computation instead of recomputing.
+    std::vector<MatchedPair> ComputePairs(const QueryOptions& options) const;
+    const std::vector<MatchedPair>& CachedPairs(const QueryOptions& options) const;
+
     using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
 
     std::unordered_map<unsigned int, MoleculeRecord> molecules_;
     std::unordered_map<std::string, std::vector<unsigned int>> molecule_ids_by_canonical_smiles_;
     std::unordered_map<std::string, std::vector<Fragmentation>> constant_buckets_;
     std::set<FragmentationKey> fragmentation_keys_;
+
+    // Single-slot memoization of the most-recent GetPairs(options) result. mutable
+    // because it is written from the const query methods; invalidated by every
+    // mutator (Clear, AddMolecule, InsertFragmentation). Safe without locking under
+    // the per-thread-instance contract: an index is never queried concurrently and
+    // is only queried after analyze() has finished building it.
+    mutable bool pairs_cache_valid_ = false;
+    mutable QueryOptions pairs_cache_options_;
+    mutable std::vector<MatchedPair> pairs_cache_;
 };
 
 }  // namespace OEMMPA

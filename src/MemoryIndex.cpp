@@ -556,6 +556,20 @@ void add_hydrogen_candidates_for_fragmentation(
     }
 }
 
+// Field-by-field equality of two QueryOptions, for the GetPairs memoization key.
+// These are stored configuration values (no float arithmetic), so exact == is
+// correct. Keep in sync with QueryOptions if new query fields are added.
+bool query_options_equal(const QueryOptions& a, const QueryOptions& b) {
+    return a.GetMaxHeavyAtomChange() == b.GetMaxHeavyAtomChange()
+        && a.GetMaxRelativeHeavyAtomChange() == b.GetMaxRelativeHeavyAtomChange()
+        && a.GetMaxVariableHeavies() == b.GetMaxVariableHeavies()
+        && a.GetMinVariableHeavies() == b.GetMinVariableHeavies()
+        && a.GetMaxVariableRatio() == b.GetMaxVariableRatio()
+        && a.GetMinVariableRatio() == b.GetMinVariableRatio()
+        && a.GetSymmetric() == b.GetSymmetric()
+        && a.GetScoringOptions().GetMode() == b.GetScoringOptions().GetMode();
+}
+
 }  // namespace
 
 VariableFragmentMetrics validate_and_measure_fragmentation(const Fragmentation& fragmentation) {
@@ -582,6 +596,7 @@ void MemoryIndex::Clear() {
     molecule_ids_by_canonical_smiles_.clear();
     constant_buckets_.clear();
     fragmentation_keys_.clear();
+    pairs_cache_valid_ = false;
 }
 
 void MemoryIndex::AddMolecule(const MoleculeRecord& record) {
@@ -594,6 +609,7 @@ void MemoryIndex::AddMolecule(const MoleculeRecord& record) {
 
     molecules_.emplace(internal_id, record);
     molecule_ids_by_canonical_smiles_[record.GetCanonicalSmiles()].push_back(internal_id);
+    pairs_cache_valid_ = false;
 }
 
 void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
@@ -633,6 +649,8 @@ void MemoryIndex::AddValidatedFragmentation(const Fragmentation& fragmentation) 
 }
 
 void MemoryIndex::InsertFragmentation(Fragmentation stored) {
+    // Any insertion changes the pair enumeration; drop the memoized result.
+    pairs_cache_valid_ = false;
     const FragmentationKey key = {
         stored.GetMoleculeId(),
         stored.GetConstantSmiles(),
@@ -673,7 +691,7 @@ const MoleculeRecord& MemoryIndex::GetMolecule(unsigned int internal_id) const {
     return iter->second;
 }
 
-std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
+std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) const {
     std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
     std::map<CandidateKey, std::unordered_set<std::string>> seen_by_group;
     VariableOrderKeyCache order_key_cache;
@@ -804,10 +822,23 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
     return pairs;
 }
 
+const std::vector<MatchedPair>& MemoryIndex::CachedPairs(const QueryOptions& options) const {
+    if (!pairs_cache_valid_ || !query_options_equal(pairs_cache_options_, options)) {
+        pairs_cache_ = ComputePairs(options);
+        pairs_cache_options_ = options;
+        pairs_cache_valid_ = true;
+    }
+    return pairs_cache_;
+}
+
+std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
+    return CachedPairs(options);
+}
+
 std::vector<Transform> MemoryIndex::GetTransforms(const QueryOptions& options) const {
     std::map<std::string, Transform> transforms_by_smiles;
 
-    for (const MatchedPair& pair : GetPairs(options)) {
+    for (const MatchedPair& pair : CachedPairs(options)) {
         auto iter = transforms_by_smiles.find(pair.GetTransformSmiles());
         if (iter == transforms_by_smiles.end()) {
             iter = transforms_by_smiles.emplace(

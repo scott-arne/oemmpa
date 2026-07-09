@@ -551,5 +551,35 @@ TEST(MemoryIndexTest, PreValidatedFragmentationSkipsReparseAndMatches) {
               fast.GetPairs(QueryOptions()).size());
 }
 
+TEST(MemoryIndexTest, MutationInvalidatesMemoizedPairs) {
+    // GetPairs memoizes its result; a subsequent mutation must invalidate it so
+    // later queries (and GetTransforms, which shares the cache) see the new pairs
+    // rather than the stale cached set.
+    MemoryIndex index = MakeToluenePhenolIndex();
+    ASSERT_EQ(index.GetPairs(QueryOptions()).size(), 2u);       // warms the cache
+    ASSERT_EQ(index.GetTransforms(QueryOptions()).size(), 2u);
+
+    // Add a third molecule on the same constant: the shared bucket now holds three
+    // variables (C/O/N) -> C(3,2) x 2 orientations = 6 oriented pairs.
+    index.AddMolecule(MakeMolecule(3, "Nc1ccccc1", "aniline"));
+    index.AddFragmentation(MakeFragmentation(3, "c1ccccc1[*:1]", "N[*:1]"));
+
+    EXPECT_EQ(index.GetPairs(QueryOptions()).size(), 6u);
+    EXPECT_EQ(index.GetTransforms(QueryOptions()).size(), 6u);
+}
+
+TEST(MemoryIndexTest, DifferingOptionsAreNotServedFromCache) {
+    // The memoization key includes the query options, so a differing-options query
+    // recomputes instead of returning the previously cached result.
+    MemoryIndex index = MakeToluenePhenolIndex();
+    ASSERT_EQ(index.GetPairs(QueryOptions()).size(), 2u);       // symmetric, warms cache
+
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    EXPECT_EQ(index.GetPairs(asymmetric).size(), 1u);           // must recompute, not reuse
+
+    EXPECT_EQ(index.GetPairs(QueryOptions()).size(), 2u);       // back to symmetric
+}
+
 }  // namespace test
 }  // namespace OEMMPA
