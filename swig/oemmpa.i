@@ -2,6 +2,15 @@
 // SWIG interface file for oemmpa Python bindings
 %module("threads"=1) _oemmpa
 
+// ============================================================================
+// GIL release configuration (MUST be here, before any wrapper-generating directives)
+// ============================================================================
+// Release the GIL only around the long, Python-free C++ calls; keep the many
+// tiny getters GIL-held. In SWIG 4.4 the executable feature is `nothreadallow`
+// (%threadallow == %feature("nothreadallow","0")).
+// This global default turns release OFF for ALL wrappers.
+%feature("nothreadallow", "1");
+
 %{
 #include "oemmpa/oemmpa.h"
 #include "oedesalt/Desalter.h"
@@ -364,12 +373,9 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 #define OEMMPA_VERSION_PATCH 0
 
 // ============================================================================
-// GIL release configuration
+// GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
 // ============================================================================
-// Release the GIL only around the long, Python-free C++ calls; keep the many
-// tiny getters GIL-held. In SWIG 4.4 the executable feature is `nothreadallow`
-// (%threadallow == %feature("nothreadallow","0")).
-%feature("nothreadallow", "1");
+// These 6 methods are the ONLY wrappers that release the GIL.
 %threadallow OEMMPA::Analyzer::Analyze;
 %threadallow OEMMPA::Analyzer::GetPairs;
 %threadallow OEMMPA::Analyzer::GetTransforms;

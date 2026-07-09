@@ -24,3 +24,12 @@ def test_target_methods_release_gil():
     assert getter, "expected a getter wrapper to sample"
     assert not any(any(r in b for r in RELEASE) for b in getter), \
         "trivial getter should stay GIL-held"
+    # Exclusivity: sample other non-target wrappers and assert they do NOT release.
+    non_targets = ("Analyzer_GetFragmentationCount", "DuckDBStore_GetDatabasePath",
+                   "AnalysisMethod_GetMethodName", "Fragmenter_GetMaxCuts")
+    for name in non_targets:
+        assert not wrapper_releases(r"_wrap_" + name), f"{name} should NOT release the GIL"
+    # Total GIL macro count: must be low (only the 6 targets × overloads, begin+end).
+    # Pin the observed count so a regression that goes broad will fail.
+    macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
+    assert macro_count <= 24, f"Expected ≤24 GIL macros (6 targets), found {macro_count}"
