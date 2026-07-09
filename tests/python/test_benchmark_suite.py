@@ -759,3 +759,155 @@ def test_invoke_benchmark_builds_absolute_quoted_command():
     assert "out dir/res.csv" in tokens
     assert "head-to-head" in tokens
     assert "--sizes" in tokens and "20" in tokens
+
+
+def test_report_renders_single_job_rows_distinctly():
+    """Verify that single-job rows with different thread counts are kept distinct in the rendered report.
+
+    This test exercises the report grouping logic to ensure that single-job rows
+    keyed by (mode, threads) are not collapsed together when rendering.
+    """
+    from benchmarks.report import Report, ThreadScalingSection, BaselineDeltaSection
+    from rich.console import Console
+    import io
+
+    rows = [
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 1,
+            "wall_seconds": 1.0,
+            "speedup": 1.0,
+            "molecule_count": 100,
+            "pair_count": 200,
+            "transform_count": 50,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 2,
+            "wall_seconds": 0.6,
+            "speedup": 1.67,
+            "molecule_count": 100,
+            "pair_count": 200,
+            "transform_count": 50,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 4,
+            "wall_seconds": 0.4,
+            "speedup": 2.5,
+            "molecule_count": 100,
+            "pair_count": 200,
+            "transform_count": 50,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "concurrent",
+            "workers": 1,
+            "jobs_completed": 3,
+            "wall_seconds": 1.0,
+            "jobs_per_second": 3.0,
+            "speedup": 1.0,
+            "efficiency": 1.0,
+            "molecule_count": 100,
+            "pair_count": 200,
+            "transform_count": 50,
+        },
+    ]
+
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    assert len(section.single_job_rows) == 3, "Expected 3 single-job rows to be preserved"
+
+    # Render the section and verify all three thread counts appear
+    buffer = io.StringIO()
+    console = Console(file=buffer, force_terminal=False, width=120)
+    section.render(console, verbose=False)
+    output = buffer.getvalue()
+
+    # All three thread counts must appear in the rendered output as distinct rows
+    assert "threads=1" in output.lower() or "│ 1" in output or "  1 " in output, \
+        "threads=1 row missing from rendered output"
+    assert "threads=2" in output.lower() or "│ 2" in output or "  2 " in output, \
+        "threads=2 row missing from rendered output"
+    assert "threads=4" in output.lower() or "│ 4" in output or "  4 " in output, \
+        "threads=4 row missing from rendered output"
+
+    # Test baseline comparison grouping
+    baseline_rows = [
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 1,
+            "wall_seconds": 1.0,
+            "speedup": 1.0,
+            "molecule_count": 100,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 2,
+            "wall_seconds": 0.6,
+            "speedup": 1.67,
+            "molecule_count": 100,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 4,
+            "wall_seconds": 0.3,
+            "speedup": 3.33,
+            "molecule_count": 100,
+        },
+    ]
+    current_rows = [
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 1,
+            "wall_seconds": 1.0,
+            "speedup": 1.0,
+            "molecule_count": 100,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 2,
+            "wall_seconds": 0.6,
+            "speedup": 1.67,
+            "molecule_count": 100,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 4,
+            "wall_seconds": 0.5,
+            "speedup": 2.0,
+            "molecule_count": 100,
+        },
+    ]
+
+    baseline_section = BaselineDeltaSection.from_rows(current_rows, baseline_rows=baseline_rows)
+    assert baseline_section is not None
+    # threads=4 wall_seconds changed from 0.3 to 0.5 (67% slower), should trigger a warning
+    assert baseline_section.severity == "warning", \
+        "Expected warning severity due to threads=4 wall_seconds regression"
+    # Verify that all three thread values were compared distinctly
+    thread_4_row = next((r for r in baseline_section.moved_rows
+                         if "4" in r["where"] and "wall_seconds" in r["metric"]), None)
+    assert thread_4_row is not None, "Expected threads=4 wall_seconds comparison in moved_rows"
+    # Verify the row shows threads=4 was compared distinctly (not collapsed with threads=1,2)
+    assert "single_job" in thread_4_row["where"], "Expected mode=single_job in where key"
+    assert "4" in thread_4_row["where"], "Expected threads=4 in where key"

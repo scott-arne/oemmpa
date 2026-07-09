@@ -1093,7 +1093,9 @@ def _baseline_join_key(row: Mapping[str, Any]) -> tuple[str, ...]:
         str(row.get("benchmark", "")),
         str(row.get("dataset", "")),
         str(row.get("command", "")),
+        str(row.get("mode", "")),
         str(row.get("workers", "")),
+        str(row.get("threads", "")),
         str(row.get("size", "")),
     )
 
@@ -1142,8 +1144,8 @@ class BaselineDeltaSection(Section):
     def from_rows(cls, rows, baseline_rows=None, baseline_path=None):
         """Construct a populated section from current and baseline rows.
 
-        Joins on ``(benchmark, dataset, command, workers)``. Each baseline
-        metric column is classified by name (seconds / throughput / count)
+        Joins on ``(benchmark, dataset, command, mode, workers, threads, size)``.
+        Each baseline metric column is classified by name (seconds / throughput / count)
         and compared via the corresponding verdict helper. Neutral rows are
         omitted from the rendered table; baseline rows with no matching
         current row become a synthesized ``"missing"`` warning.
@@ -1180,7 +1182,7 @@ class BaselineDeltaSection(Section):
                 )
                 continue
             for column, baseline_value in baseline_row.items():
-                if column in {"benchmark", "dataset", "command", "workers", "status", "reason", "size"}:
+                if column in {"benchmark", "dataset", "command", "mode", "workers", "threads", "status", "reason", "size"}:
                     continue
                 current_value = current_row.get(column)
                 baseline_num = _as_float(baseline_value)
