@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "oemmpa"
-version = "2.0.1"
+version = "2.1.0"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
 license = "MIT"
 license-files = ["LICENSE"]
