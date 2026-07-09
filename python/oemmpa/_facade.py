@@ -421,6 +421,12 @@ class Analyzer:
             an explicit int (including ``1``) is used as-is (clamped to the CPU
             count). Parallelism is opt-in; the default is single-threaded.
         :returns: ``self`` for chaining.
+
+        **Thread safety:** The underlying C++ analysis releases the Python GIL when
+        ``threads`` is greater than 1, enabling concurrent execution across Python
+        threads. However, a single ``Analyzer`` instance is **not safe** to use from
+        multiple threads at once. For concurrent analysis jobs, create one ``Analyzer``
+        instance per thread.
         """
         if threads is None:
             self._raw_analyzer.Analyze()
@@ -433,6 +439,10 @@ class Analyzer:
 
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`PairCollection` of wrapped pair results.
+
+        **Thread safety:** This method releases the Python GIL when called on an
+        ``Analyzer`` configured with multiple threads. Do not call from multiple
+        threads on the same ``Analyzer`` instance; use one instance per thread.
         """
         if options is None:
             raw_pairs = self._raw_analyzer.GetPairs()
@@ -445,6 +455,10 @@ class Analyzer:
 
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`TransformCollection` of wrapped transform results.
+
+        **Thread safety:** This method releases the Python GIL when called on an
+        ``Analyzer`` configured with multiple threads. Do not call from multiple
+        threads on the same ``Analyzer`` instance; use one instance per thread.
         """
         if options is None:
             raw_transforms = self._raw_analyzer.GetTransforms()
