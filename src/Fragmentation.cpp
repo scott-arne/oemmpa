@@ -41,4 +41,31 @@ const std::string& Fragmentation::GetConstantWithHydrogenSmiles() const {
     return constant_with_hydrogen_smiles_;
 }
 
+bool Fragmentation::HasVariableMetrics() const {
+    return has_variable_metrics_;
+}
+
+unsigned int Fragmentation::GetVariableHeavyAtomCount() const {
+    return variable_heavy_atom_count_;
+}
+
+unsigned int Fragmentation::GetVariableHeavyBondCount() const {
+    return variable_heavy_bond_count_;
+}
+
+const std::set<unsigned int>& Fragmentation::GetVariableAttachmentLabels() const {
+    return variable_attachment_labels_;
+}
+
+void Fragmentation::SetVariableMetrics(
+    unsigned int heavy_atom_count,
+    unsigned int heavy_bond_count,
+    std::set<unsigned int> attachment_labels
+) {
+    variable_heavy_atom_count_ = heavy_atom_count;
+    variable_heavy_bond_count_ = heavy_bond_count;
+    variable_attachment_labels_ = std::move(attachment_labels);
+    has_variable_metrics_ = true;
+}
+
 }  // namespace OEMMPA
