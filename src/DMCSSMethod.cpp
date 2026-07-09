@@ -619,7 +619,7 @@ void DMCSSMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
-void DMCSSMethod::Analyze() {
+void DMCSSMethod::Analyze(unsigned int /*threads*/) {
     analyzed_ = false;
     std::vector<MatchedPair> next_pairs;
 

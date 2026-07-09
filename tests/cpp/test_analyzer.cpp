@@ -564,5 +564,33 @@ TEST(AnalyzerThreadResolutionTest, EnvFallbackAndDefensiveParsing) {
     ::unsetenv("OEMMPA_ANALYZE_THREADS");
 }
 
+TEST(AnalyzerThreadsPlumbingTest, ExplicitThreadsAcceptedAndSerialResultUnchanged) {
+    Analyzer a("fragmentation");
+    a.AddMolecule("Cc1ccccc1", "tol");
+    a.AddMolecule("Oc1ccccc1", "phenol");
+    a.Analyze();                 // env/default path
+    const auto baseline = a.GetPairs();
+    Analyzer b("fragmentation");
+    b.AddMolecule("Cc1ccccc1", "tol");
+    b.AddMolecule("Oc1ccccc1", "phenol");
+    b.Analyze(4);                // explicit (still serial in this task)
+    EXPECT_EQ(b.GetPairs().size(), baseline.size());
+}
+
+// Spec requirement: dmcss/oemedchem accept and IGNORE threads>1 (no error,
+// identical output). Availability-gate if a backend is compiled out.
+TEST(AnalyzerThreadsPlumbingTest, NonFragmentationBackendsIgnoreThreads) {
+    for (const char* method : {"dmcss", "oemedchem"}) {
+        Analyzer one(method), many(method);
+        for (Analyzer* a : {&one, &many}) {
+            a->AddMolecule("Cc1ccccc1", "tol");
+            a->AddMolecule("Oc1ccccc1", "phenol");
+        }
+        one.Analyze(1);
+        many.Analyze(4);          // must not throw; must match
+        EXPECT_EQ(one.GetPairs().size(), many.GetPairs().size()) << method;
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

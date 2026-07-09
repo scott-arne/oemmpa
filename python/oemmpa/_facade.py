@@ -413,12 +413,19 @@ class Analyzer:
         internal_id = self._internal_id_by_external[str(molecule_id)]
         return list(self._raw_analyzer.GetStrippedNames(internal_id))
 
-    def analyze(self):
+    def analyze(self, threads=None):
         """Run analysis and return this analyzer.
 
+        :param threads: Optional worker count. ``None`` resolves from the
+            ``OEMMPA_ANALYZE_THREADS`` environment variable (else single-threaded);
+            an explicit int (including ``1``) is used as-is (clamped to the CPU
+            count). Parallelism is opt-in; the default is single-threaded.
         :returns: ``self`` for chaining.
         """
-        self._raw_analyzer.Analyze()
+        if threads is None:
+            self._raw_analyzer.Analyze()
+        else:
+            self._raw_analyzer.Analyze(int(threads))
         return self
 
     def pairs(self, options=None):

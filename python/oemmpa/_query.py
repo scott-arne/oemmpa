@@ -771,6 +771,7 @@ def analyze_dataframe(
     id=None,
     properties=None,
     method="fragmentation",
+    threads=None,
 ):
     """Analyze molecules and properties from a dataframe-like object.
 
@@ -779,6 +780,10 @@ def analyze_dataframe(
     :param id: Optional column containing molecule identifiers.
     :param properties: Optional iterable of numeric property columns.
     :param method: Analysis method passed to :class:`oemmpa.Analyzer`.
+    :param threads: Optional worker count. ``None`` resolves from the
+        ``OEMMPA_ANALYZE_THREADS`` environment variable (else single-threaded);
+        an explicit int (including ``1``) is used as-is (clamped to the CPU
+        count). Parallelism is opt-in; the default is single-threaded.
     :returns: :class:`AnalysisResult`.
     """
     analyzer = Analyzer(method=method)
@@ -793,7 +798,7 @@ def analyze_dataframe(
         smiles_of=_source_to_smiles,
     )
 
-    analyzer.analyze()
+    analyzer.analyze(threads)
     return AnalysisResult(
         analyzer,
         load_report=report,

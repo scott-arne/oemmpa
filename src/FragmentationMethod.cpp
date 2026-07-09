@@ -17,7 +17,7 @@ void FragmentationMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
-void FragmentationMethod::Analyze() {
+void FragmentationMethod::Analyze(unsigned int /*threads*/) {
     analyzed_ = false;
     MemoryIndex next_index;
 

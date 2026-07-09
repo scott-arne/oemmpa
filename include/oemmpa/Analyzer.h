@@ -159,7 +159,10 @@ public:
     /// \brief Run matched-pair analysis for the current molecule set.
     ///
     /// Successful analysis is required before querying pairs or transforms.
+    /// Run analysis; resolves worker count from OEMMPA_ANALYZE_THREADS (else 1).
     void Analyze();
+    /// Run analysis with an explicit worker count (opt-in parallelism).
+    void Analyze(unsigned int threads);
 
     /// \brief Return all analyzed matched pairs with default query options.
     ///

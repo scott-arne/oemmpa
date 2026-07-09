@@ -17,7 +17,7 @@ public:
     virtual ~AnalysisMethod() = default;
     virtual void Clear() = 0;
     virtual void AddMolecule(const MoleculeRecord& record) = 0;
-    virtual void Analyze() = 0;
+    virtual void Analyze(unsigned int threads) = 0;
     virtual std::vector<MatchedPair> GetPairs(const QueryOptions& options) const = 0;
     virtual std::vector<Transform> GetTransforms(const QueryOptions& options) const = 0;
     virtual Fragmenter* GetFragmenter() { return nullptr; }

@@ -14,7 +14,7 @@ public:
 
     void Clear() override;
     void AddMolecule(const MoleculeRecord& record) override;
-    void Analyze() override;
+    void Analyze(unsigned int threads) override;
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const override;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
 
