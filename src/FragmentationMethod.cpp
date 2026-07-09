@@ -67,17 +67,22 @@ void FragmentationMethod::Analyze(unsigned int threads) {
         std::min<unsigned int>(threads, static_cast<unsigned int>(molecule_count));
     last_analyze_worker_count_ = worker_count;
 
+    std::vector<Fragmenter> worker_fragmenters;
+    worker_fragmenters.reserve(worker_count);
+    for (unsigned int w = 0; w < worker_count; ++w) {
+        worker_fragmenters.push_back(fragmenter_);
+    }
+
     std::vector<std::thread> workers;
     workers.reserve(worker_count);
     for (unsigned int w = 0; w < worker_count; ++w) {
-        workers.emplace_back([&]() {
-            Fragmenter worker_fragmenter = fragmenter_;
+        workers.emplace_back([&, w]() {
             std::size_t i;
             while ((i = cursor.fetch_add(1)) < molecule_count) {
                 try {
                     const MoleculeRecord& molecule = molecules_[i];
                     std::vector<Fragmentation> frags =
-                        worker_fragmenter.Fragment(molecule.GetInternalId(), molecule.GetMol());
+                        worker_fragmenters[w].Fragment(molecule.GetInternalId(), molecule.GetMol());
                     for (Fragmentation& frag : frags) {
                         const VariableFragmentMetrics m =
                             validate_and_measure_fragmentation(frag);
@@ -97,6 +102,12 @@ void FragmentationMethod::Analyze(unsigned int threads) {
 
     for (std::size_t i = 0; i < molecule_count; ++i) {
         if (results[i].error) {
+            // Determinism guarantee: rethrow the exception from the lowest-index
+            // failing molecule, so the thrown exception is invariant across thread
+            // counts for a given input sequence. This is not exercised by a test
+            // because Phase-1 failures (fragmenter_.Fragment OR
+            // validate_and_measure_fragmentation) are not reachable from valid
+            // public API input: valid molecules always fragment cleanly.
             std::rethrow_exception(results[i].error);
         }
     }
