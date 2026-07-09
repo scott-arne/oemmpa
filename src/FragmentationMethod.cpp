@@ -142,7 +142,7 @@ void FragmentationMethod::Analyze(unsigned int threads) {
     for (std::size_t i = 0; i < molecule_count; ++i) {
         next_index.AddMolecule(molecules_[i]);
         for (const Fragmentation& fragmentation : results[i].fragmentations) {
-            next_index.AddFragmentation(fragmentation);
+            next_index.AddValidatedFragmentation(fragmentation);
         }
     }
     index_ = std::move(next_index);

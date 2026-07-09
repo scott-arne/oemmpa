@@ -604,21 +604,37 @@ void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
         );
     }
 
-    // Validation parses the variable SMILES; cache those metrics on the stored
-    // fragmentation so the pair query never re-parses them (this is the dominant
-    // save-time cost on large datasets). Fast path: if the fragmentation already
-    // carries metrics, skip re-validation and use them directly.
+    // Always validate user-supplied fragmentations. Validation parses the
+    // variable SMILES; cache those metrics on the stored fragmentation so the
+    // pair query never re-parses them (the dominant save-time cost on large
+    // datasets). Caller-supplied metrics are never trusted here -- doing so
+    // would let a malformed fragmentation bypass the shape checks.
+    const SmilesMetrics variable_metrics = validate_fragmentation_shape(fragmentation);
     Fragmentation stored = fragmentation;
-    if (!fragmentation.HasVariableMetrics()) {
-        const SmilesMetrics variable_metrics = validate_fragmentation_shape(fragmentation);
-        stored.SetVariableMetrics(
-            variable_metrics.heavy_atom_count,
-            variable_metrics.heavy_bond_count,
-            variable_metrics.attachment_labels);
-    }
+    stored.SetVariableMetrics(
+        variable_metrics.heavy_atom_count,
+        variable_metrics.heavy_bond_count,
+        variable_metrics.attachment_labels);
+    InsertFragmentation(std::move(stored));
+}
 
+void MemoryIndex::AddValidatedFragmentation(const Fragmentation& fragmentation) {
+    // Trusted internal entry used only by the parallel analyzer's serial merge:
+    // the fragmentation was already validated and measured by
+    // validate_and_measure_fragmentation() in the parallel phase, so skip the
+    // re-parse. Still verifies the referenced molecule is loaded.
+    const unsigned int molecule_id = fragmentation.GetMoleculeId();
+    if (!HasMolecule(molecule_id)) {
+        throw InvalidQueryError(
+            "fragmentation references unloaded molecule id: " + std::to_string(molecule_id)
+        );
+    }
+    InsertFragmentation(fragmentation);
+}
+
+void MemoryIndex::InsertFragmentation(Fragmentation stored) {
     const FragmentationKey key = {
-        molecule_id,
+        stored.GetMoleculeId(),
         stored.GetConstantSmiles(),
         stored.GetVariableSmiles(),
         stored.GetCutCount()
@@ -628,7 +644,7 @@ void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
             std::vector<Fragmentation>& bucket =
                 constant_buckets_[stored.GetConstantSmiles()];
             for (Fragmentation& existing : bucket) {
-                if (existing.GetMoleculeId() == molecule_id &&
+                if (existing.GetMoleculeId() == stored.GetMoleculeId() &&
                     existing.GetConstantSmiles() == stored.GetConstantSmiles() &&
                     existing.GetVariableSmiles() == stored.GetVariableSmiles() &&
                     existing.GetCutCount() == stored.GetCutCount() &&

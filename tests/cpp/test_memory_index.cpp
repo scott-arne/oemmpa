@@ -327,6 +327,44 @@ TEST(MemoryIndexTest, InvalidUserAddedFragmentationsThrowInvalidQueryError) {
     );
 }
 
+TEST(MemoryIndexTest, PresetVariableMetricsDoNotBypassValidation) {
+    // Fragmentation::SetVariableMetrics is public, so a caller can flip the
+    // has-metrics flag. AddFragmentation must still validate the shape and
+    // reject malformed fragmentations rather than trusting supplied metrics.
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
+
+    auto with_metrics = [](Fragmentation fragmentation) {
+        fragmentation.SetVariableMetrics(1, 0, {1});
+        return fragmentation;
+    };
+
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "C[*:1]", 0))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "", "C[*:1]"))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", ""))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "CC"))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C([*:1])[*:2]", "C[*:1]", 2))),
+        InvalidQueryError
+    );
+    EXPECT_THROW(
+        index.AddFragmentation(with_metrics(MakeFragmentation(1, "C[*:1]", "C[*:2]", 1))),
+        InvalidQueryError
+    );
+}
+
 TEST(MemoryIndexTest, MixedCutCountsInSharedConstantDoNotPair) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
