@@ -22,8 +22,22 @@ struct SmilesMetrics {
     std::set<unsigned int> attachment_labels;
 };
 
-using VariableMetricsCache = std::map<std::string, SmilesMetrics>;
-using VariableOrderKeyCache = std::map<std::string, std::string>;
+using VariableMetricsCache = std::unordered_map<std::string, SmilesMetrics>;
+using VariableOrderKeyCache = std::unordered_map<std::string, std::string>;
+
+// Per-fragmentation values hoisted out of the O(k^2) candidate loop so each is
+// computed once per fragmentation rather than once per candidate comparison.
+// The pointers reference cache / index storage whose elements are pointer-stable
+// across further insertions: both std::unordered_map and MemoryIndex::molecules_
+// only invalidate a pointer when its element is erased, which never happens
+// during a GetPairs call.
+struct FragInfo {
+    const Fragmentation* fragmentation = nullptr;
+    const MoleculeRecord* record = nullptr;
+    const SmilesMetrics* variable_metrics = nullptr;
+    const std::string* order_key = nullptr;
+    bool is_hydrogen = false;
+};
 
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
     return atom != nullptr && atom->GetAtomicNum() > 1;
@@ -262,29 +276,21 @@ std::vector<Fragmentation> with_hydrogen_fragmentations(
     return sorted_fragmentations(expanded);
 }
 
-bool is_hydrogen_variable(const Fragmentation& fragmentation) {
-    return fragmentation.GetVariableSmiles() == "[*:1][H]";
-}
-
-bool lhs_is_asymmetric_source(
-    const Fragmentation& lhs,
-    const Fragmentation& rhs,
-    VariableOrderKeyCache& order_key_cache
-) {
-    const bool lhs_is_hydrogen = is_hydrogen_variable(lhs);
-    const bool rhs_is_hydrogen = is_hydrogen_variable(rhs);
-    if (lhs_is_hydrogen != rhs_is_hydrogen) {
-        return !lhs_is_hydrogen;
+bool lhs_is_asymmetric_source(const FragInfo& lhs, const FragInfo& rhs) {
+    if (lhs.is_hydrogen != rhs.is_hydrogen) {
+        return !lhs.is_hydrogen;
     }
 
-    return std::make_tuple(
-        get_variable_order_key(lhs.GetVariableSmiles(), order_key_cache),
-        lhs.GetVariableSmiles(),
-        lhs.GetMoleculeId()
-    ) < std::make_tuple(
-        get_variable_order_key(rhs.GetVariableSmiles(), order_key_cache),
-        rhs.GetVariableSmiles(),
-        rhs.GetMoleculeId()
+    const unsigned int lhs_id = lhs.fragmentation->GetMoleculeId();
+    const unsigned int rhs_id = rhs.fragmentation->GetMoleculeId();
+    return std::tie(
+        *lhs.order_key,
+        lhs.fragmentation->GetVariableSmiles(),
+        lhs_id
+    ) < std::tie(
+        *rhs.order_key,
+        rhs.fragmentation->GetVariableSmiles(),
+        rhs_id
     );
 }
 
@@ -382,24 +388,55 @@ using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
 
 const std::string kHydrogenVariableSmiles = "[*:1][H]";
 
+FragInfo make_frag_info(
+    const Fragmentation& fragmentation,
+    const MemoryIndex& index,
+    VariableMetricsCache& metrics_cache,
+    VariableOrderKeyCache& order_key_cache
+) {
+    FragInfo info;
+    info.fragmentation = &fragmentation;
+    info.record = &index.GetMolecule(fragmentation.GetMoleculeId());
+    info.variable_metrics =
+        &get_variable_metrics(fragmentation.GetVariableSmiles(), metrics_cache);
+    info.order_key =
+        &get_variable_order_key(fragmentation.GetVariableSmiles(), order_key_cache);
+    info.is_hydrogen = fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
+    return info;
+}
+
+// Precompute one FragInfo per fragmentation in a bucket so the O(k^2) candidate
+// loop never re-derives molecule records, variable metrics, or order keys. The
+// returned pointers reference `fragmentations` and the caches, which must both
+// outlive the FragInfo vector (they do for the duration of a bucket's loop).
+std::vector<FragInfo> build_frag_infos(
+    const std::vector<Fragmentation>& fragmentations,
+    const MemoryIndex& index,
+    VariableMetricsCache& metrics_cache,
+    VariableOrderKeyCache& order_key_cache
+) {
+    std::vector<FragInfo> infos;
+    infos.reserve(fragmentations.size());
+    for (const Fragmentation& fragmentation : fragmentations) {
+        infos.push_back(
+            make_frag_info(fragmentation, index, metrics_cache, order_key_cache));
+    }
+    return infos;
+}
+
 void add_candidate_if_allowed(
     std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
     std::map<CandidateKey, std::unordered_set<std::string>>& seen_by_group,
-    const Fragmentation& source_fragmentation,
-    const Fragmentation& target_fragmentation,
-    const MoleculeRecord& source_record,
-    const MoleculeRecord& target_record,
+    const FragInfo& source,
+    const FragInfo& target,
     const std::string& constant_smiles,
-    const QueryOptions& options,
-    VariableMetricsCache& metrics_cache
+    const QueryOptions& options
 ) {
-    const SmilesMetrics& source_variable_metrics =
-        get_variable_metrics(source_fragmentation.GetVariableSmiles(), metrics_cache);
-    const SmilesMetrics& target_variable_metrics =
-        get_variable_metrics(target_fragmentation.GetVariableSmiles(), metrics_cache);
+    const SmilesMetrics& source_variable_metrics = *source.variable_metrics;
+    const SmilesMetrics& target_variable_metrics = *target.variable_metrics;
     if (!compatible_fragmentation_topology(
-        source_fragmentation,
-        target_fragmentation,
+        *source.fragmentation,
+        *target.fragmentation,
         source_variable_metrics,
         target_variable_metrics
     )) {
@@ -416,7 +453,7 @@ void add_candidate_if_allowed(
     if (!passes_atom_delta_filters(
         heavy_atom_delta,
         options,
-        source_record.GetHeavyAtomCount()
+        source.record->GetHeavyAtomCount()
     )) {
         return;
     }
@@ -434,30 +471,26 @@ void add_candidate_if_allowed(
     // for [*:1]C >> [*:1][H], `--min-variable-heavies 1` keeps the pair but
     // `--min-variable-heavies 2` drops it (the C side has |V| = 1). So the
     // exemption is per-fragment, applied only to the [H] side, not the pair.
-    const bool source_is_hydrogen =
-        source_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
-    const bool target_is_hydrogen =
-        target_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles;
-    if (!source_is_hydrogen &&
+    if (!source.is_hydrogen &&
         !options.AllowsVariableFragment(
             source_variable_metrics.heavy_atom_count,
-            source_record.GetHeavyAtomCount()
+            source.record->GetHeavyAtomCount()
         )) {
         return;
     }
-    if (!target_is_hydrogen &&
+    if (!target.is_hydrogen &&
         !options.AllowsVariableFragment(
             target_variable_metrics.heavy_atom_count,
-            target_record.GetHeavyAtomCount()
+            target.record->GetHeavyAtomCount()
         )) {
         return;
     }
 
     MatchedPair pair = make_pair(
-        source_fragmentation,
-        target_fragmentation,
-        source_record,
-        target_record,
+        *source.fragmentation,
+        *target.fragmentation,
+        *source.record,
+        *target.record,
         constant_smiles,
         heavy_atom_delta,
         heavy_bond_delta
@@ -484,7 +517,8 @@ void add_hydrogen_candidates_for_fragmentation(
     const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
     const MemoryIndex& index,
     const QueryOptions& options,
-    VariableMetricsCache& metrics_cache
+    VariableMetricsCache& metrics_cache,
+    VariableOrderKeyCache& order_key_cache
 ) {
     if (source_fragmentation.GetCutCount() != 1) {
         return;
@@ -504,7 +538,8 @@ void add_hydrogen_candidates_for_fragmentation(
         return;
     }
 
-    const MoleculeRecord& source_record = index.GetMolecule(source_fragmentation.GetMoleculeId());
+    const FragInfo source_info =
+        make_frag_info(source_fragmentation, index, metrics_cache, order_key_cache);
     for (const unsigned int hydrogen_parent_id : hydrogen_parent_ids->second) {
         if (hydrogen_parent_id == source_fragmentation.GetMoleculeId()) {
             continue;
@@ -516,31 +551,26 @@ void add_hydrogen_candidates_for_fragmentation(
             kHydrogenVariableSmiles,
             1
         );
-        const MoleculeRecord& hydrogen_record = index.GetMolecule(hydrogen_parent_id);
+        const FragInfo hydrogen_info =
+            make_frag_info(hydrogen_fragmentation, index, metrics_cache, order_key_cache);
 
         add_candidate_if_allowed(
             candidates_by_group,
             seen_by_group,
-            source_fragmentation,
-            hydrogen_fragmentation,
-            source_record,
-            hydrogen_record,
+            source_info,
+            hydrogen_info,
             source_fragmentation.GetConstantSmiles(),
-            options,
-            metrics_cache
+            options
         );
 
         if (options.GetSymmetric()) {
             add_candidate_if_allowed(
                 candidates_by_group,
                 seen_by_group,
-                hydrogen_fragmentation,
-                source_fragmentation,
-                hydrogen_record,
-                source_record,
+                hydrogen_info,
+                source_info,
                 source_fragmentation.GetConstantSmiles(),
-                options,
-                metrics_cache
+                options
             );
         }
     }
@@ -642,46 +672,39 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 molecule_ids_by_smiles
             );
 
-        for (size_t source_index = 0; source_index < fragmentations.size(); ++source_index) {
+        // Hoist every per-fragmentation lookup (molecule record, variable
+        // metrics, order key) out of the O(k^2) comparison loop below; each is
+        // computed once here instead of twice per candidate pair.
+        const std::vector<FragInfo> infos =
+            build_frag_infos(fragmentations, *this, metrics_cache, order_key_cache);
+
+        for (size_t source_index = 0; source_index < infos.size(); ++source_index) {
             for (
                 size_t target_index = source_index + 1;
-                target_index < fragmentations.size();
+                target_index < infos.size();
                 ++target_index
             ) {
-                const Fragmentation& lhs = fragmentations[source_index];
-                const Fragmentation& rhs = fragmentations[target_index];
+                const FragInfo& lhs = infos[source_index];
+                const FragInfo& rhs = infos[target_index];
 
-                if (lhs.GetMoleculeId() == rhs.GetMoleculeId()) {
+                if (lhs.fragmentation->GetMoleculeId() ==
+                    rhs.fragmentation->GetMoleculeId()) {
                     continue;
                 }
-                if (lhs.GetVariableSmiles() == rhs.GetVariableSmiles()) {
+                if (lhs.fragmentation->GetVariableSmiles() ==
+                    rhs.fragmentation->GetVariableSmiles()) {
                     continue;
                 }
-
-                const MoleculeRecord& lhs_record = GetMolecule(lhs.GetMoleculeId());
-                const MoleculeRecord& rhs_record = GetMolecule(rhs.GetMoleculeId());
 
                 if (!options.GetSymmetric()) {
-                    const bool use_lhs_as_source =
-                        lhs_is_asymmetric_source(lhs, rhs, order_key_cache);
-                    const Fragmentation& source_fragmentation =
-                        use_lhs_as_source ? lhs : rhs;
-                    const Fragmentation& target_fragmentation =
-                        use_lhs_as_source ? rhs : lhs;
-                    const MoleculeRecord& source_record =
-                        use_lhs_as_source ? lhs_record : rhs_record;
-                    const MoleculeRecord& target_record =
-                        use_lhs_as_source ? rhs_record : lhs_record;
+                    const bool use_lhs_as_source = lhs_is_asymmetric_source(lhs, rhs);
                     add_candidate_if_allowed(
                         candidates_by_group,
                         seen_by_group,
-                        source_fragmentation,
-                        target_fragmentation,
-                        source_record,
-                        target_record,
+                        use_lhs_as_source ? lhs : rhs,
+                        use_lhs_as_source ? rhs : lhs,
                         constant_smiles,
-                        options,
-                        metrics_cache
+                        options
                     );
                     continue;
                 }
@@ -689,27 +712,9 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 // Reaching here means the symmetric branch (the asymmetric
                 // case above ``continue``s), so emit both pair directions.
                 add_candidate_if_allowed(
-                    candidates_by_group,
-                    seen_by_group,
-                    lhs,
-                    rhs,
-                    lhs_record,
-                    rhs_record,
-                    constant_smiles,
-                    options,
-                    metrics_cache
-                );
+                    candidates_by_group, seen_by_group, lhs, rhs, constant_smiles, options);
                 add_candidate_if_allowed(
-                    candidates_by_group,
-                    seen_by_group,
-                    rhs,
-                    lhs,
-                    rhs_record,
-                    lhs_record,
-                    constant_smiles,
-                    options,
-                    metrics_cache
-                );
+                    candidates_by_group, seen_by_group, rhs, lhs, constant_smiles, options);
             }
         }
     }
@@ -723,7 +728,8 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
                 molecule_ids_by_canonical_smiles_,
                 *this,
                 options,
-                metrics_cache
+                metrics_cache,
+                order_key_cache
             );
         }
     }
