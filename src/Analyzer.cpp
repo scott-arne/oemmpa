@@ -13,7 +13,7 @@
 
 #include <cerrno>
 #include <cstdlib>
-#include <cstring>
+#include <limits>
 #include <map>
 #include <optional>
 #include <thread>
@@ -38,6 +38,15 @@ unsigned int resolve_analyze_threads(std::optional<unsigned int> explicit_thread
     const unsigned int hardware = std::thread::hardware_concurrency();
     if (hardware > 0 && requested > static_cast<long long>(hardware)) {
         return hardware;
+    }
+    // When hardware_concurrency() is unknown (0) the clamp above is skipped, so
+    // an enormous request (e.g. a multiple of 2^32) could otherwise wrap when
+    // narrowed to unsigned int and violate the documented >= 1 contract. Cap at
+    // UINT_MAX before the cast.
+    constexpr long long max_threads =
+        static_cast<long long>(std::numeric_limits<unsigned int>::max());
+    if (requested > max_threads) {
+        return std::numeric_limits<unsigned int>::max();
     }
     return static_cast<unsigned int>(requested);
 }

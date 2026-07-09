@@ -595,6 +595,9 @@ TEST(AnalyzerThreadsPlumbingTest, NonFragmentationBackendsIgnoreThreads) {
 }
 
 TEST(ParallelAnalyzeTest, ParallelPathActuallySpawnsWorkers) {
+    if (std::thread::hardware_concurrency() < 2) {
+        GTEST_SKIP() << "requires >= 2 hardware threads to exercise the parallel path";
+    }
     Analyzer a("fragmentation");
     a.AddMolecule("Cc1ccccc1", "m1");
     a.AddMolecule("Oc1ccccc1", "m2");
@@ -613,6 +616,9 @@ TEST(ParallelAnalyzeTest, ParallelPathActuallySpawnsWorkers) {
 }
 
 TEST(ParallelAnalyzeTest, ParallelPathSetsSystemMemPoolMode) {
+    if (std::thread::hardware_concurrency() < 2) {
+        GTEST_SKIP() << "requires >= 2 hardware threads to exercise the parallel path";
+    }
     Analyzer serial("fragmentation");
     serial.AddMolecule("Cc1ccccc1", "s1");
     serial.AddMolecule("Oc1ccccc1", "s2");

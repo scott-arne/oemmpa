@@ -11,8 +11,14 @@ def test_target_methods_release_gil():
     # Spot-check: the long-running methods release the GIL; a trivial getter does not.
     import re
     RELEASE = ("SWIG_PYTHON_THREAD_BEGIN_ALLOW", "Py_BEGIN_ALLOW_THREADS")
+    # Scan windows are the number of chars examined after a wrapper name. The
+    # release check uses a wider window so it reaches the GIL macro inside larger
+    # wrapper bodies; the getter check (absence assertion) uses a tighter window
+    # so it cannot bleed into the following wrapper and read a neighbor's macro.
+    RELEASE_SCAN = 1500
+    GETTER_SCAN = 800
     def wrapper_releases(pattern):
-        blocks = re.findall(pattern + r"[\s\S]{0,1500}", text)
+        blocks = re.findall(pattern + r"[\s\S]{0," + str(RELEASE_SCAN) + r"}", text)
         return blocks and any(any(r in b for r in RELEASE) for b in blocks)
     # Every one of the six target methods must release the GIL.
     for name in ("Analyzer_Analyze", "Analyzer_GetPairs", "Analyzer_GetTransforms",
@@ -20,7 +26,7 @@ def test_target_methods_release_gil():
                  "DuckDBStore_AddPropertiesFromCsvFile"):
         assert wrapper_releases(r"_wrap_" + name), f"{name} should release the GIL"
     # A sampled trivial getter must NOT release (proves selectivity, no churn).
-    getter = re.findall(r"_wrap_Analyzer_GetMethodName[\s\S]{0,800}", text)
+    getter = re.findall(r"_wrap_Analyzer_GetMethodName[\s\S]{0," + str(GETTER_SCAN) + r"}", text)
     assert getter, "expected a getter wrapper to sample"
     assert not any(any(r in b for r in RELEASE) for b in getter), \
         "trivial getter should stay GIL-held"

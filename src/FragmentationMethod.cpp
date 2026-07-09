@@ -18,6 +18,10 @@ namespace OEMMPA {
 namespace {
 
 void ensure_thread_safe_mempool() {
+    // OESetMemPoolMode is a process-global, one-way switch: once any parallel
+    // analysis flips the pool to System mode it stays there for the life of the
+    // process (including later serial analyses). The default (serial) path never
+    // calls this, so a purely serial process is unaffected.
     static std::once_flag flag;
     std::call_once(flag, []() {
         OESystem::OESetMemPoolMode(OESystem::OEMemPoolMode::System);
@@ -60,8 +64,8 @@ void FragmentationMethod::Analyze(unsigned int threads) {
     // concurrent modification of aliased OEMol objects. This matches the serial
     // path's duplicate-id check (AddMolecule per molecule) but fires before
     // Phase 1, guaranteeing no duplicate/aliased molecule is ever fragmented in
-    // parallel. Exception message and precedence (lowest index) match
-    // MemoryIndex::AddMolecule exactly.
+    // parallel. For inputs reachable via the public API the thrown exception
+    // (message and lowest-index precedence) matches MemoryIndex::AddMolecule.
     std::unordered_set<unsigned int> seen_ids;
     for (const MoleculeRecord& molecule : molecules_) {
         const unsigned int internal_id = molecule.GetInternalId();

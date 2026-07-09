@@ -730,6 +730,10 @@ class ThreadScalingSection(Section):
             threads = int(_as_float(row.get("threads")) or 0)
             wall = _as_float(row.get("wall_seconds")) or 0.0
             speedup = _as_float(row.get("speedup"))
+            # The division fallback only fires for legacy rows lacking a speedup
+            # field. It degrades safely to 0.0 (rendered as "-") when there is no
+            # threads==1 baseline row or the wall time is unmeasurable (0), rather
+            # than raising, so a partial CSV still renders.
             if speedup is None and single_job_baseline_wall is not None:
                 speedup = single_job_baseline_wall / wall if wall else 0.0
             rendered_single_job.append(
