@@ -124,10 +124,17 @@ def test_thread_scaling_rows_measure_independent_analyzer_jobs():
         repeats=1,
     )
 
-    assert [row["workers"] for row in rows] == [1, 2]
-    assert all(row["benchmark"] == "thread_scaling" for row in rows)
-    assert all(row["jobs_completed"] >= 1 for row in rows)
-    assert all("jobs_per_second" in row for row in rows)
+    concurrent = [r for r in rows if r.get("mode") == "concurrent"]
+    single_job = [r for r in rows if r.get("mode") == "single_job"]
+
+    assert len(concurrent) == 2
+    assert [r["workers"] for r in concurrent] == [1, 2]
+    assert all(r["benchmark"] == "thread_scaling" for r in concurrent)
+    assert all(r["jobs_completed"] >= 1 for r in concurrent)
+    assert all("jobs_per_second" in r for r in concurrent)
+
+    assert len(single_job) == 2
+    assert [r["threads"] for r in single_job] == [1, 2]
 
 
 def test_thread_scaling_rows_emit_concurrent_and_single_job_modes():
@@ -637,6 +644,55 @@ def test_invoke_benchmark_task_registered():
     import pytest as _pytest
     with _pytest.raises(Exit):
         tasks.benchmark(Context(), head_to_head=False, sizes="20")
+
+
+def test_thread_scaling_report_handles_missing_single_job_baseline():
+    from benchmarks.report import ThreadScalingSection
+
+    rows = [
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "concurrent",
+            "workers": 1,
+            "jobs_completed": 3,
+            "wall_seconds": 1.0,
+            "jobs_per_second": 3.0,
+            "speedup": 1.0,
+            "efficiency": 1.0,
+            "molecule_count": 10,
+            "pair_count": 20,
+            "transform_count": 5,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 2,
+            "wall_seconds": 0.5,
+            "speedup": 0.0,
+            "molecule_count": 10,
+            "pair_count": 20,
+            "transform_count": 5,
+        },
+        {
+            "benchmark": "thread_scaling",
+            "dataset": "test.smi",
+            "mode": "single_job",
+            "threads": 4,
+            "wall_seconds": 0.25,
+            "speedup": 0.0,
+            "molecule_count": 10,
+            "pair_count": 20,
+            "transform_count": 5,
+        },
+    ]
+
+    section = ThreadScalingSection.from_rows(rows)
+    assert section is not None
+    assert len(section.single_job_rows) == 2
+    assert section.single_job_rows[0]["speedup"] == 0.0
+    assert section.single_job_rows[1]["speedup"] == 0.0
 
 
 def test_invoke_benchmark_builds_absolute_quoted_command():

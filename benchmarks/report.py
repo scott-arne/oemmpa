@@ -694,6 +694,7 @@ class ThreadScalingSection(Section):
             for row in sorted(concurrent, key=lambda r: _as_float(r.get("workers")) or 0.0):
                 workers = int(_as_float(row.get("workers")) or 0)
                 jps = _as_float(row.get("jobs_per_second")) or 0.0
+                # Fallback handles legacy rows lacking speedup/efficiency fields.
                 speedup = _as_float(row.get("speedup")) or (jps / baseline_jps if baseline_jps else 0.0)
                 efficiency = _as_float(row.get("efficiency")) or (speedup / workers if workers else 0.0)
                 if efficiency > 1.0:
@@ -723,15 +724,19 @@ class ThreadScalingSection(Section):
 
         # Process single-job mode
         rendered_single_job: list[dict[str, Any]] = []
+        single_job_baseline = next((r for r in single_job if int(_as_float(r.get("threads")) or 0) == 1), None)
+        single_job_baseline_wall = _as_float(single_job_baseline.get("wall_seconds")) if single_job_baseline else None
         for row in sorted(single_job, key=lambda r: _as_float(r.get("threads")) or 0.0):
             threads = int(_as_float(row.get("threads")) or 0)
             wall = _as_float(row.get("wall_seconds")) or 0.0
-            speedup = _as_float(row.get("speedup")) or 0.0
+            speedup = _as_float(row.get("speedup"))
+            if speedup is None and single_job_baseline_wall is not None:
+                speedup = single_job_baseline_wall / wall if wall else 0.0
             rendered_single_job.append(
                 {
                     "threads": threads,
                     "wall_seconds": wall,
-                    "speedup": speedup,
+                    "speedup": speedup or 0.0,
                 }
             )
 

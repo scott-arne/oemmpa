@@ -240,14 +240,16 @@ def thread_scaling_rows(smiles_path, workers=(1, 2, 4), single_job_threads=None,
     :param smiles_path: Whitespace ``SMILES id`` file.
     :param workers: Iterable of worker counts (concurrent mode).
     :param single_job_threads: Optional iterable of thread counts for single-job
-        internal parallelism mode. When provided, emits both concurrent and
-        single-job mode rows.
+        internal parallelism mode. Defaults to ``workers`` when ``None`` (emits
+        both concurrent and single-job mode rows by default).
     :param repeats: Jobs per worker count multiplier (concurrent mode).
     :returns: List of CSV-ready dictionaries with ``mode`` field when both modes
         are measured.
     """
     smiles_path = Path(smiles_path)
     rows = []
+    if single_job_threads is None:
+        single_job_threads = workers
     emit_mode = single_job_threads is not None
 
     # Mode A: concurrent independent jobs (each analyze(threads=1))
