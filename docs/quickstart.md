@@ -595,8 +595,14 @@ access to the same instance will cause data races. Create one instance per threa
 
 The `threads` parameter to `analyze()` parallelizes within a single analyzer. Pass
 `threads=None` (default) for single-threaded analysis or an explicit count (e.g.,
-`threads=4`) to use multiple cores. See the `analyze()` docstring for details on
-thread resolution and the `OEMMPA_ANALYZE_THREADS` environment variable.
+`threads=4`) to use multiple cores. An explicit `threads=` argument takes precedence
+over the `OEMMPA_ANALYZE_THREADS` environment variable. See the `analyze()` docstring
+for full details.
+
+**Warning:** Avoid combining high `threads=` values with many concurrent jobs (e.g.,
+`ThreadPoolExecutor` with many workers). This can oversubscribe CPU cores and degrade
+performance. Prefer either many single-threaded analyzers across workers, or fewer
+analyzers with moderate `threads=` counts.
 
 ## Persistent Storage
 
