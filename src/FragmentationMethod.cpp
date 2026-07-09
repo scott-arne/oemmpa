@@ -10,6 +10,7 @@
 #include <exception>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,22 @@ void FragmentationMethod::Analyze(unsigned int threads) {
         index_ = std::move(next_index);
         analyzed_ = true;
         return;
+    }
+
+    // Validate unique internal ids BEFORE parallel fragmentation to prevent
+    // concurrent modification of aliased OEMol objects. This matches the serial
+    // path's duplicate-id check (AddMolecule per molecule) but fires before
+    // Phase 1, guaranteeing no duplicate/aliased molecule is ever fragmented in
+    // parallel. Exception message and precedence (lowest index) match
+    // MemoryIndex::AddMolecule exactly.
+    std::unordered_set<unsigned int> seen_ids;
+    for (const MoleculeRecord& molecule : molecules_) {
+        const unsigned int internal_id = molecule.GetInternalId();
+        if (!seen_ids.insert(internal_id).second) {
+            throw DuplicateIdError(
+                "duplicate molecule internal id: " + std::to_string(internal_id)
+            );
+        }
     }
 
     ensure_thread_safe_mempool();

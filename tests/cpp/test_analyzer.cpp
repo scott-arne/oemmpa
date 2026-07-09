@@ -653,5 +653,23 @@ TEST(ParallelAnalyzeTest, OutputIdenticalAcrossThreadCounts) {
     }
 }
 
+TEST(ParallelAnalyzeTest, ParallelPathThrowsDuplicateIdErrorBeforeFragmentation) {
+    FragmentationMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(100, "Cc1ccccc1", "m1"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(101, "Oc1ccccc1", "m2"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(100, "Nc1ccccc1", "m3"));
+    EXPECT_THROW(
+        {
+            try {
+                method.Analyze(4);
+            } catch (const DuplicateIdError& e) {
+                EXPECT_STREQ(e.what(), "duplicate molecule internal id: 100");
+                throw;
+            }
+        },
+        DuplicateIdError
+    );
+}
+
 }  // namespace test
 }  // namespace OEMMPA
