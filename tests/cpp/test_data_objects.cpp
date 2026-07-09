@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <set>
+
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/Transform.h"
@@ -14,6 +16,21 @@ TEST(DataObjectTest, FragmentationStoresConstantAndVariable) {
     EXPECT_EQ(fragmentation.GetConstantSmiles(), "c1ccccc1[*:1]");
     EXPECT_EQ(fragmentation.GetVariableSmiles(), "C[*:1]");
     EXPECT_EQ(fragmentation.GetCutCount(), 1);
+}
+
+TEST(DataObjectTest, FragmentationVariableMetricsAreOptionalAndRoundTrip) {
+    // A freshly constructed fragmentation carries no cached metrics, so the pair
+    // query must fall back to parsing its variable SMILES.
+    Fragmentation fragmentation(4, "c1ccccc1[*:1]", "C[*:1]", 1);
+    EXPECT_FALSE(fragmentation.HasVariableMetrics());
+
+    // Once populated (as the index does at insertion time), the metrics read
+    // back verbatim so the query can skip the re-parse.
+    fragmentation.SetVariableMetrics(1, 0, {1});
+    EXPECT_TRUE(fragmentation.HasVariableMetrics());
+    EXPECT_EQ(fragmentation.GetVariableHeavyAtomCount(), 1u);
+    EXPECT_EQ(fragmentation.GetVariableHeavyBondCount(), 0u);
+    EXPECT_EQ(fragmentation.GetVariableAttachmentLabels(), (std::set<unsigned int>{1}));
 }
 
 TEST(DataObjectTest, DefaultConstructedObjectsHaveSafeDefaults) {
