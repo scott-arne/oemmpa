@@ -678,14 +678,36 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
         const std::vector<FragInfo> infos =
             build_frag_infos(fragmentations, *this, metrics_cache, order_key_cache);
 
-        for (size_t source_index = 0; source_index < infos.size(); ++source_index) {
+        // Drop fragmentations that can never survive the per-fragment
+        // variable-size bound before entering the O(k^2) loop. A non-hydrogen
+        // fragment failing QueryOptions::AllowsVariableFragment is rejected as
+        // BOTH source and target inside add_candidate_if_allowed, so it yields
+        // no pair; removing it here only prunes comparisons that would be
+        // rejected anyway, leaving the emitted pair set unchanged. Hydrogen
+        // fragments are exempt from the bound (see add_candidate_if_allowed) and
+        // are always kept. With no variable filter configured the predicate is
+        // always true and this is a no-op; with max_variable_heavies set on a
+        // large-molecule dataset it is the dominant reducer of bucket size.
+        std::vector<FragInfo> candidate_infos;
+        candidate_infos.reserve(infos.size());
+        for (const FragInfo& info : infos) {
+            if (info.is_hydrogen ||
+                options.AllowsVariableFragment(
+                    info.variable_metrics->heavy_atom_count,
+                    info.record->GetHeavyAtomCount()
+                )) {
+                candidate_infos.push_back(info);
+            }
+        }
+
+        for (size_t source_index = 0; source_index < candidate_infos.size(); ++source_index) {
             for (
                 size_t target_index = source_index + 1;
-                target_index < infos.size();
+                target_index < candidate_infos.size();
                 ++target_index
             ) {
-                const FragInfo& lhs = infos[source_index];
-                const FragInfo& rhs = infos[target_index];
+                const FragInfo& lhs = candidate_infos[source_index];
+                const FragInfo& rhs = candidate_infos[target_index];
 
                 if (lhs.fragmentation->GetMoleculeId() ==
                     rhs.fragmentation->GetMoleculeId()) {
