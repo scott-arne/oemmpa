@@ -11,11 +11,18 @@
 #include <oechem.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace OEMMPA {
+
+/// \brief Resolve the effective analyze() worker count.
+/// \param explicit_threads Set when the caller passed an explicit count (the
+///        presence channel); empty means resolve from the environment.
+/// \returns A count >= 1, clamped to hardware_concurrency() when known.
+unsigned int resolve_analyze_threads(std::optional<unsigned int> explicit_threads);
 
 class DuckDBStore;
 

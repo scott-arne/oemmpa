@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace OEMMPA {
@@ -538,6 +540,28 @@ TEST(AnalyzerDesalt, ClearResetsStrippedNamesButKeepsDesalter) {
     // ...but the desalter still applies to the next molecule (reused id 1).
     const unsigned int id2 = analyzer.AddMolecule("CCO.Cl", "m2");
     EXPECT_EQ(analyzer.GetStrippedNames(id2).size(), 1u);
+}
+
+TEST(AnalyzerThreadResolutionTest, ExplicitCountWinsAndClamps) {
+    ::setenv("OEMMPA_ANALYZE_THREADS", "999999", 1);
+    EXPECT_EQ(resolve_analyze_threads(std::optional<unsigned int>(1)), 1u);  // explicit beats env
+    const unsigned int hw = std::thread::hardware_concurrency();
+    if (hw > 0) {
+        EXPECT_EQ(resolve_analyze_threads(std::optional<unsigned int>(999999u)), hw);  // clamp
+    }
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
+}
+
+TEST(AnalyzerThreadResolutionTest, EnvFallbackAndDefensiveParsing) {
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
+    EXPECT_EQ(resolve_analyze_threads(std::nullopt), 1u);            // unset -> 1
+    ::setenv("OEMMPA_ANALYZE_THREADS", "3", 1);
+    EXPECT_EQ(resolve_analyze_threads(std::nullopt), 3u);            // valid env
+    for (const char* bad : {"0", "-2", "abc", ""}) {
+        ::setenv("OEMMPA_ANALYZE_THREADS", bad, 1);
+        EXPECT_EQ(resolve_analyze_threads(std::nullopt), 1u) << bad; // defensive -> 1
+    }
+    ::unsetenv("OEMMPA_ANALYZE_THREADS");
 }
 
 }  // namespace test

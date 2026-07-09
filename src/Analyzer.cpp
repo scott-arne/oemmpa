@@ -11,9 +11,37 @@
 #include "oemmpa/OEMedChemMethod.h"
 #endif
 
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 #include <map>
+#include <optional>
+#include <thread>
 
 namespace OEMMPA {
+
+unsigned int resolve_analyze_threads(std::optional<unsigned int> explicit_threads) {
+    long long requested = 1;
+    if (explicit_threads.has_value()) {
+        requested = static_cast<long long>(*explicit_threads);
+    } else if (const char* env = std::getenv("OEMMPA_ANALYZE_THREADS")) {
+        errno = 0;
+        char* end = nullptr;
+        const long long parsed = std::strtoll(env, &end, 10);
+        if (end != env && end != nullptr && *end == '\0' && errno == 0) {
+            requested = parsed;
+        }
+    }
+    if (requested < 1) {
+        return 1;
+    }
+    const unsigned int hardware = std::thread::hardware_concurrency();
+    if (hardware > 0 && requested > static_cast<long long>(hardware)) {
+        return hardware;
+    }
+    return static_cast<unsigned int>(requested);
+}
+
 namespace {
 
 const char* kFragmentationMethodName = "fragmentation";
