@@ -4,15 +4,25 @@ import pathlib
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tests" / "python"))
 
-import duckdb
 import pytest
-import oemmpa
+
+# Skip cleanly on a build/environment without DuckDB. These guards MUST run
+# before importing _duckdb_dump, which imports the `duckdb` module at import
+# time — otherwise a DuckDB-less environment errors during collection instead
+# of skipping. importorskip both skips when the module is missing and gives the
+# module when present.
+pytest.importorskip("duckdb")
+pytestmark = pytest.mark.skipif(
+    not pytest.importorskip("oemmpa").duckdb_available(),
+    reason="DuckDB storage helpers require a DuckDB-enabled build",
+)
+
+import duckdb
 import _duckdb_dump as dump
 
 FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
 
 
-@pytest.mark.skipif(not oemmpa.duckdb_available(), reason="duckdb unavailable")
 def test_saved_store_identical_across_thread_counts(tmp_path):
     dumps = {}
     for threads in (1, 8):
