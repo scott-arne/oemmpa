@@ -2,6 +2,7 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/PairScoring.h"
+#include "oemmpa/VariableFragmentMetrics.h"
 
 #include <oechem.h>
 
@@ -16,11 +17,7 @@
 namespace OEMMPA {
 namespace {
 
-struct SmilesMetrics {
-    unsigned int heavy_atom_count = 0;
-    unsigned int heavy_bond_count = 0;
-    std::set<unsigned int> attachment_labels;
-};
+using SmilesMetrics = VariableFragmentMetrics;
 
 using VariableOrderKeyCache = std::unordered_map<std::string, std::string>;
 
@@ -140,22 +137,7 @@ void validate_fragmentation_labels(
 // so the caller can cache them on the Fragmentation (avoiding a re-parse at
 // query time).
 SmilesMetrics validate_fragmentation_shape(const Fragmentation& fragmentation) {
-    if (fragmentation.GetCutCount() == 0) {
-        throw InvalidQueryError("fragmentation cut_count must be at least 1");
-    }
-    if (fragmentation.GetConstantSmiles().empty()) {
-        throw InvalidQueryError("fragmentation constant SMILES must not be empty");
-    }
-    if (fragmentation.GetVariableSmiles().empty()) {
-        throw InvalidQueryError("fragmentation variable SMILES must not be empty");
-    }
-
-    SmilesMetrics variable_metrics =
-        parse_smiles_metrics(fragmentation.GetVariableSmiles(), "variable");
-    const SmilesMetrics constant_metrics =
-        parse_smiles_metrics(fragmentation.GetConstantSmiles(), "constant");
-    validate_fragmentation_labels(fragmentation, variable_metrics, constant_metrics);
-    return variable_metrics;
+    return validate_and_measure_fragmentation(fragmentation);
 }
 
 long long absolute_delta(int value) {
@@ -576,6 +558,25 @@ void add_hydrogen_candidates_for_fragmentation(
 
 }  // namespace
 
+VariableFragmentMetrics validate_and_measure_fragmentation(const Fragmentation& fragmentation) {
+    if (fragmentation.GetCutCount() == 0) {
+        throw InvalidQueryError("fragmentation cut_count must be at least 1");
+    }
+    if (fragmentation.GetConstantSmiles().empty()) {
+        throw InvalidQueryError("fragmentation constant SMILES must not be empty");
+    }
+    if (fragmentation.GetVariableSmiles().empty()) {
+        throw InvalidQueryError("fragmentation variable SMILES must not be empty");
+    }
+
+    SmilesMetrics variable_metrics =
+        parse_smiles_metrics(fragmentation.GetVariableSmiles(), "variable");
+    const SmilesMetrics constant_metrics =
+        parse_smiles_metrics(fragmentation.GetConstantSmiles(), "constant");
+    validate_fragmentation_labels(fragmentation, variable_metrics, constant_metrics);
+    return variable_metrics;
+}
+
 void MemoryIndex::Clear() {
     molecules_.clear();
     molecule_ids_by_canonical_smiles_.clear();
@@ -605,13 +606,16 @@ void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
 
     // Validation parses the variable SMILES; cache those metrics on the stored
     // fragmentation so the pair query never re-parses them (this is the dominant
-    // save-time cost on large datasets).
-    const SmilesMetrics variable_metrics = validate_fragmentation_shape(fragmentation);
+    // save-time cost on large datasets). Fast path: if the fragmentation already
+    // carries metrics, skip re-validation and use them directly.
     Fragmentation stored = fragmentation;
-    stored.SetVariableMetrics(
-        variable_metrics.heavy_atom_count,
-        variable_metrics.heavy_bond_count,
-        variable_metrics.attachment_labels);
+    if (!fragmentation.HasVariableMetrics()) {
+        const SmilesMetrics variable_metrics = validate_fragmentation_shape(fragmentation);
+        stored.SetVariableMetrics(
+            variable_metrics.heavy_atom_count,
+            variable_metrics.heavy_bond_count,
+            variable_metrics.attachment_labels);
+    }
 
     const FragmentationKey key = {
         molecule_id,
