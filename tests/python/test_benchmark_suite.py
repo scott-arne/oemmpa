@@ -130,6 +130,30 @@ def test_thread_scaling_rows_measure_independent_analyzer_jobs():
     assert all("jobs_per_second" in row for row in rows)
 
 
+def test_thread_scaling_rows_emit_concurrent_and_single_job_modes():
+    from benchmarks.benchmark_suite import thread_scaling_rows
+
+    rows = thread_scaling_rows(
+        DATA_DIR / "mmpa_smiles.smi",
+        workers=[1, 2],
+        single_job_threads=[1, 2],
+        repeats=1,
+    )
+
+    concurrent = [r for r in rows if r.get("mode") == "concurrent"]
+    single_job = [r for r in rows if r.get("mode") == "single_job"]
+
+    assert len(concurrent) == 2
+    assert [r["workers"] for r in concurrent] == [1, 2]
+    assert all("speedup" in r for r in concurrent)
+    assert all("efficiency" in r for r in concurrent)
+
+    assert len(single_job) == 2
+    assert [r["threads"] for r in single_job] == [1, 2]
+    assert all("wall_seconds" in r for r in single_job)
+    assert all("speedup" in r for r in single_job)
+
+
 def test_storage_benchmark_reports_duckdb_availability():
     from benchmarks.benchmark_suite import storage_rows
     from oemmpa import duckdb_available

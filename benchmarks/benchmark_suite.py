@@ -59,10 +59,14 @@ BENCHMARK_SCHEMAS = {
     "thread_scaling": [
         "benchmark",
         "dataset",
+        "mode",
         "workers",
+        "threads",
         "jobs_completed",
         "wall_seconds",
         "jobs_per_second",
+        "speedup",
+        "efficiency",
         "molecule_count",
         "pair_count",
         "transform_count",
@@ -226,7 +230,7 @@ def rdkit_report_rows(smiles_paths, repeats=3):
     return rows
 
 
-def thread_scaling_rows(smiles_path, workers=(1, 2, 4), repeats=3):
+def thread_scaling_rows(smiles_path, workers=(1, 2, 4), single_job_threads=None, repeats=3):
     """Benchmark independent analyzer throughput across worker counts.
 
     This measures portable concurrent analyzer jobs rather than assuming an
@@ -234,35 +238,85 @@ def thread_scaling_rows(smiles_path, workers=(1, 2, 4), repeats=3):
     behavior and future C++ parallelism regressions.
 
     :param smiles_path: Whitespace ``SMILES id`` file.
-    :param workers: Iterable of worker counts.
-    :param repeats: Jobs per worker count multiplier.
-    :returns: List of CSV-ready dictionaries.
+    :param workers: Iterable of worker counts (concurrent mode).
+    :param single_job_threads: Optional iterable of thread counts for single-job
+        internal parallelism mode. When provided, emits both concurrent and
+        single-job mode rows.
+    :param repeats: Jobs per worker count multiplier (concurrent mode).
+    :returns: List of CSV-ready dictionaries with ``mode`` field when both modes
+        are measured.
     """
     smiles_path = Path(smiles_path)
     rows = []
+    emit_mode = single_job_threads is not None
+
+    # Mode A: concurrent independent jobs (each analyze(threads=1))
     for worker_count in workers:
         worker_count = int(worker_count)
         job_count = max(1, worker_count * int(repeats))
         start = perf_counter()
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
             results = list(
-                executor.map(lambda _: run_oemmpa(smiles_path), range(job_count))
+                executor.map(lambda _: run_oemmpa(smiles_path, threads=1), range(job_count))
             )
         elapsed = perf_counter() - start
         last = results[-1]
-        rows.append(
-            {
+        row = {
+            "benchmark": "thread_scaling",
+            "dataset": smiles_path.name,
+            "workers": worker_count,
+            "jobs_completed": job_count,
+            "wall_seconds": elapsed,
+            "jobs_per_second": job_count / elapsed if elapsed else 0.0,
+            "molecule_count": last["molecule_count"],
+            "pair_count": last["pair_count"],
+            "transform_count": last["transform_count"],
+        }
+        if emit_mode:
+            row["mode"] = "concurrent"
+        rows.append(row)
+
+    # Compute speedup and efficiency for concurrent mode
+    if emit_mode and rows:
+        baseline = next((r for r in rows if r["workers"] == 1), None)
+        if baseline:
+            baseline_jps = baseline["jobs_per_second"]
+            for row in rows:
+                if row.get("mode") == "concurrent":
+                    speedup = row["jobs_per_second"] / baseline_jps if baseline_jps else 0.0
+                    efficiency = speedup / row["workers"] if row["workers"] else 0.0
+                    row["speedup"] = speedup
+                    row["efficiency"] = efficiency
+
+    # Mode B: single-job internal parallelism (one analyze(threads=k))
+    if single_job_threads is not None:
+        single_job_results = []
+        for thread_count in single_job_threads:
+            thread_count = int(thread_count)
+            start = perf_counter()
+            result = run_oemmpa(smiles_path, threads=thread_count)
+            elapsed = perf_counter() - start
+            single_job_results.append((thread_count, elapsed, result))
+
+        baseline_single = next((r for r in single_job_results if r[0] == 1), None)
+        baseline_wall = baseline_single[1] if baseline_single else None
+
+        for thread_count, wall, result in single_job_results:
+            row = {
                 "benchmark": "thread_scaling",
                 "dataset": smiles_path.name,
-                "workers": worker_count,
-                "jobs_completed": job_count,
-                "wall_seconds": elapsed,
-                "jobs_per_second": job_count / elapsed if elapsed else 0.0,
-                "molecule_count": last["molecule_count"],
-                "pair_count": last["pair_count"],
-                "transform_count": last["transform_count"],
+                "mode": "single_job",
+                "threads": thread_count,
+                "wall_seconds": wall,
+                "molecule_count": result["molecule_count"],
+                "pair_count": result["pair_count"],
+                "transform_count": result["transform_count"],
             }
-        )
+            if baseline_wall:
+                speedup = baseline_wall / wall if wall else 0.0
+                row["speedup"] = speedup
+            rows.append(row)
+
     return rows
 
 
@@ -1138,15 +1192,26 @@ def rdkit_report_command(ctx, smiles, output, repeats):
     show_default=True,
     help="Comma-separated worker counts.",
 )
+@click.option(
+    "--single-job-threads",
+    help="Comma-separated thread counts for single-job internal parallelism.",
+)
 @click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
 @click.option("--repeats", type=int, help="Number of repeated runs.")
 @click.pass_context
-def thread_scaling_command(ctx, smiles, workers, output, repeats):
+def thread_scaling_command(ctx, smiles, workers, single_job_threads, output, repeats):
     """Benchmark independent analyzer throughput across worker counts."""
     output = output if output is not None else ctx.obj["output"]
     repeats = repeats if repeats is not None else ctx.obj["repeats"]
     worker_list = [int(value) for value in workers.split(",") if value]
-    rows = thread_scaling_rows(smiles, workers=worker_list, repeats=repeats)
+    single_job_list = (
+        [int(value) for value in single_job_threads.split(",") if value]
+        if single_job_threads is not None
+        else None
+    )
+    rows = thread_scaling_rows(
+        smiles, workers=worker_list, single_job_threads=single_job_list, repeats=repeats
+    )
     _finish_cli(
         rows,
         output=output,
