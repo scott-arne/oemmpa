@@ -629,6 +629,39 @@ def test_regression_check_keeps_head_to_head_sizes_distinct(tmp_path):
     assert by_size["size=300"]["status"] == "regression"
 
 
+def test_regression_check_keeps_single_job_thread_rows_distinct(tmp_path):
+    import csv
+
+    from benchmarks.benchmark_suite import regression_check_rows
+
+    def write(path, t1_wall, t2_wall, t4_wall):
+        rows = [
+            {"benchmark": "thread_scaling", "dataset": "d.smi", "mode": "single_job",
+             "threads": 1, "wall_seconds": t1_wall},
+            {"benchmark": "thread_scaling", "dataset": "d.smi", "mode": "single_job",
+             "threads": 2, "wall_seconds": t2_wall},
+            {"benchmark": "thread_scaling", "dataset": "d.smi", "mode": "single_job",
+             "threads": 4, "wall_seconds": t4_wall},
+        ]
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(
+                fh, fieldnames=["benchmark", "dataset", "mode", "threads", "wall_seconds"]
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+
+    base = tmp_path / "base.csv"
+    cur = tmp_path / "cur.csv"
+    write(base, 1.0, 0.5, 0.25)
+    write(cur, 1.0, 0.5, 1.0)  # threads=1,2 unchanged; threads=4 is 4x slower
+    report = regression_check_rows(str(base), str(cur), max_seconds_ratio=1.25)
+    by_threads = {r["command"]: r for r in report if r["metric"] == "wall_seconds"}
+    assert set(by_threads) == {"mode=single_job,threads=1", "mode=single_job,threads=2", "mode=single_job,threads=4"}
+    assert by_threads["mode=single_job,threads=1"]["status"] == "pass"
+    assert by_threads["mode=single_job,threads=2"]["status"] == "pass"
+    assert by_threads["mode=single_job,threads=4"]["status"] == "regression"
+
+
 def test_invoke_benchmark_task_registered():
     import sys
     from pathlib import Path
