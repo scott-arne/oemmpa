@@ -930,34 +930,36 @@ void refresh_rule_environment_statistics(
     }
     require_success(*delete_result, delete_sql);
 
-    const std::string insert_sql =
-        "insert into rule_environment_statistics ("
-        "id, rule_environment_id, property_name_id, count, avg, std, kurtosis, skewness, "
-        "min, q1, median, q3, max, paired_t, p_value"
-        ") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    // Stream the rows through a duckdb::Appender (column order matches the
+    // rule_environment_statistics DDL) rather than a prepared INSERT per row.
+    // At production scale there are millions of rule environments and the
+    // per-statement path dominated save(); the Appender flushes in bulk on
+    // Close(). Nullable columns (std/kurtosis/skewness/paired_t/p_value) are
+    // appended as duckdb::Value objects, which carry their own NULLs.
+    duckdb::Appender appender(*connection, "rule_environment_statistics");
     std::uint64_t next_id = 1;
     for (const auto& entry : deltas_by_key) {
         const AggregateStatistics statistics = aggregate_values(entry.second);
-        duckdb::vector<duckdb::Value> values = {
-            duckdb::Value::UBIGINT(next_id),
-            duckdb::Value::UBIGINT(entry.first.first),
-            duckdb::Value::UBIGINT(entry.first.second),
-            duckdb::Value::UINTEGER(statistics.count),
-            duckdb::Value::DOUBLE(statistics.avg),
-            statistics.std,
-            statistics.kurtosis,
-            statistics.skewness,
-            duckdb::Value::DOUBLE(statistics.min),
-            duckdb::Value::DOUBLE(statistics.q1),
-            duckdb::Value::DOUBLE(statistics.median),
-            duckdb::Value::DOUBLE(statistics.q3),
-            duckdb::Value::DOUBLE(statistics.max),
-            statistics.paired_t,
-            statistics.p_value,
-        };
-        execute_prepared(connection, insert_sql, std::move(values));
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(next_id));
+        appender.Append(duckdb::Value::UBIGINT(entry.first.first));
+        appender.Append(duckdb::Value::UBIGINT(entry.first.second));
+        appender.Append(duckdb::Value::UINTEGER(statistics.count));
+        appender.Append(duckdb::Value::DOUBLE(statistics.avg));
+        appender.Append(statistics.std);
+        appender.Append(statistics.kurtosis);
+        appender.Append(statistics.skewness);
+        appender.Append(duckdb::Value::DOUBLE(statistics.min));
+        appender.Append(duckdb::Value::DOUBLE(statistics.q1));
+        appender.Append(duckdb::Value::DOUBLE(statistics.median));
+        appender.Append(duckdb::Value::DOUBLE(statistics.q3));
+        appender.Append(duckdb::Value::DOUBLE(statistics.max));
+        appender.Append(statistics.paired_t);
+        appender.Append(statistics.p_value);
+        appender.EndRow();
         ++next_id;
     }
+    appender.Close();
 }
 
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
