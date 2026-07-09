@@ -374,7 +374,9 @@ void Analyzer::AddProperty(
 }
 
 void Analyzer::Analyze() {
-    Analyze(resolve_analyze_threads(std::nullopt));
+    analyzed_ = false;
+    method_->Analyze(resolve_analyze_threads(std::nullopt));
+    analyzed_ = true;
 }
 
 void Analyzer::Analyze(unsigned int threads) {
