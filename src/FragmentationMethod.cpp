@@ -75,6 +75,16 @@ void FragmentationMethod::Analyze(unsigned int threads) {
 
     std::vector<std::thread> workers;
     workers.reserve(worker_count);
+    struct JoinAllGuard {
+        std::vector<std::thread>& workers;
+        ~JoinAllGuard() {
+            for (std::thread& worker : workers) {
+                if (worker.joinable()) {
+                    worker.join();
+                }
+            }
+        }
+    } join_all_guard{workers};
     for (unsigned int w = 0; w < worker_count; ++w) {
         workers.emplace_back([&, w]() {
             std::size_t i;
