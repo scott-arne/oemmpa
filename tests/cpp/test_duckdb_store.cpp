@@ -1934,5 +1934,61 @@ TEST(DuckDBStoreTest, AddPairsAcceptsExactDuplicateWithinBatch) {
     EXPECT_EQ(store.GetRowCount("pair"), 1u);
 }
 
+TEST(DuckDBStoreReadOnlyTest, OpensExistingFileReadOnlyForReads) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore writer(database_path.string());
+        writer.InitializeSchema();
+        writer.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+        writer.AddMoleculeProperty(1, "pIC50", 6.5);
+    }
+
+    DuckDBStore reader(database_path.string(), /*read_only=*/true);
+    EXPECT_TRUE(reader.HasMolecule(1));
+    EXPECT_EQ(reader.GetRowCount("compound"), 1U);
+    EXPECT_DOUBLE_EQ(reader.GetMoleculeProperty(1, "pIC50"), 6.5);
+
+    std::filesystem::remove(database_path);
+}
+
+TEST(DuckDBStoreReadOnlyTest, RejectsWritesInReadOnlyMode) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore writer(database_path.string());
+        writer.InitializeSchema();
+    }
+
+    DuckDBStore reader(database_path.string(), /*read_only=*/true);
+    EXPECT_THROW(
+        reader.Execute("create table readonly_probe (x integer)"), StorageError);
+
+    std::filesystem::remove(database_path);
+}
+
+TEST(DuckDBStoreReadOnlyTest, ConcurrentReadOnlyHandlesShareTheFile) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore writer(database_path.string());
+        writer.InitializeSchema();
+        writer.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+    }
+
+    // Two read-only handles to the same file must coexist: a read-write open
+    // takes an exclusive lock, whereas read-only handles share the file. This
+    // is the concurrency guarantee the flag exists to provide.
+    DuckDBStore reader_a(database_path.string(), /*read_only=*/true);
+    DuckDBStore reader_b(database_path.string(), /*read_only=*/true);
+    EXPECT_EQ(reader_a.GetRowCount("compound"), 1U);
+    EXPECT_EQ(reader_b.GetRowCount("compound"), 1U);
+
+    std::filesystem::remove(database_path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

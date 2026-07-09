@@ -4,7 +4,7 @@ if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
 endif()
 
-project(oemmpa VERSION 2.2.0 LANGUAGES CXX)
+project(oemmpa VERSION 2.2.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -114,6 +114,7 @@ set(OEMMPA_SOURCES
     src/QueryOptions.cpp
     src/PairScoring.cpp
     src/MemoryIndex.cpp
+    src/ThreadSupport.cpp
 )
 
 if(OEMMPA_HAS_DUCKDB)

@@ -677,5 +677,52 @@ TEST(ParallelAnalyzeTest, ParallelPathThrowsDuplicateIdErrorBeforeFragmentation)
     );
 }
 
+TEST(ParallelAnalyzeTest, GetPairsAndTransformsIdenticalAcrossThreadCounts) {
+    if (std::thread::hardware_concurrency() < 2) {
+        GTEST_SKIP() << "requires >= 2 hardware threads to exercise parallel GetPairs";
+    }
+    // Several distinct scaffolds (benzene / pyridine / acyclic) yield multiple
+    // constant buckets, so analyze(threads=8) parallelizes the pair enumeration
+    // across workers. Output must be byte-identical to the serial (threads=1) run.
+    auto build = [](unsigned int threads) {
+        Analyzer a("fragmentation");
+        const std::vector<std::string> smiles = {
+            "Cc1ccccc1", "Oc1ccccc1", "Nc1ccccc1", "Clc1ccccc1", "CCc1ccccc1",
+            "Fc1ccccc1", "Brc1ccccc1", "CCOc1ccccc1",
+            "Cc1ccncc1", "Oc1ccncc1", "Nc1ccncc1", "Clc1ccncc1", "CCc1ccncc1",
+            "CCCCC", "CCCCO", "CCCCN", "CCCCCl", "CCCCBr",
+        };
+        int id = 0;
+        for (const std::string& s : smiles) {
+            a.AddMolecule(s, "m" + std::to_string(id++));
+        }
+        a.Analyze(threads);
+        return a;
+    };
+    Analyzer serial = build(1);
+    Analyzer parallel = build(8);
+
+    const std::vector<MatchedPair> p1 = serial.GetPairs();
+    const std::vector<MatchedPair> p8 = parallel.GetPairs();
+    ASSERT_FALSE(p1.empty());
+    ASSERT_EQ(p1.size(), p8.size());
+    for (size_t i = 0; i < p1.size(); ++i) {
+        EXPECT_EQ(p1[i].GetConstantSmiles(), p8[i].GetConstantSmiles()) << "pair " << i;
+        EXPECT_EQ(p1[i].GetSourceMoleculeId(), p8[i].GetSourceMoleculeId()) << "pair " << i;
+        EXPECT_EQ(p1[i].GetTargetMoleculeId(), p8[i].GetTargetMoleculeId()) << "pair " << i;
+        EXPECT_EQ(p1[i].GetTransformSmiles(), p8[i].GetTransformSmiles()) << "pair " << i;
+        EXPECT_EQ(p1[i].GetSourceVariableSmiles(), p8[i].GetSourceVariableSmiles()) << "pair " << i;
+        EXPECT_EQ(p1[i].GetTargetVariableSmiles(), p8[i].GetTargetVariableSmiles()) << "pair " << i;
+    }
+
+    const std::vector<Transform> t1 = serial.GetTransforms();
+    const std::vector<Transform> t8 = parallel.GetTransforms();
+    ASSERT_EQ(t1.size(), t8.size());
+    for (size_t i = 0; i < t1.size(); ++i) {
+        EXPECT_EQ(t1[i].GetTransformSmiles(), t8[i].GetTransformSmiles()) << "transform " << i;
+        EXPECT_EQ(t1[i].GetEvidenceCount(), t8[i].GetEvidenceCount()) << "transform " << i;
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

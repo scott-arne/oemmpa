@@ -1509,19 +1509,31 @@ DuckDBStore::DuckDBStore()
     : DuckDBStore(":memory:") {}
 
 DuckDBStore::DuckDBStore(const std::string& database_path)
+    : DuckDBStore(database_path, /*read_only=*/false) {}
+
+DuckDBStore::DuckDBStore(const std::string& database_path, bool read_only)
     : database_path_(normalize_database_path(database_path)) {
     try {
-        database_ = std::make_unique<duckdb::DuckDB>(database_path_);
+        if (read_only) {
+            duckdb::DBConfig config;
+            config.options.access_mode = duckdb::AccessMode::READ_ONLY;
+            database_ = std::make_unique<duckdb::DuckDB>(database_path_, &config);
+        } else {
+            database_ = std::make_unique<duckdb::DuckDB>(database_path_);
+        }
         connection_ = std::make_unique<duckdb::Connection>(*database_);
     } catch (const std::exception& exc) {
         throw StorageError("failed to open DuckDB database: " + std::string(exc.what()));
     }
 
-    // Ensure the schema (and its indexes) exists on open. InitializeSchema is
-    // idempotent (every table/index uses ``if not exists``), so this also
-    // backfills indexes added in later versions onto previously created
-    // database files, not just freshly created ones.
-    InitializeSchema();
+    // A read-only connection cannot run schema DDL, so InitializeSchema is
+    // skipped -- callers open read-only against a store already initialized
+    // read-write. In read-write mode InitializeSchema is idempotent (every
+    // table/index uses ``if not exists``), so this also backfills indexes added
+    // in later versions onto previously created database files.
+    if (!read_only) {
+        InitializeSchema();
+    }
 }
 
 DuckDBStore::~DuckDBStore() = default;

@@ -1,34 +1,18 @@
 #include "oemmpa/FragmentationMethod.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/ThreadSupport.h"
 #include "oemmpa/VariableFragmentMetrics.h"
-
-#include <oesystem.h>
 
 #include <algorithm>
 #include <atomic>
 #include <exception>
-#include <mutex>
 #include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace OEMMPA {
-namespace {
-
-void ensure_thread_safe_mempool() {
-    // OESetMemPoolMode is a process-global, one-way switch: once any parallel
-    // analysis flips the pool to System mode it stays there for the life of the
-    // process (including later serial analyses). The default (serial) path never
-    // calls this, so a purely serial process is unaffected.
-    static std::once_flag flag;
-    std::call_once(flag, []() {
-        OESystem::OESetMemPoolMode(OESystem::OEMemPoolMode::System);
-    });
-}
-
-}  // namespace
 
 void FragmentationMethod::Clear() {
     molecules_.clear();
@@ -44,6 +28,10 @@ void FragmentationMethod::AddMolecule(const MoleculeRecord& record) {
 void FragmentationMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
     MemoryIndex next_index;
+    // Propagate the resolved worker count so the pair enumeration (GetPairs) can
+    // parallelize across constant buckets by the same opt-in count that drives
+    // fragmentation. The count survives the index_ = std::move(next_index) below.
+    next_index.SetPairThreadCount(threads);
     const std::size_t molecule_count = molecules_.size();
 
     if (threads <= 1 || molecule_count <= 1) {

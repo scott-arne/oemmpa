@@ -236,9 +236,15 @@ def coerce_objective(
     return objective
 
 
-def open_store(path):
-    """Open a persisted OEMMPA DuckDB store."""
-    return DuckDBStore(path)
+def open_store(path, read_only=False):
+    """Open a persisted OEMMPA DuckDB store.
+
+    :param path: DuckDB store path.
+    :param read_only: When true, open with DuckDB's ``READ_ONLY`` access mode so
+        multiple processes can read the store concurrently without taking an
+        exclusive lock. The store must already exist and be initialized.
+    """
+    return DuckDBStore(path, read_only=read_only)
 
 
 open = open_store

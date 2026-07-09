@@ -39,3 +39,9 @@ file = "tests/python/test_oemmpa.py"
 type = "custom"
 template = 'oemmpa\.__version_info__ == \({info_tuple}\)'
 label = "test-version-info"
+
+[[locations]]
+file = "tests/python/test_oemmpa.py"
+type = "custom"
+template = '_proxy\.__version__ == "{version}"'
+label = "test-proxy-version-string"

@@ -73,6 +73,7 @@ def run_oemmpa_pair_equivalent(
     max_variable_heavies=None,
     max_heavies=None,
     max_rotatable_bonds=None,
+    threads=None,
 ):
     """Run OEMMPA in the pair-only mode used for RDKit comparison.
 
@@ -89,6 +90,9 @@ def run_oemmpa_pair_equivalent(
         MMPDB-style). ``None`` applies no limit.
     :param max_rotatable_bonds: Optional whole-molecule rotatable-bond cap
         (fragment-time, MMPDB-style). ``None`` applies no limit.
+    :param threads: Optional analyze worker count. ``None`` (the default) runs
+        single-threaded; an explicit count enables OEMMPA's parallel
+        fragmentation and pair enumeration.
     :returns: Benchmark result dictionary.
     """
     oemmpa = _import_worktree_package()
@@ -110,7 +114,7 @@ def run_oemmpa_pair_equivalent(
     if report.rejected_count:
         messages = "; ".join(error.message for error in report.errors)
         raise RuntimeError(f"OEMMPA rejected benchmark rows: {messages}")
-    analyzer.analyze()
+    analyzer.analyze(threads)
     pairs = analyzer.pairs(options).to_dicts()
     elapsed = perf_counter() - start
 

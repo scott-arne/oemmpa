@@ -137,6 +137,8 @@ BENCHMARK_SCHEMAS = {
         "size",
         "actual_molecule_count",
         "oemmpa_warm_seconds",
+        "oemmpa_warm_parallel_seconds",
+        "oemmpa_parallel_threads",
         "rdkit_warm_seconds",
         "mmpdb_warm_process_seconds",
         "oemmpa_wall_seconds",

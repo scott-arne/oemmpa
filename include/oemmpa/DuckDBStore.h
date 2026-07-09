@@ -80,10 +80,19 @@ public:
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
 
-    /// \brief Open a DuckDB database at ``database_path``.
+    /// \brief Open a DuckDB database at ``database_path`` (read-write).
     ///
     /// Use ``":memory:"`` for an in-memory database.
     explicit DuckDBStore(const std::string& database_path);
+
+    /// \brief Open a DuckDB database at ``database_path`` with an explicit mode.
+    ///
+    /// When ``read_only`` is true the database is opened with DuckDB's
+    /// ``READ_ONLY`` access mode -- it takes a shared rather than exclusive
+    /// lock, so multiple readers can open the same file concurrently -- and
+    /// ``InitializeSchema`` is skipped, since schema DDL cannot run against a
+    /// read-only connection. The store must already exist and be initialized.
+    DuckDBStore(const std::string& database_path, bool read_only);
     ~DuckDBStore();
 
     DuckDBStore(const DuckDBStore&) = delete;

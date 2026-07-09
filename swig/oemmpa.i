@@ -370,7 +370,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 #define OEMMPA_VERSION_MAJOR 2
 #define OEMMPA_VERSION_MINOR 2
-#define OEMMPA_VERSION_PATCH 0
+#define OEMMPA_VERSION_PATCH 2
 
 // ============================================================================
 // GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
@@ -431,6 +431,89 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 #endif
 %include "../include/oemmpa/Analyzer.h"
 %include "../include/oemmpa/oemmpa.h"
+
+// ============================================================================
+// Bulk result export (single-crossing to_dicts)
+// ============================================================================
+// Materializing pairs/transforms one field at a time costs ~10 Python<->C++
+// getter crossings per row, which dominates to_dicts() at scale. These helpers
+// build the entire list of dicts in one C call. The implementations live in a
+// plain %{ %} block (compiled into the wrapper, not itself wrapped); only the
+// two public functions below are exposed to Python.
+%{
+// value is a new reference (or NULL on allocation failure); on success the dict
+// takes its own reference, so we always release ours. Returns -1 on any failure
+// with our reference dropped, so callers can bail without leaking.
+static int _oemmpa_dict_set_new(PyObject* dict, const char* key, PyObject* value) {
+    if (value == NULL) {
+        return -1;
+    }
+    const int rc = PyDict_SetItemString(dict, key, value);
+    Py_DECREF(value);
+    return rc;
+}
+
+// Mirror PairResult._id_or_internal: the external id string when non-empty,
+// otherwise the internal integer id.
+static PyObject* _oemmpa_pair_id_object(const std::string& external_id, unsigned int internal_id) {
+    if (external_id.empty()) {
+        return PyLong_FromUnsignedLong(internal_id);
+    }
+    return PyUnicode_FromStringAndSize(
+        external_id.data(), static_cast<Py_ssize_t>(external_id.size()));
+}
+
+static PyObject* _oemmpa_str_object(const std::string& value) {
+    return PyUnicode_FromStringAndSize(
+        value.data(), static_cast<Py_ssize_t>(value.size()));
+}
+
+// Byte-for-byte equivalent to [PairResult(p).to_dict() for p in pairs].
+static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pairs) {
+    PyObject* list = PyList_New(static_cast<Py_ssize_t>(pairs.size()));
+    if (list == NULL) {
+        return NULL;
+    }
+    Py_ssize_t index = 0;
+    for (const OEMMPA::MatchedPair& pair : pairs) {
+        PyObject* row = PyDict_New();
+        if (row == NULL) {
+            Py_DECREF(list);
+            return NULL;
+        }
+        if (_oemmpa_dict_set_new(row, "source_id",
+                _oemmpa_pair_id_object(pair.GetSourceExternalId(), pair.GetSourceMoleculeId())) < 0
+            || _oemmpa_dict_set_new(row, "target_id",
+                _oemmpa_pair_id_object(pair.GetTargetExternalId(), pair.GetTargetMoleculeId())) < 0
+            || _oemmpa_dict_set_new(row, "constant",
+                _oemmpa_str_object(pair.GetConstantSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "source_variable",
+                _oemmpa_str_object(pair.GetSourceVariableSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "target_variable",
+                _oemmpa_str_object(pair.GetTargetVariableSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "transform",
+                _oemmpa_str_object(pair.GetTransformSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "cut_count",
+                PyLong_FromUnsignedLong(pair.GetCutCount())) < 0
+            || _oemmpa_dict_set_new(row, "heavy_atom_delta",
+                PyLong_FromLong(pair.GetHeavyAtomDelta())) < 0
+            || _oemmpa_dict_set_new(row, "heavy_bond_delta",
+                PyLong_FromLong(pair.GetHeavyBondDelta())) < 0) {
+            Py_DECREF(row);
+            Py_DECREF(list);
+            return NULL;
+        }
+        PyList_SetItem(list, index, row);  // steals the row reference
+        ++index;
+    }
+    return list;
+}
+%}
+
+// Expose only the public builder (SWIG passes the PyObject* return through).
+// Transforms are intentionally not bulk-exported: with only two fields the
+// per-row getter count is too low to beat the C dict-building overhead.
+PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pairs);
 
 // ============================================================================
 // Module-level Python convenience code

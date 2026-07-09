@@ -281,3 +281,38 @@ def test_save_analyzer_rejects_variable_filter_with_explicit_query_options(tmp_p
             query_options=options,
             max_variable_heavies=3,
         )
+
+
+def test_open_store_read_only_allows_concurrent_readers(tmp_path):
+    import gc
+
+    import oemmpa
+
+    database_path = tmp_path / "read_only.duckdb"
+    writer = oemmpa.DuckDBStore(database_path)
+    writer.load_molecules_from_file(DATA_DIR / "mmpa_smiles.smi")
+    del writer
+    gc.collect()
+
+    # Two read-only handles to the same file must coexist -- a read-write open
+    # holds an exclusive lock, whereas read-only handles share the file.
+    reader_a = oemmpa.open_store(database_path, read_only=True)
+    reader_b = oemmpa.open_store(database_path, read_only=True)
+    assert reader_a.row_count("compound") == 3
+    assert reader_b.row_count("compound") == 3
+
+
+def test_open_store_read_only_rejects_writes(tmp_path):
+    import gc
+
+    import oemmpa
+
+    database_path = tmp_path / "read_only.duckdb"
+    writer = oemmpa.DuckDBStore(database_path)
+    del writer
+    gc.collect()
+
+    reader = oemmpa.open_store(database_path, read_only=True)
+    with pytest.raises(RuntimeError):
+        reader.execute("create table readonly_probe (x integer)")
+

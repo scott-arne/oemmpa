@@ -34,6 +34,12 @@ private:
     friend class FragmentationMethod;
     void AddValidatedFragmentation(const Fragmentation& fragmentation);
 
+    // Set by FragmentationMethod::Analyze to the resolved analyze() worker count so
+    // ComputePairs can parallelize the pair enumeration across constant buckets by
+    // the same opt-in count. Friend-only; a standalone index keeps the default (1 =
+    // serial), so it never spawns threads unless analyze() asked for them.
+    void SetPairThreadCount(unsigned int count);
+
     // Shared insertion (dedup key + per-constant bucket). Assumes `stored`
     // already carries its variable metrics.
     void InsertFragmentation(Fragmentation stored);
@@ -52,6 +58,9 @@ private:
     std::unordered_map<std::string, std::vector<unsigned int>> molecule_ids_by_canonical_smiles_;
     std::unordered_map<std::string, std::vector<Fragmentation>> constant_buckets_;
     std::set<FragmentationKey> fragmentation_keys_;
+
+    // Worker count for parallel pair enumeration in ComputePairs; 1 == serial.
+    unsigned int pair_thread_count_ = 1;
 
     // Single-slot memoization of the most-recent GetPairs(options) result. mutable
     // because it is written from the const query methods; invalidated by every

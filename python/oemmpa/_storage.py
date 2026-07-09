@@ -87,6 +87,10 @@ class DuckDBStore:
 
     :param path: Optional DuckDB database path. When omitted, an in-memory
         database is opened.
+    :param read_only: When true (and ``path`` is given), open with DuckDB's
+        ``READ_ONLY`` access mode -- a shared rather than exclusive lock, so
+        multiple readers can open the same store concurrently. Schema
+        initialization is skipped, so the store must already exist.
     :raises RuntimeError: If OEMMPA was built without DuckDB support.
 
     **Thread safety:** A single ``DuckDBStore`` instance is **not safe** to use
@@ -94,12 +98,12 @@ class DuckDBStore:
     instance per thread.
     """
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, read_only=False):
         store_class = _require_duckdb_store_class()
         if path is None:
             self._raw_store = store_class()
         else:
-            self._raw_store = store_class(str(path))
+            self._raw_store = store_class(str(path), read_only)
 
     @property
     def raw(self):

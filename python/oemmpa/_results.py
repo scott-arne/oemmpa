@@ -1,5 +1,6 @@
 """Pythonic wrappers for OEMMPA result objects."""
 
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._dataframe import (
     PAIR_SMILES_COLUMNS,
     PRODUCT_SMILES_COLUMNS,
@@ -101,6 +102,16 @@ class PairResult:
 class PairCollection(list):
     """List of :class:`PairResult` objects with export helpers."""
 
+    _raw_pairs = None
+
+    def attach_raw(self, raw_pairs):
+        """Retain the raw ``_oemmpa`` pair vector backing this collection.
+
+        Enables the single-crossing :meth:`to_dicts` fast path. Only valid when
+        the collection was built one-to-one from ``raw_pairs``.
+        """
+        self._raw_pairs = raw_pairs
+
     def __repr__(self):
         return text_collection_summary(self.__class__.__name__, len(self))
 
@@ -110,8 +121,15 @@ class PairCollection(list):
     def to_dicts(self):
         """Return all pair results as dictionaries.
 
+        Uses a single C++ crossing when this collection still corresponds
+        one-to-one to its backing vector, avoiding ~10 per-pair getter calls;
+        falls back to per-pair conversion for filtered or mutated collections.
+
         :returns: List of result dictionaries.
         """
+        raw = self._raw_pairs
+        if raw is not None and len(raw) == len(self):
+            return _oemmpa.matched_pair_dicts(raw)
         return [pair.to_dict() for pair in self]
 
     def to_dataframe(self, library="pandas", molecules=False):

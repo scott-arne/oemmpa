@@ -484,6 +484,7 @@ class HeadToHeadSection(Section):
         table = Table()
         table.add_column("n", justify="right")
         table.add_column("oemmpa warm", justify="right")
+        table.add_column("oemmpa warm∥", justify="right")
         table.add_column("rdkit warm", justify="right")
         table.add_column("mmpdb proc", justify="right")
         table.add_column("oemmpa wall", justify="right")
@@ -498,6 +499,7 @@ class HeadToHeadSection(Section):
             table.add_row(
                 str(int(_as_float(row.get("actual_molecule_count")) or 0)),
                 format_seconds(_as_float(row.get("oemmpa_warm_seconds"))),
+                format_seconds(_as_float(row.get("oemmpa_warm_parallel_seconds"))),
                 format_seconds(_as_float(row.get("rdkit_warm_seconds"))),
                 format_seconds(_as_float(row.get("mmpdb_warm_process_seconds"))),
                 format_seconds(_as_float(row.get("oemmpa_wall_seconds"))),
@@ -510,6 +512,17 @@ class HeadToHeadSection(Section):
                 _ratio_cell(row.get("vs_mmpdb_wall_ratio")),
             )
         console.print(table)
+        threads = next(
+            (int(_as_float(r.get("oemmpa_parallel_threads")) or 0) for r in self.rows),
+            0,
+        )
+        if threads > 1:
+            console.print(
+                f"[dim]oemmpa warm∥ is the same warm workload with "
+                f"analyze(threads={threads}); RDKit/MMPDB have no in-process "
+                "parallel pair path here, so warm/ratio columns stay "
+                "single-threaded.[/dim]"
+            )
 
     def glance_entry(self):
         return GlanceEntry(

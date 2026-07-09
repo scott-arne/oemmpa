@@ -448,7 +448,12 @@ class Analyzer:
             raw_pairs = self._raw_analyzer.GetPairs()
         else:
             raw_pairs = self._raw_analyzer.GetPairs(options)
-        return PairCollection(PairResult(pair) for pair in raw_pairs)
+        collection = PairCollection(PairResult(pair) for pair in raw_pairs)
+        # Retain the raw C++ vector so to_dicts() can materialize every row in a
+        # single crossing instead of ~10 per-pair getter calls. The vector owns
+        # its data (GetPairs returns by value), so keeping it alive is safe.
+        collection.attach_raw(raw_pairs)
+        return collection
 
     def transforms(self, options=None):
         """Return analyzed transforms.

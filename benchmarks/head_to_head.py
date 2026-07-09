@@ -86,13 +86,14 @@ def _min_over_repeats(fn, repeats):
     return best, result
 
 
-def _oemmpa_warm(subset_path, repeats):
+def _oemmpa_warm(subset_path, repeats, threads=None):
     def once():
         res = run_oemmpa_pair_equivalent(
             subset_path,
             max_variable_heavies=MMPDB_DEFAULT_MAX_VARIABLE_HEAVIES,
             max_heavies=MMPDB_DEFAULT_MAX_HEAVIES,
             max_rotatable_bonds=MMPDB_DEFAULT_MAX_ROTATABLE_BONDS,
+            threads=threads,
         )
         return res["elapsed_seconds"], res
     return _min_over_repeats(once, repeats)
@@ -241,6 +242,13 @@ def head_to_head_rows(smiles_path, sizes=DEFAULT_SIZES, repeats=3, mmpdb_exe=DEF
             actual = _subset(smiles_path, size, subset)
 
             oemmpa_warm, oemmpa_res = _oemmpa_warm(subset, repeats)
+            # Parallel warm time: OEMMPA's fragmentation and pair enumeration are
+            # opt-in parallel, so the serial warm column understates real
+            # capability. This column reruns the same warm workload with all
+            # cores. RDKit/MMPDB have no in-process parallel pair path here, so
+            # they keep a single warm column.
+            parallel_threads = os.cpu_count() or 1
+            oemmpa_warm_parallel, _ = _oemmpa_warm(subset, repeats, threads=parallel_threads)
             oemmpa_wall = _oemmpa_wall(subset, repeats, oemmpa_exe)
             oemmpa_pairs = int(oemmpa_res["pair_count"])
 
@@ -278,6 +286,8 @@ def head_to_head_rows(smiles_path, sizes=DEFAULT_SIZES, repeats=3, mmpdb_exe=DEF
                 "size": size,
                 "actual_molecule_count": actual,
                 "oemmpa_warm_seconds": oemmpa_warm,
+                "oemmpa_warm_parallel_seconds": oemmpa_warm_parallel,
+                "oemmpa_parallel_threads": parallel_threads,
                 "rdkit_warm_seconds": rdkit_warm,
                 "mmpdb_warm_process_seconds": mmpdb_process,
                 "oemmpa_wall_seconds": oemmpa_wall,

@@ -2,14 +2,20 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/PairScoring.h"
+#include "oemmpa/ThreadSupport.h"
 #include "oemmpa/VariableFragmentMetrics.h"
 
 #include <oechem.h>
+#include <oesystem.h>
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -599,6 +605,12 @@ void MemoryIndex::Clear() {
     pairs_cache_valid_ = false;
 }
 
+void MemoryIndex::SetPairThreadCount(unsigned int count) {
+    // Threading choice only; it never changes the emitted pair set, so the memoized
+    // result (if any) stays valid.
+    pair_thread_count_ = count;
+}
+
 void MemoryIndex::AddMolecule(const MoleculeRecord& record) {
     const unsigned int internal_id = record.GetInternalId();
     if (HasMolecule(internal_id)) {
@@ -692,9 +704,6 @@ const MoleculeRecord& MemoryIndex::GetMolecule(unsigned int internal_id) const {
 }
 
 std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) const {
-    std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
-    std::map<CandidateKey, std::unordered_set<std::string>> seen_by_group;
-    VariableOrderKeyCache order_key_cache;
     const std::map<std::string, std::vector<unsigned int>> molecule_ids_by_smiles =
         molecule_ids_by_canonical_smiles(molecules_);
 
@@ -707,7 +716,20 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
             sorted_fragmentations(constant_buckets_.at(constant_smiles)));
     }
 
-    for (const std::string& constant_smiles : constants) {
+    // Enumerate one constant bucket and append its scored pairs to `out_pairs`.
+    // Candidate groups are keyed by (constant, source, target), so groups from
+    // different constants are disjoint: each bucket's enumeration, hydrogen pass,
+    // and scoring are fully independent. That independence is what lets the buckets
+    // run on separate workers below with no cross-thread merge -- and PairScoring
+    // per group here is equivalent to scoring after all constants, since no group
+    // ever spans constants. `order_key_cache` is caller-owned so a worker amortizes
+    // it across the constants it handles.
+    const auto process_constant = [&](const std::string& constant_smiles,
+                                      VariableOrderKeyCache& order_key_cache,
+                                      std::vector<MatchedPair>& out_pairs) {
+        std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
+        std::map<CandidateKey, std::unordered_set<std::string>> seen_by_group;
+
         const std::vector<Fragmentation> fragmentations =
             with_hydrogen_fragmentations(
                 sorted_buckets.at(constant_smiles),
@@ -782,9 +804,7 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
                     candidates_by_group, seen_by_group, rhs, lhs, constant_smiles, options);
             }
         }
-    }
 
-    for (const std::string& constant_smiles : constants) {
         for (const Fragmentation& fragmentation : sorted_buckets.at(constant_smiles)) {
             add_hydrogen_candidates_for_fragmentation(
                 candidates_by_group,
@@ -795,27 +815,95 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
                 options
             );
         }
-    }
 
-    std::vector<MatchedPair> pairs;
-    // Reserve a tight upper bound for the result. KeepAll returns every
-    // candidate, so the total candidate count is exact; every other scoring
-    // mode collapses each group to a single selected pair, so one-per-group is
-    // the bound there. Using the mode-appropriate bound avoids reserving raw
-    // storage for every candidate on scored queries that select only a few.
-    if (options.GetScoringOptions().GetMode() == ScoringMode::KeepAll) {
-        std::size_t candidate_total = 0;
         for (const auto& entry : candidates_by_group) {
-            candidate_total += entry.second.size();
+            std::vector<MatchedPair> selected =
+                PairScoring::Select(entry.second, options.GetScoringOptions());
+            out_pairs.insert(out_pairs.end(), selected.begin(), selected.end());
         }
-        pairs.reserve(candidate_total);
+    };
+
+    // Parallelize across constant buckets when analyze() resolved more than one
+    // worker (pair_thread_count_). This is opt-in: the default and any concurrent
+    // job that ran analyze(threads=1) resolves to 1 here, so the pair phase stays
+    // serial and cannot oversubscribe. Output is byte-identical to serial because
+    // groups are disjoint per constant and the final std::sort (a strict total
+    // order over all pair fields) normalizes the concatenation order.
+    std::vector<MatchedPair> pairs;
+    const unsigned int worker_count = std::min<unsigned int>(
+        pair_thread_count_, static_cast<unsigned int>(constants.size()));
+
+    if (worker_count <= 1 || constants.size() <= 1) {
+        VariableOrderKeyCache order_key_cache;
+        for (const std::string& constant_smiles : constants) {
+            process_constant(constant_smiles, order_key_cache, pairs);
+        }
     } else {
-        pairs.reserve(candidates_by_group.size());
-    }
-    for (const auto& entry : candidates_by_group) {
-        std::vector<MatchedPair> selected =
-            PairScoring::Select(entry.second, options.GetScoringOptions());
-        pairs.insert(pairs.end(), selected.begin(), selected.end());
+        // OEChem is reachable from the enumeration (asymmetric order-key resolution
+        // and the metrics-fallback parse), so the memory pool must be thread-safe
+        // before workers spawn.
+        ensure_thread_safe_mempool();
+
+        // Collect each constant's pairs in a slot indexed by its position in the
+        // sorted `constants` list. Work-stealing still balances load across workers,
+        // but reassembling in constant order below reproduces the serial pre-sort
+        // order, so the final std::sort stays cheap (near-sorted input) instead of
+        // paying to sort a work-steal-scrambled vector.
+        std::vector<std::vector<MatchedPair>> per_constant(constants.size());
+        std::vector<std::exception_ptr> errors(worker_count);
+        std::atomic<std::size_t> cursor{0};
+
+        std::vector<std::thread> workers;
+        workers.reserve(worker_count);
+        struct JoinAllGuard {
+            std::vector<std::thread>& workers;
+            ~JoinAllGuard() {
+                for (std::thread& worker : workers) {
+                    if (worker.joinable()) {
+                        worker.join();
+                    }
+                }
+            }
+        } join_all_guard{workers};
+
+        for (unsigned int w = 0; w < worker_count; ++w) {
+            workers.emplace_back([&, w]() {
+                VariableOrderKeyCache order_key_cache;
+                try {
+                    std::size_t i;
+                    while ((i = cursor.fetch_add(1)) < constants.size()) {
+                        process_constant(constants[i], order_key_cache, per_constant[i]);
+                    }
+                } catch (...) {
+                    errors[w] = std::current_exception();
+                }
+            });
+        }
+        for (std::thread& worker : workers) {
+            worker.join();
+        }
+
+        // Rethrow the lowest-worker-index failure so the thrown exception is
+        // invariant across thread counts. Valid public-API input never triggers
+        // one (metrics are cached and SMILES are valid), matching the precedent in
+        // FragmentationMethod::Analyze.
+        for (const std::exception_ptr& error : errors) {
+            if (error) {
+                std::rethrow_exception(error);
+            }
+        }
+
+        std::size_t total_pairs = 0;
+        for (const std::vector<MatchedPair>& slice : per_constant) {
+            total_pairs += slice.size();
+        }
+        pairs.reserve(total_pairs);
+        for (std::vector<MatchedPair>& slice : per_constant) {
+            pairs.insert(
+                pairs.end(),
+                std::make_move_iterator(slice.begin()),
+                std::make_move_iterator(slice.end()));
+        }
     }
 
     std::sort(pairs.begin(), pairs.end(), compare_pairs);

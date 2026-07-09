@@ -292,6 +292,7 @@ docs/hyperpowers/
 CMakeUserPresets.json
 .claude
 build-debug/
+build-release/
 python/oemmpa/_build_info.py
 python/oemmpa/oemmpa.py
 
