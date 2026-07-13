@@ -304,6 +304,10 @@ python/oemmpa/oemmpa.py
 .idea/
 issues/
 .ruff_cache/
+# Generated benchmark artifacts: on-demand corpora, raw results, and the HTML
+# report are large derived data, regenerated on demand and never committed.
+benchmarks/.corpus/
+benchmarks/results/
 # Proprietary compound datasets: never commit. Public SureChEMBL slices under
 # tests/data/ are the only committed molecule corpora (see the fixture
 # provenance manifest). This is defense-in-depth against an accidental

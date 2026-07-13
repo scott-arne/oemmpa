@@ -5,6 +5,8 @@ from __future__ import annotations
 import csv
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -20,10 +22,22 @@ if __package__ in (None, ""):
     from benchmarks.rdkit_compare import compare, run_oemmpa
     from benchmarks.head_to_head import head_to_head_rows, DEFAULT_HEADTOHEAD_SMILES, DEFAULT_SIZES
     from benchmarks.report import Report
+    from benchmarks.stage_benchmark import (
+        DEFAULT_SIZES as STAGE_DEFAULT_SIZES,
+        DEFAULT_THREADS as STAGE_DEFAULT_THREADS,
+        run_stage_benchmark,
+    )
+    from benchmarks.report_html import render_html
 else:
     from .rdkit_compare import compare, run_oemmpa
     from .head_to_head import head_to_head_rows, DEFAULT_HEADTOHEAD_SMILES, DEFAULT_SIZES
     from .report import Report
+    from .stage_benchmark import (
+        DEFAULT_SIZES as STAGE_DEFAULT_SIZES,
+        DEFAULT_THREADS as STAGE_DEFAULT_THREADS,
+        run_stage_benchmark,
+    )
+    from .report_html import render_html
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -153,6 +167,30 @@ BENCHMARK_SCHEMAS = {
         "mmpdb_unavailable_reason",
         "vs_rdkit_wall_ratio",
         "vs_mmpdb_wall_ratio",
+    ],
+    "stage_scaling": [
+        "benchmark",
+        "dataset",
+        "tool",
+        "variant",
+        "size",
+        "molecule_count",
+        "stage",
+        "seconds",
+        "threads",
+        "pair_count",
+        "transform_count",
+    ],
+    "stage_parallel": [
+        "benchmark",
+        "dataset",
+        "tool",
+        "size",
+        "stage",
+        "threads",
+        "seconds",
+        "speedup",
+        "efficiency",
     ],
 }
 
@@ -1425,6 +1463,105 @@ def regression_check_command(ctx, baseline, current, max_seconds_ratio, output, 
         baseline_path=ctx.obj["baseline"],
         verbose=ctx.obj["verbose"],
     )
+
+
+def _print_stage_summary(records, meta):
+    """Print a compact console summary of the staged-benchmark results."""
+    scaling = [r for r in records if r["benchmark"] == "stage_scaling"]
+    parallel = [r for r in records if r["benchmark"] == "stage_parallel"]
+    if not scaling:
+        click.echo("No stage_scaling records produced (no corpus source?).")
+        return
+    sizes = sorted({r["size"] for r in scaling if r["variant"] == "filtered"})
+    top = sizes[-1]
+    click.echo("")
+    click.echo(f"End-to-end totals at {top} molecules (filtered, warm):")
+    for tool in ("oemmpa", "mmpdb", "rdkit"):
+        rows = [
+            r
+            for r in scaling
+            if r["tool"] == tool and r["variant"] == "filtered" and r["size"] == top
+        ]
+        if rows:
+            click.echo(f"  {tool:8} {sum(r['seconds'] for r in rows):8.3f} s")
+    totals = [r for r in parallel if r["stage"] == "total" and r.get("speedup")]
+    if totals:
+        best = max(totals, key=lambda r: r["speedup"])
+        click.echo(
+            f"Best OEMMPA parallel speedup: {best['speedup']:.2f}x "
+            f"at {best['threads']} threads"
+        )
+
+
+@benchmark_cli.command("stage-benchmark")
+@click.option(
+    "--sizes",
+    default=",".join(str(s) for s in STAGE_DEFAULT_SIZES),
+    show_default=True,
+    help="Comma-separated molecule counts for the size sweep.",
+)
+@click.option(
+    "--threads",
+    default=",".join(str(t) for t in STAGE_DEFAULT_THREADS),
+    show_default=True,
+    help="Comma-separated worker-thread counts for the OEMMPA parallel sweep.",
+)
+@click.option(
+    "--parquet",
+    type=click.Path(path_type=Path),
+    help="Public parquet to sample corpora from (default: OEMMPA_BENCHMARK_PARQUET / Downloads).",
+)
+@click.option(
+    "--parallel-size",
+    type=int,
+    help="Corpus size for the thread sweep (default: largest --sizes value).",
+)
+@click.option(
+    "--json",
+    "json_path",
+    type=click.Path(path_type=Path),
+    help="Write the full record+metadata bundle as JSON (feeds the HTML report).",
+)
+@click.option(
+    "--html",
+    "html_path",
+    type=click.Path(path_type=Path),
+    help="Write the self-contained interactive HTML report.",
+)
+@click.option("--output", type=click.Path(path_type=Path), help="Optional CSV output path.")
+@click.option("--repeats", type=int, help="Warm-timing repeats (auto-reduced at large sizes).")
+@click.pass_context
+def stage_benchmark_command(
+    ctx, sizes, threads, parquet, parallel_size, json_path, html_path, output, repeats
+):
+    """Run the per-stage OEMMPA/RDKit/MMPDB benchmark and render the web report."""
+    output = output if output is not None else ctx.obj["output"]
+    repeats = repeats if repeats is not None else ctx.obj["repeats"]
+    size_list = [int(s) for s in str(sizes).split(",") if s.strip()]
+    thread_list = [int(t) for t in str(threads).split(",") if t.strip()]
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    records, meta = run_stage_benchmark(
+        sizes=size_list,
+        threads=thread_list,
+        repeats=repeats,
+        parquet=str(parquet) if parquet is not None else None,
+        parallel_size=parallel_size,
+        generated_at=generated_at,
+    )
+    if json_path is not None:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(
+            json.dumps({"records": records, "meta": meta}, indent=2), encoding="utf-8"
+        )
+        click.echo(f"Wrote {len(records)} records to {json_path}")
+    if html_path is not None:
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(render_html(records, meta), encoding="utf-8")
+        click.echo(f"Wrote HTML report to {html_path}")
+    if output is not None:
+        write_csv(records, output)
+        click.echo(f"Wrote CSV to {output}")
+    _print_stage_summary(records, meta)
 
 
 def main(argv=None, *, standalone_mode=True):

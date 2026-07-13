@@ -249,3 +249,61 @@ def benchmark(c, head_to_head=False, sizes=None, smiles=None, output=None, repea
         argv += ["--repeats", str(repeats)]
 
     c.run(shlex.join(argv), env=env, pty=False)
+
+
+@task(
+    help={
+        "sizes": "Comma-separated molecule counts for the size sweep.",
+        "threads": "Comma-separated worker-thread counts for the parallel sweep.",
+        "parquet": "Public parquet to sample corpora from.",
+        "parallel_size": "Corpus size for the thread sweep (default: largest size).",
+        "json": "Write the record+metadata JSON bundle to this path.",
+        "html": "Write the self-contained HTML report to this path.",
+        "output": "Write benchmark rows to a CSV path.",
+        "repeats": "Warm-timing repeats (auto-reduced at large sizes).",
+    }
+)
+def stage_benchmark(
+    c,
+    sizes=None,
+    threads=None,
+    parquet=None,
+    parallel_size=None,
+    json=None,
+    html=None,
+    output=None,
+    repeats=None,
+):
+    """Run the per-stage OEMMPA/RDKit/MMPDB benchmark and render the web report."""
+    env = dict(os.environ)
+    for key, fallback in _BENCHMARK_ENV_DEFAULTS.items():
+        env.setdefault(key, fallback)
+    python_root = str(PROJECT_ROOT / "python")
+    # Prefer the release SWIG build for accurate performance numbers, falling
+    # back to the debug build when release has not been built.
+    release_swig = PROJECT_ROOT / "build-release" / "swig"
+    swig_root = str(
+        release_swig if release_swig.is_dir() else PROJECT_ROOT / "build-debug" / "swig"
+    )
+    env["PYTHONPATH"] = os.pathsep.join(
+        [python_root, swig_root, env.get("PYTHONPATH", "")]
+    )
+    interpreter_bin = str(Path(sys.executable).parent)
+    env["PATH"] = os.pathsep.join([interpreter_bin, env.get("PATH", "")])
+
+    script = str(PROJECT_ROOT / "benchmarks" / "benchmark_suite.py")
+    argv = [sys.executable, script, "stage-benchmark"]
+    for flag, value in (
+        ("--sizes", sizes),
+        ("--threads", threads),
+        ("--parquet", parquet),
+        ("--parallel-size", parallel_size),
+        ("--json", json),
+        ("--html", html),
+        ("--output", output),
+        ("--repeats", repeats),
+    ):
+        if value is not None:
+            argv += [flag, str(value)]
+
+    c.run(shlex.join(argv), env=env, pty=False)
