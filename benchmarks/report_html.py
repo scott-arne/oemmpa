@@ -558,6 +558,52 @@ function renderThroughputPairs() {
   });
 }
 
+// ---- dynamic throughput note (computed from the loaded data, not hard-coded) ----
+function metricTrend(tool, kind) {
+  const pts = sizes.map((s) => {
+    const t = totalSeconds(tool, "filtered", s);
+    if (!t) return null;
+    const num = kind === "mol" ? moleculeCount(s) : pairCount(tool, "filtered", s);
+    return num ? num / t : null;
+  }).filter((v) => v != null && v > 0);
+  return pts.length >= 2 ? pts[pts.length - 1] / pts[0] : null;
+}
+function fmtTrend(ratio) {
+  if (ratio == null) return "— (single size)";
+  const arrow = ratio > 1.05 ? "▲" : ratio < 0.95 ? "▼" : "→";
+  const factor = ratio >= 1 ? ratio.toFixed(1) : ratio.toFixed(2);
+  return `${arrow} ${factor}× over the sweep`;
+}
+function renderThroughputNote() {
+  const mount = document.getElementById("throughput-note");
+  if (!mount) return;
+  mount.replaceChildren();
+  const lead = document.createElement("div");
+  lead.style.marginBottom = "8px";
+  lead.textContent =
+    "Trends across this run's size range (per-molecule vs per-pair). Diverging " +
+    "arrows for a tool — molecules/s down while pairs/s up — mean its cost " +
+    "is pair-dominated and pairs are growing faster than molecules, not that it is " +
+    "getting slower.";
+  mount.appendChild(lead);
+  toolsPresent.forEach((tool) => {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "8px";
+    row.style.margin = "3px 0";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = toolColor(tool);
+    const label = document.createElement("span");
+    label.textContent =
+      `${TOOL_LABEL[tool]} — molecules/s ${fmtTrend(metricTrend(tool, "mol"))}` +
+      `; pairs/s ${fmtTrend(metricTrend(tool, "pair"))}`;
+    row.append(dot, label);
+    mount.appendChild(row);
+  });
+}
+
 // ---- stage-breakdown size selector ----
 function initStageBreakdown() {
   const sel = document.getElementById("size-select");
@@ -630,6 +676,7 @@ function renderAll() {
   renderParallel();
   renderThroughput();
   renderThroughputPairs();
+  renderThroughputNote();
   renderTable();
 }
 let stageInit = false;
@@ -672,7 +719,10 @@ def _page_body():
       bonds; <b>enumerate</b> forms matched pairs (mmpdb's <code>index</code> also
       builds rules and writes SQLite here); <b>transforms</b> groups pairs into
       rules; <b>materialize</b> exports rows; <b>persist</b> writes DuckDB. mmpdb
-      and RDKit expose only the shared core (fragment + enumerate).</p>
+      and RDKit expose only the shared core (fragment + enumerate).
+      <i>How to read it &mdash;</i> a taller bar is more end-to-end time; each
+      segment is one stage, so compare where each tool spends its time. Change the
+      corpus size to see how the mix shifts as the dataset grows.</p>
     <div class="controls">
       <label for="size-select">Corpus size</label>
       <select id="size-select"></select>
@@ -681,11 +731,12 @@ def _page_body():
     <div class="legend" id="legend-stages"></div>
 
     <h2>Scaling with corpus size</h2>
-    <p class="explain">End-to-end wall time vs molecule count, both axes log-scaled
-      so a straight line means power-law growth and a shallower slope means better
-      scaling. The dashed line is native (unfiltered) RDKit, shown only at small
-      sizes because its pair count explodes past a few thousand molecules. Click a
-      legend entry to toggle a series.</p>
+    <p class="explain">End-to-end wall time vs molecule count, both axes log-scaled.
+      <i>How to read it &mdash;</i> lower is faster; on log-log axes a straight line
+      means power-law growth and a shallower slope means better scaling, so compare
+      slopes between tools. The dashed line is native (unfiltered) RDKit, shown only
+      at small sizes because its pair count explodes past a few thousand molecules.
+      Click a legend entry to toggle a series.</p>
     <div class="legend" id="legend-scaling"></div>
     <div class="card"><div id="chart-scaling"></div></div>
 
@@ -699,23 +750,15 @@ def _page_body():
     <p class="explain" id="parallel-caption"></p>
 
     <h2>Throughput</h2>
-    <p class="explain">Two views of the same runs. <b>Molecules / second</b>
-      normalizes by input size; <b>pairs / second</b> normalizes by the matched
-      pairs actually produced. Read them together: the left answers &ldquo;how fast
-      per input molecule&rdquo;, the right &ldquo;how fast per unit of MMP work.&rdquo;</p>
-    <div class="insight">
-      <b>OEMMPA's molecules/second falls as the corpus grows &mdash; this is
-      expected, not a regression.</b> Matched-molecular-pair work is intrinsically
-      <i>per pair</i>, and pairs grow super-linearly with corpus size: here, pairs
-      per molecule rise from about 6 at 100 molecules to about 116 at 10,000 as
-      shared scaffolds accumulate members. Dividing that by molecules can only trend
-      down. Measured <i>per pair</i> (right chart), OEMMPA instead gets
-      <b>faster</b> with scale as its bulk operations amortize
-      (&asymp;1,200&nbsp;&rarr;&nbsp;14,000 pairs/s from 100 to 10k here). RDKit's
-      molecules/second stays flat only because roughly 88% of its measured time is
-      per-molecule fragmentation and it does no persistence; OEMMPA additionally
-      enumerates, groups, materializes, and writes every pair to DuckDB &mdash;
-      strictly more work per molecule, yet it still finishes faster end-to-end.</p>
+    <p class="explain">The same runs, normalized two ways: by <b>input molecules</b>
+      (left) and by <b>matched pairs produced</b> (right).
+      <i>How to read it &mdash;</i> follow the <b>shape</b> of each tool's own curve,
+      not the absolute heights between tools (pair counts are defined differently per
+      tool, so per-pair heights are not comparable across tools). A per-molecule rate
+      that falls while the per-pair rate rises is the signature of pair-dominated
+      work &mdash; matched pairs grow faster than molecules as the corpus grows &mdash;
+      rather than a slowdown. The note below is computed live from the loaded data.</p>
+    <div class="insight" id="throughput-note"></div>
     <div class="chart-grid">
       <div class="card">
         <div class="chart-title">Molecules / second &mdash; normalized by input size</div>

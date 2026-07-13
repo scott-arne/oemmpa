@@ -72,11 +72,12 @@ def test_render_html_is_self_contained():
         "All measurements",
     ]:
         assert title in html
-    # Both throughput views (molecules/sec and pairs/sec) and the framing callout
-    # that explains the molecule-normalized decline is expected.
+    # Both throughput views (molecules/sec and pairs/sec), the live-computed note
+    # placeholder, and per-chart "how to read it" guidance.
     assert 'id="chart-throughput"' in html
     assert 'id="chart-throughput-pairs"' in html
-    assert "expected, not a regression" in html
+    assert 'id="throughput-note"' in html
+    assert "How to read it" in html
     # No external resources: no CDN/network fetches of any kind.
     assert not re.search(r'(src|href)\s*=\s*"https?:', html)
     assert "<script src" not in html
