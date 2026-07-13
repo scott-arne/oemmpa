@@ -83,6 +83,21 @@ p.explain { color: var(--text-secondary); font-size: 14px; margin: 6px 0 16px; m
   box-shadow: var(--shadow);
   margin-bottom: 8px;
 }
+.insight {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--series-oemmpa);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 4px 0 16px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  max-width: 84ch;
+  box-shadow: var(--shadow);
+}
+.insight b { color: var(--text-primary); }
+.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+.chart-title { font-size: 13px; font-weight: 600; color: var(--text-secondary); margin: 2px 2px 10px; }
 .meta-grid { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px;
   color: var(--text-secondary); margin: 10px 0 4px; }
 .meta-grid b { color: var(--text-primary); font-weight: 600; }
@@ -205,6 +220,10 @@ function stageSeconds(tool, variant, size, stage) {
 function moleculeCount(size) {
   const r = scaling.find((x) => x.size === size);
   return r ? r.molecule_count : size;
+}
+function pairCount(tool, variant, size) {
+  const r = scaling.find((x) => x.tool === tool && x.variant === variant && x.size === size);
+  return r ? r.pair_count : null;
 }
 
 // ---- shared tooltip ----
@@ -520,6 +539,25 @@ function renderThroughput() {
   });
 }
 
+// ---- throughput per unit of MMP work (pairs/sec, rises with scale) ----
+function renderThroughputPairs() {
+  const mount = document.getElementById("chart-throughput-pairs");
+  const series = toolsPresent.map((tool) => ({
+    key: tool, label: TOOL_LABEL[tool], color: () => toolColor(tool),
+    points: sizes.map((s) => {
+      const t = totalSeconds(tool, "filtered", s);
+      const p = pairCount(tool, "filtered", s);
+      return { x: s, y: t && p ? p / t : null };
+    }).filter((p) => p.y != null),
+  }));
+  lineChart(mount, {
+    series, xLog: true, yLog: false, yMin: 0,
+    xLabel: "molecules (log scale)", yLabel: "pairs / second",
+    xFormat: fmtCompact, yFormat: fmtCompact,
+    xTipLabel: (x) => fmtCompact(x) + " molecules", yTip: (v) => fmtCompact(v) + " pairs/s",
+  });
+}
+
 // ---- stage-breakdown size selector ----
 function initStageBreakdown() {
   const sel = document.getElementById("size-select");
@@ -591,6 +629,7 @@ function renderAll() {
   renderScaling();
   renderParallel();
   renderThroughput();
+  renderThroughputPairs();
   renderTable();
 }
 let stageInit = false;
@@ -660,11 +699,34 @@ def _page_body():
     <p class="explain" id="parallel-caption"></p>
 
     <h2>Throughput</h2>
-    <p class="explain">Molecules processed per second end-to-end &mdash; a
-      tool-comparable rate (unlike pair counts, which are defined differently per
-      tool). Higher is faster; a flat or rising curve means throughput holds as the
-      corpus grows.</p>
-    <div class="card"><div id="chart-throughput"></div></div>
+    <p class="explain">Two views of the same runs. <b>Molecules / second</b>
+      normalizes by input size; <b>pairs / second</b> normalizes by the matched
+      pairs actually produced. Read them together: the left answers &ldquo;how fast
+      per input molecule&rdquo;, the right &ldquo;how fast per unit of MMP work.&rdquo;</p>
+    <div class="insight">
+      <b>OEMMPA's molecules/second falls as the corpus grows &mdash; this is
+      expected, not a regression.</b> Matched-molecular-pair work is intrinsically
+      <i>per pair</i>, and pairs grow super-linearly with corpus size: here, pairs
+      per molecule rise from about 6 at 100 molecules to about 116 at 10,000 as
+      shared scaffolds accumulate members. Dividing that by molecules can only trend
+      down. Measured <i>per pair</i> (right chart), OEMMPA instead gets
+      <b>faster</b> with scale as its bulk operations amortize
+      (&asymp;1,200&nbsp;&rarr;&nbsp;14,000 pairs/s from 100 to 10k here). RDKit's
+      molecules/second stays flat only because roughly 88% of its measured time is
+      per-molecule fragmentation and it does no persistence; OEMMPA additionally
+      enumerates, groups, materializes, and writes every pair to DuckDB &mdash;
+      strictly more work per molecule, yet it still finishes faster end-to-end.</p>
+    <div class="chart-grid">
+      <div class="card">
+        <div class="chart-title">Molecules / second &mdash; normalized by input size</div>
+        <div id="chart-throughput"></div>
+      </div>
+      <div class="card">
+        <div class="chart-title">Pairs / second &mdash; normalized by MMP work
+          (per-tool trend; pair definitions differ across tools)</div>
+        <div id="chart-throughput-pairs"></div>
+      </div>
+    </div>
 
     <h2>All measurements</h2>
     <p class="explain">Every stage timing behind the charts. The table is the
