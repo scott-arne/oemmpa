@@ -14,6 +14,42 @@ using OEMMPA::MoleculeRecord;
 using OEMMPA::QueryOptions;
 using OEMMPA::WizePairZMethod;
 
+TEST(WizePairZTest, EncodesHydrogenSubstituentAsRule) {
+    Analyzer analyzer("wizepairz");
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.AddMolecule("Fc1ccccc1", "fluorobenzene");
+    analyzer.Analyze();
+    const auto pairs = analyzer.GetPairs();
+    // aryl H -> F: one side's variable is the hydrogen convention [*:1][H].
+    const bool has_h_to_f = std::any_of(pairs.begin(), pairs.end(),
+        [](const MatchedPair& p) {
+            return (p.GetSourceVariableSmiles() == "[*:1][H]" &&
+                    p.GetTargetVariableSmiles() == "[*:1]F");
+        });
+    EXPECT_TRUE(has_h_to_f);
+}
+
+TEST(WizePairZTest, PopulatesPerRadiusExplicitHSmirks) {
+    Analyzer analyzer("wizepairz");
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    const auto pairs = analyzer.GetPairs();
+    ASSERT_FALSE(pairs.empty());
+    const MatchedPair& p = pairs.front();
+    ASSERT_FALSE(p.GetEnvironmentSmirks().empty());
+    EXPECT_TRUE(p.HasValidRadiusRange());
+    // Each entry is a reaction SMIRKS with '>>', mapped RECS atoms (a ':' map
+    // token on a real atom), and explicit hydrogens.
+    for (const auto& e : p.GetEnvironmentSmirks()) {
+        EXPECT_NE(e.smirks.find(">>"), std::string::npos);
+        EXPECT_NE(e.smirks.find(":"), std::string::npos);   // atom maps present
+        EXPECT_NE(e.smirks.find("[H]"), std::string::npos); // explicit hydrogens
+    }
+    // Radii are contiguous and end at max (default 4).
+    EXPECT_EQ(p.GetMaxValidRadius(), 4u);
+}
+
 TEST(WizePairZTest, SelectsMethodAndFindsHeavyAtomPair) {
     Analyzer analyzer("wizepairz");
     analyzer.AddMolecule("Cc1ccccc1", "tol");

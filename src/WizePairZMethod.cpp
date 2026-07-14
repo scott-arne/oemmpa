@@ -8,10 +8,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <queue>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace OEMMPA {
 namespace {
@@ -90,6 +95,109 @@ mcs::McsMatch invert_match(const mcs::McsMatch& match) {
     return inverted;
 }
 
+// Assign every atom its WizePairZ environment radius: variable (non-MCS) atoms
+// are radius 0, "changed" MCS core atoms are radius 1, and every remaining MCS
+// atom takes its minimum bond distance (multi-source BFS) to the nearest
+// radius-0/1 "marked" atom. BFS distance from a set of sources is independent of
+// the order the sources and neighbours are visited, so the result is
+// deterministic regardless of container iteration order.
+std::map<unsigned int, unsigned int> assign_recs_radii(
+    const OEChem::OEMolBase& mol,
+    const AtomIndexSet& constant_atoms,
+    const AtomIndexSet& changed_core_atoms,
+    const AtomIndexSet& variable_atoms
+) {
+    std::map<unsigned int, unsigned int> radii;
+    for (const unsigned int idx : variable_atoms) {
+        radii[idx] = 0;
+    }
+    for (const unsigned int idx : changed_core_atoms) {
+        radii[idx] = 1;
+    }
+
+    // Multi-source BFS seeded from the marked atoms (radius 0 and radius 1).
+    std::map<unsigned int, unsigned int> distance;
+    std::queue<unsigned int> frontier;
+    for (const unsigned int idx : variable_atoms) {
+        if (distance.emplace(idx, 0).second) {
+            frontier.push(idx);
+        }
+    }
+    for (const unsigned int idx : changed_core_atoms) {
+        if (distance.emplace(idx, 0).second) {
+            frontier.push(idx);
+        }
+    }
+    while (!frontier.empty()) {
+        const unsigned int idx = frontier.front();
+        frontier.pop();
+        const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(idx));
+        if (atom == nullptr) {
+            continue;
+        }
+        const unsigned int next_distance = distance[idx] + 1;
+        for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+            if (distance.emplace(nbr->GetIdx(), next_distance).second) {
+                frontier.push(nbr->GetIdx());
+            }
+        }
+    }
+
+    // Remaining MCS atoms take their bond distance to the nearest marked atom.
+    for (const unsigned int idx : constant_atoms) {
+        if (radii.count(idx) != 0) {
+            continue;  // already a radius-1 changed-core atom
+        }
+        const auto found = distance.find(idx);
+        radii[idx] = found != distance.end()
+            ? found->second
+            : std::numeric_limits<unsigned int>::max();  // unreachable -> always pruned
+    }
+    return radii;
+}
+
+// Bonds crossing from the retained environment into the pruned MCS shell become
+// wildcard attachment points ([*]) so a radius-reduced environment still shows
+// that the molecule continues past the cut. Variable atoms are always retained,
+// so the pruned neighbour is always an MCS (constant) atom.
+std::vector<mcs::Boundary> truncation_boundaries(
+    const OEChem::OEMolBase& mol,
+    const AtomIndexSet& retained_atoms,
+    const AtomIndexSet& constant_atoms
+) {
+    std::vector<mcs::Boundary> boundaries;
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        const unsigned int begin_idx = bond->GetBgnIdx();
+        const unsigned int end_idx = bond->GetEndIdx();
+        const bool begin_in = retained_atoms.count(begin_idx) != 0;
+        const bool end_in = retained_atoms.count(end_idx) != 0;
+        if (begin_in == end_in) {
+            continue;
+        }
+        const unsigned int retained_idx = begin_in ? begin_idx : end_idx;
+        const unsigned int pruned_idx = begin_in ? end_idx : begin_idx;
+        if (constant_atoms.count(pruned_idx) == 0) {
+            continue;  // pruned neighbour is a variable atom, not an environment cut
+        }
+        mcs::Boundary boundary;
+        // render_mapped_region_with_explicit_h with selected_side_is_constant=false
+        // attaches the dummy to variable_atom_idx, so point that at the retained atom.
+        boundary.variable_atom_idx = retained_idx;
+        boundary.constant_atom_idx = pruned_idx;
+        boundary.label = 0;  // unmapped wildcard [*]
+        boundaries.push_back(boundary);
+    }
+    std::sort(
+        boundaries.begin(),
+        boundaries.end(),
+        [](const mcs::Boundary& lhs, const mcs::Boundary& rhs) {
+            return std::tie(lhs.variable_atom_idx, lhs.constant_atom_idx) <
+                   std::tie(rhs.variable_atom_idx, rhs.constant_atom_idx);
+        }
+    );
+    return boundaries;
+}
+
 MatchedPair make_pair(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
@@ -108,13 +216,116 @@ MatchedPair make_pair(
         cut_count, heavy_atom_delta, heavy_bond_delta);
 }
 
-// Task 5 scope: single MCS, 90% threshold, heavy-atom variable regions only.
-// RECS marking / single-fragment validation / per-radius shells / explicit-H
-// are added in Tasks 6-7.
+// The per-radius explicit-H SMIRKS hierarchy for one directed pair, plus the
+// contiguous [min, max] range of radii at which it stayed a single fragment.
+struct EnvironmentHierarchy {
+    std::vector<PairEnvironmentSmirks> forward;  // reactant >> product
+    std::vector<PairEnvironmentSmirks> reverse;  // product >> reactant
+    unsigned int min_valid_radius = 0;
+    unsigned int max_valid_radius = 0;
+    bool valid = false;
+};
+
+// Build the paper's specificity hierarchy: encode the transformation at the
+// maximum radius and prune inward, emitting one explicit-H SMIRKS per radius and
+// stopping as soon as a side's per-radius RECS is no longer a single fragment.
+// The surviving radii therefore form a contiguous top range [min_valid, max].
+EnvironmentHierarchy encode_environment_hierarchy(
+    const OEChem::OEMolBase& source_mol,
+    const OEChem::OEMolBase& target_mol,
+    const AtomIndexSet& source_variable,
+    const AtomIndexSet& target_variable,
+    const AtomIndexSet& source_changed_core,
+    const AtomIndexSet& target_changed_core,
+    const mcs::McsMatch& match,
+    unsigned int max_radius
+) {
+    EnvironmentHierarchy hierarchy;
+    if (max_radius == 0) {
+        return hierarchy;
+    }
+
+    const std::map<unsigned int, unsigned int> source_radii = assign_recs_radii(
+        source_mol, match.source_constant_atoms, source_changed_core, source_variable);
+    const std::map<unsigned int, unsigned int> target_radii = assign_recs_radii(
+        target_mol, match.target_constant_atoms, target_changed_core, target_variable);
+
+    // Reactant->product atom maps, built once. Every source RECS/retained-core
+    // atom carries (source_idx + 1); each MCS atom's mapped target counterpart
+    // carries the SAME index so conserved environment atoms line up across the
+    // arrow, while the changing (unmapped-on-the-other-side) atoms stand out.
+    std::unordered_map<unsigned int, unsigned int> source_atom_map;
+    for (const unsigned int idx : source_variable) {
+        source_atom_map[idx] = idx + 1;
+    }
+    for (const unsigned int idx : match.source_constant_atoms) {
+        source_atom_map[idx] = idx + 1;
+    }
+    std::unordered_map<unsigned int, unsigned int> target_atom_map;
+    for (const auto& entry : match.target_to_source) {
+        target_atom_map[entry.first] = entry.second + 1;  // target idx -> source idx + 1
+    }
+
+    // Descending radius; break at the first radius that fragments a side.
+    std::vector<std::pair<unsigned int, std::pair<std::string, std::string>>> rendered;
+    for (unsigned int radius = max_radius; radius >= 1; --radius) {
+        AtomIndexSet source_recs = source_variable;
+        for (const unsigned int idx : match.source_constant_atoms) {
+            const auto found = source_radii.find(idx);
+            if (found != source_radii.end() && found->second <= radius) {
+                source_recs.insert(idx);
+            }
+        }
+        AtomIndexSet target_recs = target_variable;
+        for (const unsigned int idx : match.target_constant_atoms) {
+            const auto found = target_radii.find(idx);
+            if (found != target_radii.end() && found->second <= radius) {
+                target_recs.insert(idx);
+            }
+        }
+        if (!mcs::is_single_fragment(source_mol, source_recs) ||
+            !mcs::is_single_fragment(target_mol, target_recs)) {
+            break;
+        }
+        const std::vector<mcs::Boundary> source_trunc =
+            truncation_boundaries(source_mol, source_recs, match.source_constant_atoms);
+        const std::vector<mcs::Boundary> target_trunc =
+            truncation_boundaries(target_mol, target_recs, match.target_constant_atoms);
+        std::string reactant = mcs::render_mapped_region_with_explicit_h(
+            source_mol, source_recs, source_trunc, false, source_atom_map);
+        std::string product = mcs::render_mapped_region_with_explicit_h(
+            target_mol, target_recs, target_trunc, false, target_atom_map);
+        rendered.push_back({radius, {std::move(reactant), std::move(product)}});
+        hierarchy.min_valid_radius = radius;
+    }
+    if (rendered.empty()) {
+        return hierarchy;  // even the max radius fragmented -> no valid encoding
+    }
+
+    // Emit ascending by radius; both directions share the rendered sides.
+    std::sort(
+        rendered.begin(),
+        rendered.end(),
+        [](const std::pair<unsigned int, std::pair<std::string, std::string>>& lhs,
+           const std::pair<unsigned int, std::pair<std::string, std::string>>& rhs) {
+            return lhs.first < rhs.first;
+        });
+    for (const auto& entry : rendered) {
+        hierarchy.forward.push_back({entry.first, entry.second.first + ">>" + entry.second.second});
+        hierarchy.reverse.push_back({entry.first, entry.second.second + ">>" + entry.second.first});
+    }
+    hierarchy.max_valid_radius = rendered.back().first;
+    hierarchy.valid = true;
+    return hierarchy;
+}
+
+// Single MCS + 90% identity threshold; RECS marking + single-fragment validation
+// (Task 6); per-radius explicit-H SMIRKS hierarchy + hydrogen substituents (Task 7).
 void add_wizepairz_pair_if_valid(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
     double fraction,
+    unsigned int max_environment_radius,
     std::vector<MatchedPair>& pairs
 ) {
     const OEChem::OEMolBase& source_mol = source_record.GetMol();
@@ -140,9 +351,6 @@ void add_wizepairz_pair_if_valid(
         mcs::invert_atom_selection(target_mol, match.target_constant_atoms);
     const unsigned int source_var_heavy = mcs::count_heavy_atoms(source_mol, source_variable);
     const unsigned int target_var_heavy = mcs::count_heavy_atoms(target_mol, target_variable);
-    if (source_var_heavy == 0 || target_var_heavy == 0) {
-        return;  // hydrogen substituent handled in Task 7
-    }
 
     // Mark differing MCS atoms (valence / implicit-H / ring membership / ring size).
     const AtomIndexSet source_changed_core =
@@ -159,7 +367,8 @@ void add_wizepairz_pair_if_valid(
     // The WizePairZ single-site validity gate: a valid transformation localizes
     // the change to one connected region on each molecule. A RECS that splits
     // into multiple fragments signals a change spread across independent sites,
-    // so reject the pair.
+    // so reject the pair. This also rejects no-op pairs (an empty RECS is not a
+    // single fragment).
     if (!mcs::is_single_fragment(source_mol, source_recs) ||
         !mcs::is_single_fragment(target_mol, target_recs)) {
         return;
@@ -169,34 +378,85 @@ void add_wizepairz_pair_if_valid(
         mcs::collect_source_boundaries(source_mol, match.source_constant_atoms);
     const std::vector<mcs::Boundary> target_boundaries =
         mcs::collect_target_boundaries(target_mol, match.target_constant_atoms, match.target_to_source);
-    if (source_boundaries.empty() || source_boundaries.size() != target_boundaries.size()) {
-        return;
+
+    // Hydrogen-as-substituent handling. A side with no non-MCS variable atoms
+    // (e.g. benzene in benzene -> fluorobenzene) has zero boundaries; the change
+    // is the implicit-H difference on the mapped changed-core atom. Such a side
+    // renders as the paper's [*:label][H] convention. Genuine multi-cut
+    // mismatches (both sides non-empty but unequal boundary counts) are rejected.
+    const bool source_is_hydrogen = source_boundaries.empty();
+    const bool target_is_hydrogen = target_boundaries.empty();
+    if (source_is_hydrogen && target_is_hydrogen) {
+        return;  // no attachment on either side -> nothing changed
+    }
+    if (!source_is_hydrogen && !target_is_hydrogen &&
+        source_boundaries.size() != target_boundaries.size()) {
+        return;  // genuine multi-cut mismatch
+    }
+    if (source_is_hydrogen || target_is_hydrogen) {
+        const std::vector<mcs::Boundary>& heavy_boundaries =
+            source_is_hydrogen ? target_boundaries : source_boundaries;
+        if (heavy_boundaries.size() != 1) {
+            return;  // the paper does not encode multi-cut hydrogen changes
+        }
     }
 
+    // Constant region: rendered from the HEAVY side so the attachment carbon
+    // shows its true substituted valence. Rendering the hydrogen side instead
+    // would leave a spurious explicit H on the attachment atom (e.g.
+    // [*:1][cH]1ccccc1 rather than the phenyl [*:1]c1ccccc1). For the ordinary
+    // both-heavy case this is the source side, preserving prior behavior.
+    const OEChem::OEMolBase& constant_mol = source_is_hydrogen ? target_mol : source_mol;
+    const AtomIndexSet& constant_atoms =
+        source_is_hydrogen ? match.target_constant_atoms : match.source_constant_atoms;
+    const std::vector<mcs::Boundary>& constant_boundaries =
+        source_is_hydrogen ? target_boundaries : source_boundaries;
     const std::string constant_smiles =
-        mcs::build_region_smiles(source_mol, match.source_constant_atoms, source_boundaries, true);
-    const std::string source_variable_smiles =
-        mcs::build_region_smiles(source_mol, source_variable, source_boundaries, false);
-    const std::string target_variable_smiles =
-        mcs::build_region_smiles(target_mol, target_variable, target_boundaries, false);
+        mcs::build_region_smiles(constant_mol, constant_atoms, constant_boundaries, true);
+
+    // The hydrogen side borrows the heavy side's single attachment label.
+    const unsigned int hydrogen_label = source_is_hydrogen
+        ? target_boundaries.front().label
+        : (target_is_hydrogen ? source_boundaries.front().label : 0);
+    const std::string source_variable_smiles = source_is_hydrogen
+        ? mcs::render_hydrogen_variable_smiles(hydrogen_label)
+        : mcs::build_region_smiles(source_mol, source_variable, source_boundaries, false);
+    const std::string target_variable_smiles = target_is_hydrogen
+        ? mcs::render_hydrogen_variable_smiles(hydrogen_label)
+        : mcs::build_region_smiles(target_mol, target_variable, target_boundaries, false);
     if (constant_smiles.empty() || source_variable_smiles.empty() ||
         target_variable_smiles.empty() || source_variable_smiles == target_variable_smiles) {
         return;
     }
 
+    // Deltas: the hydrogen side's empty variable region already contributes zero
+    // heavies and zero heavy bonds through the shared counters.
     const int heavy_atom_delta =
         static_cast<int>(target_var_heavy) - static_cast<int>(source_var_heavy);
     const int heavy_bond_delta =
         static_cast<int>(mcs::count_heavy_bonds(target_mol, target_variable)) -
         static_cast<int>(mcs::count_heavy_bonds(source_mol, source_variable));
-    const auto cut_count = static_cast<unsigned int>(source_boundaries.size());
+    const auto cut_count = static_cast<unsigned int>(
+        std::max(source_boundaries.size(), target_boundaries.size()));
 
-    pairs.push_back(make_pair(source_record, target_record, constant_smiles,
+    const EnvironmentHierarchy hierarchy = encode_environment_hierarchy(
+        source_mol, target_mol, source_variable, target_variable,
+        source_changed_core, target_changed_core, match, max_environment_radius);
+
+    MatchedPair forward_pair = make_pair(source_record, target_record, constant_smiles,
         source_variable_smiles, target_variable_smiles, cut_count,
-        heavy_atom_delta, heavy_bond_delta));
-    pairs.push_back(make_pair(target_record, source_record, constant_smiles,
+        heavy_atom_delta, heavy_bond_delta);
+    MatchedPair reverse_pair = make_pair(target_record, source_record, constant_smiles,
         target_variable_smiles, source_variable_smiles, cut_count,
-        -heavy_atom_delta, -heavy_bond_delta));
+        -heavy_atom_delta, -heavy_bond_delta);
+    if (hierarchy.valid) {
+        forward_pair.SetEnvironmentSmirks(hierarchy.forward);
+        forward_pair.SetValidRadiusRange(hierarchy.min_valid_radius, hierarchy.max_valid_radius);
+        reverse_pair.SetEnvironmentSmirks(hierarchy.reverse);
+        reverse_pair.SetValidRadiusRange(hierarchy.min_valid_radius, hierarchy.max_valid_radius);
+    }
+    pairs.push_back(std::move(forward_pair));
+    pairs.push_back(std::move(reverse_pair));
 }
 
 }  // namespace
@@ -214,7 +474,7 @@ void WizePairZMethod::Analyze(unsigned int /*threads*/) {
     for (size_t i = 0; i < molecules_.size(); ++i) {
         for (size_t j = i + 1; j < molecules_.size(); ++j) {
             add_wizepairz_pair_if_valid(molecules_[i], molecules_[j],
-                mcs_identity_fraction_, next_pairs);
+                mcs_identity_fraction_, max_environment_radius_, next_pairs);
         }
     }
     std::sort(next_pairs.begin(), next_pairs.end(), mcs::compare_pairs);
