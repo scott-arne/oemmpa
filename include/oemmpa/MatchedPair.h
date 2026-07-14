@@ -3,8 +3,16 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace OEMMPA {
+
+/// \brief One rendered explicit-hydrogen SMIRKS for a pair at a given
+/// environment radius (WizePairZ). Empty for non-WizePairZ methods.
+struct PairEnvironmentSmirks {
+    unsigned int radius = 0;
+    std::string smirks;
+};
 
 class MatchedPair {
 public:
@@ -38,6 +46,13 @@ public:
     int GetHeavyAtomDelta() const;
     int GetHeavyBondDelta() const;
 
+    void SetEnvironmentSmirks(std::vector<PairEnvironmentSmirks> entries);
+    const std::vector<PairEnvironmentSmirks>& GetEnvironmentSmirks() const;
+    void SetValidRadiusRange(unsigned int min_valid_radius, unsigned int max_valid_radius);
+    bool HasValidRadiusRange() const;
+    unsigned int GetMinValidRadius() const;
+    unsigned int GetMaxValidRadius() const;
+
     void SetProperty(const std::string& property_name, double source_value, double target_value);
     double GetSourceProperty(const std::string& property_name) const;
     double GetTargetProperty(const std::string& property_name) const;
@@ -66,6 +81,10 @@ private:
     int heavy_bond_delta_ = 0;
     std::unordered_map<std::string, double> source_properties_;
     std::unordered_map<std::string, double> target_properties_;
+    std::vector<PairEnvironmentSmirks> environment_smirks_;
+    bool has_valid_radius_range_ = false;
+    unsigned int min_valid_radius_ = 0;
+    unsigned int max_valid_radius_ = 0;
 };
 
 }  // namespace OEMMPA

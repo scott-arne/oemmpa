@@ -125,5 +125,21 @@ TEST(DataObjectTest, TransformRejectsMismatchedPairTransform) {
     EXPECT_EQ(transform.GetEvidenceCount(), 1);
 }
 
+TEST(MatchedPairTest, CarriesOptionalEnvironmentSmirksAnnotation) {
+    OEMMPA::MatchedPair pair(
+        1, 2, "a", "b", "CC", "CO",
+        "[*:1]C", "[*:1]C", "[*:1]O", 1, 0, 0);
+    EXPECT_TRUE(pair.GetEnvironmentSmirks().empty());
+    EXPECT_FALSE(pair.HasValidRadiusRange());
+
+    pair.SetEnvironmentSmirks({{3, "[c:1]([H])>>[c:1]F"}, {4, "..."}});
+    pair.SetValidRadiusRange(3, 4);
+    EXPECT_EQ(pair.GetEnvironmentSmirks().size(), 2u);
+    EXPECT_EQ(pair.GetEnvironmentSmirks().front().radius, 3u);
+    EXPECT_TRUE(pair.HasValidRadiusRange());
+    EXPECT_EQ(pair.GetMinValidRadius(), 3u);
+    EXPECT_EQ(pair.GetMaxValidRadius(), 4u);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

@@ -134,4 +134,30 @@ double MatchedPair::lookup_property(
     return iter->second;
 }
 
+void MatchedPair::SetEnvironmentSmirks(std::vector<PairEnvironmentSmirks> entries) {
+    environment_smirks_ = std::move(entries);
+}
+
+const std::vector<PairEnvironmentSmirks>& MatchedPair::GetEnvironmentSmirks() const {
+    return environment_smirks_;
+}
+
+void MatchedPair::SetValidRadiusRange(unsigned int min_valid_radius, unsigned int max_valid_radius) {
+    has_valid_radius_range_ = true;
+    min_valid_radius_ = min_valid_radius;
+    max_valid_radius_ = max_valid_radius;
+}
+
+bool MatchedPair::HasValidRadiusRange() const {
+    return has_valid_radius_range_;
+}
+
+unsigned int MatchedPair::GetMinValidRadius() const {
+    return min_valid_radius_;
+}
+
+unsigned int MatchedPair::GetMaxValidRadius() const {
+    return max_valid_radius_;
+}
+
 }  // namespace OEMMPA
