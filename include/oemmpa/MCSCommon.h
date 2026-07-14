@@ -109,6 +109,8 @@ std::vector<MatchedPair> run_all_pairs(
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
+#include <mutex>
 #include <thread>
 
 namespace OEMMPA {
@@ -145,6 +147,8 @@ std::vector<MatchedPair> run_all_pairs(
 
     std::vector<std::vector<MatchedPair>> worker_sinks(worker_count);
     std::atomic<std::size_t> cursor{0};
+    std::mutex error_mutex;
+    std::exception_ptr first_error;
 
     std::vector<std::thread> workers;
     workers.reserve(worker_count);
@@ -163,27 +167,39 @@ std::vector<MatchedPair> run_all_pairs(
         workers.emplace_back([&, w]() {
             std::size_t linear_idx;
             while ((linear_idx = cursor.fetch_add(1)) < total_pairs) {
-                // Map linear index to (i, j) where i < j.
-                // Formula: linear_idx = i * (2 * n - i - 1) / 2 + (j - i - 1)
-                // Invert using quadratic formula.
-                std::size_t i = 0;
-                std::size_t remaining = linear_idx;
-                for (i = 0; i < molecule_count; ++i) {
-                    const std::size_t row_size = molecule_count - i - 1;
-                    if (remaining < row_size) {
-                        break;
+                try {
+                    // Map linear index to (i, j) where i < j.
+                    // Formula: linear_idx = i * (2 * n - i - 1) / 2 + (j - i - 1)
+                    // Invert by scanning rows until the remainder fits within a row.
+                    std::size_t i = 0;
+                    std::size_t remaining = linear_idx;
+                    for (i = 0; i < molecule_count; ++i) {
+                        const std::size_t row_size = molecule_count - i - 1;
+                        if (remaining < row_size) {
+                            break;
+                        }
+                        remaining -= row_size;
                     }
-                    remaining -= row_size;
-                }
-                const std::size_t j = i + 1 + remaining;
+                    const std::size_t j = i + 1 + remaining;
 
-                emit(molecules[i], molecules[j], worker_sinks[w]);
+                    emit(molecules[i], molecules[j], worker_sinks[w]);
+                } catch (...) {
+                    std::lock_guard<std::mutex> lock(error_mutex);
+                    if (!first_error) {
+                        first_error = std::current_exception();
+                    }
+                    break;
+                }
             }
         });
     }
 
     for (std::thread& worker : workers) {
         worker.join();
+    }
+
+    if (first_error) {
+        std::rethrow_exception(first_error);
     }
 
     // Concatenate all worker sinks.

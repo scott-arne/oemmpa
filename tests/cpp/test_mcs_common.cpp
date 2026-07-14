@@ -1,5 +1,8 @@
 #include "oemmpa/MCSCommon.h"
 
+#include "oemmpa/Error.h"
+#include "oemmpa/MoleculeRecord.h"
+
 #include <gtest/gtest.h>
 #include <oechem.h>
 
@@ -57,4 +60,25 @@ TEST(MCSCommonTest, BuildRegionSmilesExplicitHydrogensFlag) {
         mol, atoms, boundaries, /*selected_side_is_constant=*/false,
         OEMMPA::mcs::RegionRenderOptions{});
     EXPECT_EQ(without_explicit.find("[H]"), std::string::npos);  // no explicit hydrogens
+}
+
+TEST(MCSCommonTest, RunAllPairsPropagatesWorkerException) {
+    // Verify that a worker exception (e.g., from emit) propagates to the caller
+    // instead of terminating. Build two molecules and use an emit that throws
+    // for one pair.
+    std::vector<OEMMPA::MoleculeRecord> molecules;
+    molecules.push_back(OEMMPA::MoleculeRecord::FromSmiles(1u, "C", "mol1"));
+    molecules.push_back(OEMMPA::MoleculeRecord::FromSmiles(2u, "O", "mol2"));
+
+    auto emit_throws = [](const OEMMPA::MoleculeRecord&,
+                          const OEMMPA::MoleculeRecord&,
+                          std::vector<OEMMPA::MatchedPair>&) {
+        throw OEMMPA::AnalysisStateError("worker boom");
+    };
+
+    unsigned int worker_count_out = 0;
+    EXPECT_THROW(
+        OEMMPA::mcs::run_all_pairs(molecules, 2, worker_count_out, emit_throws),
+        OEMMPA::AnalysisStateError
+    );
 }
