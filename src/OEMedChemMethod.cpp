@@ -26,19 +26,6 @@ using AtomIndexSet = std::set<unsigned int>;
 constexpr float OEMEDCHEM_MIN_FRAGMENT_PERCENT = 50.0f;
 constexpr float OEMEDCHEM_MAX_FRAGMENT_PERCENT = 100.0f;
 
-long long absolute_delta(int value) {
-    const long long widened_value = value;
-    return widened_value < 0 ? -widened_value : widened_value;
-}
-
-std::string canonical_smiles(const OEChem::OEMolBase& mol) {
-    std::string smiles;
-    const unsigned int smiles_flags =
-        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
-    OEChem::OECreateSmiString(smiles, mol, smiles_flags);
-    return smiles;
-}
-
 AtomIndexSet mapped_atoms(const OEChem::OEMolBase& mol) {
     AtomIndexSet selected_atoms;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
