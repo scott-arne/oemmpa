@@ -1,6 +1,7 @@
 #include "oemmpa/OEMedChemMethod.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/MCSCommon.h"
 
 #include <oechem.h>
 #include <oemedchem.h>
@@ -18,14 +19,6 @@ namespace {
 
 using AtomIndexSet = std::set<unsigned int>;
 
-struct Boundary {
-    unsigned int label = 0;
-    unsigned int constant_atom_idx = 0;
-    unsigned int variable_atom_idx = 0;
-    unsigned int bond_idx = 0;
-    unsigned int sort_map_idx = 0;
-};
-
 // OEMedChem's indexable fragment range is expressed as a percentage of the
 // molecule's heavy atoms. 50-100% keeps the variable (changing) fragment from
 // being smaller than the constant, matching the single-cut/combo-cut matched
@@ -33,20 +26,9 @@ struct Boundary {
 constexpr float OEMEDCHEM_MIN_FRAGMENT_PERCENT = 50.0f;
 constexpr float OEMEDCHEM_MAX_FRAGMENT_PERCENT = 100.0f;
 
-bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
-    return atom != nullptr && atom->GetAtomicNum() > 1;
-}
-
 long long absolute_delta(int value) {
     const long long widened_value = value;
     return widened_value < 0 ? -widened_value : widened_value;
-}
-
-void copy_bond_flags(const OEChem::OEBondBase& source, OEChem::OEBondBase& target) {
-    target.SetAromatic(source.IsAromatic());
-    target.SetInRing(source.IsInRing());
-    target.SetIntType(source.GetIntType());
-    target.SetType(source.GetType());
 }
 
 std::string canonical_smiles(const OEChem::OEMolBase& mol) {
@@ -77,37 +59,8 @@ AtomIndexSet unmapped_atoms(const OEChem::OEMolBase& mol) {
     return selected_atoms;
 }
 
-unsigned int count_heavy_atoms(
-    const OEChem::OEMolBase& mol,
-    const AtomIndexSet& atom_indices
-) {
-    unsigned int count = 0;
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom_indices.count(atom->GetIdx()) != 0 && is_heavy_atom(&*atom)) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-unsigned int count_heavy_bonds(
-    const OEChem::OEMolBase& mol,
-    const AtomIndexSet& atom_indices
-) {
-    unsigned int count = 0;
-    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
-        const bool begin_selected = atom_indices.count(bond->GetBgnIdx()) != 0;
-        const bool end_selected = atom_indices.count(bond->GetEndIdx()) != 0;
-        if (begin_selected && end_selected && is_heavy_atom(bond->GetBgn()) &&
-            is_heavy_atom(bond->GetEnd())) {
-            ++count;
-        }
-    }
-    return count;
-}
-
-std::vector<Boundary> collect_boundaries(const OEChem::OEMolBase& mol) {
-    std::vector<Boundary> boundaries;
+std::vector<mcs::Boundary> collect_boundaries(const OEChem::OEMolBase& mol) {
+    std::vector<mcs::Boundary> boundaries;
     for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
         OEChem::OEAtomBase* begin = bond->GetBgn();
         OEChem::OEAtomBase* end = bond->GetEnd();
@@ -121,24 +74,24 @@ std::vector<Boundary> collect_boundaries(const OEChem::OEMolBase& mol) {
             continue;
         }
 
-        Boundary boundary;
+        mcs::Boundary boundary;
         boundary.constant_atom_idx = begin_constant ? begin->GetIdx() : end->GetIdx();
         boundary.variable_atom_idx = begin_constant ? end->GetIdx() : begin->GetIdx();
         boundary.bond_idx = bond->GetIdx();
-        boundary.sort_map_idx = begin_constant ? begin->GetMapIdx() : end->GetMapIdx();
+        boundary.sort_constant_idx = begin_constant ? begin->GetMapIdx() : end->GetMapIdx();
         boundaries.push_back(boundary);
     }
 
     std::sort(
         boundaries.begin(),
         boundaries.end(),
-        [](const Boundary& lhs, const Boundary& rhs) {
+        [](const mcs::Boundary& lhs, const mcs::Boundary& rhs) {
             return std::make_tuple(
-                lhs.sort_map_idx,
+                lhs.sort_constant_idx,
                 lhs.variable_atom_idx,
                 lhs.bond_idx
             ) < std::make_tuple(
-                rhs.sort_map_idx,
+                rhs.sort_constant_idx,
                 rhs.variable_atom_idx,
                 rhs.bond_idx
             );
@@ -149,66 +102,6 @@ std::vector<Boundary> collect_boundaries(const OEChem::OEMolBase& mol) {
         boundaries[index].label = static_cast<unsigned int>(index + 1);
     }
     return boundaries;
-}
-
-std::string build_region_smiles(
-    const OEChem::OEMolBase& mol,
-    const AtomIndexSet& selected_atoms,
-    const std::vector<Boundary>& boundaries,
-    bool selected_side_is_constant
-) {
-    OEChem::OEGraphMol region;
-    std::unordered_map<unsigned int, OEChem::OEAtomBase*> clones;
-
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (selected_atoms.count(atom->GetIdx()) == 0) {
-            continue;
-        }
-
-        OEChem::OEAtomBase* clone = region.NewAtom(*atom);
-        if (clone == nullptr) {
-            throw AnalysisStateError("failed to clone OEMedChem region atom");
-        }
-        clone->SetMapIdx(0);
-        clones[atom->GetIdx()] = clone;
-    }
-
-    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
-        const auto begin = clones.find(bond->GetBgnIdx());
-        const auto end = clones.find(bond->GetEndIdx());
-        if (begin == clones.end() || end == clones.end()) {
-            continue;
-        }
-
-        OEChem::OEBondBase* clone_bond =
-            region.NewBond(begin->second, end->second, bond->GetOrder());
-        if (clone_bond == nullptr) {
-            throw AnalysisStateError("failed to clone OEMedChem region bond");
-        }
-        copy_bond_flags(*bond, *clone_bond);
-    }
-
-    for (const Boundary& boundary : boundaries) {
-        const unsigned int selected_atom_idx = selected_side_is_constant
-            ? boundary.constant_atom_idx
-            : boundary.variable_atom_idx;
-        const auto selected_atom = clones.find(selected_atom_idx);
-        if (selected_atom == clones.end()) {
-            continue;
-        }
-
-        OEChem::OEAtomBase* dummy = region.NewAtom(0);
-        if (dummy == nullptr) {
-            throw AnalysisStateError("failed to add OEMedChem attachment atom");
-        }
-        dummy->SetImplicitHCount(0);
-        dummy->SetMapIdx(boundary.label);
-        if (region.NewBond(selected_atom->second, dummy, 1) == nullptr) {
-            throw AnalysisStateError("failed to add OEMedChem attachment bond");
-        }
-    }
-
-    return canonical_smiles(region);
 }
 
 bool read_mapped_smiles(OEChem::OEGraphMol& mol, const std::string& smiles) {
@@ -273,9 +166,9 @@ void add_native_pair(
     const AtomIndexSet source_variable_atoms = unmapped_atoms(source_mol);
     const AtomIndexSet target_variable_atoms = unmapped_atoms(target_mol);
     const unsigned int source_variable_heavy_atoms =
-        count_heavy_atoms(source_mol, source_variable_atoms);
+        mcs::count_heavy_atoms(source_mol, source_variable_atoms);
     const unsigned int target_variable_heavy_atoms =
-        count_heavy_atoms(target_mol, target_variable_atoms);
+        mcs::count_heavy_atoms(target_mol, target_variable_atoms);
     if (
         source_constant_atoms.empty() ||
         target_constant_atoms.empty() ||
@@ -285,25 +178,25 @@ void add_native_pair(
         return;
     }
 
-    const std::vector<Boundary> source_boundaries = collect_boundaries(source_mol);
-    const std::vector<Boundary> target_boundaries = collect_boundaries(target_mol);
+    const std::vector<mcs::Boundary> source_boundaries = collect_boundaries(source_mol);
+    const std::vector<mcs::Boundary> target_boundaries = collect_boundaries(target_mol);
     if (source_boundaries.empty() || source_boundaries.size() != target_boundaries.size()) {
         return;
     }
 
-    const std::string constant_smiles = build_region_smiles(
+    const std::string constant_smiles = mcs::build_region_smiles(
         source_mol,
         source_constant_atoms,
         source_boundaries,
         true
     );
-    const std::string source_variable_smiles = build_region_smiles(
+    const std::string source_variable_smiles = mcs::build_region_smiles(
         source_mol,
         source_variable_atoms,
         source_boundaries,
         false
     );
-    const std::string target_variable_smiles = build_region_smiles(
+    const std::string target_variable_smiles = mcs::build_region_smiles(
         target_mol,
         target_variable_atoms,
         target_boundaries,
@@ -324,8 +217,8 @@ void add_native_pair(
         static_cast<int>(target_variable_heavy_atoms) -
         static_cast<int>(source_variable_heavy_atoms);
     const int heavy_bond_delta =
-        static_cast<int>(count_heavy_bonds(target_mol, target_variable_atoms)) -
-        static_cast<int>(count_heavy_bonds(source_mol, source_variable_atoms));
+        static_cast<int>(mcs::count_heavy_bonds(target_mol, target_variable_atoms)) -
+        static_cast<int>(mcs::count_heavy_bonds(source_mol, source_variable_atoms));
     const unsigned int cut_count = static_cast<unsigned int>(source_boundaries.size());
 
     pairs.push_back(make_pair(
@@ -350,30 +243,6 @@ void add_native_pair(
     ));
 }
 
-bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
-    return std::make_tuple(
-        lhs.GetConstantSmiles(),
-        lhs.GetSourceMoleculeId(),
-        lhs.GetTargetMoleculeId(),
-        lhs.GetTransformSmiles(),
-        lhs.GetSourceVariableSmiles(),
-        lhs.GetTargetVariableSmiles(),
-        lhs.GetCutCount(),
-        lhs.GetHeavyAtomDelta(),
-        lhs.GetHeavyBondDelta()
-    ) < std::make_tuple(
-        rhs.GetConstantSmiles(),
-        rhs.GetSourceMoleculeId(),
-        rhs.GetTargetMoleculeId(),
-        rhs.GetTransformSmiles(),
-        rhs.GetSourceVariableSmiles(),
-        rhs.GetTargetVariableSmiles(),
-        rhs.GetCutCount(),
-        rhs.GetHeavyAtomDelta(),
-        rhs.GetHeavyBondDelta()
-    );
-}
-
 bool same_pair_identity(const MatchedPair& lhs, const MatchedPair& rhs) {
     return std::make_tuple(
         lhs.GetConstantSmiles(),
@@ -388,31 +257,6 @@ bool same_pair_identity(const MatchedPair& lhs, const MatchedPair& rhs) {
         rhs.GetTransformSmiles(),
         rhs.GetCutCount()
     );
-}
-
-bool passes_atom_delta_filters(
-    int heavy_atom_delta,
-    const QueryOptions& options,
-    unsigned int source_heavy_atom_count
-) {
-    const long long abs_atom_delta = absolute_delta(heavy_atom_delta);
-    if (
-        options.GetMaxHeavyAtomChange() >= 0 &&
-        abs_atom_delta > options.GetMaxHeavyAtomChange()
-    ) {
-        return false;
-    }
-
-    if (options.GetMaxRelativeHeavyAtomChange() >= 0.0) {
-        const double relative_change = source_heavy_atom_count == 0
-            ? (abs_atom_delta == 0 ? 0.0 : std::numeric_limits<double>::infinity())
-            : static_cast<double>(abs_atom_delta) / static_cast<double>(source_heavy_atom_count);
-        if (relative_change > options.GetMaxRelativeHeavyAtomChange()) {
-            return false;
-        }
-    }
-
-    return true;
 }
 
 bool is_expected_index_filter(int status) {
@@ -497,7 +341,7 @@ void OEMedChemMethod::Analyze(unsigned int /*threads*/) {
         }
     }
 
-    std::sort(next_pairs.begin(), next_pairs.end(), compare_pairs);
+    std::sort(next_pairs.begin(), next_pairs.end(), mcs::compare_pairs);
     next_pairs.erase(
         std::unique(next_pairs.begin(), next_pairs.end(), same_pair_identity),
         next_pairs.end()
@@ -535,7 +379,7 @@ std::vector<MatchedPair> OEMedChemMethod::GetPairs(const QueryOptions& options) 
                 std::to_string(pair.GetSourceMoleculeId())
             );
         }
-        if (!passes_atom_delta_filters(
+        if (!mcs::passes_atom_delta_filters(
             pair.GetHeavyAtomDelta(),
             options,
             source_heavy_atoms->second
