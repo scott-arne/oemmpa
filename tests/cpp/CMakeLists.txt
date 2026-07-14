@@ -23,6 +23,7 @@ add_executable(oemmpa_tests
     test_memory_index.cpp
     test_analyzer.cpp
     test_transform_application.cpp
+    test_wizepairz.cpp
 )
 
 if(OEMMPA_HAS_DUCKDB)

@@ -108,6 +108,7 @@ set(OEMMPA_SOURCES
     src/FragmentationMethod.cpp
     src/MCSCommon.cpp
     src/DMCSSMethod.cpp
+    src/WizePairZMethod.cpp
     src/Analyzer.cpp
     src/MatchedPair.cpp
     src/Transform.cpp

@@ -10,6 +10,7 @@
 #if OEMMPA_HAS_OEMEDCHEM
 #include "oemmpa/OEMedChemMethod.h"
 #endif
+#include "oemmpa/WizePairZMethod.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -125,6 +126,9 @@ std::unique_ptr<AnalysisMethod> make_analysis_method(const std::string& method_n
     }
     if (method_name == "dmcss") {
         return std::make_unique<DMCSSMethod>();
+    }
+    if (method_name == "wizepairz") {
+        return std::make_unique<WizePairZMethod>();
     }
     if (method_name == "oemedchem") {
 #if OEMMPA_HAS_OEMEDCHEM
