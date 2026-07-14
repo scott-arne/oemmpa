@@ -480,7 +480,12 @@ void add_wizepairz_pair_if_valid(
 void WizePairZMethod::Clear() { molecules_.clear(); pairs_.clear(); analyzed_ = false; }
 void WizePairZMethod::AddMolecule(const MoleculeRecord& record) { molecules_.push_back(record); analyzed_ = false; }
 void WizePairZMethod::SetMcsIdentityFraction(double fraction) { mcs_identity_fraction_ = fraction; }
-void WizePairZMethod::SetMaxEnvironmentRadius(unsigned int radius) { max_environment_radius_ = radius; }
+void WizePairZMethod::SetMaxEnvironmentRadius(unsigned int radius) {
+    if (radius < 1) {
+        throw InvalidQueryError("wizepairz max_environment_radius must be at least 1");
+    }
+    max_environment_radius_ = radius;
+}
 unsigned int WizePairZMethod::LastAnalyzeWorkerCount() const { return last_worker_count_; }
 
 void WizePairZMethod::Analyze(unsigned int /*threads*/) {

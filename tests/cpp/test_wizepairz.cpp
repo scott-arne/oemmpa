@@ -1,4 +1,5 @@
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/Error.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
@@ -204,4 +205,14 @@ TEST(WizePairZTest, SingleFragmentGateAcceptsSingleSiteAtLowThreshold) {
     method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
     method.Analyze(1);
     EXPECT_FALSE(method.GetPairs(QueryOptions{}).empty());
+}
+
+TEST(WizePairZTest, RejectsZeroMaxEnvironmentRadius) {
+    WizePairZMethod method;
+    EXPECT_THROW(method.SetMaxEnvironmentRadius(0), OEMMPA::InvalidQueryError);
+}
+
+TEST(WizePairZTest, AcceptsOneMaxEnvironmentRadius) {
+    WizePairZMethod method;
+    EXPECT_NO_THROW(method.SetMaxEnvironmentRadius(1));
 }
