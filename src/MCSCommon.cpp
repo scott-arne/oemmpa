@@ -355,6 +355,12 @@ std::string build_region_smiles(
 
     if (render_options.explicit_hydrogens) {
         OEChem::OEAddExplicitHydrogens(region);
+        // Use Hydrogens flag to force explicit hydrogen atoms to appear as separate [H] in SMILES.
+        std::string smiles;
+        const unsigned int smiles_flags =
+            OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps | OEChem::OESMILESFlag::Hydrogens;
+        OEChem::OECreateSmiString(smiles, region, smiles_flags);
+        return smiles;
     }
 
     return canonical_smiles(region);

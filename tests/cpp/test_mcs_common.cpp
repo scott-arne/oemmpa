@@ -41,3 +41,20 @@ TEST(MCSCommonTest, MappedRegionKeepsRealAtomMapsAndExplicitHydrogens) {
     EXPECT_NE(out.find("[C:2]"), std::string::npos);  // the real carbon keeps map 2
     EXPECT_NE(out.find("[H]"), std::string::npos);     // explicit hydrogens present
 }
+
+TEST(MCSCommonTest, BuildRegionSmilesExplicitHydrogensFlag) {
+    // Methane carbon: explicit-H path should emit [H], default path should not.
+    const OEChem::OEGraphMol mol = mol_from_smiles("C");
+    const std::set<unsigned int> atoms{0u};
+    const std::vector<OEMMPA::mcs::Boundary> boundaries;
+
+    const std::string with_explicit = OEMMPA::mcs::build_region_smiles(
+        mol, atoms, boundaries, /*selected_side_is_constant=*/false,
+        OEMMPA::mcs::RegionRenderOptions{/*explicit_hydrogens=*/true});
+    EXPECT_NE(with_explicit.find("[H]"), std::string::npos);  // explicit hydrogens present
+
+    const std::string without_explicit = OEMMPA::mcs::build_region_smiles(
+        mol, atoms, boundaries, /*selected_side_is_constant=*/false,
+        OEMMPA::mcs::RegionRenderOptions{});
+    EXPECT_EQ(without_explicit.find("[H]"), std::string::npos);  // no explicit hydrogens
+}
