@@ -156,6 +156,27 @@ std::map<unsigned int, unsigned int> assign_recs_radii(
     return radii;
 }
 
+// The RECS pruned at environment radius R: every variable (radius-0) atom plus
+// each MCS core atom whose assign_recs_radii distance is <= R (changed-core atoms
+// are radius 1). R = max_environment_radius reproduces the paper's outermost
+// RECS; smaller R prunes inward toward the change. Variable atoms are always
+// retained, so only MCS core atoms are gated on radius here.
+AtomIndexSet recs_at_radius(
+    const AtomIndexSet& variable_atoms,
+    const AtomIndexSet& constant_atoms,
+    const std::map<unsigned int, unsigned int>& radii,
+    unsigned int radius
+) {
+    AtomIndexSet recs = variable_atoms;
+    for (const unsigned int idx : constant_atoms) {
+        const auto found = radii.find(idx);
+        if (found != radii.end() && found->second <= radius) {
+            recs.insert(idx);
+        }
+    }
+    return recs;
+}
+
 // Bonds crossing from the retained environment into the pruned MCS shell become
 // wildcard attachment points ([*]) so a radius-reduced environment still shows
 // that the molecule continues past the cut. Variable atoms are always retained,
@@ -235,8 +256,8 @@ EnvironmentHierarchy encode_environment_hierarchy(
     const OEChem::OEMolBase& target_mol,
     const AtomIndexSet& source_variable,
     const AtomIndexSet& target_variable,
-    const AtomIndexSet& source_changed_core,
-    const AtomIndexSet& target_changed_core,
+    const std::map<unsigned int, unsigned int>& source_radii,
+    const std::map<unsigned int, unsigned int>& target_radii,
     const mcs::McsMatch& match,
     unsigned int max_radius
 ) {
@@ -244,11 +265,6 @@ EnvironmentHierarchy encode_environment_hierarchy(
     if (max_radius == 0) {
         return hierarchy;
     }
-
-    const std::map<unsigned int, unsigned int> source_radii = assign_recs_radii(
-        source_mol, match.source_constant_atoms, source_changed_core, source_variable);
-    const std::map<unsigned int, unsigned int> target_radii = assign_recs_radii(
-        target_mol, match.target_constant_atoms, target_changed_core, target_variable);
 
     // Reactant->product atom maps, built once. Every source RECS/retained-core
     // atom carries (source_idx + 1); each MCS atom's mapped target counterpart
@@ -269,20 +285,10 @@ EnvironmentHierarchy encode_environment_hierarchy(
     // Descending radius; break at the first radius that fragments a side.
     std::vector<std::pair<unsigned int, std::pair<std::string, std::string>>> rendered;
     for (unsigned int radius = max_radius; radius >= 1; --radius) {
-        AtomIndexSet source_recs = source_variable;
-        for (const unsigned int idx : match.source_constant_atoms) {
-            const auto found = source_radii.find(idx);
-            if (found != source_radii.end() && found->second <= radius) {
-                source_recs.insert(idx);
-            }
-        }
-        AtomIndexSet target_recs = target_variable;
-        for (const unsigned int idx : match.target_constant_atoms) {
-            const auto found = target_radii.find(idx);
-            if (found != target_radii.end() && found->second <= radius) {
-                target_recs.insert(idx);
-            }
-        }
+        const AtomIndexSet source_recs = recs_at_radius(
+            source_variable, match.source_constant_atoms, source_radii, radius);
+        const AtomIndexSet target_recs = recs_at_radius(
+            target_variable, match.target_constant_atoms, target_radii, radius);
         if (!mcs::is_single_fragment(source_mol, source_recs) ||
             !mcs::is_single_fragment(target_mol, target_recs)) {
             break;
@@ -358,19 +364,29 @@ void add_wizepairz_pair_if_valid(
     const AtomIndexSet target_changed_core =
         collect_changed_core_atoms(target_mol, source_mol, invert_match(match));
 
-    // RECS at the maximum radius = non-MCS (variable) atoms plus changed core atoms.
-    AtomIndexSet source_recs = source_variable;
-    source_recs.insert(source_changed_core.begin(), source_changed_core.end());
-    AtomIndexSet target_recs = target_variable;
-    target_recs.insert(target_changed_core.begin(), target_changed_core.end());
+    // Assign every atom its WizePairZ environment radius (variable = 0,
+    // changed-core = 1, other MCS atoms = bond distance to the nearest change).
+    // Computed once and shared by the validity gate and the per-radius hierarchy
+    // so the two can never disagree about which radii are single-fragment.
+    const std::map<unsigned int, unsigned int> source_radii = assign_recs_radii(
+        source_mol, match.source_constant_atoms, source_changed_core, source_variable);
+    const std::map<unsigned int, unsigned int> target_radii = assign_recs_radii(
+        target_mol, match.target_constant_atoms, target_changed_core, target_variable);
 
-    // The WizePairZ single-site validity gate: a valid transformation localizes
-    // the change to one connected region on each molecule. A RECS that splits
-    // into multiple fragments signals a change spread across independent sites,
-    // so reject the pair. This also rejects no-op pairs (an empty RECS is not a
-    // single fragment).
-    if (!mcs::is_single_fragment(source_mol, source_recs) ||
-        !mcs::is_single_fragment(target_mol, target_recs)) {
+    // The paper-faithful WizePairZ validity gate: prune the RECS at the maximum
+    // environment radius (delete MCS atoms more than max_environment_radius bonds
+    // from the change) and require it to be a single connected fragment on BOTH
+    // sides. A RECS that still splits at the widest radius signals a change spread
+    // across independent sites that the retained core cannot bridge, so reject the
+    // pair. This also rejects no-op pairs (an empty RECS is not a single fragment).
+    // The hierarchy then encodes inward from this radius, stopping when a side
+    // splits, so a pair that passes the gate always has at least max_radius valid.
+    const AtomIndexSet source_recs_max = recs_at_radius(
+        source_variable, match.source_constant_atoms, source_radii, max_environment_radius);
+    const AtomIndexSet target_recs_max = recs_at_radius(
+        target_variable, match.target_constant_atoms, target_radii, max_environment_radius);
+    if (!mcs::is_single_fragment(source_mol, source_recs_max) ||
+        !mcs::is_single_fragment(target_mol, target_recs_max)) {
         return;
     }
 
@@ -441,7 +457,7 @@ void add_wizepairz_pair_if_valid(
 
     const EnvironmentHierarchy hierarchy = encode_environment_hierarchy(
         source_mol, target_mol, source_variable, target_variable,
-        source_changed_core, target_changed_core, match, max_environment_radius);
+        source_radii, target_radii, match, max_environment_radius);
 
     MatchedPair forward_pair = make_pair(source_record, target_record, constant_smiles,
         source_variable_smiles, target_variable_smiles, cut_count,

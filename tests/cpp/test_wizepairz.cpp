@@ -132,19 +132,66 @@ TEST(WizePairZTest, AcceptsSingleSiteChange) {
     EXPECT_FALSE(analyzer.GetPairs().empty());
 }
 
-TEST(WizePairZTest, SingleFragmentGateRejectsDisconnectedRecs) {
-    // At the default 0.90 identity threshold, para-xylene->hydroquinone is
-    // rejected by the MCS size cutoff before the single-fragment gate is
-    // reached, so it cannot exercise the gate. Lowering the threshold lets the
-    // pair through the cutoff; its variable region is the disconnected
-    // [*:1]C.[*:2]C -> [*:1]O.[*:2]O (a two-site change). This directly proves
-    // the single-fragment gate is what rejects it.
+TEST(WizePairZTest, HierarchyPrunesLowRadiiForCoreBridgedTwoSiteChange) {
+    // The Figure-4 case. Para-xylene -> hydroquinone is two methyl->hydroxyl
+    // changes at the 1 and 4 ring positions. Their RECS is two disconnected
+    // fragments at radius 1 (each change plus its ipso carbon, which are para and
+    // thus not bonded), but the benzene core bridges them at radius 2 (BFS from
+    // both changed sites reaches every ring carbon within two bonds). At the
+    // default max radius (4) the pruned-at-max RECS is a single fragment, so the
+    // pair is valid; the per-radius hierarchy then prunes the invalid low radii,
+    // emitting SMIRKS only for the surviving contiguous top range [2, 4] and
+    // reporting min_valid=2. A permissive identity threshold is needed so the
+    // 6-atom benzene MCS clears the size cutoff.
     WizePairZMethod method;
     method.SetMcsIdentityFraction(0.5);
-    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "dimethyl"));
-    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "diol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
     method.Analyze(1);
-    EXPECT_TRUE(method.GetPairs(QueryOptions{}).empty());
+    const auto pairs = method.GetPairs(QueryOptions{});
+    ASSERT_FALSE(pairs.empty());
+    const MatchedPair& p = pairs.front();
+    ASSERT_TRUE(p.HasValidRadiusRange());
+    // Low-radius RECS was disconnected: the hierarchy genuinely pruned it.
+    EXPECT_GT(p.GetMinValidRadius(), 1u);
+    EXPECT_EQ(p.GetMinValidRadius(), 2u);
+    EXPECT_EQ(p.GetMaxValidRadius(), 4u);
+    // Exactly the surviving top range [2, 4] is emitted, contiguous and ordered.
+    const auto& smirks = p.GetEnvironmentSmirks();
+    ASSERT_EQ(smirks.size(), 3u);
+    EXPECT_EQ(smirks.front().radius, 2u);
+    EXPECT_EQ(smirks.back().radius, 4u);
+}
+
+TEST(WizePairZTest, StrictRadiusOneEmitsSingleSmirksAndRejectsTwoSite) {
+    // With max environment radius 1, RECS-at-1 recovers the strict radius-0/1
+    // acceptance: a localized single-site change (toluene->phenol) stays a single
+    // fragment and emits exactly one radius-1 SMIRKS with min==max==1.
+    WizePairZMethod single;
+    single.SetMcsIdentityFraction(0.5);
+    single.SetMaxEnvironmentRadius(1);
+    single.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    single.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    single.Analyze(1);
+    const auto single_pairs = single.GetPairs(QueryOptions{});
+    ASSERT_FALSE(single_pairs.empty());
+    const MatchedPair& sp = single_pairs.front();
+    ASSERT_TRUE(sp.HasValidRadiusRange());
+    EXPECT_EQ(sp.GetMinValidRadius(), 1u);
+    EXPECT_EQ(sp.GetMaxValidRadius(), 1u);
+    ASSERT_EQ(sp.GetEnvironmentSmirks().size(), 1u);
+    EXPECT_EQ(sp.GetEnvironmentSmirks().front().radius, 1u);
+
+    // The same strict radius rejects a core-bridged two-site change: its
+    // radius-1 RECS is disconnected and, with max radius 1, cannot be rescued by
+    // a wider environment. This recapitulates the original strict gate behavior.
+    WizePairZMethod two_site;
+    two_site.SetMcsIdentityFraction(0.5);
+    two_site.SetMaxEnvironmentRadius(1);
+    two_site.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    two_site.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    two_site.Analyze(1);
+    EXPECT_TRUE(two_site.GetPairs(QueryOptions{}).empty());
 }
 
 TEST(WizePairZTest, SingleFragmentGateAcceptsSingleSiteAtLowThreshold) {
