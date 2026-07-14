@@ -254,11 +254,50 @@ std::vector<Boundary> collect_target_boundaries(
     return boundaries;
 }
 
+std::string render_hydrogen_variable_smiles(unsigned int label) {
+    return "[*:" + std::to_string(label) + "][H]";
+}
+
+bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms) {
+    if (atoms.empty()) {
+        return false;
+    }
+    // BFS over the induced subgraph; connected iff every atom is reached.
+    std::set<unsigned int> visited;
+    std::vector<unsigned int> stack{*atoms.begin()};
+    visited.insert(*atoms.begin());
+    while (!stack.empty()) {
+        const unsigned int idx = stack.back();
+        stack.pop_back();
+        const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(idx));
+        if (atom == nullptr) {
+            continue;
+        }
+        for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+            const unsigned int nbr_idx = nbr->GetIdx();
+            if (atoms.count(nbr_idx) != 0 && visited.insert(nbr_idx).second) {
+                stack.push_back(nbr_idx);
+            }
+        }
+    }
+    return visited.size() == atoms.size();
+}
+
 std::string build_region_smiles(
     const OEChem::OEMolBase& mol,
     const std::set<unsigned int>& selected_atoms,
     const std::vector<Boundary>& boundaries,
     bool selected_side_is_constant
+) {
+    return build_region_smiles(mol, selected_atoms, boundaries, selected_side_is_constant, RegionRenderOptions{});
+}
+
+std::string build_region_smiles(
+    const OEChem::OEMolBase& mol,
+    const std::set<unsigned int>& selected_atoms,
+    const std::vector<Boundary>& boundaries,
+    bool selected_side_is_constant,
+    const RegionRenderOptions& render_options
 ) {
     OEChem::OEGraphMol region;
     std::unordered_map<unsigned int, OEChem::OEAtomBase*> clones;
@@ -311,7 +350,85 @@ std::string build_region_smiles(
         }
     }
 
+    if (render_options.explicit_hydrogens) {
+        OEChem::OEAddExplicitHydrogens(region);
+    }
+
     return canonical_smiles(region);
+}
+
+std::string render_mapped_region_with_explicit_h(
+    const OEChem::OEMolBase& mol,
+    const std::set<unsigned int>& atoms,
+    const std::vector<Boundary>& boundaries,
+    bool selected_side_is_constant,
+    const std::unordered_map<unsigned int, unsigned int>& atom_map_indices
+) {
+    OEChem::OEGraphMol region;
+    std::unordered_map<unsigned int, OEChem::OEAtomBase*> clones;
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atoms.count(atom->GetIdx()) == 0) {
+            continue;
+        }
+
+        OEChem::OEAtomBase* clone = region.NewAtom(*atom);
+        if (clone == nullptr) {
+            throw AnalysisStateError("failed to clone mapped region atom");
+        }
+        // Keep real-atom maps for atoms present in atom_map_indices.
+        const unsigned int original_idx = atom->GetIdx();
+        const auto map_entry = atom_map_indices.find(original_idx);
+        if (map_entry != atom_map_indices.end()) {
+            clone->SetMapIdx(map_entry->second);
+        } else {
+            clone->SetMapIdx(0);
+        }
+        clones[original_idx] = clone;
+    }
+
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        const auto begin = clones.find(bond->GetBgnIdx());
+        const auto end = clones.find(bond->GetEndIdx());
+        if (begin == clones.end() || end == clones.end()) {
+            continue;
+        }
+
+        OEChem::OEBondBase* clone_bond =
+            region.NewBond(begin->second, end->second, bond->GetOrder());
+        if (clone_bond == nullptr) {
+            throw AnalysisStateError("failed to clone mapped region bond");
+        }
+        copy_bond_flags(*bond, *clone_bond);
+    }
+
+    for (const Boundary& boundary : boundaries) {
+        const unsigned int selected_atom_idx = selected_side_is_constant
+            ? boundary.constant_atom_idx
+            : boundary.variable_atom_idx;
+        const auto selected_atom = clones.find(selected_atom_idx);
+        if (selected_atom == clones.end()) {
+            continue;
+        }
+
+        OEChem::OEAtomBase* dummy = region.NewAtom(0);
+        if (dummy == nullptr) {
+            throw AnalysisStateError("failed to add mapped region attachment atom");
+        }
+        dummy->SetImplicitHCount(0);
+        dummy->SetMapIdx(boundary.label);
+        if (region.NewBond(selected_atom->second, dummy, 1) == nullptr) {
+            throw AnalysisStateError("failed to add mapped region attachment bond");
+        }
+    }
+
+    OEChem::OEAddExplicitHydrogens(region);
+    // Use Hydrogens flag to force explicit hydrogen atoms to appear as separate [H] in SMILES.
+    std::string smiles;
+    const unsigned int smiles_flags =
+        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps | OEChem::OESMILESFlag::Hydrogens;
+    OEChem::OECreateSmiString(smiles, region, smiles_flags);
+    return smiles;
 }
 
 bool find_mcs_match(

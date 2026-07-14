@@ -31,6 +31,26 @@ struct McsMatch {
     std::unordered_map<unsigned int, unsigned int> target_to_source;
 };
 
+/// \brief A variable region descriptor for WizePairZ: either an atom subset or a
+/// single hydrogen substituent.
+struct VariableRegion {
+    enum class Kind { AtomSubset, Hydrogen };
+    Kind kind = Kind::AtomSubset;
+    std::set<unsigned int> atoms;
+    unsigned int hydrogen_label = 0;
+    static VariableRegion subset(std::set<unsigned int> region_atoms) {
+        return VariableRegion{Kind::AtomSubset, std::move(region_atoms), 0};
+    }
+    static VariableRegion hydrogen(unsigned int label) {
+        return VariableRegion{Kind::Hydrogen, {}, label};
+    }
+};
+
+/// \brief Rendering options for region SMILES generation.
+struct RegionRenderOptions {
+    bool explicit_hydrogens = false;
+};
+
 bool is_heavy_atom(const OEChem::OEAtomBase* atom);
 unsigned int count_heavy_atoms(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atom_indices);
 unsigned int count_heavy_bonds(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atom_indices);
@@ -42,7 +62,11 @@ std::vector<Boundary> collect_source_boundaries(const OEChem::OEMolBase& mol, co
 std::vector<Boundary> collect_target_boundaries(const OEChem::OEMolBase& mol, const std::set<unsigned int>& constant_atoms, const std::unordered_map<unsigned int, unsigned int>& target_to_source);
 bool find_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase& target_mol, const std::set<unsigned int>& source_candidates, const std::set<unsigned int>& target_candidates, McsMatch& record);
 McsMatch find_disconnected_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase& target_mol);
+std::string render_hydrogen_variable_smiles(unsigned int label);
+bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms);
 std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant);
+std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const RegionRenderOptions& render_options);
+std::string render_mapped_region_with_explicit_h(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const std::unordered_map<unsigned int, unsigned int>& atom_map_indices);
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs);
 bool passes_atom_delta_filters(int heavy_atom_delta, const QueryOptions& options, unsigned int source_heavy_atom_count);
 
