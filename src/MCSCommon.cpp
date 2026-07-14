@@ -475,6 +475,8 @@ bool find_mcs_match(
     // Several MCS solutions of equal size can exist; the order OEChem yields
     // them is not guaranteed stable across inputs/versions. Pick the
     // lexicographically smallest mapping so the resulting pair is reproducible.
+    // The tie-break compares atom sets first, then the atom mapping to pin
+    // automorphic solutions (same atoms, different mapping).
     bool have_record = false;
     for (; matches; ++matches) {
         McsMatch candidate = extract_match_record(*matches);
@@ -482,17 +484,35 @@ bool find_mcs_match(
             || candidate.target_constant_atoms.empty()) {
             continue;
         }
-        if (!have_record
-            || std::tie(
-                   candidate.source_constant_atoms,
-                   candidate.target_constant_atoms
-               )
-                   < std::tie(
-                       record.source_constant_atoms,
-                       record.target_constant_atoms
-                   )) {
+        // Convert the unordered mapping to a sorted vector for deterministic comparison.
+        std::vector<std::pair<unsigned int, unsigned int>> candidate_mapping(
+            candidate.target_to_source.begin(),
+            candidate.target_to_source.end()
+        );
+        std::sort(candidate_mapping.begin(), candidate_mapping.end());
+
+        if (!have_record) {
             record = std::move(candidate);
             have_record = true;
+        } else {
+            std::vector<std::pair<unsigned int, unsigned int>> record_mapping(
+                record.target_to_source.begin(),
+                record.target_to_source.end()
+            );
+            std::sort(record_mapping.begin(), record_mapping.end());
+
+            if (std::tie(
+                    candidate.source_constant_atoms,
+                    candidate.target_constant_atoms,
+                    candidate_mapping
+                )
+                    < std::tie(
+                        record.source_constant_atoms,
+                        record.target_constant_atoms,
+                        record_mapping
+                    )) {
+                record = std::move(candidate);
+            }
         }
     }
     return have_record;
