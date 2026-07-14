@@ -31,6 +31,65 @@ bool passes_identity_threshold(
     return mcs_heavy_atoms >= cutoff;
 }
 
+// Radius-1 "changed" MCS atoms: MCS atoms in mol_a whose local environment
+// differs from their mapped counterpart in mol_b. A substitution can perturb an
+// otherwise-common core atom (its valence, implicit-H count, ring membership, or
+// smallest ring size); marking those atoms folds them into the RECS so the
+// single-fragment validity test sees the true extent of the change.
+AtomIndexSet collect_changed_core_atoms(
+    const OEChem::OEMolBase& mol_a,
+    const OEChem::OEMolBase& mol_b,
+    const mcs::McsMatch& match
+) {
+    // match.target_to_source maps target idx -> source idx and mol_a is the
+    // match's source side, so invert it to map each mol_a atom to its mol_b
+    // counterpart. The MCS mapping is a bijection, so this inverse is
+    // well-defined and independent of hash iteration order.
+    std::unordered_map<unsigned int, unsigned int> source_to_target;
+    source_to_target.reserve(match.target_to_source.size());
+    for (const auto& entry : match.target_to_source) {
+        source_to_target[entry.second] = entry.first;
+    }
+
+    AtomIndexSet changed;
+    for (const unsigned int source_idx : match.source_constant_atoms) {
+        const auto mapped = source_to_target.find(source_idx);
+        if (mapped == source_to_target.end()) {
+            continue;
+        }
+        const OEChem::OEAtomBase* atom_a =
+            mol_a.GetAtom(OEChem::OEHasAtomIdx(source_idx));
+        const OEChem::OEAtomBase* atom_b =
+            mol_b.GetAtom(OEChem::OEHasAtomIdx(mapped->second));
+        if (atom_a == nullptr || atom_b == nullptr) {
+            continue;
+        }
+        const bool differs =
+            atom_a->GetValence() != atom_b->GetValence() ||
+            atom_a->GetImplicitHCount() != atom_b->GetImplicitHCount() ||
+            atom_a->IsInRing() != atom_b->IsInRing() ||
+            OEChem::OEAtomGetSmallestRingSize(*atom_a) !=
+                OEChem::OEAtomGetSmallestRingSize(*atom_b);
+        if (differs) {
+            changed.insert(source_idx);
+        }
+    }
+    return changed;
+}
+
+// Swap the source/target roles of an MCS match (and invert target_to_source)
+// so collect_changed_core_atoms can walk the target molecule as its "mol_a".
+mcs::McsMatch invert_match(const mcs::McsMatch& match) {
+    mcs::McsMatch inverted;
+    inverted.source_constant_atoms = match.target_constant_atoms;
+    inverted.target_constant_atoms = match.source_constant_atoms;
+    inverted.target_to_source.reserve(match.target_to_source.size());
+    for (const auto& entry : match.target_to_source) {
+        inverted.target_to_source[entry.second] = entry.first;
+    }
+    return inverted;
+}
+
 MatchedPair make_pair(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
@@ -83,6 +142,27 @@ void add_wizepairz_pair_if_valid(
     const unsigned int target_var_heavy = mcs::count_heavy_atoms(target_mol, target_variable);
     if (source_var_heavy == 0 || target_var_heavy == 0) {
         return;  // hydrogen substituent handled in Task 7
+    }
+
+    // Mark differing MCS atoms (valence / implicit-H / ring membership / ring size).
+    const AtomIndexSet source_changed_core =
+        collect_changed_core_atoms(source_mol, target_mol, match);
+    const AtomIndexSet target_changed_core =
+        collect_changed_core_atoms(target_mol, source_mol, invert_match(match));
+
+    // RECS at the maximum radius = non-MCS (variable) atoms plus changed core atoms.
+    AtomIndexSet source_recs = source_variable;
+    source_recs.insert(source_changed_core.begin(), source_changed_core.end());
+    AtomIndexSet target_recs = target_variable;
+    target_recs.insert(target_changed_core.begin(), target_changed_core.end());
+
+    // The WizePairZ single-site validity gate: a valid transformation localizes
+    // the change to one connected region on each molecule. A RECS that splits
+    // into multiple fragments signals a change spread across independent sites,
+    // so reject the pair.
+    if (!mcs::is_single_fragment(source_mol, source_recs) ||
+        !mcs::is_single_fragment(target_mol, target_recs)) {
+        return;
     }
 
     const std::vector<mcs::Boundary> source_boundaries =
