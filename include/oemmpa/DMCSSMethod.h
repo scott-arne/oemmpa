@@ -17,6 +17,7 @@ public:
     void Analyze(unsigned int threads) override;
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const override;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
+    unsigned int LastAnalyzeWorkerCount() const override;
 
 private:
     void RequireAnalyzed() const;
@@ -24,6 +25,7 @@ private:
     std::vector<MoleculeRecord> molecules_;
     std::vector<MatchedPair> pairs_;
     bool analyzed_ = false;
+    unsigned int last_worker_count_ = 1;
 };
 
 }  // namespace OEMMPA

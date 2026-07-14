@@ -488,18 +488,15 @@ void WizePairZMethod::SetMaxEnvironmentRadius(unsigned int radius) {
 }
 unsigned int WizePairZMethod::LastAnalyzeWorkerCount() const { return last_worker_count_; }
 
-void WizePairZMethod::Analyze(unsigned int /*threads*/) {
+void WizePairZMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
-    last_worker_count_ = 1;
-    std::vector<MatchedPair> next_pairs;
-    for (size_t i = 0; i < molecules_.size(); ++i) {
-        for (size_t j = i + 1; j < molecules_.size(); ++j) {
-            add_wizepairz_pair_if_valid(molecules_[i], molecules_[j],
-                mcs_identity_fraction_, max_environment_radius_, next_pairs);
-        }
-    }
-    std::sort(next_pairs.begin(), next_pairs.end(), mcs::compare_pairs);
-    pairs_ = std::move(next_pairs);
+    const double fraction = mcs_identity_fraction_;
+    const unsigned int max_radius = max_environment_radius_;
+    pairs_ = mcs::run_all_pairs(molecules_, threads, last_worker_count_,
+        [fraction, max_radius](const MoleculeRecord& a, const MoleculeRecord& b,
+                               std::vector<MatchedPair>& sink) {
+            add_wizepairz_pair_if_valid(a, b, fraction, max_radius, sink);
+        });
     analyzed_ = true;
 }
 

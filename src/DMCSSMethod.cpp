@@ -150,27 +150,18 @@ void DMCSSMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
-void DMCSSMethod::Analyze(unsigned int /*threads*/) {
+void DMCSSMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
-    std::vector<MatchedPair> next_pairs;
-
-    for (size_t source_index = 0; source_index < molecules_.size(); ++source_index) {
-        for (
-            size_t target_index = source_index + 1;
-            target_index < molecules_.size();
-            ++target_index
-        ) {
-            add_mcs_pair_if_valid(
-                molecules_[source_index],
-                molecules_[target_index],
-                next_pairs
-            );
-        }
-    }
-
-    std::sort(next_pairs.begin(), next_pairs.end(), mcs::compare_pairs);
-    pairs_ = std::move(next_pairs);
+    pairs_ = mcs::run_all_pairs(molecules_, threads, last_worker_count_,
+        [](const MoleculeRecord& a, const MoleculeRecord& b,
+           std::vector<MatchedPair>& sink) {
+            add_mcs_pair_if_valid(a, b, sink);
+        });
     analyzed_ = true;
+}
+
+unsigned int DMCSSMethod::LastAnalyzeWorkerCount() const {
+    return last_worker_count_;
 }
 
 std::vector<MatchedPair> DMCSSMethod::GetPairs(const QueryOptions& options) const {

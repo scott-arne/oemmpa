@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <thread>
 
 using OEMMPA::Analyzer;
 using OEMMPA::MatchedPair;
@@ -215,4 +216,27 @@ TEST(WizePairZTest, RejectsZeroMaxEnvironmentRadius) {
 TEST(WizePairZTest, AcceptsOneMaxEnvironmentRadius) {
     WizePairZMethod method;
     EXPECT_NO_THROW(method.SetMaxEnvironmentRadius(1));
+}
+
+TEST(WizePairZTest, ParallelMatchesSerial) {
+    const std::vector<std::pair<std::string,std::string>> mols = {
+        {"Cc1ccccc1","a"},{"Oc1ccccc1","b"},{"Fc1ccccc1","c"},
+        {"Clc1ccccc1","d"},{"N#Cc1ccccc1","e"}};
+    unsigned int parallel_workers = 0;
+    auto run = [&](unsigned int threads, unsigned int* workers_out){
+        Analyzer analyzer("wizepairz");
+        for (auto& m : mols) analyzer.AddMolecule(m.first, m.second);
+        analyzer.Analyze(threads);
+        if (workers_out) *workers_out = analyzer.LastAnalyzeWorkerCount();
+        std::vector<std::string> keys;
+        for (auto& p : analyzer.GetPairs())
+            keys.push_back(p.GetSourceExternalId()+"|"+p.GetTargetExternalId()+"|"+p.GetTransformSmiles());
+        return keys;
+    };
+    const std::vector<std::string> serial = run(1, nullptr);
+    const std::vector<std::string> parallel = run(4, &parallel_workers);
+    EXPECT_EQ(serial, parallel);
+    if (std::thread::hardware_concurrency() >= 4) {
+        EXPECT_GT(parallel_workers, 1u);
+    }
 }
