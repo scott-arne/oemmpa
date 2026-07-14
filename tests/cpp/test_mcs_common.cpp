@@ -27,6 +27,8 @@ TEST(MCSCommonTest, DetectsDisconnectedAtomSubset) {
     EXPECT_FALSE(OEMMPA::mcs::is_single_fragment(mol, {0, 3}));  // para carbons, not adjacent
     EXPECT_FALSE(OEMMPA::mcs::is_single_fragment(mol, {}));      // empty = not a fragment
     EXPECT_TRUE(OEMMPA::mcs::is_single_fragment(mol, {2}));      // single atom = trivially one fragment
+    EXPECT_FALSE(OEMMPA::mcs::is_single_fragment(mol, {999999u}));      // invalid singleton
+    EXPECT_FALSE(OEMMPA::mcs::is_single_fragment(mol, {0u, 999999u}));  // valid + invalid
 }
 
 TEST(MCSCommonTest, MappedRegionKeepsRealAtomMapsAndExplicitHydrogens) {

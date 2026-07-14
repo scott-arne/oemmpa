@@ -64,7 +64,7 @@ bool find_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase
 McsMatch find_disconnected_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase& target_mol);
 std::string render_hydrogen_variable_smiles(unsigned int label);
 /// \brief Check whether the given atom indices form a single connected component.
-/// Atom indices not present in `mol` are treated as unreachable.
+/// Returns false if any index in `atoms` does not correspond to a real atom in `mol`.
 bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms);
 std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant);
 std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const RegionRenderOptions& render_options);

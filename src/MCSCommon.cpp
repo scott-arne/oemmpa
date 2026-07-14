@@ -262,6 +262,12 @@ bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned in
     if (atoms.empty()) {
         return false;
     }
+    // Verify all indices correspond to real atoms.
+    for (const unsigned int idx : atoms) {
+        if (mol.GetAtom(OEChem::OEHasAtomIdx(idx)) == nullptr) {
+            return false;
+        }
+    }
     // BFS over the induced subgraph; connected iff every atom is reached.
     std::set<unsigned int> visited;
     std::vector<unsigned int> stack{*atoms.begin()};
@@ -270,9 +276,6 @@ bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned in
         const unsigned int idx = stack.back();
         stack.pop_back();
         const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(idx));
-        if (atom == nullptr) {
-            continue;
-        }
         for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
             const unsigned int nbr_idx = nbr->GetIdx();
             if (atoms.count(nbr_idx) != 0 && visited.insert(nbr_idx).second) {
