@@ -212,7 +212,7 @@ def _add_method_arguments(parser):
         "--max-environment-radius",
         type=int,
         default=None,
-        help="Wizepairz maximum environment radius (default 5, valid range [1, 5]).",
+        help="Wizepairz maximum environment radius (default 4, valid range [1, 5]).",
     )
 
 
