@@ -339,3 +339,28 @@ def test_raw_analyzer_does_not_expose_mutable_fragmenter_pointer():
 
     assert not hasattr(oemmpa._oemmpa.Analyzer(), "GetFragmenter")
     assert not hasattr(oemmpa._oemmpa.FragmentationMethod(), "GetFragmenter")
+
+
+def test_pair_exposes_environment_smirks():
+    from oemmpa import Analyzer
+
+    wz = Analyzer(method="wizepairz")
+    wz.add_molecule("Cc1ccccc1", id="tol")
+    wz.add_molecule("Oc1ccccc1", id="phenol")
+    wz.analyze()
+    wz_pairs = wz.pairs()
+
+    smirks_entries = [e for p in wz_pairs for e in p.environment_smirks]
+    assert smirks_entries
+    assert all(hasattr(e, "radius") for e in smirks_entries)
+    assert all(hasattr(e, "smirks") for e in smirks_entries)
+    assert all(isinstance(e.radius, int) for e in smirks_entries)
+    assert all(isinstance(e.smirks, str) and ">>" in e.smirks for e in smirks_entries)
+
+    frag = Analyzer(method="fragmentation")
+    frag.add_molecule("Cc1ccccc1", id="tol2")
+    frag.add_molecule("Oc1ccccc1", id="phenol2")
+    frag.analyze()
+    frag_pairs = frag.pairs()
+
+    assert all(not p.environment_smirks for p in frag_pairs)

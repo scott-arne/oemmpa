@@ -55,6 +55,15 @@ class PairResult:
         """Directional transform SMILES."""
         return self._raw_pair.GetTransformSmiles()
 
+    @property
+    def environment_smirks(self):
+        """Per-radius SMIRKS annotation (WizePairZ only).
+
+        :returns: List of objects with `.radius` (int) and `.smirks` (str)
+            attributes. Empty for non-WizePairZ pairs.
+        """
+        return list(self._raw_pair.GetEnvironmentSmirks())
+
     def property_delta(self, name):
         """Return the directional property delta for ``name``.
 
@@ -90,6 +99,10 @@ class PairResult:
             "cut_count": self._raw_pair.GetCutCount(),
             "heavy_atom_delta": self._raw_pair.GetHeavyAtomDelta(),
             "heavy_bond_delta": self._raw_pair.GetHeavyBondDelta(),
+            "environment_smirks": [
+                {"radius": e.radius, "smirks": e.smirks}
+                for e in self._raw_pair.GetEnvironmentSmirks()
+            ],
         }
 
     @staticmethod

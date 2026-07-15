@@ -359,6 +359,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(FragmentationVector) std::vector<OEMMPA::Fragmentation>;
 %template(EnvironmentFingerprintVector) std::vector<OEMMPA::EnvironmentFingerprint>;
 %template(QueryEnvironmentVector) std::vector<OEMMPA::QueryEnvironment>;
+%template(PairEnvironmentSmirksVector) std::vector<OEMMPA::PairEnvironmentSmirks>;
 %template(MatchedPairVector) std::vector<OEMMPA::MatchedPair>;
 %template(RuleEnvironmentStatisticsVector) std::vector<OEMMPA::RuleEnvironmentStatistics>;
 %template(TransformVector) std::vector<OEMMPA::Transform>;
@@ -481,6 +482,31 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
             Py_DECREF(list);
             return NULL;
         }
+
+        // Build environment_smirks list
+        const auto& env_smirks = pair.GetEnvironmentSmirks();
+        PyObject* smirks_list = PyList_New(static_cast<Py_ssize_t>(env_smirks.size()));
+        if (smirks_list == NULL) {
+            Py_DECREF(row);
+            Py_DECREF(list);
+            return NULL;
+        }
+        for (size_t i = 0; i < env_smirks.size(); ++i) {
+            PyObject* entry = PyDict_New();
+            if (entry == NULL
+                || _oemmpa_dict_set_new(entry, "radius",
+                    PyLong_FromUnsignedLong(env_smirks[i].radius)) < 0
+                || _oemmpa_dict_set_new(entry, "smirks",
+                    _oemmpa_str_object(env_smirks[i].smirks)) < 0) {
+                Py_XDECREF(entry);
+                Py_DECREF(smirks_list);
+                Py_DECREF(row);
+                Py_DECREF(list);
+                return NULL;
+            }
+            PyList_SetItem(smirks_list, i, entry);  // steals the entry reference
+        }
+
         if (_oemmpa_dict_set_new(row, "source_id",
                 _oemmpa_pair_id_object(pair.GetSourceExternalId(), pair.GetSourceMoleculeId())) < 0
             || _oemmpa_dict_set_new(row, "target_id",
@@ -498,7 +524,9 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
             || _oemmpa_dict_set_new(row, "heavy_atom_delta",
                 PyLong_FromLong(pair.GetHeavyAtomDelta())) < 0
             || _oemmpa_dict_set_new(row, "heavy_bond_delta",
-                PyLong_FromLong(pair.GetHeavyBondDelta())) < 0) {
+                PyLong_FromLong(pair.GetHeavyBondDelta())) < 0
+            || _oemmpa_dict_set_new(row, "environment_smirks",
+                smirks_list) < 0) {
             Py_DECREF(row);
             Py_DECREF(list);
             return NULL;
