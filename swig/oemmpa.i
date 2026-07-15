@@ -527,6 +527,7 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
                 PyLong_FromLong(pair.GetHeavyBondDelta())) < 0
             || _oemmpa_dict_set_new(row, "environment_smirks",
                 smirks_list) < 0) {
+            Py_DECREF(smirks_list);
             Py_DECREF(row);
             Py_DECREF(list);
             return NULL;
