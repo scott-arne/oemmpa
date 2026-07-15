@@ -197,6 +197,18 @@ TEST(AnalyzerTest, WizePairZConfigGuardedByMethod) {
     EXPECT_NO_THROW(wp.SetWizePairZMaxEnvironmentRadius(3));
 }
 
+TEST(AnalyzerTest, WizePairZConfigRejectsNonFiniteIdentityFraction) {
+    Analyzer wp("wizepairz");
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(std::nan("")), InvalidQueryError);
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(std::numeric_limits<double>::infinity()), InvalidQueryError);
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(-std::numeric_limits<double>::infinity()), InvalidQueryError);
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(0.0), InvalidQueryError);
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(-0.5), InvalidQueryError);
+    EXPECT_THROW(wp.SetWizePairZIdentityFraction(1.5), InvalidQueryError);
+    EXPECT_NO_THROW(wp.SetWizePairZIdentityFraction(0.5));
+    EXPECT_NO_THROW(wp.SetWizePairZIdentityFraction(1.0));
+}
+
 TEST(AnalyzerTest, MaxVariableRatioFiltersLargeVariableRegions) {
     // Ethylbenzene has 8 heavy atoms; [*:1]CC is 2, ratio 0.25. Propylbenzene
     // has 9 heavy atoms; [*:1]CCC is 3, ratio 0.333. A max ratio of 0.3 drops

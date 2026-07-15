@@ -480,7 +480,7 @@ void add_wizepairz_pair_if_valid(
 void WizePairZMethod::Clear() { molecules_.clear(); pairs_.clear(); analyzed_ = false; }
 void WizePairZMethod::AddMolecule(const MoleculeRecord& record) { molecules_.push_back(record); analyzed_ = false; }
 void WizePairZMethod::SetMcsIdentityFraction(double fraction) {
-    if (fraction <= 0.0 || fraction > 1.0) {
+    if (!std::isfinite(fraction) || fraction <= 0.0 || fraction > 1.0) {
         throw InvalidQueryError(
             "wizepairz mcs_identity_fraction must be in (0, 1]");
     }

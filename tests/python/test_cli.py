@@ -2294,3 +2294,98 @@ def test_wizepairz_method_on_build_subcommand(tmp_path):
     )
     assert result.returncode == 0
     assert (tmp_path / "test.duckdb").exists()
+
+
+def test_persisted_mode_rejects_explicit_method_fragmentation(tmp_path):
+    # Finding 2: explicit --method fragmentation in persisted mode should error
+    # (the method is fixed at build time), even though fragmentation is the default.
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--transform", "[*:1]C>>[*:1]O",
+        "--property", "pIC50",
+        check=False,
+    )
+    assert result.returncode == 0
+
+    result = _run_cli(
+        "predict",
+        str(database),
+        "--transform", "[*:1]C>>[*:1]O",
+        "--property", "pIC50",
+        "--method", "fragmentation",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--method does not apply when reading a prebuilt store" in result.stderr
+
+
+def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
+    # Finding 3: fragmentation-only flags (--cut-rgroup, --max-heavies, etc.)
+    # should be rejected when --method is wizepairz/dmcss/oemedchem.
+    smiles = tmp_path / "molecules.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+    database = tmp_path / "test.oemmpa.duckdb"
+
+    # --cut-rgroup with wizepairz should error
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database),
+        "--method", "wizepairz",
+        "--cut-rgroup", "*F",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--cut-rgroup requires --method fragmentation" in result.stderr
+
+    # --cut-rgroup-file with dmcss should error
+    rgroup_file = tmp_path / "rgroups.txt"
+    rgroup_file.write_text("*F\n*Cl\n", encoding="utf-8")
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database),
+        "--method", "dmcss",
+        "--cut-rgroup-file", str(rgroup_file),
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--cut-rgroup-file requires --method fragmentation" in result.stderr
+
+    # --max-heavies with wizepairz should error
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database),
+        "--method", "wizepairz",
+        "--max-heavies", "50",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--max-heavies requires --method fragmentation" in result.stderr
+
+    # --max-rotatable-bonds with oemedchem should error
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database),
+        "--method", "oemedchem",
+        "--max-rotatable-bonds", "5",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--max-rotatable-bonds requires --method fragmentation" in result.stderr
+
+    # --method fragmentation with --cut-rgroup should succeed
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database),
+        "--method", "fragmentation",
+        "--cut-rgroup", "*F",
+    )
+    assert result.returncode == 0
+    assert database.exists()

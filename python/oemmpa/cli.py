@@ -199,7 +199,7 @@ def _add_method_arguments(parser):
     parser.add_argument(
         "--method",
         choices=["fragmentation", "dmcss", "oemedchem", "wizepairz"],
-        default="fragmentation",
+        default=None,
         help="Analysis method to use (default: fragmentation).",
     )
     parser.add_argument(
@@ -692,7 +692,9 @@ def _configure_wizepairz(analyzer, args):
 
 
 def _build_analyzer(args, *, load_properties=None):
-    method = getattr(args, "method", "fragmentation")
+    method = getattr(args, "method", None)
+    if method is None:
+        method = "fragmentation"
     # Validate that wizepairz-specific flags are only used with wizepairz method
     identity_fraction = getattr(args, "mcs_identity_fraction", None)
     max_environment_radius = getattr(args, "max_environment_radius", None)
@@ -700,6 +702,9 @@ def _build_analyzer(args, *, load_properties=None):
         raise ValueError(
             "--mcs-identity-fraction/--max-environment-radius require --method wizepairz"
         )
+    # Validate fragmentation-only flags are only used with fragmentation method
+    if method != "fragmentation":
+        _reject_fragmentation_only_flags(args)
     analyzer = Analyzer(method=method)
     if method == "fragmentation":
         _configure_fragmentation(analyzer, args)
@@ -886,6 +891,36 @@ def _require_smiles_input(args, command):
         )
 
 
+def _reject_fragmentation_only_flags(args):
+    """Reject fragmentation-only flags in non-fragmentation methods.
+
+    When the analysis method is wizepairz/dmcss/oemedchem, fragmentation-specific
+    configuration flags should not be silently ignored.
+    """
+    # --cut-rgroup and --cut-rgroup-file have None default, easy to detect
+    for option, value in (
+        ("--cut-rgroup", getattr(args, "cut_rgroups", None)),
+        ("--cut-rgroup-file", getattr(args, "cut_rgroup_file", None)),
+    ):
+        if value is not None:
+            raise ValueError(f"{option} requires --method fragmentation")
+
+    # --max-heavies and --max-rotatable-bonds have non-None defaults (100, 10)
+    # on build; they are _UNSET on other subcommands. Only reject when the
+    # subcommand HAS the flag and it was explicitly provided via sys.argv.
+    max_heavies = getattr(args, "max_heavies", _UNSET)
+    max_rotatable = getattr(args, "max_rotatable_bonds", _UNSET)
+    if max_heavies is not _UNSET:
+        # build subcommand: check if explicitly provided
+        import sys
+        if any("--max-heavies" in arg for arg in sys.argv):
+            raise ValueError("--max-heavies requires --method fragmentation")
+    if max_rotatable is not _UNSET:
+        import sys
+        if any("--max-rotatable-bonds" in arg for arg in sys.argv):
+            raise ValueError("--max-rotatable-bonds requires --method fragmentation")
+
+
 def _reject_persisted_fragmentation_options(args, command):
     for option, value in (
         ("--cut-rgroup", getattr(args, "cut_rgroups", None)),
@@ -914,9 +949,9 @@ def _reject_persisted_method_options(args, command):
                 f"{command} {option} does not apply when reading a prebuilt store; "
                 "the method is fixed at build time"
             )
-    # Reject --method only if explicitly set to non-default
-    method = getattr(args, "method", "fragmentation")
-    if method != "fragmentation":
+    # Reject --method if explicitly set (None means unspecified)
+    method = getattr(args, "method", None)
+    if method is not None:
         raise ValueError(
             f"{command} --method does not apply when reading a prebuilt store; "
             "the method is fixed at build time"
