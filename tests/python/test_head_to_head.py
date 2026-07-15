@@ -27,6 +27,7 @@ HEAD_TO_HEAD_KEYS = {
     "rdkit_available", "mmpdb_available",
     "rdkit_unavailable_reason", "mmpdb_unavailable_reason",
     "vs_rdkit_wall_ratio", "vs_mmpdb_wall_ratio",
+    "oemmpa_parallel_threads", "oemmpa_warm_parallel_seconds",
 }
 
 

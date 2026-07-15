@@ -12,8 +12,10 @@ work, command-line tools for common SMILES/property-file analyses, and
 benchmark tools for tracking performance on representative datasets.
 
 OEMMPA currently supports fragmentation-based analysis, pairwise disconnected
-maximum common substructure analysis through `dmcss`, and OpenEye OEMedChem
-analysis through `oemedchem`. Transform generation can apply chemically
+maximum common substructure analysis through `dmcss`, OpenEye OEMedChem
+analysis through `oemedchem`, and WizePairZ analysis through `wizepairz`
+(MCS-based with unspecified cores, per-radius explicit-H SMIRKS, 90% identity
+threshold, and `[1,5]` environment radius). Transform generation can apply chemically
 explicit unimolecular SMIRKS and can also apply observed single-cut,
 single-atom transformations such as `C[*:1]>>O[*:1]`. Python helpers can
 summarize property changes using MMPDB-style statistic names, use those

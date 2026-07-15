@@ -12,6 +12,7 @@ from pathlib import Path
 import duckdb
 
 TABLES = [
+    "dataset",
     "compound",
     "constant_smiles",
     "rule_smiles",
@@ -27,6 +28,7 @@ TABLES = [
 # Natural-key SELECTs: no surrogate id columns, ORDER BY the projected columns
 # so the result is a deterministic multiset (sorted sequence with duplicates).
 _QUERIES = {
+    "dataset": "select analysis_method from dataset order by 1",
     # compound.id is NOT a renumberable surrogate: it is the analyzer internal
     # id, referenced by pair.compound1_id/compound2_id and
     # compound_property.compound_id. Include it so the equivalence test enforces
@@ -49,19 +51,20 @@ _QUERIES = {
     ),
     "rule_environment": (
         "select f.smiles, t.smiles, ef.smarts, ef.pseudosmiles, ef.parent_smarts, "
-        "re.radius, re.num_pairs from rule_environment re "
+        "re.radius, re.num_pairs, re.explicit_smirks from rule_environment re "
         "join rule r on r.id = re.rule_id "
         "join rule_smiles f on f.id = r.from_smiles_id "
         "join rule_smiles t on t.id = r.to_smiles_id "
         "join environment_fingerprint ef on ef.id = re.environment_fingerprint_id "
-        "order by 1, 2, 3, 4, 5, 6, 7"
+        "order by 1, 2, 3, 4, 5, 6, 7, 8"
     ),
     "pair": (
         "select c.smiles as constant_smiles, "
         "src.public_id as source_id, tgt.public_id as target_id, "
         "f.smiles as from_variable, t.smiles as to_variable, "
         "re.radius, ef.smarts, ef.pseudosmiles, ef.parent_smarts, re.num_pairs, "
-        "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta "
+        "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta, "
+        "p.min_valid_radius, p.max_valid_radius "
         "from pair p "
         "join constant_smiles c on c.id = p.constant_id "
         "join compound src on src.id = p.compound1_id "
@@ -84,7 +87,7 @@ _QUERIES = {
         "join rule_smiles f on f.id = r.from_smiles_id "
         "join rule_smiles t on t.id = r.to_smiles_id "
         "join environment_fingerprint ef on ef.id = re.environment_fingerprint_id "
-        "order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13"
+        "order by 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     ),
     "property_name": "select name from property_name order by 1",
     "compound_property": (
@@ -96,7 +99,7 @@ _QUERIES = {
     "rule_environment_statistics": (
         "select f.smiles, t.smiles, ef.smarts, re.radius, pn.name, "
         "s.count, s.avg, s.std, s.min, s.q1, s.median, s.q3, s.max, "
-        "s.kurtosis, s.skewness, s.paired_t, s.p_value "
+        "s.kurtosis, s.skewness, s.paired_t, s.p_value, re.explicit_smirks "
         "from rule_environment_statistics s "
         "join rule_environment re on re.id = s.rule_environment_id "
         "join rule r on r.id = re.rule_id "

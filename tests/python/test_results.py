@@ -40,6 +40,9 @@ class FakePair:
     def GetHeavyBondDelta(self):
         return 0
 
+    def GetEnvironmentSmirks(self):
+        return []
+
     def GetPropertyDelta(self, name):
         assert name == "pIC50"
         return 1.0
@@ -94,6 +97,7 @@ def test_pair_to_dict_includes_expected_keys():
         "cut_count": 1,
         "heavy_atom_delta": 0,
         "heavy_bond_delta": 0,
+        "environment_smirks": [],
     }
 
 

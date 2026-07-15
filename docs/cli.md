@@ -73,6 +73,49 @@ file. The resulting cut SMARTS are part of the analysis inputs; persisted
 `predict` and persisted `generate` read the stored rule environments and reject
 fragmentation options at report time.
 
+### Analysis Method
+
+`build` and the stateless commands (`stats`, `predict`, `generate`) accept
+`--method {fragmentation,dmcss,oemedchem,wizepairz}` to select which
+pair-enumeration method to use:
+
+```bash
+oemmpa build \
+  --smiles molecules.smi \
+  --method wizepairz \
+  --output analysis.oemmpa.duckdb
+```
+
+The default is `fragmentation`. Each method has different trade-offs in
+performance, pair coverage, and SMIRKS representation. Method is stored in the
+DuckDB `dataset.analysis_method` column. Persisted commands (`summary`,
+`predict`, `generate`) read from an existing store; `--method` is rejected when
+reading a prebuilt store because the method was already applied at build time.
+
+`wizepairz` supports two configuration knobs:
+
+- `--mcs-identity-fraction FLOAT` — MCS identity threshold (default 0.90, valid
+  range `[0.0, 1.0]`). Only pairs with MCS identity fraction ≥ this value are
+  emitted.
+- `--max-environment-radius INT` — maximum environment radius for per-radius
+  SMIRKS hierarchy (default 5, valid range `[1, 5]`).
+
+These flags require `--method wizepairz`:
+
+```bash
+oemmpa build \
+  --smiles molecules.smi \
+  --method wizepairz \
+  --mcs-identity-fraction 0.85 \
+  --max-environment-radius 3 \
+  --output analysis.oemmpa.duckdb
+```
+
+Fragmentation-specific flags such as `--cut-rgroup`, `--max-heavies`,
+`--max-rotatable-bonds`, `--min-variable-heavies`, and `--max-variable-heavies`
+require `--method fragmentation` (or no explicit method, since fragmentation is
+the default).
+
 ### Salt And Solvent Removal
 
 By default, `oemmpa` desalts every input molecule: it splits disconnected
