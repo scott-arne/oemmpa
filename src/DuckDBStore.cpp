@@ -1199,7 +1199,8 @@ std::string build_rule_environment_statistics_query(bool filter_property) {
         << "stats.skewness is not null, coalesce(stats.skewness, 0.0), "
         << "stats.min, stats.q1, stats.median, stats.q3, stats.max, "
         << "stats.paired_t is not null, coalesce(stats.paired_t, 0.0), "
-        << "stats.p_value is not null, coalesce(stats.p_value, 0.0) "
+        << "stats.p_value is not null, coalesce(stats.p_value, 0.0), "
+        << "coalesce(rule_env.explicit_smirks, '') "
         << "from rule_environment_statistics stats "
         << "join property_name on property_name.id = stats.property_name_id "
         << "join rule_environment rule_env on rule_env.id = stats.rule_environment_id "
@@ -1245,7 +1246,8 @@ RuleEnvironmentStatistics read_rule_environment_statistics_row(const Row& row) {
         row.template GetValue<bool>(21),
         row.template GetValue<double>(22),
         row.template GetValue<bool>(23),
-        row.template GetValue<double>(24)
+        row.template GetValue<double>(24),
+        row.template GetValue<std::string>(25)
     );
 }
 

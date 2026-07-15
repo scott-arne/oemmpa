@@ -34,7 +34,8 @@ public:
         bool has_paired_t,
         double paired_t,
         bool has_p_value,
-        double p_value
+        double p_value,
+        const std::string& explicit_smirks
     );
 
     std::uint64_t GetRuleEnvironmentId() const;
@@ -63,6 +64,7 @@ public:
     double GetPairedT() const;
     bool HasPValue() const;
     double GetPValue() const;
+    const std::string& GetExplicitSmirks() const;
 
 private:
     std::uint64_t rule_environment_id_ = 0;
@@ -91,6 +93,7 @@ private:
     double paired_t_ = 0.0;
     bool has_p_value_ = false;
     double p_value_ = 0.0;
+    std::string explicit_smirks_;
 };
 
 }  // namespace OEMMPA

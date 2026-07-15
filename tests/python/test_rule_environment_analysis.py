@@ -678,3 +678,19 @@ def test_multicut_rule_environment_preserves_keys_and_transform_identity():
         assert pair["transform"] == transform
         assert pair["cut_count"] == 2
         assert supporting_pairs[0].property_delta("pIC50") == pytest.approx(1.0)
+
+
+def test_rule_environment_exposes_explicit_smirks():
+    # Fragmentation stores have NULL explicit_smirks (pre-WizePairZ).
+    fragmentation_store = _store_with_toluene_phenol_statistics()
+    rows = fragmentation_store.rule_environment_statistics("pIC50")
+    assert rows, "expected rule-environment statistics"
+
+    # The RuleEnvironmentStatisticsResult dataclass has explicit_smirks.
+    assert hasattr(rows[0], "explicit_smirks")
+
+    # Fragmentation rows have None (SQL NULL coalesced).
+    assert all(r.explicit_smirks is None or r.explicit_smirks == "" for r in rows)
+
+    # to_dict includes the new field.
+    assert "explicit_smirks" in rows[0].to_dict()
