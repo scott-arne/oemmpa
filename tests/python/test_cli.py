@@ -1367,6 +1367,65 @@ def test_cli_persisted_reports_reject_fragmentation_options(
     )
 
 
+@pytest.mark.parametrize(
+    ("command", "command_args"),
+    [
+        ("predict", ["--transform", "[*:1]C>>[*:1]O"]),
+        ("generate", ["--source", "Cc1ccccc1"]),
+    ],
+)
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("--mcs-identity-fraction", "0.8"),
+        ("--max-environment-radius", "3"),
+        ("--method", "wizepairz"),
+    ],
+)
+def test_cli_persisted_reports_reject_method_options(
+    tmp_path,
+    command,
+    command_args,
+    option,
+    value,
+):
+    database = _build_cli_store(tmp_path)
+    result = _run_cli(
+        command,
+        str(database),
+        "--property",
+        "pIC50",
+        *command_args,
+        option,
+        value,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert (
+        f"{command} {option} does not apply when reading a prebuilt store"
+        in result.stderr
+    )
+
+
+def test_cli_refresh_stats_stateless_accepts_method_flag():
+    """Verify stateless mode still accepts --method without regression."""
+    result = _run_cli(
+        "refresh-stats",
+        "--smiles",
+        str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties",
+        str(DATA_DIR / "mmpa_properties.csv"),
+        "--property",
+        "pIC50",
+        "--method",
+        "wizepairz",
+    )
+
+    rows = _tsv_rows(result.stdout)
+    assert len(rows) > 0
+
+
 def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(PYTHON_ROOT))
     from oemmpa import cli as cli_module

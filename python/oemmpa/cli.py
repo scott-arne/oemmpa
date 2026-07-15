@@ -898,6 +898,31 @@ def _reject_persisted_fragmentation_options(args, command):
             )
 
 
+def _reject_persisted_method_options(args, command):
+    """Reject wizepairz method flags when reading a prebuilt store.
+
+    The analysis method and its configuration are fixed at build time; method
+    flags have no effect when reading a persisted database and should not be
+    silently ignored.
+    """
+    for option, value in (
+        ("--mcs-identity-fraction", getattr(args, "mcs_identity_fraction", None)),
+        ("--max-environment-radius", getattr(args, "max_environment_radius", None)),
+    ):
+        if value is not None:
+            raise ValueError(
+                f"{command} {option} does not apply when reading a prebuilt store; "
+                "the method is fixed at build time"
+            )
+    # Reject --method only if explicitly set to non-default
+    method = getattr(args, "method", "fragmentation")
+    if method != "fragmentation":
+        raise ValueError(
+            f"{command} --method does not apply when reading a prebuilt store; "
+            "the method is fixed at build time"
+        )
+
+
 def _reject_stateless_details(args, command):
     if getattr(args, "details_prefix", None) is not None:
         raise ValueError(f"{command} detail reports require a database path")
@@ -937,6 +962,7 @@ def _find_persisted_matches(args):
 
 def _predict_persisted(args):
     _reject_persisted_fragmentation_options(args, "predict")
+    _reject_persisted_method_options(args, "predict")
     _ensure_persisted_report_outputs(
         args.database,
         args.output,
@@ -1063,6 +1089,7 @@ def _generate_no_properties(args):
     min_evidence = 1 if args.min_evidence is None else args.min_evidence
     if args.database is not None:
         _reject_persisted_fragmentation_options(args, "generate")
+        _reject_persisted_method_options(args, "generate")
         _ensure_report_output_is_not_database(args.database, args.output)
         transforms = _open_store(args.database).transforms()
     else:
@@ -1110,6 +1137,7 @@ def _generate_stateless(args):
 
 def _generate_persisted(args):
     _reject_persisted_fragmentation_options(args, "generate")
+    _reject_persisted_method_options(args, "generate")
     _reject_stateless_generate_options(args)
     _ensure_persisted_report_outputs(
         args.database,
