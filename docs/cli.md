@@ -95,7 +95,7 @@ reading a prebuilt store because the method was already applied at build time.
 `wizepairz` supports two configuration knobs:
 
 - `--mcs-identity-fraction FLOAT` — MCS identity threshold (default 0.90, valid
-  range `[0.0, 1.0]`). Only pairs with MCS identity fraction ≥ this value are
+  range `(0.0, 1.0]`). Only pairs with MCS identity fraction ≥ this value are
   emitted.
 - `--max-environment-radius INT` — maximum environment radius for per-radius
   SMIRKS hierarchy (default 4, valid range `[1, 5]`).
