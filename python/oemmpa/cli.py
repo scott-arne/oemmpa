@@ -553,23 +553,35 @@ def _configure_fragmentation(analyzer, args):
     cut_rgroups = getattr(args, "cut_rgroups", None)
     cut_rgroup_file = getattr(args, "cut_rgroup_file", None)
 
-    # Fragment-size guards are build-only. Absent attr -> not applied (leaves the
-    # neutral C++ default). Present int -> apply it. Present None ('none') ->
-    # explicitly clear the guard (no limit).
-    max_heavies = getattr(args, "max_heavies", _UNSET)
-    max_rotatable_bonds = getattr(args, "max_rotatable_bonds", _UNSET)
+    # Fragment-size guards are build-only. When the attribute is absent from the
+    # args namespace (getattr returns the _UNSET fallback), don't apply any size
+    # guards. When present: _UNSET sentinel (argparse default) -> resolve to the
+    # MMPDB defaults (100, 10); concrete int -> apply it; None ('none') -> clear.
+    max_heavies_raw = getattr(args, "max_heavies", _UNSET)
+    max_rotatable_bonds_raw = getattr(args, "max_rotatable_bonds", _UNSET)
+
+    # Check if the attribute actually exists (distinct from being _UNSET default)
+    has_max_heavies = hasattr(args, "max_heavies")
+    has_max_rotatable_bonds = hasattr(args, "max_rotatable_bonds")
 
     kwargs = {}
     if cut_rgroups is not None:
         kwargs["cut_rgroups"] = cut_rgroups
     if cut_rgroup_file is not None:
         kwargs["cut_rgroup_file"] = cut_rgroup_file
-    if max_heavies is not _UNSET:
+
+    # Only process if the attribute exists on the subcommand
+    if has_max_heavies:
+        # Resolve _UNSET to default 100
+        max_heavies = 100 if max_heavies_raw is _UNSET else max_heavies_raw
         if max_heavies is None:
             kwargs["clear_max_heavy_atoms"] = True
         else:
             kwargs["max_heavy_atoms"] = max_heavies
-    if max_rotatable_bonds is not _UNSET:
+
+    if has_max_rotatable_bonds:
+        # Resolve _UNSET to default 10
+        max_rotatable_bonds = 10 if max_rotatable_bonds_raw is _UNSET else max_rotatable_bonds_raw
         if max_rotatable_bonds is None:
             kwargs["clear_max_rotatable_bonds"] = True
         else:
@@ -905,22 +917,14 @@ def _reject_fragmentation_only_flags(args):
         if value is not None:
             raise ValueError(f"{option} requires --method fragmentation")
 
-    # --max-heavies and --max-rotatable-bonds have non-None defaults (100, 10)
-    # on build; they are _UNSET on other subcommands. Only reject when the
-    # subcommand HAS the flag and it was explicitly provided via sys.argv.
-    def _argv_has_flag(flag):
-        import sys
-        return any(a == flag or a.startswith(flag + "=") for a in sys.argv)
-
+    # --max-heavies and --max-rotatable-bonds use _UNSET sentinel default.
+    # Only reject when the flag was explicitly provided (not _UNSET).
     max_heavies = getattr(args, "max_heavies", _UNSET)
     max_rotatable = getattr(args, "max_rotatable_bonds", _UNSET)
     if max_heavies is not _UNSET:
-        # build subcommand: check if explicitly provided
-        if _argv_has_flag("--max-heavies"):
-            raise ValueError("--max-heavies requires --method fragmentation")
+        raise ValueError("--max-heavies requires --method fragmentation")
     if max_rotatable is not _UNSET:
-        if _argv_has_flag("--max-rotatable-bonds"):
-            raise ValueError("--max-rotatable-bonds requires --method fragmentation")
+        raise ValueError("--max-rotatable-bonds requires --method fragmentation")
 
 
 def _reject_persisted_fragmentation_options(args, command):
@@ -1249,13 +1253,13 @@ def _build_parser():
     build_parser.add_argument(
         "--max-heavies",
         type=_optional_nonnegative_int,
-        default=100,
+        default=_UNSET,
         help="Maximum molecule heavy atoms to fragment (MMPDB default 100); use 'none' for no limit.",
     )
     build_parser.add_argument(
         "--max-rotatable-bonds",
         type=_optional_nonnegative_int,
-        default=10,
+        default=_UNSET,
         help="Maximum rotatable bonds to fragment (MMPDB default 10); use 'none' for no limit.",
     )
     build_parser.add_argument(

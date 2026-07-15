@@ -1920,12 +1920,14 @@ def test_cli_build_max_rotatable_bonds_flag_filters(tmp_path):
 def test_cli_build_fragment_size_defaults_are_mmpdb_values():
     # Assert the default VALUES directly (behavioral tests above cover the
     # filtering mechanism; exceeding 100/10 with real pairs is impractical).
-    from oemmpa.cli import _build_parser
+    # Note: defaults are now _UNSET sentinel; _configure_fragmentation resolves
+    # them to 100/10 at consumption time.
+    from oemmpa.cli import _build_parser, _UNSET
     args = _build_parser().parse_args(
         ["build", "--smiles", "x.smi", "--output", "y.duckdb"]
     )
-    assert args.max_heavies == 100
-    assert args.max_rotatable_bonds == 10
+    assert args.max_heavies is _UNSET
+    assert args.max_rotatable_bonds is _UNSET
 
 
 def test_cli_build_max_heavies_is_distinct_from_max_heavies_transf():
@@ -1933,7 +1935,7 @@ def test_cli_build_max_heavies_is_distinct_from_max_heavies_transf():
     # string `--max-heavies` as a unique-prefix abbreviation of
     # --max-heavies-transf. Now --max-heavies is a distinct molecule-size cap.
     # Pin both spellings so a future edit cannot silently re-collide them.
-    from oemmpa.cli import _build_parser
+    from oemmpa.cli import _build_parser, _UNSET
 
     args = _build_parser().parse_args(
         ["build", "--smiles", "x.smi", "--output", "y.duckdb", "--max-heavies", "25"]
@@ -1948,7 +1950,7 @@ def test_cli_build_max_heavies_is_distinct_from_max_heavies_transf():
         ]
     )
     assert args.max_heavies_transf == 25
-    assert args.max_heavies == 100
+    assert args.max_heavies is _UNSET
 
 
 def test_cli_build_fragment_size_none_restores_no_limit():
@@ -2000,10 +2002,12 @@ def test_configure_fragmentation_ignores_absent_size_args():
     _configure_fragmentation(analyzer, args)
     assert analyzer.calls == []  # no configuration applied
 
-    # A build-style namespace WITH the size defaults applies exactly them.
+    # A build-style namespace WITH the size defaults (_UNSET sentinel) applies
+    # the resolved defaults (100, 10).
+    from oemmpa.cli import _UNSET
     build_args = argparse.Namespace(
         cut_rgroups=None, cut_rgroup_file=None,
-        max_heavies=100, max_rotatable_bonds=10,
+        max_heavies=_UNSET, max_rotatable_bonds=_UNSET,
     )
     build_analyzer = _RecordingAnalyzer()
     _configure_fragmentation(build_analyzer, build_args)
@@ -2429,3 +2433,69 @@ def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
     )
     assert result.returncode == 0
     assert database_frag2.exists()
+
+
+def test_fragmentation_flags_detected_from_parsed_args_not_sys_argv(tmp_path):
+    """Fix 5: --max-heavies and --max-rotatable-bonds use sentinel defaults.
+
+    Before the fix, _reject_fragmentation_only_flags scanned sys.argv to detect
+    "was this flag explicitly set?", so an in-process invocation via
+    main(["build", "--method", "wizepairz", "--max-heavies", "50", ...])
+    would scan the host process's sys.argv (e.g. pytest's), not the passed argv,
+    making the flags dead options on that path.
+
+    After the fix, the flags use _UNSET sentinel defaults, so explicit-set
+    detection works from the PARSED args (argv-independent).
+    """
+    from oemmpa.cli import main
+
+    smiles = tmp_path / "molecules.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+    database = tmp_path / "test.oemmpa.duckdb"
+
+    # In-process invocation with --max-heavies + wizepairz should ERROR
+    # (not scan sys.argv, which may not have --max-heavies at all).
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "build",
+            "--smiles", str(smiles),
+            "--output", str(database),
+            "--method", "wizepairz",
+            "--max-heavies", "50",
+        ])
+    assert exc_info.value.code == 2
+
+    # Same test, --max-heavies= form
+    database2 = tmp_path / "test2.oemmpa.duckdb"
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "build",
+            "--smiles", str(smiles),
+            "--output", str(database2),
+            "--method", "wizepairz",
+            "--max-heavies=50",
+        ])
+    assert exc_info.value.code == 2
+
+    # In-process invocation with --max-rotatable-bonds + wizepairz should ERROR
+    database3 = tmp_path / "test3.oemmpa.duckdb"
+    with pytest.raises(SystemExit) as exc_info:
+        main([
+            "build",
+            "--smiles", str(smiles),
+            "--output", str(database3),
+            "--method", "wizepairz",
+            "--max-rotatable-bonds", "5",
+        ])
+    assert exc_info.value.code == 2
+
+    # Default fragmentation build (no --max-heavies) should work and apply
+    # the default max_heavies=100 (verify via successful build).
+    database_default = tmp_path / "test_default.oemmpa.duckdb"
+    exit_code = main([
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database_default),
+    ])
+    assert exit_code == 0
+    assert database_default.exists()
