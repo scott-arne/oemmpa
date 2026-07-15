@@ -317,10 +317,10 @@ class Analyzer:
 
         :param identity_fraction: Optional MCS identity fraction threshold
             (default 0.90). Candidate pairs whose MCS size divided by the
-            smaller input's heavy atom count is below this threshold are
+            larger input's heavy atom count is below this threshold are
             rejected as insufficiently similar.
         :param max_environment_radius: Optional maximum environment radius
-            (default 5, valid range [1, 5]).
+            (default 4, valid range [1, 5]).
         :returns: ``self`` for chaining.
         :raises ValueError: If the analyzer is not using the wizepairz method
             or a supplied option is invalid.
