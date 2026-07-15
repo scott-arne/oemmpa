@@ -1949,6 +1949,114 @@ TEST(DuckDBStoreTest, RepresentativeExplicitSmirksIsOrderIndependent) {
     std::filesystem::remove(b_then_a);
 }
 
+TEST(DuckDBStoreTest, DroppedDuplicatePairDoesNotSeedInvalidRadiusEnvironment) {
+    // A duplicate pair (same compound1/compound2/rule/constant identity) must be
+    // dropped by the physical-pair dedup and contribute NOTHING to the v3
+    // environment derivation. Here the KEPT pair is valid only at [2, 4]; the
+    // same-identity duplicate carries a WIDER [0, 4] range. If the derivation
+    // ran for the dropped pair (the pre-fix ordering, where it ran before the
+    // dedup check) it would seed orphan rule_environment rows at radii 0..1 that
+    // no stored pair supports. Only the kept pair's range may seed environments.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "m1"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "m2"));
+        store.SetAnalysisMethod("wizepairz");
+        // Same identity; narrow pair first (kept), wider duplicate second
+        // (dropped by dedup). Payloads match, so the conflict guard stays quiet.
+        store.AddPairs({MakeRangedPair(1, 2, 2, 4), MakeRangedPair(1, 2, 0, 4)});
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    // Exactly one physical pair survives the dedup.
+    EXPECT_EQ(ScalarUBigint(connection, "select count(*) from pair"), 1u);
+    // No rule_environment seeded below the kept pair's min valid radius: the
+    // dropped [0, 4] duplicate contributed nothing to the fan-out.
+    EXPECT_EQ(ScalarUBigint(
+        connection, "select count(*) from rule_environment where radius < 2"), 0u);
+    EXPECT_EQ(ScalarUBigint(
+        connection, "select min(radius) from rule_environment"), 2u);
+    // No environment membership falls outside the stored pair's [2, 4] range.
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from pair p "
+        "join constant_environment ce on ce.constant_id = p.constant_id "
+        "join rule_environment re on re.rule_id = p.rule_id "
+        "and re.environment_fingerprint_id = ce.environment_fingerprint_id "
+        "and ce.radius = re.radius "
+        "where p.min_valid_radius is not null "
+        "and (re.radius < p.min_valid_radius or re.radius > p.max_valid_radius)"),
+        0u);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, IdempotentReloadDoesNotSeedExtraV3State) {
+    // Re-appending the exact same WizePairZ pairs into an existing store is a
+    // pure reload: every pair is dropped by the identity dedup. That dropped
+    // path must leave ALL v3 environment state untouched -- no orphan
+    // rule_environment rows, stable num_pairs, stable representative SMIRKS, and
+    // no duplicate physical pairs.
+    MatchedPair pair_a = MakeRangedPair(1, 2, 0, 2);
+    pair_a.SetEnvironmentSmirks({{0u, "a0>>x"}, {1u, "z1>>x"}, {2u, "m2>>x"}});
+    MatchedPair pair_b = MakeRangedPair(3, 4, 0, 2);
+    pair_b.SetEnvironmentSmirks({{0u, "z0>>x"}, {1u, "a1>>x"}, {2u, "n2>>x"}});
+    const std::vector<MatchedPair> pairs = {pair_a, pair_b};
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "m1"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "m2"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(3, "Cc1ccncc1", "m3"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(4, "Oc1ccncc1", "m4"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs(pairs);
+    }
+
+    struct Snapshot {
+        std::uint64_t rule_environment_count;
+        std::uint64_t num_pairs_sum;
+        std::uint64_t pair_count;
+        std::map<int, std::string> representatives;
+        bool operator==(const Snapshot& other) const {
+            return rule_environment_count == other.rule_environment_count &&
+                   num_pairs_sum == other.num_pairs_sum &&
+                   pair_count == other.pair_count &&
+                   representatives == other.representatives;
+        }
+    };
+    const auto snapshot = [&]() -> Snapshot {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        return Snapshot{
+            ScalarUBigint(connection, "select count(*) from rule_environment"),
+            ScalarUBigint(connection,
+                "select coalesce(sum(num_pairs), 0) from rule_environment"),
+            ScalarUBigint(connection, "select count(*) from pair"),
+            ReadRepresentativeMap(path)};
+    };
+
+    const Snapshot before = snapshot();
+    // Reopen the SAME store and re-append the SAME pairs (a reload). Every pair
+    // is a persisted duplicate and must be dropped without side effects.
+    {
+        DuckDBStore reopened(path.string());
+        reopened.AddPairs(pairs);
+    }
+    const Snapshot after = snapshot();
+
+    EXPECT_EQ(before.rule_environment_count, after.rule_environment_count);
+    EXPECT_EQ(before.num_pairs_sum, after.num_pairs_sum);
+    EXPECT_EQ(before.pair_count, after.pair_count);
+    EXPECT_EQ(before.representatives, after.representatives);
+    EXPECT_EQ(before, after);
+    std::filesystem::remove(path);
+}
+
 TEST(DuckDBStoreTest, RejectsVersionOneStoreAfterBump) {
     const std::string path = (std::filesystem::temp_directory_path() /
         "oemmpa_v1_after_bump.duckdb").string();

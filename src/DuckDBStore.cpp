@@ -2445,6 +2445,59 @@ void DuckDBStore::AppendBulk(
                     fingerprint_id});
             }
         }
+        // One physical pair row per (compound1, compound2, rule, constant)
+        // identity. Resolve the identity and run the dedup check BEFORE any v3
+        // environment derivation: a pair dropped here (a duplicate seen earlier
+        // this batch or already persisted) must contribute NOTHING to
+        // rule_environment, explicit_smirks, or num_pairs -- exactly as it
+        // contributes nothing to pair_rows. Seeding environment state from a
+        // pair that is not actually stored would create orphan rule_environment
+        // rows and skew the representative SMIRKS. The constant/rule/rule_smiles
+        // ids (needed to form the identity) and the per-constant
+        // constant_environment rows above are idempotent, and a dropped
+        // duplicate's constant and rule are necessarily already known, so they
+        // stage nothing new either.
+        const std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+            std::uint64_t> identity{
+            pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
+            rule_id, constant_id};
+        const std::tuple<unsigned int, int, int> payload{
+            pair.GetCutCount(), pair.GetHeavyAtomDelta(),
+            pair.GetHeavyBondDelta()};
+        if (!pair_identity_cache_.insert(identity).second) {
+            // Identity already known (staged earlier this call or preloaded from
+            // disk). If staged this call, verify payload consistency; then skip
+            // ALL staging and derivation -- this pair is not persisted.
+            auto it = seen_payload.find(identity);
+            if (it != seen_payload.end() && it->second != payload) {
+                // Same identity but DIFFERENT payload within this batch: reject
+                // loudly rather than silently dropping the second pair.
+                throw StorageError(
+                    "conflicting matched-pair payload for identical "
+                    "(compound1, compound2, rule, constant): "
+                    "cut_count/heavy_atom_delta/heavy_bond_delta mismatch");
+            }
+            // Otherwise: exact duplicate (same identity, same payload) or a
+            // persisted identity we can't verify -> skip silently as before.
+            continue;
+        }
+        // First sight this load AND not persisted: stage the physical pair and
+        // record its payload so later same-identity pairs can be validated.
+        // Everything below derives v3 environment state and therefore runs ONLY
+        // for a genuinely persisted pair.
+        seen_payload.emplace(identity, payload);
+        const bool pair_has_range = pair.HasValidRadiusRange();
+        const int pair_min_radius =
+            pair_has_range ? static_cast<int>(pair.GetMinValidRadius()) : 0;
+        const int pair_max_radius =
+            pair_has_range ? static_cast<int>(pair.GetMaxValidRadius()) : 0;
+        pair_rows.push_back({
+            pair_counter(), rule_id, constant_id,
+            pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
+            pair.GetCutCount(), pair.GetHeavyAtomDelta(),
+            pair.GetHeavyBondDelta(),
+            pair_min_radius, pair_max_radius, pair_has_range});
+
         // Concrete per-radius SMIRKS for this pair (WizePairZ); empty otherwise.
         // Consulted below to stage the representative explicit_smirks per
         // rule_environment.
@@ -2453,11 +2506,6 @@ void DuckDBStore::AppendBulk(
             pair_smirks_by_radius.emplace(
                 static_cast<int>(entry.radius), &entry.smirks);
         }
-        const bool pair_has_range = pair.HasValidRadiusRange();
-        const int pair_min_radius =
-            pair_has_range ? static_cast<int>(pair.GetMinValidRadius()) : 0;
-        const int pair_max_radius =
-            pair_has_range ? static_cast<int>(pair.GetMaxValidRadius()) : 0;
 
         // fan out over radius 0..5 fingerprints (cached per constant)
         for (const EnvironmentFingerprint& fingerprint :
@@ -2517,42 +2565,6 @@ void DuckDBStore::AppendBulk(
                         *smirks_it->second;
                 }
             }
-        }
-        // One physical pair row per (compound1, compound2, rule, constant)
-        // identity. Dedup via the seeded identity cache so a duplicate pair in a
-        // later AddPairs call (or a reopened store) is skipped rather than
-        // tripping the unique constraint.
-        const std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
-            std::uint64_t> identity{
-            pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
-            rule_id, constant_id};
-        const std::tuple<unsigned int, int, int> payload{
-            pair.GetCutCount(), pair.GetHeavyAtomDelta(),
-            pair.GetHeavyBondDelta()};
-        if (pair_identity_cache_.insert(identity).second) {
-            // First sight this load AND not persisted: stage the pair and record
-            // its payload so later same-identity pairs can be validated.
-            pair_rows.push_back({
-                pair_counter(), rule_id, constant_id,
-                pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
-                pair.GetCutCount(), pair.GetHeavyAtomDelta(),
-                pair.GetHeavyBondDelta(),
-                pair_min_radius, pair_max_radius, pair_has_range});
-            seen_payload.emplace(identity, payload);
-        } else {
-            // Identity already known (either staged earlier this call or preloaded
-            // from disk). If staged this call, verify payload consistency.
-            auto it = seen_payload.find(identity);
-            if (it != seen_payload.end() && it->second != payload) {
-                // Same identity but DIFFERENT payload within this batch: reject
-                // loudly rather than silently dropping the second pair.
-                throw StorageError(
-                    "conflicting matched-pair payload for identical "
-                    "(compound1, compound2, rule, constant): "
-                    "cut_count/heavy_atom_delta/heavy_bond_delta mismatch");
-            }
-            // Otherwise: either exact duplicate (same identity, same payload) or
-            // persisted identity we can't verify -> skip silently as before.
         }
     }
 
