@@ -694,3 +694,28 @@ def test_rule_environment_exposes_explicit_smirks():
 
     # to_dict includes the new field.
     assert "explicit_smirks" in rows[0].to_dict()
+
+
+def test_wizepairz_store_surfaces_explicit_smirks():
+    from oemmpa import Analyzer, DuckDBStore
+
+    # Build a wizepairz store with a numeric property so stats are computed.
+    analyzer = Analyzer(method="wizepairz")
+    analyzer.add_molecule("Cc1ccccc1", id="tol")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.add_property("tol", "pIC50", 6.0)
+    analyzer.add_property("phenol", "pIC50", 7.5)
+    analyzer.analyze()
+
+    store = DuckDBStore()
+    store.save_analyzer(analyzer)
+    rows = store.rule_environment_statistics("pIC50")
+
+    # WizePairZ stores should populate explicit_smirks.
+    assert rows, "expected rule-environment statistics"
+    explicit_rows = [r for r in rows if r.explicit_smirks]
+    assert explicit_rows, "expected non-empty explicit_smirks from wizepairz store"
+
+    # Verify the explicit_smirks contains the reaction arrow.
+    assert any(">>" in r.explicit_smirks for r in explicit_rows), \
+        "expected explicit_smirks to contain '>>'"
