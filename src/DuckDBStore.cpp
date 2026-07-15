@@ -1133,7 +1133,8 @@ std::string build_pair_query(
         << "c.smiles as constant_smiles, "
         << "source_variable.smiles as source_variable_smiles, "
         << "target_variable.smiles as target_variable_smiles, "
-        << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta "
+        << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta, "
+        << "p.min_valid_radius, p.max_valid_radius "
         << "from pair p "
         << "join compound source_molecule on source_molecule.id = p.compound1_id "
         << "join compound target_molecule on target_molecule.id = p.compound2_id "
@@ -1293,6 +1294,16 @@ std::vector<MatchedPair> read_pairs_with_properties(
             row.GetValue<std::int32_t>(10),
             row.GetValue<std::int32_t>(11)
         );
+        // Read optional WizePairZ valid-radius bounds (columns 12, 13).
+        // Non-WizePairZ pairs have NULL for both. If both are non-NULL, set the range.
+        duckdb::Value min_radius_val = row.GetValue<duckdb::Value>(12);
+        duckdb::Value max_radius_val = row.GetValue<duckdb::Value>(13);
+        if (!min_radius_val.IsNull() && !max_radius_val.IsNull()) {
+            pair.SetValidRadiusRange(
+                static_cast<unsigned int>(min_radius_val.GetValue<int32_t>()),
+                static_cast<unsigned int>(max_radius_val.GetValue<int32_t>())
+            );
+        }
         compound_ids.insert(pair.GetSourceMoleculeId());
         compound_ids.insert(pair.GetTargetMoleculeId());
         pairs.push_back(std::move(pair));

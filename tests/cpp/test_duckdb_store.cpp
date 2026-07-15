@@ -2443,5 +2443,132 @@ TEST(DuckDBStoreTest, RejectsInvalidWizePairZRadiusRange) {
     EXPECT_THROW(store.AddPairs(pairs), StorageError);
 }
 
+TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsValidRadiusBounds) {
+    // Regression test: before the fix, GetPairs() never read min_valid_radius /
+    // max_valid_radius from the pair table, so persisted WizePairZ pairs LOST
+    // their valid-radius bounds on read. A GetPairs() -> AddPairs() round-trip
+    // would re-persist them with NULL bounds, silently broadening environment
+    // membership to the full 0-5 fan-out (the originally-excluded radii are now
+    // included). This test verifies that the bounds survive read -> write.
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+
+    // Build a WizePairZ store with the pxylene -> hydroquinone pair (two-site
+    // core-bridged change whose valid range is [2, 4], not the full [0, 5]).
+    WizePairZMethod method;
+    method.SetMcsIdentityFraction(0.5);
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    method.Analyze(1);
+    const std::vector<MatchedPair> original_pairs = method.GetPairs(QueryOptions{});
+
+    ASSERT_GE(original_pairs.size(), 1u) << "Expected at least one WizePairZ pair";
+    // All pairs from this WizePairZ analysis should have valid-radius ranges.
+    for (const MatchedPair& pair : original_pairs) {
+        ASSERT_TRUE(pair.HasValidRadiusRange())
+            << "WizePairZ pair should have a valid-radius range";
+    }
+
+    const unsigned int original_min = original_pairs[0].GetMinValidRadius();
+    const unsigned int original_max = original_pairs[0].GetMaxValidRadius();
+    EXPECT_EQ(original_min, 2u) << "Expected pxylene->hydroquinone min radius 2";
+    EXPECT_EQ(original_max, 4u) << "Expected pxylene->hydroquinone max radius 4";
+
+    // Persist the pair to a store.
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs(original_pairs);
+    }
+
+    // Read the pairs back via GetPairs() and verify the bounds survived for all.
+    std::vector<MatchedPair> read_pairs;
+    {
+        DuckDBStore store(path.string());
+        read_pairs = store.GetPairs();
+    }
+
+    ASSERT_EQ(read_pairs.size(), original_pairs.size())
+        << "Expected same number of pairs as original";
+    for (const MatchedPair& pair : read_pairs) {
+        ASSERT_TRUE(pair.HasValidRadiusRange())
+            << "Read pair should have a valid-radius range";
+        EXPECT_EQ(pair.GetMinValidRadius(), original_min)
+            << "Min radius should match original";
+        EXPECT_EQ(pair.GetMaxValidRadius(), original_max)
+            << "Max radius should match original";
+    }
+
+    // Round-trip: write the read pairs to a FRESH store, then verify the bounds
+    // are still preserved (this is the core regression: before the fix, the
+    // re-persisted pair would have NULL bounds, broadening to [0, 5]).
+    const std::filesystem::path roundtrip_path = TemporaryDatabasePath();
+    std::filesystem::remove(roundtrip_path);
+    {
+        DuckDBStore roundtrip_store(roundtrip_path.string());
+        roundtrip_store.InitializeSchema();
+        roundtrip_store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+        roundtrip_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+        roundtrip_store.SetAnalysisMethod("wizepairz");
+        roundtrip_store.AddPairs(read_pairs);  // The GetPairs() result
+    }
+
+    // Read back from the round-trip store directly via SQL to confirm the
+    // persisted min_valid_radius/max_valid_radius match the original.
+    duckdb::DuckDB database(roundtrip_path.string());
+    duckdb::Connection connection(database);
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+        "select min_valid_radius, max_valid_radius from pair");
+    ASSERT_TRUE(result && !result->HasError())
+        << "Round-trip pair query failed";
+
+    for (const auto& row : *result) {
+        duckdb::Value min_val = row.GetValue<duckdb::Value>(0);
+        duckdb::Value max_val = row.GetValue<duckdb::Value>(1);
+        ASSERT_FALSE(min_val.IsNull())
+            << "Round-trip pair should have non-NULL min_valid_radius";
+        ASSERT_FALSE(max_val.IsNull())
+            << "Round-trip pair should have non-NULL max_valid_radius";
+        EXPECT_EQ(min_val.GetValue<int32_t>(), static_cast<int32_t>(original_min))
+            << "Round-trip min radius should match original";
+        EXPECT_EQ(max_val.GetValue<int32_t>(), static_cast<int32_t>(original_max))
+            << "Round-trip max radius should match original";
+    }
+
+    // Also verify a fragmentation pair (no valid-radius range) round-trips with
+    // NULL bounds unchanged.
+    const std::filesystem::path frag_path = TemporaryDatabasePath();
+    std::filesystem::remove(frag_path);
+    {
+        DuckDBStore frag_store(frag_path.string());
+        frag_store.InitializeSchema();
+        frag_store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        frag_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+        frag_store.SetAnalysisMethod("fragment");
+        // Non-WizePairZ pair (no SetValidRadiusRange call).
+        MatchedPair frag_pair(
+            1, 2, "toluene", "phenol",
+            "Cc1ccccc1", "Oc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1]C", "[*:1]O",
+            1, 0, 0);
+        frag_store.AddPairs({frag_pair});
+    }
+    {
+        DuckDBStore frag_store(frag_path.string());
+        std::vector<MatchedPair> frag_read = frag_store.GetPairs();
+        ASSERT_EQ(frag_read.size(), 1u);
+        EXPECT_FALSE(frag_read[0].HasValidRadiusRange())
+            << "Fragmentation pair should have no valid-radius range";
+    }
+
+    std::filesystem::remove(path);
+    std::filesystem::remove(roundtrip_path);
+    std::filesystem::remove(frag_path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA
