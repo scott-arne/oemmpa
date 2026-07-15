@@ -2570,5 +2570,175 @@ TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsValidRadiusBounds) {
     std::filesystem::remove(frag_path);
 }
 
+TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsEnvironmentSmirks) {
+    // Regression test: before the fix, GetPairs() never read environment_smirks
+    // from the environment_smirks table, so persisted WizePairZ pairs LOST their
+    // descriptive per-radius SMIRKS on read. A GetPairs() -> AddPairs() round-trip
+    // would re-persist them with empty environment SMIRKS vectors, leaving the
+    // destination store's environment_smirks table empty. This test verifies that
+    // the SMIRKS vectors survive read -> write.
+
+    const std::filesystem::path path_a = TemporaryDatabasePath();
+    std::filesystem::remove(path_a);
+
+    // Build a WizePairZ store with the pxylene -> hydroquinone pair (two-site
+    // core-bridged change whose valid range is [2, 4]). This pair carries non-empty
+    // environment SMIRKS at radii 2, 3, 4.
+    WizePairZMethod method;
+    method.SetMcsIdentityFraction(0.5);
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    method.Analyze(1);
+    const std::vector<MatchedPair> original_pairs = method.GetPairs(QueryOptions{});
+
+    ASSERT_GE(original_pairs.size(), 1u) << "Expected at least one WizePairZ pair";
+    ASSERT_FALSE(original_pairs[0].GetEnvironmentSmirks().empty())
+        << "WizePairZ pair should have non-empty environment SMIRKS";
+
+    // Persist the pair to store A.
+    {
+        DuckDBStore store(path_a.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs(original_pairs);
+    }
+
+    // Read the pairs back via GetPairs() and verify the environment SMIRKS survived.
+    std::vector<MatchedPair> read_pairs;
+    {
+        DuckDBStore store(path_a.string());
+        read_pairs = store.GetPairs();
+    }
+
+    ASSERT_EQ(read_pairs.size(), original_pairs.size())
+        << "Expected same number of pairs as original";
+    ASSERT_FALSE(read_pairs[0].GetEnvironmentSmirks().empty())
+        << "Read pair should have non-empty environment SMIRKS";
+
+    // Verify the read SMIRKS match the original (same radii and SMIRKS).
+    const auto& original_smirks = original_pairs[0].GetEnvironmentSmirks();
+    const auto& read_smirks = read_pairs[0].GetEnvironmentSmirks();
+    ASSERT_EQ(read_smirks.size(), original_smirks.size())
+        << "Read pair should have same number of SMIRKS entries";
+    for (std::size_t i = 0; i < original_smirks.size(); ++i) {
+        EXPECT_EQ(read_smirks[i].radius, original_smirks[i].radius)
+            << "SMIRKS radius should match at index " << i;
+        EXPECT_EQ(read_smirks[i].smirks, original_smirks[i].smirks)
+            << "SMIRKS string should match at index " << i;
+    }
+
+    // Round-trip: write the read pairs to a FRESH store B, then verify the
+    // environment_smirks table is non-empty and matches store A.
+    const std::filesystem::path path_b = TemporaryDatabasePath();
+    std::filesystem::remove(path_b);
+    {
+        DuckDBStore store_b(path_b.string());
+        store_b.InitializeSchema();
+        store_b.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+        store_b.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+        store_b.SetAnalysisMethod("wizepairz");
+        store_b.AddPairs(read_pairs);
+    }
+
+    // Directly via SQL, verify store B has a non-empty environment_smirks table
+    // and the SMIRKS match store A (identical representative set).
+    duckdb::DuckDB db_a(path_a.string());
+    duckdb::Connection conn_a(db_a);
+    std::unique_ptr<duckdb::QueryResult> result_a = conn_a.Query(
+        "select count(*) from environment_smirks");
+    ASSERT_TRUE(result_a && !result_a->HasError())
+        << "Store A environment_smirks count query failed";
+    int64_t count_a = result_a->Fetch()->GetValue(0, 0).GetValue<int64_t>();
+    ASSERT_GT(count_a, 0) << "Store A should have non-empty environment_smirks";
+
+    duckdb::DuckDB db_b(path_b.string());
+    duckdb::Connection conn_b(db_b);
+    std::unique_ptr<duckdb::QueryResult> result_b = conn_b.Query(
+        "select count(*) from environment_smirks");
+    ASSERT_TRUE(result_b && !result_b->HasError())
+        << "Store B environment_smirks count query failed";
+    int64_t count_b = result_b->Fetch()->GetValue(0, 0).GetValue<int64_t>();
+    EXPECT_EQ(count_b, count_a)
+        << "Store B should have same environment_smirks count as store A";
+
+    // Compare the sorted SMIRKS from both stores.
+    std::unique_ptr<duckdb::QueryResult> smirks_a = conn_a.Query(
+        "select smirks from environment_smirks order by smirks");
+    ASSERT_TRUE(smirks_a && !smirks_a->HasError())
+        << "Store A environment_smirks query failed";
+
+    std::unique_ptr<duckdb::QueryResult> smirks_b = conn_b.Query(
+        "select smirks from environment_smirks order by smirks");
+    ASSERT_TRUE(smirks_b && !smirks_b->HasError())
+        << "Store B environment_smirks query failed";
+
+    std::vector<std::string> smirks_vec_a;
+    for (const auto& row : *smirks_a) {
+        smirks_vec_a.push_back(row.GetValue<std::string>(0));
+    }
+    std::vector<std::string> smirks_vec_b;
+    for (const auto& row : *smirks_b) {
+        smirks_vec_b.push_back(row.GetValue<std::string>(0));
+    }
+
+    EXPECT_EQ(smirks_vec_b, smirks_vec_a)
+        << "Store B should have identical SMIRKS as store A";
+
+    // Fragmentation control: a fragment-method store round-trip leaves
+    // environment_smirks empty (count 0).
+    const std::filesystem::path frag_path = TemporaryDatabasePath();
+    std::filesystem::remove(frag_path);
+    {
+        DuckDBStore frag_store(frag_path.string());
+        frag_store.InitializeSchema();
+        frag_store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        frag_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+        frag_store.SetAnalysisMethod("fragment");
+        MatchedPair frag_pair(
+            1, 2, "toluene", "phenol",
+            "Cc1ccccc1", "Oc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1]C", "[*:1]O",
+            1, 0, 0);
+        frag_store.AddPairs({frag_pair});
+    }
+    {
+        DuckDBStore frag_store(frag_path.string());
+        std::vector<MatchedPair> frag_read = frag_store.GetPairs();
+        ASSERT_EQ(frag_read.size(), 1u);
+        EXPECT_TRUE(frag_read[0].GetEnvironmentSmirks().empty())
+            << "Fragmentation pair should have empty environment SMIRKS";
+
+        // Round-trip the fragmentation pair.
+        const std::filesystem::path frag_roundtrip_path = TemporaryDatabasePath();
+        std::filesystem::remove(frag_roundtrip_path);
+        {
+            DuckDBStore frag_rt_store(frag_roundtrip_path.string());
+            frag_rt_store.InitializeSchema();
+            frag_rt_store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+            frag_rt_store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+            frag_rt_store.SetAnalysisMethod("fragment");
+            frag_rt_store.AddPairs(frag_read);
+        }
+
+        duckdb::DuckDB frag_rt_db(frag_roundtrip_path.string());
+        duckdb::Connection frag_rt_conn(frag_rt_db);
+        std::unique_ptr<duckdb::QueryResult> frag_rt_result = frag_rt_conn.Query(
+            "select count(*) from environment_smirks");
+        ASSERT_TRUE(frag_rt_result && !frag_rt_result->HasError())
+            << "Fragmentation round-trip environment_smirks count query failed";
+        int64_t frag_rt_count = frag_rt_result->Fetch()->GetValue(0, 0).GetValue<int64_t>();
+        EXPECT_EQ(frag_rt_count, 0)
+            << "Fragmentation round-trip should have empty environment_smirks";
+
+        std::filesystem::remove(frag_roundtrip_path);
+    }
+
+    std::filesystem::remove(path_a);
+    std::filesystem::remove(path_b);
+    std::filesystem::remove(frag_path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

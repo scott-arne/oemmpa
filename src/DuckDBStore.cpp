@@ -1134,7 +1134,8 @@ std::string build_pair_query(
         << "source_variable.smiles as source_variable_smiles, "
         << "target_variable.smiles as target_variable_smiles, "
         << "p.cut_count, p.heavy_atom_delta, p.heavy_bond_delta, "
-        << "p.min_valid_radius, p.max_valid_radius "
+        << "p.min_valid_radius, p.max_valid_radius, "
+        << "p.id as pair_id "
         << "from pair p "
         << "join compound source_molecule on source_molecule.id = p.compound1_id "
         << "join compound target_molecule on target_molecule.id = p.compound2_id "
@@ -1278,6 +1279,7 @@ std::vector<MatchedPair> read_pairs_with_properties(
     duckdb::QueryResult& result
 ) {
     std::vector<MatchedPair> pairs;
+    std::vector<std::uint64_t> pair_db_ids;
     std::set<std::uint64_t> compound_ids;
     for (const auto& row : result) {
         MatchedPair pair(
@@ -1304,8 +1306,11 @@ std::vector<MatchedPair> read_pairs_with_properties(
                 static_cast<unsigned int>(max_radius_val.GetValue<int32_t>())
             );
         }
+        // Capture the database pair_id (column 14) before moving the pair.
+        std::uint64_t pair_id = row.GetValue<std::uint64_t>(14);
         compound_ids.insert(pair.GetSourceMoleculeId());
         compound_ids.insert(pair.GetTargetMoleculeId());
+        pair_db_ids.push_back(pair_id);
         pairs.push_back(std::move(pair));
     }
 
@@ -1368,6 +1373,62 @@ std::vector<MatchedPair> read_pairs_with_properties(
             }
         }
     }
+
+    // Rehydrate WizePairZ environment SMIRKS vectors. Each pair stores the
+    // representative (lexicographically-smallest) SMIRKS per radius within its
+    // valid-radius range. Re-AddPairs with these representatives is idempotent
+    // (the min-fold of a single representative is that same representative).
+    // Non-WizePairZ stores have no environment_smirks rows; the join yields
+    // nothing and pairs keep their empty vectors.
+    if (!pairs.empty()) {
+        std::ostringstream pair_id_list;
+        bool first = true;
+        for (const std::uint64_t pair_id : pair_db_ids) {
+            if (!first) {
+                pair_id_list << ",";
+            }
+            pair_id_list << pair_id;
+            first = false;
+        }
+
+        const std::string env_smirks_sql =
+            "select p.id, rule_env.radius, es.smirks "
+            "from pair p "
+            "join constant_environment ce on ce.constant_id = p.constant_id "
+            "join rule_environment rule_env "
+            "  on rule_env.rule_id = p.rule_id "
+            "  and rule_env.environment_fingerprint_id = ce.environment_fingerprint_id "
+            "  and rule_env.radius = ce.radius "
+            "join environment_smirks es on es.rule_environment_id = rule_env.id "
+            "where p.id in (" + pair_id_list.str() + ") "
+            "  and (p.min_valid_radius is null "
+            "       or rule_env.radius between p.min_valid_radius and p.max_valid_radius) "
+            "order by p.id, rule_env.radius";
+
+        std::unique_ptr<duckdb::QueryResult> env_result = connection->Query(env_smirks_sql);
+        if (!env_result) {
+            throw StorageError("DuckDB query returned no result: " + env_smirks_sql);
+        }
+        require_success(*env_result, env_smirks_sql);
+
+        // Group SMIRKS by pair_id.
+        std::unordered_map<std::uint64_t, std::vector<PairEnvironmentSmirks>> smirks_by_pair;
+        for (const auto& env_row : *env_result) {
+            std::uint64_t pair_id = env_row.GetValue<std::uint64_t>(0);
+            unsigned int radius = static_cast<unsigned int>(env_row.GetValue<int32_t>(1));
+            std::string smirks = env_row.GetValue<std::string>(2);
+            smirks_by_pair[pair_id].push_back(PairEnvironmentSmirks{radius, std::move(smirks)});
+        }
+
+        // Attach SMIRKS to each pair.
+        for (std::size_t i = 0; i < pairs.size(); ++i) {
+            auto it = smirks_by_pair.find(pair_db_ids[i]);
+            if (it != smirks_by_pair.end()) {
+                pairs[i].SetEnvironmentSmirks(std::move(it->second));
+            }
+        }
+    }
+
     return pairs;
 }
 
