@@ -481,8 +481,12 @@ void WizePairZMethod::Clear() { molecules_.clear(); pairs_.clear(); analyzed_ = 
 void WizePairZMethod::AddMolecule(const MoleculeRecord& record) { molecules_.push_back(record); analyzed_ = false; }
 void WizePairZMethod::SetMcsIdentityFraction(double fraction) { mcs_identity_fraction_ = fraction; }
 void WizePairZMethod::SetMaxEnvironmentRadius(unsigned int radius) {
-    if (radius < 1) {
-        throw InvalidQueryError("wizepairz max_environment_radius must be at least 1");
+    // DuckDB store materializes constant_environment fingerprints for radii 0..5 only
+    // (see ComputeConstantEnvironmentFingerprints default max_radius=5).
+    constexpr unsigned int kMaxStoreEnvironmentRadius = 5;
+    if (radius < 1 || radius > kMaxStoreEnvironmentRadius) {
+        throw InvalidQueryError(
+            "wizepairz max_environment_radius must be between 1 and 5 (the store's environment radius span)");
     }
     max_environment_radius_ = radius;
 }

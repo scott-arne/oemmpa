@@ -218,6 +218,16 @@ TEST(WizePairZTest, AcceptsOneMaxEnvironmentRadius) {
     EXPECT_NO_THROW(method.SetMaxEnvironmentRadius(1));
 }
 
+TEST(WizePairZTest, AcceptsFiveMaxEnvironmentRadius) {
+    WizePairZMethod method;
+    EXPECT_NO_THROW(method.SetMaxEnvironmentRadius(5));
+}
+
+TEST(WizePairZTest, RejectsSixMaxEnvironmentRadius) {
+    WizePairZMethod method;
+    EXPECT_THROW(method.SetMaxEnvironmentRadius(6), OEMMPA::InvalidQueryError);
+}
+
 TEST(WizePairZTest, ParallelMatchesSerial) {
     const std::vector<std::pair<std::string,std::string>> mols = {
         {"Cc1ccccc1","a"},{"Oc1ccccc1","b"},{"Fc1ccccc1","c"},
