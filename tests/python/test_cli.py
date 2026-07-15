@@ -2197,3 +2197,41 @@ def test_configure_desalting_bundled_default_uses_bundled_patterns():
     analyzer = Analyzer()  # configure_desalting() runs in __init__
     analyzer.add_molecule("CC(=O)Oc1ccccc1C(=O)O.Cl", id="aspirin")
     assert "Halides" in analyzer.stripped_names("aspirin")
+
+
+def test_wizepairz_flags_rejected_with_non_wizepairz_method(tmp_path):
+    # --mcs-identity-fraction and --max-environment-radius are only valid
+    # when --method wizepairz.
+    result = _run_cli(
+        "build",
+        "--smiles", str(DATA_DIR / "molecules.smi"),
+        "--output", str(tmp_path / "test.duckdb"),
+        "--method", "fragmentation",
+        "--mcs-identity-fraction", "0.8",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--mcs-identity-fraction/--max-environment-radius require --method wizepairz" in result.stderr
+
+    result = _run_cli(
+        "build",
+        "--smiles", str(DATA_DIR / "molecules.smi"),
+        "--output", str(tmp_path / "test.duckdb"),
+        "--method", "dmcss",
+        "--max-environment-radius", "3",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--mcs-identity-fraction/--max-environment-radius require --method wizepairz" in result.stderr
+
+
+def test_wizepairz_method_on_build_subcommand(tmp_path):
+    # --method wizepairz should work on build (which calls _build_analyzer).
+    result = _run_cli(
+        "build",
+        "--smiles", str(DATA_DIR / "mmpa_smiles.smi"),
+        "--output", str(tmp_path / "test.duckdb"),
+        "--method", "wizepairz",
+    )
+    assert result.returncode == 0
+    assert (tmp_path / "test.duckdb").exists()

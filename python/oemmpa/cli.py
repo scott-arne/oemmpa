@@ -190,6 +190,32 @@ def _add_input_arguments(
     )
 
 
+def _add_method_arguments(parser):
+    """Add analyzer method selection arguments to a subparser.
+
+    These arguments control which pair-enumeration method is used and
+    method-specific configuration knobs.
+    """
+    parser.add_argument(
+        "--method",
+        choices=["fragmentation", "dmcss", "oemedchem", "wizepairz"],
+        default="fragmentation",
+        help="Analysis method to use (default: fragmentation).",
+    )
+    parser.add_argument(
+        "--mcs-identity-fraction",
+        type=float,
+        default=None,
+        help="Wizepairz MCS identity fraction threshold (default 0.90).",
+    )
+    parser.add_argument(
+        "--max-environment-radius",
+        type=int,
+        default=None,
+        help="Wizepairz maximum environment radius (default 5, valid range [1, 5]).",
+    )
+
+
 def _add_desalting_arguments(parser):
     """Add the salt/solvent-removal flag group to a molecule-ingesting parser.
 
@@ -667,6 +693,13 @@ def _configure_wizepairz(analyzer, args):
 
 def _build_analyzer(args, *, load_properties=None):
     method = getattr(args, "method", "fragmentation")
+    # Validate that wizepairz-specific flags are only used with wizepairz method
+    identity_fraction = getattr(args, "mcs_identity_fraction", None)
+    max_environment_radius = getattr(args, "max_environment_radius", None)
+    if (identity_fraction is not None or max_environment_radius is not None) and method != "wizepairz":
+        raise ValueError(
+            "--mcs-identity-fraction/--max-environment-radius require --method wizepairz"
+        )
     analyzer = Analyzer(method=method)
     if method == "fragmentation":
         _configure_fragmentation(analyzer, args)
@@ -1132,24 +1165,7 @@ def _build_parser():
         require_properties=False,
         require_property=False,
     )
-    build_parser.add_argument(
-        "--method",
-        choices=["fragmentation", "dmcss", "oemedchem", "wizepairz"],
-        default="fragmentation",
-        help="Analysis method to use (default: fragmentation).",
-    )
-    build_parser.add_argument(
-        "--mcs-identity-fraction",
-        type=float,
-        default=None,
-        help="Wizepairz MCS identity fraction threshold (default 0.90).",
-    )
-    build_parser.add_argument(
-        "--max-environment-radius",
-        type=int,
-        default=None,
-        help="Wizepairz maximum environment radius (default 5, valid range [1, 5]).",
-    )
+    _add_method_arguments(build_parser)
     build_parser.add_argument(
         "--output",
         required=True,
@@ -1267,6 +1283,7 @@ def _build_parser():
         help="Compute transform statistics from molecules and properties.",
     )
     _add_input_arguments(stats_parser)
+    _add_method_arguments(stats_parser)
     stats_parser.add_argument(
         "--min-evidence",
         type=int,
@@ -1294,6 +1311,7 @@ def _build_parser():
         help="Optional DuckDB database path for persisted prediction.",
     )
     _add_input_arguments(predict_parser, require_files=False)
+    _add_method_arguments(predict_parser)
     predict_parser.add_argument("--transform", required=True, help="Transform SMILES.")
     predict_parser.add_argument(
         "--aggregation",
@@ -1359,6 +1377,7 @@ def _build_parser():
         require_files=False,
         require_property=False,
     )
+    _add_method_arguments(generate_parser)
     generate_parser.add_argument("--source", required=True, help="Source SMILES.")
     generate_parser.add_argument(
         "--transform",

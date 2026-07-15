@@ -228,6 +228,31 @@ TEST(WizePairZTest, RejectsSixMaxEnvironmentRadius) {
     EXPECT_THROW(method.SetMaxEnvironmentRadius(6), OEMMPA::InvalidQueryError);
 }
 
+TEST(WizePairZTest, RejectsZeroMcsIdentityFraction) {
+    WizePairZMethod method;
+    EXPECT_THROW(method.SetMcsIdentityFraction(0.0), OEMMPA::InvalidQueryError);
+}
+
+TEST(WizePairZTest, RejectsNegativeMcsIdentityFraction) {
+    WizePairZMethod method;
+    EXPECT_THROW(method.SetMcsIdentityFraction(-0.1), OEMMPA::InvalidQueryError);
+}
+
+TEST(WizePairZTest, RejectsGreaterThanOneMcsIdentityFraction) {
+    WizePairZMethod method;
+    EXPECT_THROW(method.SetMcsIdentityFraction(1.5), OEMMPA::InvalidQueryError);
+}
+
+TEST(WizePairZTest, AcceptsOneMcsIdentityFraction) {
+    WizePairZMethod method;
+    EXPECT_NO_THROW(method.SetMcsIdentityFraction(1.0));
+}
+
+TEST(WizePairZTest, AcceptsPointNineMcsIdentityFraction) {
+    WizePairZMethod method;
+    EXPECT_NO_THROW(method.SetMcsIdentityFraction(0.9));
+}
+
 TEST(WizePairZTest, ParallelMatchesSerial) {
     const std::vector<std::pair<std::string,std::string>> mols = {
         {"Cc1ccccc1","a"},{"Oc1ccccc1","b"},{"Fc1ccccc1","c"},
