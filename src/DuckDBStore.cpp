@@ -1822,8 +1822,9 @@ void DuckDBStore::SetAnalysisMethod(const std::string& method_name) {
             }
         }
     }
-    Execute("update dataset set analysis_method = '" + method_name +
-            "' where id = 1");
+    const std::string sql = "update dataset set analysis_method = ? where id = 1";
+    duckdb::vector<duckdb::Value> values = {duckdb::Value(method_name)};
+    execute_prepared(connection_, sql, std::move(values));
 }
 
 void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {

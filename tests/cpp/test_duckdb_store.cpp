@@ -1807,6 +1807,17 @@ TEST(DuckDBStoreTest, RejectsSecondMethodInSameStore) {
     EXPECT_NO_THROW(store.SetAnalysisMethod("wizepairz"));  // idempotent
 }
 
+TEST(DuckDBStoreTest, SetAnalysisMethodHandlesSingleQuote) {
+    // Verify that SetAnalysisMethod correctly parameterizes the UPDATE query,
+    // handling method names containing embedded single quotes without breaking.
+    DuckDBStore store(":memory:");
+    store.InitializeSchema();
+    const std::string method_with_quote = "test'method";
+    EXPECT_NO_THROW(store.SetAnalysisMethod(method_with_quote));
+    EXPECT_NO_THROW(store.SetAnalysisMethod(method_with_quote));  // idempotent
+    EXPECT_THROW(store.SetAnalysisMethod("other"), StorageError);
+}
+
 TEST(DuckDBStoreTest, WizePairZPairExcludedFromInvalidRadius) {
     // Part A: a genuine WizePairZ pair with stored min_valid_radius = 2 seeds
     // rule_environment rows only for radii 2..4 (the full fan-out is 0..5), and
