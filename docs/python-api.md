@@ -21,8 +21,8 @@ The default method is `fragmentation`. You can request it explicitly with
 disconnected maximum common substructure analysis,
 `Analyzer(method="oemedchem")` uses OpenEye OEMedChem, and
 `Analyzer(method="wizepairz")` uses WizePairZ (MCS-based with unspecified
-cores, per-radius explicit-H SMIRKS, 90% identity threshold, and `[1,5]`
-environment radius). `analyzer.method` reports the selected method. Unknown
+cores, per-radius explicit-H SMIRKS, 90% identity threshold, and environment
+radius 1–5 with default 4). `analyzer.method` reports the selected method. Unknown
 method names raise `ValueError`.
 
 WizePairZ supports configuration via `configure_wizepairz()`:
@@ -41,7 +41,7 @@ configure_wizepairz(
 The `mcs_identity_fraction` parameter controls the MCS identity threshold
 (default 0.90, valid range `[0.0, 1.0]`). Only pairs with MCS identity fraction
 ≥ this value are emitted. The `max_environment_radius` parameter controls the
-maximum environment radius for per-radius SMIRKS hierarchy (default 5, valid
+maximum environment radius for per-radius SMIRKS hierarchy (default 4, valid
 range `[1, 5]`).
 
 ### add_molecule

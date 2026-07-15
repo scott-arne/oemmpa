@@ -98,7 +98,7 @@ reading a prebuilt store because the method was already applied at build time.
   range `[0.0, 1.0]`). Only pairs with MCS identity fraction ≥ this value are
   emitted.
 - `--max-environment-radius INT` — maximum environment radius for per-radius
-  SMIRKS hierarchy (default 5, valid range `[1, 5]`).
+  SMIRKS hierarchy (default 4, valid range `[1, 5]`).
 
 These flags require `--method wizepairz`:
 
