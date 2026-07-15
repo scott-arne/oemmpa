@@ -650,9 +650,28 @@ def _validate_property_file_pair(args, command):
     )
 
 
+def _configure_wizepairz(analyzer, args):
+    """Apply wizepairz-method CLI flags to a facade :class:`Analyzer`.
+
+    :raises ValueError: When the analyzer is not using the wizepairz method.
+    """
+    identity_fraction = getattr(args, "mcs_identity_fraction", None)
+    max_environment_radius = getattr(args, "max_environment_radius", None)
+    if identity_fraction is None and max_environment_radius is None:
+        return
+    analyzer.configure_wizepairz(
+        identity_fraction=identity_fraction,
+        max_environment_radius=max_environment_radius,
+    )
+
+
 def _build_analyzer(args, *, load_properties=None):
-    analyzer = Analyzer()
-    _configure_fragmentation(analyzer, args)
+    method = getattr(args, "method", "fragmentation")
+    analyzer = Analyzer(method=method)
+    if method == "fragmentation":
+        _configure_fragmentation(analyzer, args)
+    elif method == "wizepairz":
+        _configure_wizepairz(analyzer, args)
     _configure_desalting(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
     if molecule_report.rejected_count:
@@ -1112,6 +1131,24 @@ def _build_parser():
         build_parser,
         require_properties=False,
         require_property=False,
+    )
+    build_parser.add_argument(
+        "--method",
+        choices=["fragmentation", "dmcss", "oemedchem", "wizepairz"],
+        default="fragmentation",
+        help="Analysis method to use (default: fragmentation).",
+    )
+    build_parser.add_argument(
+        "--mcs-identity-fraction",
+        type=float,
+        default=None,
+        help="Wizepairz MCS identity fraction threshold (default 0.90).",
+    )
+    build_parser.add_argument(
+        "--max-environment-radius",
+        type=int,
+        default=None,
+        help="Wizepairz maximum environment radius (default 5, valid range [1, 5]).",
     )
     build_parser.add_argument(
         "--output",

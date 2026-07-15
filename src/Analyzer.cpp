@@ -299,6 +299,24 @@ void Analyzer::SetFragmentationCutSmarts(const std::string& cut_smarts) {
     CommitFragmenter(fragmenter);
 }
 
+void Analyzer::SetWizePairZIdentityFraction(double fraction) {
+    auto* method = dynamic_cast<WizePairZMethod*>(method_.get());
+    if (method == nullptr) {
+        throw InvalidQueryError("wizepairz controls require the wizepairz method");
+    }
+    method->SetMcsIdentityFraction(fraction);
+    analyzed_ = false;
+}
+
+void Analyzer::SetWizePairZMaxEnvironmentRadius(unsigned int radius) {
+    auto* method = dynamic_cast<WizePairZMethod*>(method_.get());
+    if (method == nullptr) {
+        throw InvalidQueryError("wizepairz controls require the wizepairz method");
+    }
+    method->SetMaxEnvironmentRadius(radius);
+    analyzed_ = false;
+}
+
 void Analyzer::ConfigureDesalting(bool strip_solvents, bool aggressive) {
     desalter_ = std::make_shared<OEDESALT::Desalter>(
         OEDESALT::Desalter::WithBundledPatterns(strip_solvents, aggressive)

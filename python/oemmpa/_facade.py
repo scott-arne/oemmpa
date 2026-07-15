@@ -307,6 +307,33 @@ class Analyzer:
             return value
         raise ValueError(f"{name} must be a bool")
 
+    def configure_wizepairz(
+        self,
+        *,
+        identity_fraction=None,
+        max_environment_radius=None,
+    ):
+        """Configure wizepairz-method controls.
+
+        :param identity_fraction: Optional MCS identity fraction threshold
+            (default 0.90). Candidate pairs whose MCS size divided by the
+            smaller input's heavy atom count is below this threshold are
+            rejected as insufficiently similar.
+        :param max_environment_radius: Optional maximum environment radius
+            (default 5, valid range [1, 5]).
+        :returns: ``self`` for chaining.
+        :raises ValueError: If the analyzer is not using the wizepairz method
+            or a supplied option is invalid.
+        """
+        try:
+            if identity_fraction is not None:
+                self._raw_analyzer.SetWizePairZIdentityFraction(float(identity_fraction))
+            if max_environment_radius is not None:
+                self._raw_analyzer.SetWizePairZMaxEnvironmentRadius(int(max_environment_radius))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
     def configure_desalting(
         self,
         *,

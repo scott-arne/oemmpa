@@ -100,6 +100,12 @@ public:
     /// \brief Configure fragmentation-method SMARTS used to select cut bonds.
     void SetFragmentationCutSmarts(const std::string& cut_smarts);
 
+    /// \brief Configure wizepairz-method MCS identity fraction.
+    void SetWizePairZIdentityFraction(double fraction);
+
+    /// \brief Configure wizepairz-method maximum environment radius.
+    void SetWizePairZMaxEnvironmentRadius(unsigned int radius);
+
     /// \brief Configure the shared desalter from oedesalt's compiled-in salt
     /// (and optional solvent) patterns. Applied to every molecule added
     /// afterward.

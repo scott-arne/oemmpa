@@ -532,6 +532,54 @@ def test_cli_build_max_variable_heavies_default_is_ten():
     assert args.max_variable_heavies == 10
 
 
+def test_cli_build_method_flag_selects_analysis_method(tmp_path):
+    smiles = tmp_path / "molecules.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+    database = tmp_path / "wizepairz.oemmpa.duckdb"
+
+    result = _run_cli(
+        "build",
+        "--method",
+        "wizepairz",
+        "--smiles",
+        str(smiles),
+        "--output",
+        str(database),
+    )
+
+    # Verify the build succeeded and created the database
+    assert result.returncode == 0
+    assert database.exists()
+    # List to ensure the database can be read
+    list_result = _run_cli("list", str(database))
+    assert list_result.returncode == 0
+
+
+def test_cli_build_wizepairz_config_flags_apply(tmp_path):
+    # Test that the wizepairz config flags are parsed and accepted (behavior
+    # verification is in C++ tests; this confirms CLI wiring).
+    smiles = tmp_path / "molecules.smi"
+    smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")
+    database = tmp_path / "wizepairz-config.oemmpa.duckdb"
+
+    result = _run_cli(
+        "build",
+        "--method",
+        "wizepairz",
+        "--mcs-identity-fraction",
+        "0.85",
+        "--max-environment-radius",
+        "3",
+        "--smiles",
+        str(smiles),
+        "--output",
+        str(database),
+    )
+
+    assert result.returncode == 0
+    assert database.exists()
+
+
 def test_cli_build_reports_missing_cut_rgroup_file(tmp_path):
     smiles, properties = _write_rgroup_cli_inputs(tmp_path)
     database = tmp_path / "analysis.oemmpa.duckdb"

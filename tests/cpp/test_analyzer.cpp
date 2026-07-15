@@ -188,6 +188,15 @@ TEST(AnalyzerTest, HydrogenFragmentIsExemptFromVariableMinBounds) {
     EXPECT_TRUE(analyzer.GetPairs(min_two).empty());
 }
 
+TEST(AnalyzerTest, WizePairZConfigGuardedByMethod) {
+    Analyzer frag("fragmentation");
+    EXPECT_THROW(frag.SetWizePairZIdentityFraction(0.8), InvalidQueryError);
+
+    Analyzer wp("wizepairz");
+    EXPECT_NO_THROW(wp.SetWizePairZIdentityFraction(0.8));
+    EXPECT_NO_THROW(wp.SetWizePairZMaxEnvironmentRadius(3));
+}
+
 TEST(AnalyzerTest, MaxVariableRatioFiltersLargeVariableRegions) {
     // Ethylbenzene has 8 heavy atoms; [*:1]CC is 2, ratio 0.25. Propylbenzene
     // has 9 heavy atoms; [*:1]CCC is 3, ratio 0.333. A max ratio of 0.3 drops
