@@ -689,6 +689,13 @@ options.SetMaxHeavyAtomChange(25)
 store.save_analyzer(analyzer, query_options=options)
 ```
 
+The variable-fragment size filters (`SetMaxVariableHeavies`,
+`SetMinVariableHeavies`, and the `SetMaxVariableRatio` / `SetMinVariableRatio`
+equivalents) apply only to the `fragmentation` method. The MCS-based methods
+(`dmcss`, `oemedchem`, `wizepairz`) enumerate pairs from a maximum common
+substructure and honor only the heavy-atom change (`SetMaxHeavyAtomChange`,
+`SetMaxRelativeHeavyAtomChange`) and symmetry (`SetSymmetric`) options.
+
 `load_properties_from_csv()` expects one row per molecule ID and one column per
 numeric property. Values of `*` or blank strings are treated as missing. Rows
 with unknown molecule IDs or non-numeric property values are reported as

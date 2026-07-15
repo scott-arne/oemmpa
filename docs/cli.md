@@ -113,10 +113,20 @@ oemmpa build \
   --output analysis.oemmpa.duckdb
 ```
 
-Fragmentation-specific flags such as `--cut-rgroup`, `--max-heavies`,
-`--max-rotatable-bonds`, `--min-variable-heavies`, and `--max-variable-heavies`
-require `--method fragmentation` (or no explicit method, since fragmentation is
-the default).
+Fragmentation-only flags — `--cut-rgroup`, `--cut-rgroup-file`, `--max-heavies`,
+and `--max-rotatable-bonds` — require `--method fragmentation` (or no explicit
+method, since fragmentation is the default) and are rejected for the MCS-based
+methods.
+
+The variable-fragment size filters — `--min-variable-heavies`,
+`--max-variable-heavies`, `--min-variable-ratio`, and `--max-variable-ratio`,
+including the default `--max-variable-heavies 10` — only affect the
+`fragmentation` method. The MCS-based methods (`dmcss`, `oemedchem`, `wizepairz`)
+enumerate pairs from a maximum common substructure rather than from enumerated
+variable fragments, so they filter persisted pairs by heavy-atom change
+(`--max-heavies-transf`, `--max-frac-trans`) and orientation (`--symmetric`)
+only. They accept the variable-size flags for MMPDB-compatible build scripts but
+do not apply them.
 
 ### Salt And Solvent Removal
 

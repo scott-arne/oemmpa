@@ -123,7 +123,11 @@ oemmpa rgroup2smarts '*c1ccccc1O' '*F'
 The `oemmpa build` command applies mmpdb-equivalent defaults for fragment filtering:
 `--max-heavies 100`, `--max-rotatable-bonds 10`, `--max-variable-heavies 10`, and
 non-symmetric indexing. These defaults can be overridden by passing `none` to any
-of the filter flags or `--symmetric` to enable bidirectional pair indexing.
+of the filter flags or `--symmetric` to enable bidirectional pair indexing. The
+fragment-size filters apply to the default `fragmentation` method; the MCS-based
+methods (`dmcss`, `oemedchem`, `wizepairz`) filter persisted pairs by heavy-atom
+change and orientation only. See [docs/cli.md](docs/cli.md) for the per-method
+flag rules.
 
 Every input is also desalted by default — deliberately more rigorously than
 mmpdb/RDKit's default SaltRemover. Use `--no-desalt` or `--salt-file` for a
