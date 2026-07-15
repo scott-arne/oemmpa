@@ -3,8 +3,11 @@
 #include "oemmpa/DuckDBStore.h"
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
+#include "oemmpa/WizePairZMethod.h"
 
 #include <duckdb.hpp>
 
@@ -14,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -1682,15 +1686,15 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
     std::filesystem::remove(path);
 }
 
-TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionTwo) {
+TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionThree) {
     const std::string path = (std::filesystem::temp_directory_path() /
-        "oemmpa_fresh_v2.duckdb").string();
+        "oemmpa_fresh_v3.duckdb").string();
     std::filesystem::remove(path);
     {
         DuckDBStore store(path);
         store.InitializeSchema();
     }
-    // A fresh store must be stamped with the current schema version (2).
+    // A fresh store must be stamped with the current schema version (3).
     {
         duckdb::DuckDB database(path);
         duckdb::Connection connection(database);
@@ -1699,9 +1703,239 @@ TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionTwo) {
         ASSERT_FALSE(result->HasError());
         const std::uint64_t version =
             result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
-        EXPECT_EQ(version, 2u);
+        EXPECT_EQ(version, 3u);
     }
     std::filesystem::remove(path);
+}
+
+namespace {
+
+// Read a single UBIGINT scalar from a raw connection.
+std::uint64_t ScalarUBigint(duckdb::Connection& connection, const std::string& sql) {
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(sql);
+    if (!result || result->HasError()) {
+        throw std::runtime_error("scalar query failed: " + sql);
+    }
+    return result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
+}
+
+// Build a file-backed WizePairZ store holding the para-xylene -> hydroquinone
+// pair, whose core-bridged two-site change prunes the low radii so the stored
+// valid range is [2, 4]. Returns the database path.
+std::filesystem::path BuildWizePairZStore() {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+
+    WizePairZMethod method;
+    method.SetMcsIdentityFraction(0.5);
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    method.Analyze(1);
+    const std::vector<MatchedPair> pairs = method.GetPairs(QueryOptions{});
+
+    DuckDBStore store(path.string());
+    store.InitializeSchema();
+    store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    store.SetAnalysisMethod("wizepairz");
+    store.AddPairs(pairs);
+    return path;
+}
+
+// Hand-construct a matched pair on a shared aromatic constant and C -> O rule,
+// annotated with an explicit valid-radius range (as WizePairZ pairs are).
+MatchedPair MakeRangedPair(
+    unsigned int source_id,
+    unsigned int target_id,
+    unsigned int min_valid_radius,
+    unsigned int max_valid_radius
+) {
+    MatchedPair pair(
+        source_id, target_id,
+        "m" + std::to_string(source_id), "m" + std::to_string(target_id),
+        "Cc1ccccc1", "Oc1ccccc1",
+        "[*:1]c1ccccc1",
+        "[*:1]C", "[*:1]O",
+        1, 0, 0);
+    pair.SetValidRadiusRange(min_valid_radius, max_valid_radius);
+    return pair;
+}
+
+// Read the (radius -> explicit_smirks) representative map from a store. Valid
+// only for a single-rule/single-constant fixture, where each radius maps to one
+// rule_environment.
+std::map<int, std::string> ReadRepresentativeMap(const std::filesystem::path& path) {
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+        "select radius, explicit_smirks from rule_environment "
+        "where explicit_smirks is not null order by radius");
+    if (!result || result->HasError()) {
+        throw std::runtime_error("representative query failed");
+    }
+    std::map<int, std::string> representatives;
+    for (const auto& row : *result) {
+        representatives.emplace(
+            row.GetValue<int>(0), row.GetValue<std::string>(1));
+    }
+    return representatives;
+}
+
+}  // namespace
+
+TEST(DuckDBStoreTest, StampsSchemaVersion3) {
+    // No public schema-version getter; a fresh store is stamped at
+    // InitializeSchema time, read back through a file-backed raw connection.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(
+        connection, "select oemmpa_schema_version from dataset where id = 1"), 3u);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsSecondMethodInSameStore) {
+    DuckDBStore store(":memory:");
+    store.InitializeSchema();
+    store.SetAnalysisMethod("wizepairz");
+    EXPECT_THROW(store.SetAnalysisMethod("dmcss"), StorageError);
+    EXPECT_NO_THROW(store.SetAnalysisMethod("wizepairz"));  // idempotent
+}
+
+TEST(DuckDBStoreTest, WizePairZPairExcludedFromInvalidRadius) {
+    // Part A: a genuine WizePairZ pair with stored min_valid_radius = 2 seeds
+    // rule_environment rows only for radii 2..4 (the full fan-out is 0..5), and
+    // the structural membership check finds NO out-of-range membership.
+    const std::filesystem::path wpz_path = BuildWizePairZStore();
+    {
+        duckdb::DuckDB database(wpz_path.string());
+        duckdb::Connection connection(database);
+        // Every stored pair persisted the pruned valid range [2, 4].
+        EXPECT_GT(ScalarUBigint(
+            connection, "select count(*) from pair where min_valid_radius = 2"), 0u);
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select count(*) from pair where min_valid_radius is null "
+            "or min_valid_radius != 2 or max_valid_radius != 4"), 0u);
+        // Fan-out gating: rule_environment rows span exactly [2, 4].
+        std::unique_ptr<duckdb::QueryResult> span = connection.Query(
+            "select min(radius), max(radius) from rule_environment");
+        ASSERT_FALSE(span->HasError());
+        auto span_row = span->Fetch();
+        EXPECT_EQ(span_row->GetValue(0, 0).GetValue<int>(), 2);
+        EXPECT_EQ(span_row->GetValue(1, 0).GetValue<int>(), 4);
+        // No rule_environment membership falls outside a pair's stored range.
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select count(*) from pair p "
+            "join constant_environment ce on ce.constant_id = p.constant_id "
+            "join rule_environment re on re.rule_id = p.rule_id "
+            "and re.environment_fingerprint_id = ce.environment_fingerprint_id "
+            "and ce.radius = re.radius "
+            "where p.min_valid_radius is not null "
+            "and (re.radius < p.min_valid_radius or re.radius > p.max_valid_radius)"),
+            0u);
+    }
+    // A valid environment (radius 2) still returns its supporting pair.
+    {
+        DuckDBStore reopened(wpz_path.string());
+        duckdb::DuckDB database(wpz_path.string());
+        duckdb::Connection connection(database);
+        const std::uint64_t re_id = ScalarUBigint(
+            connection, "select id from rule_environment where radius = 2 limit 1");
+        EXPECT_GE(reopened.GetPairsForRuleEnvironment(re_id).size(), 1U);
+    }
+    std::filesystem::remove(wpz_path);
+
+    // Part B: two pairs sharing the same rule and constant but different valid
+    // ranges. P1 is valid at [0, 4]; P2 only at [2, 4]. P2 must be excluded from
+    // the shared radius-0 environment in BOTH num_pairs and the supporting-pair
+    // read, while both contribute at radius 2.
+    const std::filesystem::path shared_path = TemporaryDatabasePath();
+    std::filesystem::remove(shared_path);
+    std::uint64_t radius0_env = 0;
+    std::uint64_t radius2_env = 0;
+    {
+        DuckDBStore store(shared_path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "m1"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "m2"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(3, "Cc1ccncc1", "m3"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(4, "Oc1ccncc1", "m4"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs({MakeRangedPair(1, 2, 0, 4), MakeRangedPair(3, 4, 2, 4)});
+    }
+    {
+        duckdb::DuckDB database(shared_path.string());
+        duckdb::Connection connection(database);
+        radius0_env = ScalarUBigint(
+            connection, "select id from rule_environment where radius = 0");
+        radius2_env = ScalarUBigint(
+            connection, "select id from rule_environment where radius = 2");
+        // num_pairs excludes P2 at radius 0 but counts both at radius 2.
+        EXPECT_EQ(ScalarUBigint(
+            connection, "select num_pairs from rule_environment where radius = 0"), 1u);
+        EXPECT_EQ(ScalarUBigint(
+            connection, "select num_pairs from rule_environment where radius = 2"), 2u);
+    }
+    {
+        DuckDBStore reopened(shared_path.string());
+        // The radius-0 environment returns only P1 (compounds 1,2), not P2.
+        const std::vector<MatchedPair> at_radius0 =
+            reopened.GetPairsForRuleEnvironment(radius0_env);
+        ASSERT_EQ(at_radius0.size(), 1U);
+        EXPECT_EQ(at_radius0.front().GetSourceMoleculeId(), 1U);
+        EXPECT_EQ(at_radius0.front().GetTargetMoleculeId(), 2U);
+        // The radius-2 environment returns both supporting pairs.
+        EXPECT_EQ(reopened.GetPairsForRuleEnvironment(radius2_env).size(), 2U);
+    }
+    std::filesystem::remove(shared_path);
+}
+
+TEST(DuckDBStoreTest, RepresentativeExplicitSmirksIsOrderIndependent) {
+    // Two pairs on the same rule and constant contribute different concrete
+    // SMIRKS to the same (rule, fingerprint, radius) environments. The stored
+    // representative must be the lexicographic min per environment regardless of
+    // the order the two appends arrive.
+    MatchedPair pair_a = MakeRangedPair(1, 2, 0, 2);
+    pair_a.SetEnvironmentSmirks({
+        {0u, "a0>>x"}, {1u, "z1>>x"}, {2u, "m2>>x"}});
+    MatchedPair pair_b = MakeRangedPair(3, 4, 0, 2);
+    pair_b.SetEnvironmentSmirks({
+        {0u, "z0>>x"}, {1u, "a1>>x"}, {2u, "n2>>x"}});
+
+    const auto save = [&](const std::filesystem::path& path,
+                          const MatchedPair& first, const MatchedPair& second) {
+        std::filesystem::remove(path);
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "m1"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "m2"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(3, "Cc1ccncc1", "m3"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(4, "Oc1ccncc1", "m4"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs({first});
+        store.AddPairs({second});
+    };
+
+    const std::filesystem::path a_then_b = TemporaryDatabasePath();
+    const std::filesystem::path b_then_a = TemporaryDatabasePath();
+    save(a_then_b, pair_a, pair_b);
+    save(b_then_a, pair_b, pair_a);
+
+    const std::map<int, std::string> map_ab = ReadRepresentativeMap(a_then_b);
+    const std::map<int, std::string> map_ba = ReadRepresentativeMap(b_then_a);
+    EXPECT_EQ(map_ab, map_ba);
+    // The representative is the lexicographic min over both contributors.
+    const std::map<int, std::string> expected = {
+        {0, "a0>>x"}, {1, "a1>>x"}, {2, "m2>>x"}};
+    EXPECT_EQ(map_ab, expected);
+
+    std::filesystem::remove(a_then_b);
+    std::filesystem::remove(b_then_a);
 }
 
 TEST(DuckDBStoreTest, RejectsVersionOneStoreAfterBump) {

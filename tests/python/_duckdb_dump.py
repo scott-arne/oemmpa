@@ -75,6 +75,11 @@ _QUERIES = {
         "join rule_environment re on re.rule_id = p.rule_id "
         "and re.environment_fingerprint_id = ce.environment_fingerprint_id "
         "and re.radius = ce.radius "
+        # Valid-range membership predicate (schema v3): a pair contributes to an
+        # environment only at radii within its stored [min, max] bounds; NULL
+        # bounds (non-WizePairZ pairs) keep the full per-radius fan-out.
+        "and (p.min_valid_radius is null or "
+        "(re.radius between p.min_valid_radius and p.max_valid_radius)) "
         "join rule r on r.id = re.rule_id "
         "join rule_smiles f on f.id = r.from_smiles_id "
         "join rule_smiles t on t.id = r.to_smiles_id "

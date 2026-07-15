@@ -122,6 +122,11 @@ struct PairRow {
     unsigned int cut_count;
     int heavy_atom_delta;
     int heavy_bond_delta;
+    // Persisted only when has_valid_range is true (WizePairZ); otherwise the two
+    // columns are stored NULL and the pair keeps the full radius fan-out.
+    int min_valid_radius;
+    int max_valid_radius;
+    bool has_valid_range;
 };
 
 struct NewConstantEnvironment {
@@ -865,6 +870,10 @@ collect_rule_environment_property_deltas(
         "on rule_env.rule_id = pair.rule_id "
         "and rule_env.environment_fingerprint_id = ce.environment_fingerprint_id "
         "and rule_env.radius = ce.radius "
+        // Valid-range membership predicate: a pair only supports statistics for
+        // environments at radii within its stored [min, max] (NULL = all radii).
+        "and (pair.min_valid_radius is null or "
+        "(rule_env.radius between pair.min_valid_radius and pair.max_valid_radius)) "
         "join compound_property source_property "
         "on source_property.compound_id = pair.compound1_id "
         "join compound_property target_property "
@@ -1145,6 +1154,11 @@ std::string build_pair_query(
     sql << "where true ";
     if (rule_environment_id > 0) {
         sql << "and rule_env.id = " << rule_environment_id << " ";
+        // Valid-range membership predicate: exclude a pair from a supporting-pair
+        // read at a radius outside its stored [min, max] (NULL = all radii), so
+        // reads agree with the num_pairs/stats derivation sites.
+        sql << "and (p.min_valid_radius is null or rule_env.radius "
+            << "between p.min_valid_radius and p.max_valid_radius) ";
     }
     if (!options.GetSymmetric()) {
         sql << "and p.compound1_id < p.compound2_id ";
@@ -1457,6 +1471,9 @@ void AppendRuleEnvironments(
         appender.Append(duckdb::Value::INTEGER(row.radius));
         appender.Append(duckdb::Value::UINTEGER(
             static_cast<std::uint32_t>(row.num_pairs)));
+        // explicit_smirks starts NULL; the representative is folded in and
+        // batch-updated after the pairs are appended.
+        appender.Append(duckdb::Value(duckdb::LogicalType::VARCHAR));
         appender.EndRow();
     }
     appender.Close();
@@ -1498,6 +1515,13 @@ void AppendPairs(
         appender.Append(duckdb::Value::UINTEGER(row.cut_count));
         appender.Append(duckdb::Value::INTEGER(row.heavy_atom_delta));
         appender.Append(duckdb::Value::INTEGER(row.heavy_bond_delta));
+        if (row.has_valid_range) {
+            appender.Append(duckdb::Value::INTEGER(row.min_valid_radius));
+            appender.Append(duckdb::Value::INTEGER(row.max_valid_radius));
+        } else {
+            appender.Append(duckdb::Value(duckdb::LogicalType::INTEGER));
+            appender.Append(duckdb::Value(duckdb::LogicalType::INTEGER));
+        }
         appender.EndRow();
     }
     appender.Close();
@@ -1587,7 +1611,10 @@ void DuckDBStore::InitializeSchema() {
             "num_rules ubigint,"
             "num_pairs ubigint,"
             "num_rule_environments ubigint,"
-            "num_rule_environment_stats ubigint"
+            "num_rule_environment_stats ubigint,"
+            // Single analysis method per store (stamped by SetAnalysisMethod on
+            // first save); nullable until stamped.
+            "analysis_method varchar"
             ")"
         );
         Execute(
@@ -1645,6 +1672,10 @@ void DuckDBStore::InitializeSchema() {
             "environment_fingerprint_id ubigint not null references environment_fingerprint(id),"
             "radius integer not null,"
             "num_pairs uinteger not null,"
+            // Order-independent representative concrete SMIRKS for this
+            // (rule, fingerprint, radius): the lexicographically smallest over
+            // all contributing WizePairZ pairs. NULL for non-WizePairZ methods.
+            "explicit_smirks varchar,"
             "unique (rule_id, environment_fingerprint_id, radius)"
             ")"
         );
@@ -1693,6 +1724,10 @@ void DuckDBStore::InitializeSchema() {
             "cut_count uinteger not null,"
             "heavy_atom_delta integer not null,"
             "heavy_bond_delta integer not null,"
+            // Per-pair valid-radius bounds (WizePairZ). NULL for methods that do
+            // not annotate a range; those pairs keep the full radius fan-out.
+            "min_valid_radius integer,"
+            "max_valid_radius integer,"
             "unique (compound1_id, compound2_id, rule_id, constant_id)"
             ")"
         );
@@ -1767,6 +1802,28 @@ void DuckDBStore::Execute(const std::string& sql) {
         throw StorageError("DuckDB query returned no result: " + sql);
     }
     require_success(*result, sql);
+}
+
+void DuckDBStore::SetAnalysisMethod(const std::string& method_name) {
+    // One store holds a single analysis method: the first save stamps it and a
+    // later save with a DIFFERENT non-empty method is rejected. Re-stamping the
+    // same method (or overwriting a still-NULL slot) is idempotent.
+    auto existing = connection_->Query(
+        "select analysis_method from dataset where id = 1");
+    require_success(*existing, "read analysis_method");
+    for (const auto& row : *existing) {
+        if (!row.GetValue<duckdb::Value>(0).IsNull()) {
+            const std::string current = row.GetValue<std::string>(0);
+            if (!current.empty() && current != method_name) {
+                throw StorageError(
+                    "DuckDB store was built with analysis method '" + current +
+                    "' but this save uses '" + method_name +
+                    "'; one store holds a single method");
+            }
+        }
+    }
+    Execute("update dataset set analysis_method = '" + method_name +
+            "' where id = 1");
 }
 
 void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {
@@ -2285,6 +2342,14 @@ void DuckDBStore::AppendBulk(
         std::uint64_t>, std::tuple<unsigned int, int, int>, PairIdentityHash>
         seen_payload;
 
+    // Representative concrete SMIRKS staged per (rule_id, fingerprint_id, radius)
+    // rule_environment key: the lexicographically smallest over the pairs seen
+    // THIS call. Folded against the stored value before writing so the final
+    // representative is independent of append order (Step 10). Only WizePairZ
+    // pairs (non-empty GetEnvironmentSmirks) contribute; others leave it NULL.
+    std::map<std::tuple<std::uint64_t, std::uint64_t, int>, std::string>
+        staged_explicit_smirks;
+
     // Wrap the whole resolve-then-append body so every failure mode presents the
     // store's StorageError contract to callers. The resolve phase can throw
     // sibling OEMMPAError types that are NOT StorageError -- e.g.
@@ -2379,9 +2444,34 @@ void DuckDBStore::AppendBulk(
                     fingerprint_id});
             }
         }
+        // Concrete per-radius SMIRKS for this pair (WizePairZ); empty otherwise.
+        // Consulted below to stage the representative explicit_smirks per
+        // rule_environment.
+        std::unordered_map<int, const std::string*> pair_smirks_by_radius;
+        for (const PairEnvironmentSmirks& entry : pair.GetEnvironmentSmirks()) {
+            pair_smirks_by_radius.emplace(
+                static_cast<int>(entry.radius), &entry.smirks);
+        }
+        const bool pair_has_range = pair.HasValidRadiusRange();
+        const int pair_min_radius =
+            pair_has_range ? static_cast<int>(pair.GetMinValidRadius()) : 0;
+        const int pair_max_radius =
+            pair_has_range ? static_cast<int>(pair.GetMaxValidRadius()) : 0;
+
         // fan out over radius 0..5 fingerprints (cached per constant)
         for (const EnvironmentFingerprint& fingerprint :
              constant_fingerprints(pair.GetConstantSmiles())) {
+            const int radius = static_cast<int>(fingerprint.GetRadius());
+            // Gate the rule_environment fan-out to the pair's valid range. A pair
+            // WITHOUT a range (empty annotation) keeps the full fan-out; a pair
+            // WITH a range only seeds/attributes radii within it, so an
+            // environment at an invalid radius exists only if some OTHER pair is
+            // valid there. The per-constant constant_environment rows above stay
+            // fully fanned out (they describe the constant, not the pair).
+            if (pair_has_range &&
+                (radius < pair_min_radius || radius > pair_max_radius)) {
+                continue;
+            }
             std::uint64_t fingerprint_id;
             {
                 const std::string key = fingerprint.GetSmarts() + "\x1f" +
@@ -2403,9 +2493,7 @@ void DuckDBStore::AppendBulk(
             // set-based UPDATE, which derives each environment's count from the
             // physical pairs via the constant_environment reconstruction join.
             const std::tuple<std::uint64_t, std::uint64_t, int>
-                rule_environment_key{
-                    rule_id, fingerprint_id,
-                    static_cast<int>(fingerprint.GetRadius())};
+                rule_environment_key{rule_id, fingerprint_id, radius};
             if (rule_environment_id_cache_.find(rule_environment_key) ==
                 rule_environment_id_cache_.end()) {
                 const std::uint64_t rule_environment_id =
@@ -2413,8 +2501,20 @@ void DuckDBStore::AppendBulk(
                 rule_environment_id_cache_.emplace(
                     rule_environment_key, rule_environment_id);
                 new_rule_environments.push_back({
-                    rule_environment_id, rule_id, fingerprint_id,
-                    static_cast<int>(fingerprint.GetRadius()), 0});
+                    rule_environment_id, rule_id, fingerprint_id, radius, 0});
+            }
+            // Stage this pair's concrete SMIRKS for the environment, keeping the
+            // lexicographically smallest seen this call. Folded against the
+            // stored value later so the result is append-order independent.
+            const auto smirks_it = pair_smirks_by_radius.find(radius);
+            if (smirks_it != pair_smirks_by_radius.end() &&
+                !smirks_it->second->empty()) {
+                auto staged = staged_explicit_smirks.find(rule_environment_key);
+                if (staged == staged_explicit_smirks.end() ||
+                    *smirks_it->second < staged->second) {
+                    staged_explicit_smirks[rule_environment_key] =
+                        *smirks_it->second;
+                }
             }
         }
         // One physical pair row per (compound1, compound2, rule, constant)
@@ -2435,7 +2535,8 @@ void DuckDBStore::AppendBulk(
                 pair_counter(), rule_id, constant_id,
                 pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),
                 pair.GetCutCount(), pair.GetHeavyAtomDelta(),
-                pair.GetHeavyBondDelta()});
+                pair.GetHeavyBondDelta(),
+                pair_min_radius, pair_max_radius, pair_has_range});
             seen_payload.emplace(identity, payload);
         } else {
             // Identity already known (either staged earlier this call or preloaded
@@ -2468,14 +2569,24 @@ void DuckDBStore::AppendBulk(
     // num_pairs is derived: count physical pairs whose (rule, constant) resolve to
     // each environment's fingerprint at its radius. Set-based, off the per-pair
     // hot path; recompute (not accumulate) so incremental reloads stay correct.
-    // MUST run after AppendPairs so newly appended pairs are counted.
+    // MUST run after AppendPairs so newly appended pairs are counted. The
+    // valid-range membership predicate excludes a pair from an environment at a
+    // radius outside its stored [min_valid_radius, max_valid_radius].
     Execute(
         "update rule_environment re set num_pairs = ("
         "select count(*) from pair p "
         "join constant_environment ce "
         "on ce.constant_id = p.constant_id and ce.radius = re.radius "
         "where p.rule_id = re.rule_id "
-        "and ce.environment_fingerprint_id = re.environment_fingerprint_id)");
+        "and ce.environment_fingerprint_id = re.environment_fingerprint_id "
+        "and (p.min_valid_radius is null or "
+        "(re.radius between p.min_valid_radius and p.max_valid_radius)))");
+
+    // Fold the staged representative SMIRKS against any value already stored for
+    // each rule_environment, then batch-update. Reading the current value and
+    // taking the lexicographic min makes the representative independent of the
+    // order in which pairs (and successive appends into the same store) arrive.
+    UpdateRepresentativeSmirks(staged_explicit_smirks);
 
     // Reconcile id sequences to max(id)+1 inside this (possibly caller-owned)
     // transaction, so a later legacy nextval insert cannot collide with the
@@ -2492,6 +2603,75 @@ void DuckDBStore::AppendBulk(
         throw;
     } catch (const std::exception& error) {
         throw StorageError(std::string("DuckDB bulk save failed: ") + error.what());
+    }
+}
+
+void DuckDBStore::UpdateRepresentativeSmirks(
+    const std::map<std::tuple<std::uint64_t, std::uint64_t, int>,
+        std::string>& staged_explicit_smirks
+) {
+    if (staged_explicit_smirks.empty()) {
+        return;
+    }
+    // Resolve each staged (rule, fingerprint, radius) key to its rule_environment
+    // id via the cache populated during staging and PreloadIdCaches.
+    std::map<std::uint64_t, std::string> staged_by_id;
+    for (const auto& entry : staged_explicit_smirks) {
+        auto it = rule_environment_id_cache_.find(entry.first);
+        if (it == rule_environment_id_cache_.end()) {
+            continue;
+        }
+        staged_by_id.emplace(it->second, entry.second);
+    }
+    if (staged_by_id.empty()) {
+        return;
+    }
+
+    // Read the stored representative for these environments in one query so the
+    // fold-in sees any value written by an earlier append into this store.
+    std::ostringstream id_list;
+    bool first = true;
+    for (const auto& entry : staged_by_id) {
+        if (!first) {
+            id_list << ",";
+        }
+        id_list << entry.first;
+        first = false;
+    }
+    const std::string select_sql =
+        "select id, explicit_smirks from rule_environment where id in (" +
+        id_list.str() + ")";
+    std::unique_ptr<duckdb::QueryResult> existing =
+        connection_->Query(select_sql);
+    if (!existing) {
+        throw StorageError("DuckDB query returned no result: " + select_sql);
+    }
+    require_success(*existing, select_sql);
+    std::unordered_map<std::uint64_t, std::string> existing_by_id;
+    for (const auto& row : *existing) {
+        if (!row.GetValue<duckdb::Value>(1).IsNull()) {
+            existing_by_id.emplace(
+                row.GetValue<std::uint64_t>(0), row.GetValue<std::string>(1));
+        }
+    }
+
+    // Fold: final = min(existing_if_present, staged_min). Skip environments whose
+    // stored value already equals the fold result (no-op write). Batch via one
+    // prepared UPDATE reused per environment.
+    const std::string update_sql =
+        "update rule_environment set explicit_smirks = ? where id = ?";
+    for (const auto& entry : staged_by_id) {
+        std::string final_value = entry.second;
+        const auto ex = existing_by_id.find(entry.first);
+        if (ex != existing_by_id.end()) {
+            if (ex->second <= final_value) {
+                continue;
+            }
+        }
+        duckdb::vector<duckdb::Value> values = {
+            duckdb::Value(final_value),
+            duckdb::Value::UBIGINT(entry.first)};
+        execute_prepared(connection_, update_sql, std::move(values));
     }
 }
 

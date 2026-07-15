@@ -74,8 +74,12 @@ public:
     // migration). Bumped to 2 atomically with the normalized pair layout (one
     // physical row per matched pair, with per-radius memberships derived through
     // constant_environment), so no committed state stamps 2 on a pre-normalized
-    // v1 table.
-    static constexpr std::uint32_t kOemmpaSchemaVersion = 2;
+    // v1 table. Bumped to 3 atomically with the WizePairZ storage tranche:
+    // per-pair valid-radius bounds gate rule_environment membership, a
+    // representative explicit_smirks is stored per rule_environment, and a
+    // single analysis method is stamped per store -- a clean break with no
+    // migration from v2.
+    static constexpr std::uint32_t kOemmpaSchemaVersion = 3;
 
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
@@ -103,6 +107,16 @@ public:
 
     /// \brief Execute SQL and raise ``StorageError`` on failure.
     void Execute(const std::string& sql);
+
+    /// \brief Stamp the store's single analysis method on ``dataset``.
+    ///
+    /// The first save records ``method_name``. A store holds a single method:
+    /// a later save that passes a different non-empty method raises
+    /// ``StorageError``. Re-stamping the same method is idempotent.
+    ///
+    /// \param method_name Name of the analysis method producing the pairs.
+    /// \raises StorageError When the store already carries a different method.
+    void SetAnalysisMethod(const std::string& method_name);
 
     /// \brief Store one molecule row.
     void AddMolecule(const MoleculeRecord& molecule);
@@ -246,6 +260,15 @@ private:
 
     // Seed member id caches from existing rows so a non-empty store reuses ids.
     void PreloadIdCaches();
+
+    // Fold the staged per-(rule_id, fingerprint_id, radius) representative SMIRKS
+    // against the value already stored for each rule_environment (taking the
+    // lexicographic min) and batch-update. Reading the stored value makes the
+    // representative independent of append order. No-op when nothing was staged.
+    void UpdateRepresentativeSmirks(
+        const std::map<std::tuple<std::uint64_t, std::uint64_t, int>,
+            std::string>& staged_explicit_smirks
+    );
 
     // Reject stores written by an older schema revision. A v2 store always has a
     // dataset row carrying oemmpa_schema_version; a populated store with a `pair`

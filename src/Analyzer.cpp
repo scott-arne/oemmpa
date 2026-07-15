@@ -431,6 +431,11 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
     store.InitializeSchema();
     store.Execute("begin transaction");
     try {
+        // Stamp the store's single analysis method before any rows are written,
+        // so a save into a store built with a different method fails before it
+        // mutates state.
+        store.SetAnalysisMethod(method_name_);
+
         // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
         // through the non-owning helper inside this single owning transaction.
         store.AppendBulk(molecules_, GetPairs(options));
