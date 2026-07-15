@@ -483,7 +483,31 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
             return NULL;
         }
 
-        // Build environment_smirks list
+        // Populate all scalar fields first (so environment_smirks cleanup is isolated)
+        if (_oemmpa_dict_set_new(row, "source_id",
+                _oemmpa_pair_id_object(pair.GetSourceExternalId(), pair.GetSourceMoleculeId())) < 0
+            || _oemmpa_dict_set_new(row, "target_id",
+                _oemmpa_pair_id_object(pair.GetTargetExternalId(), pair.GetTargetMoleculeId())) < 0
+            || _oemmpa_dict_set_new(row, "constant",
+                _oemmpa_str_object(pair.GetConstantSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "source_variable",
+                _oemmpa_str_object(pair.GetSourceVariableSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "target_variable",
+                _oemmpa_str_object(pair.GetTargetVariableSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "transform",
+                _oemmpa_str_object(pair.GetTransformSmiles())) < 0
+            || _oemmpa_dict_set_new(row, "cut_count",
+                PyLong_FromUnsignedLong(pair.GetCutCount())) < 0
+            || _oemmpa_dict_set_new(row, "heavy_atom_delta",
+                PyLong_FromLong(pair.GetHeavyAtomDelta())) < 0
+            || _oemmpa_dict_set_new(row, "heavy_bond_delta",
+                PyLong_FromLong(pair.GetHeavyBondDelta())) < 0) {
+            Py_DECREF(row);
+            Py_DECREF(list);
+            return NULL;
+        }
+
+        // Build environment_smirks list (immediately before transfer to avoid intermediate error paths)
         const auto& env_smirks = pair.GetEnvironmentSmirks();
         PyObject* smirks_list = PyList_New(static_cast<Py_ssize_t>(env_smirks.size()));
         if (smirks_list == NULL) {
@@ -507,27 +531,8 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
             PyList_SetItem(smirks_list, i, entry);  // steals the entry reference
         }
 
-        if (_oemmpa_dict_set_new(row, "source_id",
-                _oemmpa_pair_id_object(pair.GetSourceExternalId(), pair.GetSourceMoleculeId())) < 0
-            || _oemmpa_dict_set_new(row, "target_id",
-                _oemmpa_pair_id_object(pair.GetTargetExternalId(), pair.GetTargetMoleculeId())) < 0
-            || _oemmpa_dict_set_new(row, "constant",
-                _oemmpa_str_object(pair.GetConstantSmiles())) < 0
-            || _oemmpa_dict_set_new(row, "source_variable",
-                _oemmpa_str_object(pair.GetSourceVariableSmiles())) < 0
-            || _oemmpa_dict_set_new(row, "target_variable",
-                _oemmpa_str_object(pair.GetTargetVariableSmiles())) < 0
-            || _oemmpa_dict_set_new(row, "transform",
-                _oemmpa_str_object(pair.GetTransformSmiles())) < 0
-            || _oemmpa_dict_set_new(row, "cut_count",
-                PyLong_FromUnsignedLong(pair.GetCutCount())) < 0
-            || _oemmpa_dict_set_new(row, "heavy_atom_delta",
-                PyLong_FromLong(pair.GetHeavyAtomDelta())) < 0
-            || _oemmpa_dict_set_new(row, "heavy_bond_delta",
-                PyLong_FromLong(pair.GetHeavyBondDelta())) < 0
-            || _oemmpa_dict_set_new(row, "environment_smirks",
-                smirks_list) < 0) {
-            Py_DECREF(smirks_list);
+        // Transfer smirks_list to row (steals reference; self-cleans on failure; no further decref needed)
+        if (_oemmpa_dict_set_new(row, "environment_smirks", smirks_list) < 0) {
             Py_DECREF(row);
             Py_DECREF(list);
             return NULL;

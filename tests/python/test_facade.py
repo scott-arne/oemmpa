@@ -364,3 +364,32 @@ def test_pair_exposes_environment_smirks():
     frag_pairs = frag.pairs()
 
     assert all(not p.environment_smirks for p in frag_pairs)
+
+
+def test_bulk_to_dicts_includes_environment_smirks_without_crash():
+    """Regression test for CPython refcount bug in matched_pair_dicts().
+
+    The bulk to_dicts() path (via matched_pair_dicts()) on wizepairz results
+    with non-empty environment_smirks previously double-decreffed the smirks_list
+    PyObject, causing crashes or memory corruption. This test exercises that path
+    to ensure it works correctly.
+    """
+    from oemmpa import Analyzer
+
+    wz = Analyzer(method="wizepairz")
+    wz.add_molecule("Cc1ccccc1", id="tol")
+    wz.add_molecule("Oc1ccccc1", id="phenol")
+    wz.analyze()
+
+    dicts = wz.pairs().to_dicts()
+
+    assert dicts
+    assert all("environment_smirks" in row for row in dicts)
+    smirks_lists = [row["environment_smirks"] for row in dicts]
+    assert any(smirks_lists), "Expected at least one pair with non-empty environment_smirks"
+
+    for smirks_list in smirks_lists:
+        if smirks_list:
+            assert all("radius" in entry and "smirks" in entry for entry in smirks_list)
+            assert all(isinstance(entry["radius"], int) for entry in smirks_list)
+            assert all(isinstance(entry["smirks"], str) and ">>" in entry["smirks"] for entry in smirks_list)
