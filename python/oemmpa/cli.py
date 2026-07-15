@@ -908,16 +908,18 @@ def _reject_fragmentation_only_flags(args):
     # --max-heavies and --max-rotatable-bonds have non-None defaults (100, 10)
     # on build; they are _UNSET on other subcommands. Only reject when the
     # subcommand HAS the flag and it was explicitly provided via sys.argv.
+    def _argv_has_flag(flag):
+        import sys
+        return any(a == flag or a.startswith(flag + "=") for a in sys.argv)
+
     max_heavies = getattr(args, "max_heavies", _UNSET)
     max_rotatable = getattr(args, "max_rotatable_bonds", _UNSET)
     if max_heavies is not _UNSET:
         # build subcommand: check if explicitly provided
-        import sys
-        if any("--max-heavies" in arg for arg in sys.argv):
+        if _argv_has_flag("--max-heavies"):
             raise ValueError("--max-heavies requires --method fragmentation")
     if max_rotatable is not _UNSET:
-        import sys
-        if any("--max-rotatable-bonds" in arg for arg in sys.argv):
+        if _argv_has_flag("--max-rotatable-bonds"):
             raise ValueError("--max-rotatable-bonds requires --method fragmentation")
 
 

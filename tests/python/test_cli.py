@@ -2355,7 +2355,7 @@ def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
     assert result.returncode == 2
     assert "--cut-rgroup-file requires --method fragmentation" in result.stderr
 
-    # --max-heavies with wizepairz should error
+    # --max-heavies with wizepairz should error (space form)
     result = _run_cli(
         "build",
         "--smiles", str(smiles),
@@ -2367,11 +2367,38 @@ def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
     assert result.returncode == 2
     assert "--max-heavies requires --method fragmentation" in result.stderr
 
-    # --max-rotatable-bonds with oemedchem should error
+    # --max-heavies= with wizepairz should error (= form)
     result = _run_cli(
         "build",
         "--smiles", str(smiles),
         "--output", str(database),
+        "--method", "wizepairz",
+        "--max-heavies=50",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--max-heavies requires --method fragmentation" in result.stderr
+
+    # --max-heavies-transf with wizepairz should NOT be rejected by max-heavies guard
+    # (it's a different flag; may still fail for other reasons, but not the guard)
+    database_transf = tmp_path / "test_transf.oemmpa.duckdb"
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database_transf),
+        "--method", "wizepairz",
+        "--max-heavies-transf", "5",
+        check=False,
+    )
+    # Should NOT see the max-heavies guard error
+    assert "--max-heavies requires --method fragmentation" not in result.stderr
+
+    # --max-rotatable-bonds with oemedchem should error
+    database_rot = tmp_path / "test_rot.oemmpa.duckdb"
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database_rot),
         "--method", "oemedchem",
         "--max-rotatable-bonds", "5",
         check=False,
@@ -2380,12 +2407,25 @@ def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
     assert "--max-rotatable-bonds requires --method fragmentation" in result.stderr
 
     # --method fragmentation with --cut-rgroup should succeed
+    database_frag1 = tmp_path / "test_frag1.oemmpa.duckdb"
     result = _run_cli(
         "build",
         "--smiles", str(smiles),
-        "--output", str(database),
+        "--output", str(database_frag1),
         "--method", "fragmentation",
         "--cut-rgroup", "*F",
     )
     assert result.returncode == 0
-    assert database.exists()
+    assert database_frag1.exists()
+
+    # --method fragmentation with --max-heavies should succeed (no regression)
+    database_frag2 = tmp_path / "test_frag2.oemmpa.duckdb"
+    result = _run_cli(
+        "build",
+        "--smiles", str(smiles),
+        "--output", str(database_frag2),
+        "--method", "fragmentation",
+        "--max-heavies", "50",
+    )
+    assert result.returncode == 0
+    assert database_frag2.exists()
