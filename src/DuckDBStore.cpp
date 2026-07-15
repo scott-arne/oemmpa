@@ -1557,6 +1557,13 @@ DuckDBStore::DuckDBStore(const std::string& database_path, bool read_only)
     // in later versions onto previously created database files.
     if (!read_only) {
         InitializeSchema();
+    } else {
+        // Read-only mode: enforce the schema-version gate for populated stores
+        // WITHOUT running DDL. RequireCompatibleSchemaOrThrow is SELECT-only
+        // (safe under read-only); skip it when the store is empty (no pair table).
+        if (HasTable("pair")) {
+            RequireCompatibleSchemaOrThrow();
+        }
     }
 }
 
@@ -2491,6 +2498,16 @@ void DuckDBStore::AppendBulk(
             pair_has_range ? static_cast<int>(pair.GetMinValidRadius()) : 0;
         const int pair_max_radius =
             pair_has_range ? static_cast<int>(pair.GetMaxValidRadius()) : 0;
+        // Defensive guard: reject a pair with an invalid radius range (min > max),
+        // which would produce an unreachable pair (matches no rule_environment).
+        // WizePairZ always emits min <= max, so this is not reachable today, but
+        // the storage layer should not silently commit malformed ranges.
+        if (pair_has_range && pair_min_radius > pair_max_radius) {
+            throw StorageError(
+                "invalid wizepairz valid-radius range: min_valid_radius (" +
+                std::to_string(pair_min_radius) + ") > max_valid_radius (" +
+                std::to_string(pair_max_radius) + ")");
+        }
         pair_rows.push_back({
             pair_counter(), rule_id, constant_id,
             pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId(),

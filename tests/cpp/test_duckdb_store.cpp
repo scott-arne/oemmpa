@@ -2343,5 +2343,61 @@ TEST(DuckDBStoreReadOnlyTest, ConcurrentReadOnlyHandlesShareTheFile) {
     std::filesystem::remove(database_path);
 }
 
+TEST(DuckDBStoreTest, ReadOnlyOpenEnforcesSchemaVersionGate) {
+    // A read-only open of a populated store with a mismatched schema version
+    // must fail with StorageError (not deferred to a later SQL error).
+    const std::string path = (std::filesystem::temp_directory_path() /
+        "oemmpa_readonly_version.duckdb").string();
+    std::filesystem::remove(path);
+
+    // Positive: read-only open of a valid v3 store succeeds.
+    {
+        DuckDBStore writer(path);
+        writer.InitializeSchema();
+        writer.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+        writer.AddMolecule(MoleculeRecord::FromSmiles(2, "CC(C)O", "isopropanol"));
+        std::vector<MatchedPair> pairs = {
+            MakeRangedPair(1, 2, 0, 2)
+        };
+        writer.AddPairs(pairs);
+    }
+    {
+        DuckDBStore reader(path, /*read_only=*/true);
+        EXPECT_EQ(reader.GetRowCount("pair"), 1U);
+    }
+
+    // Negative: read-only open of a stale-version store throws StorageError.
+    {
+        DuckDBStore writer(path);
+        writer.Execute("update dataset set oemmpa_schema_version = 1");
+    }
+    EXPECT_THROW({ DuckDBStore reader(path, /*read_only=*/true); }, StorageError);
+
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreTest, RejectsInvalidWizePairZRadiusRange) {
+    // AddPairs (via AppendBulk) must reject a pair with min_valid_radius >
+    // max_valid_radius, which would produce an unreachable pair (matches no
+    // rule_environment).
+    DuckDBStore store;
+    store.InitializeSchema();
+
+    store.AddMolecule(MoleculeRecord::FromSmiles(1, "CCO", "ethanol"));
+    store.AddMolecule(MoleculeRecord::FromSmiles(2, "CC(C)O", "isopropanol"));
+
+    // Construct a pair with an inverted range (min=4 > max=2).
+    MatchedPair invalid_pair(
+        1, 2, "ethanol", "isopropanol",
+        "CCO", "CC(C)O",
+        "[*:1]O", "[*:1]C", "[*:1]C(C)",
+        1, 1, 0);
+    invalid_pair.SetValidRadiusRange(4, 2);
+
+    std::vector<MatchedPair> pairs = {invalid_pair};
+
+    EXPECT_THROW(store.AddPairs(pairs), StorageError);
+}
+
 }  // namespace test
 }  // namespace OEMMPA
