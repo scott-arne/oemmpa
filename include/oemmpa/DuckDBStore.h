@@ -76,7 +76,8 @@ public:
     // constant_environment), so no committed state stamps 2 on a pre-normalized
     // v1 table. Bumped to 3 atomically with the WizePairZ storage tranche:
     // per-pair valid-radius bounds gate rule_environment membership, a
-    // representative explicit_smirks is stored per rule_environment, and a
+    // representative descriptive environment SMIRKS is stored per
+    // rule_environment in the dedicated environment_smirks table, and a
     // single analysis method is stamped per store -- a clean break with no
     // migration from v2.
     static constexpr std::uint32_t kOemmpaSchemaVersion = 3;
@@ -263,11 +264,12 @@ private:
 
     // Fold the staged per-(rule_id, fingerprint_id, radius) representative SMIRKS
     // against the value already stored for each rule_environment (taking the
-    // lexicographic min) and batch-update. Reading the stored value makes the
-    // representative independent of append order. No-op when nothing was staged.
+    // lexicographic min) and upsert into the dedicated environment_smirks table.
+    // Reading the stored value makes the representative independent of append
+    // order. No-op when nothing was staged.
     void UpdateRepresentativeSmirks(
         const std::map<std::tuple<std::uint64_t, std::uint64_t, int>,
-            std::string>& staged_explicit_smirks
+            std::string>& staged_environment_smirks
     );
 
     // Reject stores written by an older schema revision. A v2 store always has a

@@ -251,12 +251,12 @@ class RuleEnvironmentStatisticsResult:
     max: float
     paired_t: float | None
     p_value: float | None
-    explicit_smirks: str | None
+    environment_smirks: str | None
 
     @classmethod
     def from_raw(cls, raw_row):
         """Build a Python result from a raw C++ row."""
-        explicit_smirks = raw_row.GetExplicitSmirks()
+        environment_smirks = raw_row.GetEnvironmentSmirks()
         return cls(
             rule_environment_id=int(raw_row.GetRuleEnvironmentId()),
             property_name=raw_row.GetPropertyName(),
@@ -279,7 +279,7 @@ class RuleEnvironmentStatisticsResult:
             max=float(raw_row.GetMax()),
             paired_t=_optional(raw_row, "HasPairedT", "GetPairedT"),
             p_value=_optional(raw_row, "HasPValue", "GetPValue"),
-            explicit_smirks=explicit_smirks if explicit_smirks else None,
+            environment_smirks=environment_smirks if environment_smirks else None,
         )
 
     def predicted_delta(self, aggregation="avg"):
@@ -309,7 +309,7 @@ class RuleEnvironmentStatisticsResult:
             "pseudosmiles": self.pseudosmiles,
             "parent_smarts": self.parent_smarts,
             **{field: getattr(self, field) for field in AGGREGATE_FIELDS},
-            "explicit_smirks": self.explicit_smirks,
+            "environment_smirks": self.environment_smirks,
         }
 
 

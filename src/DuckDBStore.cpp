@@ -41,6 +41,7 @@ const std::vector<std::string>& base_table_names() {
         "constant_smiles",
         "dataset",
         "environment_fingerprint",
+        "environment_smirks",
         "pair",
         "property_name",
         "rule",
@@ -1200,10 +1201,14 @@ std::string build_rule_environment_statistics_query(bool filter_property) {
         << "stats.min, stats.q1, stats.median, stats.q3, stats.max, "
         << "stats.paired_t is not null, coalesce(stats.paired_t, 0.0), "
         << "stats.p_value is not null, coalesce(stats.p_value, 0.0), "
-        << "coalesce(rule_env.explicit_smirks, '') "
+        // Descriptive WizePairZ environment SMIRKS lives in its own table; LEFT
+        // JOIN so non-WizePairZ environments (no row) surface as ''.
+        << "coalesce(env_smirks.smirks, '') "
         << "from rule_environment_statistics stats "
         << "join property_name on property_name.id = stats.property_name_id "
         << "join rule_environment rule_env on rule_env.id = stats.rule_environment_id "
+        << "left join environment_smirks env_smirks "
+        << "on env_smirks.rule_environment_id = rule_env.id "
         << "join environment_fingerprint "
         << "on environment_fingerprint.id = rule_env.environment_fingerprint_id "
         << "join rule on rule.id = rule_env.rule_id "
@@ -1473,9 +1478,6 @@ void AppendRuleEnvironments(
         appender.Append(duckdb::Value::INTEGER(row.radius));
         appender.Append(duckdb::Value::UINTEGER(
             static_cast<std::uint32_t>(row.num_pairs)));
-        // explicit_smirks starts NULL; the representative is folded in and
-        // batch-updated after the pairs are appended.
-        appender.Append(duckdb::Value(duckdb::LogicalType::VARCHAR));
         appender.EndRow();
     }
     appender.Close();
@@ -1681,11 +1683,21 @@ void DuckDBStore::InitializeSchema() {
             "environment_fingerprint_id ubigint not null references environment_fingerprint(id),"
             "radius integer not null,"
             "num_pairs uinteger not null,"
-            // Order-independent representative concrete SMIRKS for this
-            // (rule, fingerprint, radius): the lexicographically smallest over
-            // all contributing WizePairZ pairs. NULL for non-WizePairZ methods.
-            "explicit_smirks varchar,"
             "unique (rule_id, environment_fingerprint_id, radius)"
+            ")"
+        );
+        // The WizePairZ per-radius environment SMIRKS is a DESCRIPTIVE, searchable
+        // artifact -- the paper's '.'-joined form -- NOT an applicable transform.
+        // It is stored in its own table (keyed by rule_environment) rather than in
+        // the transform-rule storage so it cannot be mistaken for the mmpdb-style
+        // '>>' rule. One order-independent representative (the lexicographically
+        // smallest over all contributing WizePairZ pairs) is kept per
+        // rule_environment; non-WizePairZ methods write no row here.
+        Execute(
+            "create table if not exists environment_smirks ("
+            "rule_environment_id ubigint not null references rule_environment(id),"
+            "smirks varchar not null,"
+            "unique (rule_environment_id)"
             ")"
         );
         Execute(
@@ -2352,13 +2364,14 @@ void DuckDBStore::AppendBulk(
         std::uint64_t>, std::tuple<unsigned int, int, int>, PairIdentityHash>
         seen_payload;
 
-    // Representative concrete SMIRKS staged per (rule_id, fingerprint_id, radius)
-    // rule_environment key: the lexicographically smallest over the pairs seen
-    // THIS call. Folded against the stored value before writing so the final
-    // representative is independent of append order (Step 10). Only WizePairZ
-    // pairs (non-empty GetEnvironmentSmirks) contribute; others leave it NULL.
+    // Representative descriptive environment SMIRKS staged per
+    // (rule_id, fingerprint_id, radius) rule_environment key: the
+    // lexicographically smallest over the pairs seen THIS call. Folded against
+    // the stored value before writing so the final representative is independent
+    // of append order (Step 10). Only WizePairZ pairs (non-empty
+    // GetEnvironmentSmirks) contribute; others write no environment_smirks row.
     std::map<std::tuple<std::uint64_t, std::uint64_t, int>, std::string>
-        staged_explicit_smirks;
+        staged_environment_smirks;
 
     // Wrap the whole resolve-then-append body so every failure mode presents the
     // store's StorageError contract to callers. The resolve phase can throw
@@ -2458,7 +2471,7 @@ void DuckDBStore::AppendBulk(
         // identity. Resolve the identity and run the dedup check BEFORE any v3
         // environment derivation: a pair dropped here (a duplicate seen earlier
         // this batch or already persisted) must contribute NOTHING to
-        // rule_environment, explicit_smirks, or num_pairs -- exactly as it
+        // rule_environment, environment_smirks, or num_pairs -- exactly as it
         // contributes nothing to pair_rows. Seeding environment state from a
         // pair that is not actually stored would create orphan rule_environment
         // rows and skew the representative SMIRKS. The constant/rule/rule_smiles
@@ -2518,7 +2531,7 @@ void DuckDBStore::AppendBulk(
             pair_min_radius, pair_max_radius, pair_has_range});
 
         // Concrete per-radius SMIRKS for this pair (WizePairZ); empty otherwise.
-        // Consulted below to stage the representative explicit_smirks per
+        // Consulted below to stage the representative environment_smirks per
         // rule_environment.
         std::unordered_map<int, const std::string*> pair_smirks_by_radius;
         for (const PairEnvironmentSmirks& entry : pair.GetEnvironmentSmirks()) {
@@ -2577,10 +2590,10 @@ void DuckDBStore::AppendBulk(
             const auto smirks_it = pair_smirks_by_radius.find(radius);
             if (smirks_it != pair_smirks_by_radius.end() &&
                 !smirks_it->second->empty()) {
-                auto staged = staged_explicit_smirks.find(rule_environment_key);
-                if (staged == staged_explicit_smirks.end() ||
+                auto staged = staged_environment_smirks.find(rule_environment_key);
+                if (staged == staged_environment_smirks.end() ||
                     *smirks_it->second < staged->second) {
-                    staged_explicit_smirks[rule_environment_key] =
+                    staged_environment_smirks[rule_environment_key] =
                         *smirks_it->second;
                 }
             }
@@ -2615,10 +2628,11 @@ void DuckDBStore::AppendBulk(
         "(re.radius between p.min_valid_radius and p.max_valid_radius)))");
 
     // Fold the staged representative SMIRKS against any value already stored for
-    // each rule_environment, then batch-update. Reading the current value and
-    // taking the lexicographic min makes the representative independent of the
-    // order in which pairs (and successive appends into the same store) arrive.
-    UpdateRepresentativeSmirks(staged_explicit_smirks);
+    // each rule_environment, then upsert into environment_smirks. Reading the
+    // current value and taking the lexicographic min makes the representative
+    // independent of the order in which pairs (and successive appends into the
+    // same store) arrive.
+    UpdateRepresentativeSmirks(staged_environment_smirks);
 
     // Reconcile id sequences to max(id)+1 inside this (possibly caller-owned)
     // transaction, so a later legacy nextval insert cannot collide with the
@@ -2640,15 +2654,15 @@ void DuckDBStore::AppendBulk(
 
 void DuckDBStore::UpdateRepresentativeSmirks(
     const std::map<std::tuple<std::uint64_t, std::uint64_t, int>,
-        std::string>& staged_explicit_smirks
+        std::string>& staged_environment_smirks
 ) {
-    if (staged_explicit_smirks.empty()) {
+    if (staged_environment_smirks.empty()) {
         return;
     }
     // Resolve each staged (rule, fingerprint, radius) key to its rule_environment
     // id via the cache populated during staging and PreloadIdCaches.
     std::map<std::uint64_t, std::string> staged_by_id;
-    for (const auto& entry : staged_explicit_smirks) {
+    for (const auto& entry : staged_environment_smirks) {
         auto it = rule_environment_id_cache_.find(entry.first);
         if (it == rule_environment_id_cache_.end()) {
             continue;
@@ -2660,7 +2674,9 @@ void DuckDBStore::UpdateRepresentativeSmirks(
     }
 
     // Read the stored representative for these environments in one query so the
-    // fold-in sees any value written by an earlier append into this store.
+    // fold-in sees any value written by an earlier append into this store. The
+    // representative lives in the dedicated environment_smirks table (keyed by
+    // rule_environment_id); an environment with no row yet has no stored value.
     std::ostringstream id_list;
     bool first = true;
     for (const auto& entry : staged_by_id) {
@@ -2671,8 +2687,8 @@ void DuckDBStore::UpdateRepresentativeSmirks(
         first = false;
     }
     const std::string select_sql =
-        "select id, explicit_smirks from rule_environment where id in (" +
-        id_list.str() + ")";
+        "select rule_environment_id, smirks from environment_smirks "
+        "where rule_environment_id in (" + id_list.str() + ")";
     std::unique_ptr<duckdb::QueryResult> existing =
         connection_->Query(select_sql);
     if (!existing) {
@@ -2681,24 +2697,31 @@ void DuckDBStore::UpdateRepresentativeSmirks(
     require_success(*existing, select_sql);
     std::unordered_map<std::uint64_t, std::string> existing_by_id;
     for (const auto& row : *existing) {
-        if (!row.GetValue<duckdb::Value>(1).IsNull()) {
-            existing_by_id.emplace(
-                row.GetValue<std::uint64_t>(0), row.GetValue<std::string>(1));
-        }
+        existing_by_id.emplace(
+            row.GetValue<std::uint64_t>(0), row.GetValue<std::string>(1));
     }
 
-    // Fold: final = min(existing_if_present, staged_min). Skip environments whose
-    // stored value already equals the fold result (no-op write). Batch via one
-    // prepared UPDATE reused per environment.
+    // Fold: final = min(existing_if_present, staged_min). INSERT a fresh row for
+    // an environment with no stored representative; UPDATE only when the staged
+    // value is strictly smaller than the stored one; otherwise skip (no-op).
+    // Both statements are parameterized and reused across environments.
+    const std::string insert_sql =
+        "insert into environment_smirks (rule_environment_id, smirks) "
+        "values (?, ?)";
     const std::string update_sql =
-        "update rule_environment set explicit_smirks = ? where id = ?";
+        "update environment_smirks set smirks = ? where rule_environment_id = ?";
     for (const auto& entry : staged_by_id) {
-        std::string final_value = entry.second;
+        const std::string& final_value = entry.second;
         const auto ex = existing_by_id.find(entry.first);
-        if (ex != existing_by_id.end()) {
-            if (ex->second <= final_value) {
-                continue;
-            }
+        if (ex == existing_by_id.end()) {
+            duckdb::vector<duckdb::Value> values = {
+                duckdb::Value::UBIGINT(entry.first),
+                duckdb::Value(final_value)};
+            execute_prepared(connection_, insert_sql, std::move(values));
+            continue;
+        }
+        if (ex->second <= final_value) {
+            continue;
         }
         duckdb::vector<duckdb::Value> values = {
             duckdb::Value(final_value),

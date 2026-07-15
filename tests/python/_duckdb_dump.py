@@ -50,12 +50,16 @@ _QUERIES = {
         "order by 1, 2, 3"
     ),
     "rule_environment": (
+        # The descriptive environment SMIRKS now lives in its own table; LEFT
+        # JOIN it so the dump still surfaces the representative per environment.
         "select f.smiles, t.smiles, ef.smarts, ef.pseudosmiles, ef.parent_smarts, "
-        "re.radius, re.num_pairs, re.explicit_smirks from rule_environment re "
+        "re.radius, re.num_pairs, es.smirks as environment_smirks "
+        "from rule_environment re "
         "join rule r on r.id = re.rule_id "
         "join rule_smiles f on f.id = r.from_smiles_id "
         "join rule_smiles t on t.id = r.to_smiles_id "
         "join environment_fingerprint ef on ef.id = re.environment_fingerprint_id "
+        "left join environment_smirks es on es.rule_environment_id = re.id "
         "order by 1, 2, 3, 4, 5, 6, 7, 8"
     ),
     "pair": (
@@ -99,7 +103,8 @@ _QUERIES = {
     "rule_environment_statistics": (
         "select f.smiles, t.smiles, ef.smarts, re.radius, pn.name, "
         "s.count, s.avg, s.std, s.min, s.q1, s.median, s.q3, s.max, "
-        "s.kurtosis, s.skewness, s.paired_t, s.p_value, re.explicit_smirks "
+        "s.kurtosis, s.skewness, s.paired_t, s.p_value, "
+        "es.smirks as environment_smirks "
         "from rule_environment_statistics s "
         "join rule_environment re on re.id = s.rule_environment_id "
         "join rule r on r.id = re.rule_id "
@@ -107,6 +112,9 @@ _QUERIES = {
         "join rule_smiles t on t.id = r.to_smiles_id "
         "join environment_fingerprint ef on ef.id = re.environment_fingerprint_id "
         "join property_name pn on pn.id = s.property_name_id "
+        # Descriptive environment SMIRKS from the dedicated table (LEFT JOIN so
+        # non-WizePairZ environments surface NULL, matching the prior behavior).
+        "left join environment_smirks es on es.rule_environment_id = re.id "
         "order by 1, 2, 3, 4, 5"
     ),
 }

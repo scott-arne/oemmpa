@@ -355,7 +355,9 @@ def test_pair_exposes_environment_smirks():
     assert all(hasattr(e, "radius") for e in smirks_entries)
     assert all(hasattr(e, "smirks") for e in smirks_entries)
     assert all(isinstance(e.radius, int) for e in smirks_entries)
-    assert all(isinstance(e.smirks, str) and ">>" in e.smirks for e in smirks_entries)
+    # Descriptive environment SMIRKS is '.'-joined, never a '>>' reaction.
+    assert all(isinstance(e.smirks, str) and "." in e.smirks for e in smirks_entries)
+    assert all(">>" not in e.smirks for e in smirks_entries)
 
     frag = Analyzer(method="fragmentation")
     frag.add_molecule("Cc1ccccc1", id="tol2")
@@ -392,4 +394,5 @@ def test_bulk_to_dicts_includes_environment_smirks_without_crash():
         if smirks_list:
             assert all("radius" in entry and "smirks" in entry for entry in smirks_list)
             assert all(isinstance(entry["radius"], int) for entry in smirks_list)
-            assert all(isinstance(entry["smirks"], str) and ">>" in entry["smirks"] for entry in smirks_list)
+            assert all(isinstance(entry["smirks"], str) and "." in entry["smirks"] for entry in smirks_list)
+            assert all(">>" not in entry["smirks"] for entry in smirks_list)

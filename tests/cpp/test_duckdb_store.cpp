@@ -174,6 +174,7 @@ void ExpectBaseSchema(const DuckDBStore& store) {
     EXPECT_TRUE(ContainsTable(tables, "constant_smiles"));
     EXPECT_TRUE(ContainsTable(tables, "dataset"));
     EXPECT_TRUE(ContainsTable(tables, "environment_fingerprint"));
+    EXPECT_TRUE(ContainsTable(tables, "environment_smirks"));
     EXPECT_TRUE(ContainsTable(tables, "pair"));
     EXPECT_TRUE(ContainsTable(tables, "property_name"));
     EXPECT_TRUE(ContainsTable(tables, "rule"));
@@ -1761,15 +1762,17 @@ MatchedPair MakeRangedPair(
     return pair;
 }
 
-// Read the (radius -> explicit_smirks) representative map from a store. Valid
+// Read the (radius -> environment_smirks) representative map from a store. Valid
 // only for a single-rule/single-constant fixture, where each radius maps to one
-// rule_environment.
+// rule_environment. The representative now lives in the dedicated
+// environment_smirks table, keyed by rule_environment_id.
 std::map<int, std::string> ReadRepresentativeMap(const std::filesystem::path& path) {
     duckdb::DuckDB database(path.string());
     duckdb::Connection connection(database);
     std::unique_ptr<duckdb::QueryResult> result = connection.Query(
-        "select radius, explicit_smirks from rule_environment "
-        "where explicit_smirks is not null order by radius");
+        "select re.radius, es.smirks from environment_smirks es "
+        "join rule_environment re on re.id = es.rule_environment_id "
+        "order by re.radius");
     if (!result || result->HasError()) {
         throw std::runtime_error("representative query failed");
     }
@@ -1906,17 +1909,17 @@ TEST(DuckDBStoreTest, WizePairZPairExcludedFromInvalidRadius) {
     std::filesystem::remove(shared_path);
 }
 
-TEST(DuckDBStoreTest, RepresentativeExplicitSmirksIsOrderIndependent) {
+TEST(DuckDBStoreTest, RepresentativeEnvironmentSmirksIsOrderIndependent) {
     // Two pairs on the same rule and constant contribute different concrete
     // SMIRKS to the same (rule, fingerprint, radius) environments. The stored
-    // representative must be the lexicographic min per environment regardless of
-    // the order the two appends arrive.
+    // representative (in the environment_smirks table) must be the lexicographic
+    // min per environment regardless of the order the two appends arrive.
     MatchedPair pair_a = MakeRangedPair(1, 2, 0, 2);
     pair_a.SetEnvironmentSmirks({
-        {0u, "a0>>x"}, {1u, "z1>>x"}, {2u, "m2>>x"}});
+        {0u, "a0.x"}, {1u, "z1.x"}, {2u, "m2.x"}});
     MatchedPair pair_b = MakeRangedPair(3, 4, 0, 2);
     pair_b.SetEnvironmentSmirks({
-        {0u, "z0>>x"}, {1u, "a1>>x"}, {2u, "n2>>x"}});
+        {0u, "z0.x"}, {1u, "a1.x"}, {2u, "n2.x"}});
 
     const auto save = [&](const std::filesystem::path& path,
                           const MatchedPair& first, const MatchedPair& second) {
@@ -1942,11 +1945,52 @@ TEST(DuckDBStoreTest, RepresentativeExplicitSmirksIsOrderIndependent) {
     EXPECT_EQ(map_ab, map_ba);
     // The representative is the lexicographic min over both contributors.
     const std::map<int, std::string> expected = {
-        {0, "a0>>x"}, {1, "a1>>x"}, {2, "m2>>x"}};
+        {0, "a0.x"}, {1, "a1.x"}, {2, "m2.x"}};
     EXPECT_EQ(map_ab, expected);
 
     std::filesystem::remove(a_then_b);
     std::filesystem::remove(b_then_a);
+}
+
+TEST(DuckDBStoreTest, EnvironmentSmirksLivesInDedicatedTableNotRuleEnvironment) {
+    // The representative descriptive SMIRKS moved out of rule_environment into
+    // its own environment_smirks table. Verify (a) rule_environment no longer
+    // carries an explicit_smirks column and (b) environment_smirks holds exactly
+    // one representative per rule_environment (its unique key), populated for a
+    // WizePairZ store.
+    MatchedPair pair = MakeRangedPair(1, 2, 0, 2);
+    pair.SetEnvironmentSmirks({{0u, "a0.x"}, {1u, "a1.x"}, {2u, "a2.x"}});
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "m1"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "m2"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs({pair});
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    // rule_environment must NOT expose an explicit_smirks column any more.
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from information_schema.columns "
+        "where table_name = 'rule_environment' "
+        "and column_name = 'explicit_smirks'"), 0u);
+    // Every environment_smirks row references an existing rule_environment, and
+    // there is at most one representative per environment (unique key holds).
+    EXPECT_GT(ScalarUBigint(
+        connection, "select count(*) from environment_smirks"), 0u);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from environment_smirks es "
+        "left join rule_environment re on re.id = es.rule_environment_id "
+        "where re.id is null"), 0u);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from ("
+        "select rule_environment_id from environment_smirks "
+        "group by rule_environment_id having count(*) > 1)"), 0u);
+    std::filesystem::remove(path);
 }
 
 TEST(DuckDBStoreTest, DroppedDuplicatePairDoesNotSeedInvalidRadiusEnvironment) {
@@ -1999,9 +2043,9 @@ TEST(DuckDBStoreTest, IdempotentReloadDoesNotSeedExtraV3State) {
     // rule_environment rows, stable num_pairs, stable representative SMIRKS, and
     // no duplicate physical pairs.
     MatchedPair pair_a = MakeRangedPair(1, 2, 0, 2);
-    pair_a.SetEnvironmentSmirks({{0u, "a0>>x"}, {1u, "z1>>x"}, {2u, "m2>>x"}});
+    pair_a.SetEnvironmentSmirks({{0u, "a0.x"}, {1u, "z1.x"}, {2u, "m2.x"}});
     MatchedPair pair_b = MakeRangedPair(3, 4, 0, 2);
-    pair_b.SetEnvironmentSmirks({{0u, "z0>>x"}, {1u, "a1>>x"}, {2u, "n2>>x"}});
+    pair_b.SetEnvironmentSmirks({{0u, "z0.x"}, {1u, "a1.x"}, {2u, "n2.x"}});
     const std::vector<MatchedPair> pairs = {pair_a, pair_b};
 
     const std::filesystem::path path = TemporaryDatabasePath();

@@ -680,23 +680,23 @@ def test_multicut_rule_environment_preserves_keys_and_transform_identity():
         assert supporting_pairs[0].property_delta("pIC50") == pytest.approx(1.0)
 
 
-def test_rule_environment_exposes_explicit_smirks():
-    # Fragmentation stores have NULL explicit_smirks (pre-WizePairZ).
+def test_rule_environment_exposes_environment_smirks():
+    # Fragmentation stores have NULL environment_smirks (pre-WizePairZ).
     fragmentation_store = _store_with_toluene_phenol_statistics()
     rows = fragmentation_store.rule_environment_statistics("pIC50")
     assert rows, "expected rule-environment statistics"
 
-    # The RuleEnvironmentStatisticsResult dataclass has explicit_smirks.
-    assert hasattr(rows[0], "explicit_smirks")
+    # The RuleEnvironmentStatisticsResult dataclass has environment_smirks.
+    assert hasattr(rows[0], "environment_smirks")
 
     # Fragmentation rows have None (SQL NULL coalesced).
-    assert all(r.explicit_smirks is None or r.explicit_smirks == "" for r in rows)
+    assert all(r.environment_smirks is None or r.environment_smirks == "" for r in rows)
 
-    # to_dict includes the new field.
-    assert "explicit_smirks" in rows[0].to_dict()
+    # to_dict includes the field.
+    assert "environment_smirks" in rows[0].to_dict()
 
 
-def test_wizepairz_store_surfaces_explicit_smirks():
+def test_wizepairz_store_surfaces_environment_smirks():
     from oemmpa import Analyzer, DuckDBStore
 
     # Build a wizepairz store with a numeric property so stats are computed.
@@ -711,11 +711,14 @@ def test_wizepairz_store_surfaces_explicit_smirks():
     store.save_analyzer(analyzer)
     rows = store.rule_environment_statistics("pIC50")
 
-    # WizePairZ stores should populate explicit_smirks.
+    # WizePairZ stores should populate environment_smirks (from the dedicated
+    # environment_smirks table, joined into the stats read).
     assert rows, "expected rule-environment statistics"
-    explicit_rows = [r for r in rows if r.explicit_smirks]
-    assert explicit_rows, "expected non-empty explicit_smirks from wizepairz store"
+    smirks_rows = [r for r in rows if r.environment_smirks]
+    assert smirks_rows, "expected non-empty environment_smirks from wizepairz store"
 
-    # Verify the explicit_smirks contains the reaction arrow.
-    assert any(">>" in r.explicit_smirks for r in explicit_rows), \
-        "expected explicit_smirks to contain '>>'"
+    # The descriptive environment SMIRKS is '.'-joined, never a '>>' reaction.
+    assert any("." in r.environment_smirks for r in smirks_rows), \
+        "expected environment_smirks to be '.'-joined"
+    assert all(">>" not in r.environment_smirks for r in smirks_rows), \
+        "environment_smirks must not contain a '>>' reaction arrow"

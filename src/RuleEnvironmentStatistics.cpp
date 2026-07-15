@@ -28,7 +28,7 @@ RuleEnvironmentStatistics::RuleEnvironmentStatistics(
     double paired_t,
     bool has_p_value,
     double p_value,
-    const std::string& explicit_smirks
+    const std::string& environment_smirks
 )
     : rule_environment_id_(rule_environment_id),
       property_name_(property_name),
@@ -56,7 +56,7 @@ RuleEnvironmentStatistics::RuleEnvironmentStatistics(
       paired_t_(paired_t),
       has_p_value_(has_p_value),
       p_value_(p_value),
-      explicit_smirks_(explicit_smirks) {}
+      environment_smirks_(environment_smirks) {}
 
 std::uint64_t RuleEnvironmentStatistics::GetRuleEnvironmentId() const {
     return rule_environment_id_;
@@ -162,8 +162,8 @@ double RuleEnvironmentStatistics::GetPValue() const {
     return p_value_;
 }
 
-const std::string& RuleEnvironmentStatistics::GetExplicitSmirks() const {
-    return explicit_smirks_;
+const std::string& RuleEnvironmentStatistics::GetEnvironmentSmirks() const {
+    return environment_smirks_;
 }
 
 }  // namespace OEMMPA

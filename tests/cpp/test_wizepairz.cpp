@@ -41,10 +41,12 @@ TEST(WizePairZTest, PopulatesPerRadiusExplicitHSmirks) {
     const MatchedPair& p = pairs.front();
     ASSERT_FALSE(p.GetEnvironmentSmirks().empty());
     EXPECT_TRUE(p.HasValidRadiusRange());
-    // Each entry is a reaction SMIRKS with '>>', mapped RECS atoms (a ':' map
-    // token on a real atom), and explicit hydrogens.
+    // Each entry is the paper's descriptive '.'-joined environment SMIRKS (NOT a
+    // reaction transform: no '>>'), with mapped RECS atoms (a ':' map token on a
+    // real atom) and explicit hydrogens.
     for (const auto& e : p.GetEnvironmentSmirks()) {
-        EXPECT_NE(e.smirks.find(">>"), std::string::npos);
+        EXPECT_NE(e.smirks.find("."), std::string::npos);   // '.'-joined form
+        EXPECT_EQ(e.smirks.find(">>"), std::string::npos);  // not a reaction
         EXPECT_NE(e.smirks.find(":"), std::string::npos);   // atom maps present
         EXPECT_NE(e.smirks.find("[H]"), std::string::npos); // explicit hydrogens
     }

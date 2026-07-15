@@ -14,8 +14,11 @@ benchmark tools for tracking performance on representative datasets.
 OEMMPA currently supports fragmentation-based analysis, pairwise disconnected
 maximum common substructure analysis through `dmcss`, OpenEye OEMedChem
 analysis through `oemedchem`, and WizePairZ analysis through `wizepairz`
-(MCS-based with unspecified cores, per-radius explicit-H SMIRKS, 90% identity
-threshold, and environment radius 1–5 with default 4). Transform generation can apply chemically
+(MCS-based with unspecified cores, per-radius environment SMIRKS, 90% identity
+threshold, and environment radius 1–5 with default 4). The WizePairZ
+environment SMIRKS is a descriptive, searchable annotation in the paper's
+`.`-joined form (stored in the dedicated `environment_smirks` table), not a
+directly-applicable transform. Transform generation can apply chemically
 explicit unimolecular SMIRKS and can also apply observed single-cut,
 single-atom transformations such as `C[*:1]>>O[*:1]`. Python helpers can
 summarize property changes using MMPDB-style statistic names, use those

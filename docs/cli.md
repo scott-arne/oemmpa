@@ -97,8 +97,10 @@ reading a prebuilt store because the method was already applied at build time.
 - `--mcs-identity-fraction FLOAT` — MCS identity threshold (default 0.90, valid
   range `(0.0, 1.0]`). Only pairs with MCS identity fraction ≥ this value are
   emitted.
-- `--max-environment-radius INT` — maximum environment radius for per-radius
-  SMIRKS hierarchy (default 4, valid range `[1, 5]`).
+- `--max-environment-radius INT` — maximum environment radius for the per-radius
+  descriptive environment SMIRKS hierarchy (default 4, valid range `[1, 5]`).
+  These SMIRKS are searchable annotations in the paper's `.`-joined form, not
+  directly-applicable transforms.
 
 These flags require `--method wizepairz`:
 

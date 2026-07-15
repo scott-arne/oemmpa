@@ -35,7 +35,7 @@ public:
         double paired_t,
         bool has_p_value,
         double p_value,
-        const std::string& explicit_smirks
+        const std::string& environment_smirks
     );
 
     std::uint64_t GetRuleEnvironmentId() const;
@@ -64,7 +64,9 @@ public:
     double GetPairedT() const;
     bool HasPValue() const;
     double GetPValue() const;
-    const std::string& GetExplicitSmirks() const;
+    // The descriptive, '.'-joined WizePairZ environment SMIRKS for this
+    // rule_environment (empty for non-WizePairZ). NOT an applicable transform.
+    const std::string& GetEnvironmentSmirks() const;
 
 private:
     std::uint64_t rule_environment_id_ = 0;
@@ -93,7 +95,7 @@ private:
     double paired_t_ = 0.0;
     bool has_p_value_ = false;
     double p_value_ = 0.0;
-    std::string explicit_smirks_;
+    std::string environment_smirks_;
 };
 
 }  // namespace OEMMPA

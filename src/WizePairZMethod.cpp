@@ -240,8 +240,8 @@ MatchedPair make_pair(
 // The per-radius explicit-H SMIRKS hierarchy for one directed pair, plus the
 // contiguous [min, max] range of radii at which it stayed a single fragment.
 struct EnvironmentHierarchy {
-    std::vector<PairEnvironmentSmirks> forward;  // reactant >> product
-    std::vector<PairEnvironmentSmirks> reverse;  // product >> reactant
+    std::vector<PairEnvironmentSmirks> forward;  // reactant . product
+    std::vector<PairEnvironmentSmirks> reverse;  // product . reactant
     unsigned int min_valid_radius = 0;
     unsigned int max_valid_radius = 0;
     bool valid = false;
@@ -316,9 +316,13 @@ EnvironmentHierarchy encode_environment_hierarchy(
            const std::pair<unsigned int, std::pair<std::string, std::string>>& rhs) {
             return lhs.first < rhs.first;
         });
+    // The paper's environment SMIRKS is a non-reaction, '.'-joined pair of
+    // single connected fragments (reactant . product) -- a DESCRIPTIVE search
+    // key, not an applicable reaction transform. Each side is a single fragment
+    // (RECS validity above), so exactly one '.' separates the two sides.
     for (const auto& entry : rendered) {
-        hierarchy.forward.push_back({entry.first, entry.second.first + ">>" + entry.second.second});
-        hierarchy.reverse.push_back({entry.first, entry.second.second + ">>" + entry.second.first});
+        hierarchy.forward.push_back({entry.first, entry.second.first + "." + entry.second.second});
+        hierarchy.reverse.push_back({entry.first, entry.second.second + "." + entry.second.first});
     }
     hierarchy.max_valid_radius = rendered.back().first;
     hierarchy.valid = true;
