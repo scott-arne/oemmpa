@@ -329,14 +329,30 @@ class DuckDBStore:
         """
         return int(self._raw_store.GetRuleEnvironmentStatisticsCount(str(property_name)))
 
-    def rule_environment_statistics(self, property_name=None):
+    def rule_environment_statistics(self, property_name=None, *,
+                                    uncertainty=None, confidence=0.95,
+                                    alternative="two-sided", fdr=None,
+                                    fdr_scope="property", model=None):
         """Return stored rule-environment statistics rows.
 
         :param property_name: Optional property name to select.
-        :returns: Wrapped rule-environment statistics collection.
+        :param uncertainty: Optional :class:`ExperimentalUncertainty`. When
+            supplied, rows are annotated with Kramer statistics (uncovered
+            properties pass through unannotated).
+        :returns: :class:`RuleEnvironmentStatisticsCollection`, or an
+            :class:`UncertaintyRuleEnvironmentStatisticsCollection` when
+            ``uncertainty`` is supplied.
         """
         if property_name is None:
             raw_rows = self._raw_store.GetRuleEnvironmentStatistics()
         else:
             raw_rows = self._raw_store.GetRuleEnvironmentStatistics(str(property_name))
-        return wrap_rule_environment_statistics(raw_rows)
+        collection = wrap_rule_environment_statistics(raw_rows)
+        if uncertainty is None:
+            return collection
+        from ._kramer import annotate_kramer_statistics
+
+        return annotate_kramer_statistics(
+            collection, uncertainty, confidence=confidence,
+            alternative=alternative, fdr=fdr, fdr_scope=fdr_scope, model=model,
+        )

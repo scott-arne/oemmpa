@@ -191,3 +191,44 @@ def test_prediction_without_uncertainty_is_byte_for_byte():
         "transform", "property", "aggregation", "predicted_delta",
         "count", "std", "p_value",
     }
+
+
+def _build_store(tmp_path):
+    from oemmpa import DuckDBStore
+
+    analyzer = _analyzer()
+    path = str(tmp_path / "kramer.duckdb")
+    store = DuckDBStore(path)
+    store.save_analyzer(analyzer)
+    store.refresh_rule_environment_statistics()
+    return store
+
+
+def test_readback_without_uncertainty_unchanged(tmp_path):
+    # Golden: no sigma -> identical collection type, exact key set; no scipy.
+    from oemmpa._rule_environment import RuleEnvironmentStatisticsCollection
+
+    store = _build_store(tmp_path)
+    stats = store.rule_environment_statistics("pIC50")
+    assert type(stats) is RuleEnvironmentStatisticsCollection
+    baseline = stats[0].to_dict()
+    assert "sigma_exp" not in baseline
+    # explicit uncertainty=None yields the identical serialized dict
+    again = store.rule_environment_statistics("pIC50", uncertainty=None)
+    assert again[0].to_dict() == baseline
+
+
+def test_readback_with_uncertainty_is_annotated(tmp_path):
+    pytest.importorskip("scipy.stats")
+    from oemmpa import ExperimentalUncertainty
+    from oemmpa._kramer import UncertaintyRuleEnvironmentStatisticsCollection
+
+    store = _build_store(tmp_path)
+    unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
+    stats = store.rule_environment_statistics("pIC50", uncertainty=unc)
+    assert isinstance(stats, UncertaintyRuleEnvironmentStatisticsCollection)
+    assert stats[0].to_dict()["sigma_exp"] == pytest.approx(0.4)
+    # filter still works through the wrapper
+    filtered = stats.filter(min_pairs=1)
+    assert len(filtered) >= 1
+    assert "sigma_exp" in filtered.to_dicts()[0]
