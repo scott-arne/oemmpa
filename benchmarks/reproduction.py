@@ -240,16 +240,63 @@ def run_reproduction(*, measurements=None, dataset=None, property_name="pIC50",
 
 
 def _write_report(path, rows, summary):
-    try:
-        from benchmarks.report_html import render_html
+    import html
 
-        html = render_html(rows, summary)
-    except Exception:
-        # Keep the harness robust: a minimal self-contained page is sufficient
-        # for the reproduction artifact when the shared renderer does not apply.
-        items = "".join(f"<li>{k}: {v}</li>" for k, v in summary.items())
-        html = f"<html><body><h1>Kramer reproduction</h1><ul>{items}</ul></body></html>"
-    Path(path).write_text(html, encoding="utf-8")
+    # Render a self-contained Kramer-specific HTML page.
+    summary_rows = "".join(
+        f"<tr><td><strong>{html.escape(str(k))}</strong></td>"
+        f"<td>{html.escape(str(v))}</td></tr>"
+        for k, v in summary.items()
+    )
+    # Render a compact per-transform table with a useful subset of columns.
+    columns = [
+        "transform", "count", "avg", "p_value", "significant",
+        "minimum_significant_difference", "sigma_true"
+    ]
+    available = [c for c in columns if rows and c in rows[0]]
+    thead = "".join(f"<th>{html.escape(c)}</th>" for c in available)
+    tbody = ""
+    for row in rows:
+        cells = "".join(
+            f"<td>{html.escape(str(row.get(c, '')))}</td>" for c in available
+        )
+        tbody += f"<tr>{cells}</tr>"
+
+    page = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kramer reproduction (Kramer 2014)</title>
+<style>
+:root {{ color-scheme: light dark; }}
+body {{ font-family: system-ui, sans-serif; max-width: 1080px; margin: 0 auto;
+  padding: 32px 24px; line-height: 1.5; }}
+h1 {{ font-size: 28px; font-weight: 650; margin: 0 0 24px; }}
+h2 {{ font-size: 18px; font-weight: 620; margin: 32px 0 12px; }}
+table {{ border-collapse: collapse; width: 100%; margin-bottom: 24px; }}
+th, td {{ padding: 8px 12px; text-align: left; border-bottom: 1px solid #ddd; }}
+th {{ font-weight: 600; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background: #1a1a19; color: #fff; }}
+  th, td {{ border-color: #444; }}
+}}
+</style>
+</head>
+<body>
+<h1>Kramer reproduction (Kramer 2014)</h1>
+<h2>Reproduction summary</h2>
+<table>
+<tbody>{summary_rows}</tbody>
+</table>
+<h2>Per-transform statistics ({len(rows)} transforms)</h2>
+<table>
+<thead><tr>{thead}</tr></thead>
+<tbody>{tbody}</tbody>
+</table>
+</body>
+</html>"""
+    Path(path).write_text(page, encoding="utf-8")
 
 
 def main(argv=None):

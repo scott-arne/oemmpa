@@ -109,3 +109,20 @@ def test_run_reproduction_raises_on_no_transforms(tmp_path):
             property_name="logP",
             output_dir=str(tmp_path),
         )
+
+
+def test_html_report_is_kramer_specific(tmp_path):
+    # Regression: ensure the emitted HTML is a Kramer-specific page (not the
+    # staged-performance benchmark page) and includes reproduction metrics.
+    from benchmarks.reproduction import run_reproduction
+
+    run_reproduction(
+        measurements=_measurement_rows(),
+        property_name="pIC50",
+        output_dir=str(tmp_path),
+    )
+    html_path = tmp_path / "kramer_reproduction.html"
+    content = html_path.read_text(encoding="utf-8")
+    assert "Kramer reproduction" in content
+    assert "msd_inv_sqrt_n_correlation" in content
+    assert "OEMMPA performance" not in content
