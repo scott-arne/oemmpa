@@ -780,10 +780,16 @@ from ._rgroup import (
 )
 from ._uncertainty import ExperimentalUncertainty
 from ._kramer import (
+    KRAMER_FIELDS,
     AnalyticKramerModel,
     KramerConfig,
     KramerResult,
     TransformEffectModel,
+    UncertaintyRuleEnvironmentStatisticsCollection,
+    UncertaintyRuleEnvironmentStatisticsResult,
+    UncertaintyTransformStatisticsCollection,
+    UncertaintyTransformStatisticsResult,
+    annotate_kramer_statistics,
 )
 from ._results import (
     GeneratedProductCollection,
@@ -851,6 +857,7 @@ __all__ = [
     "ExperimentalUncertainty",
     "GeneratedProductCollection",
     "GeneratedProductResult",
+    "KRAMER_FIELDS",
     "KramerConfig",
     "KramerResult",
     "LoadReport",
@@ -879,6 +886,11 @@ __all__ = [
     "TransformResult",
     "TransformStatisticsCollection",
     "TransformStatisticsResult",
+    "UncertaintyRuleEnvironmentStatisticsCollection",
+    "UncertaintyRuleEnvironmentStatisticsResult",
+    "UncertaintyTransformStatisticsCollection",
+    "UncertaintyTransformStatisticsResult",
+    "annotate_kramer_statistics",
     "apply_pair_transform",
     "apply_transform_smirks",
     "apply_variable_transform",

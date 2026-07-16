@@ -223,22 +223,170 @@ def _apply_bh_fdr(rows, results, config):
             prev = q
 
 
+class _KramerWrapper:
+    """Base class: compose a base result row with its Kramer result payload.
+
+    Attribute access delegates to the Kramer payload first (so its declared
+    fields — ``significant``, ``minimum_significant_difference``, etc. — are
+    exposed flatly, and a future effect-model payload surfaces its own fields
+    without wrapper changes), then to the base row (so existing collection
+    filters and accessors keep working on wrapped rows).
+    """
+
+    __slots__ = ("base", "kramer")
+
+    def __init__(self, base, kramer):
+        object.__setattr__(self, "base", base)
+        object.__setattr__(self, "kramer", kramer)
+
+    def __getattr__(self, name):
+        # Guard against recursion before the slots are populated.
+        if name in ("base", "kramer"):
+            raise AttributeError(name)
+        try:
+            return getattr(self.kramer, name)
+        except AttributeError:
+            return getattr(self.base, name)
+
+    def to_dict(self):
+        merged = dict(self.base.to_dict())
+        merged.update(self.kramer.as_dict())
+        return merged
+
+
+class UncertaintyTransformStatisticsResult(_KramerWrapper):
+    """A transform statistics row plus Kramer fields."""
+
+
+class UncertaintyRuleEnvironmentStatisticsResult(_KramerWrapper):
+    """A persisted rule-environment statistics row plus Kramer fields."""
+
+
+def _none_kramer_dict():
+    return {field: None for field in KRAMER_FIELDS}
+
+
+class _UncertaintyCollection(list):
+    """Shared helpers for uncertainty-aware collections."""
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            for row in self:
+                if row.transform == key:
+                    return row
+            raise KeyError(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def to_dicts(self):
+        dicts = []
+        for row in self:
+            if isinstance(row, _KramerWrapper):
+                dicts.append(row.to_dict())
+            else:
+                merged = dict(row.to_dict())
+                merged.update(_none_kramer_dict())
+                dicts.append(merged)
+        return dicts
+
+    def to_dataframe(self, library="pandas", molecules=False):
+        from ._dataframe import dataframe_from_dicts, TRANSFORM_SMIRKS_COLUMNS
+
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
+
+
+class UncertaintyTransformStatisticsCollection(_UncertaintyCollection):
+    """Transform statistics collection with Kramer columns."""
+
+
+class UncertaintyRuleEnvironmentStatisticsCollection(_UncertaintyCollection):
+    """Rule-environment statistics collection with Kramer columns.
+
+    Preserves :meth:`filter` by delegating to the base collection's filter over
+    the underlying base rows and re-wrapping the survivors.
+    """
+
+    def to_dataframe(self, library="pandas", molecules=False):
+        from ._dataframe import (
+            RULE_ENVIRONMENT_SMILES_COLUMNS,
+            TRANSFORM_SMIRKS_COLUMNS,
+            dataframe_from_dicts,
+        )
+
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=RULE_ENVIRONMENT_SMILES_COLUMNS,
+            smirks_columns=TRANSFORM_SMIRKS_COLUMNS,
+        )
+
+    def filter(self, **kwargs):
+        from ._rule_environment import RuleEnvironmentStatisticsCollection
+
+        wrapper_by_id = {}
+        base_rows = []
+        for row in self:
+            base = row.base if isinstance(row, _KramerWrapper) else row
+            base_rows.append(base)
+            if isinstance(row, _KramerWrapper):
+                wrapper_by_id[id(base)] = row
+        filtered = RuleEnvironmentStatisticsCollection(base_rows).filter(**kwargs)
+        out = UncertaintyRuleEnvironmentStatisticsCollection()
+        for base in filtered:
+            out.append(wrapper_by_id.get(id(base), base))
+        return out
+
+
+def _wrap_row(base, kramer, *, rule_environment):
+    if kramer is None:
+        return base
+    if rule_environment:
+        return UncertaintyRuleEnvironmentStatisticsResult(base, kramer)
+    return UncertaintyTransformStatisticsResult(base, kramer)
+
+
 def annotate_kramer_statistics(rows, uncertainty, *, confidence=0.95,
                                alternative="two-sided", fdr=None,
                                fdr_scope="property", model=None):
-    """Annotate rows with Kramer statistics (public sidecar entry point).
+    """Annotate rows with Kramer statistics, returning flat wrapper rows.
 
-    Task 2 returns the raw per-row :class:`KramerResult` list; Task 3 extends
-    this to return flat wrapper rows. Uncovered properties map to None.
+    Covered properties are wrapped with Kramer fields; uncovered properties
+    pass through as their base type. ``to_dicts()`` emits a stable column set.
 
     :param rows: Rows exposing ``count``, ``avg``, ``std``, ``property_name``.
     :param uncertainty: :class:`ExperimentalUncertainty`.
+    :param confidence: Two-sided confidence level.
+    :param alternative: ``"two-sided"``, ``"greater"``, or ``"less"``.
+    :param fdr: ``None`` or ``"bh"``.
+    :param fdr_scope: ``"property"`` or ``"global"``.
     :param model: Optional :class:`TransformEffectModel`; defaults to
         :class:`AnalyticKramerModel`.
-    :returns: List aligned to ``rows`` (wrapper rows in Task 3).
+    :returns: An uncertainty-aware collection (transform or rule-environment
+        flavour, inferred from the row type).
     """
+    rows = list(rows)
     if model is None:
         model = AnalyticKramerModel()
     config = KramerConfig(confidence=confidence, alternative=alternative,
                           fdr=fdr, fdr_scope=fdr_scope)
-    return model.annotate(list(rows), uncertainty, config)
+    kramer_results = model.annotate(rows, uncertainty, config)
+
+    rule_environment = any(hasattr(row, "rule_environment_id") for row in rows)
+    if rule_environment:
+        collection = UncertaintyRuleEnvironmentStatisticsCollection()
+    else:
+        collection = UncertaintyTransformStatisticsCollection()
+    for base, kramer in zip(rows, kramer_results):
+        collection.append(_wrap_row(base, kramer, rule_environment=rule_environment))
+    return collection
