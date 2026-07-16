@@ -27,42 +27,33 @@ def _analyzer():
 
 def test_wrapper_to_dict_merges_base_and_kramer_columns():
     pytest.importorskip("scipy.stats")
-    from oemmpa import (
-        ExperimentalUncertainty,
-        compute_transform_statistics,
-    )
+    from oemmpa import ExperimentalUncertainty, annotate_kramer_statistics
+    from oemmpa._analytics import TransformStatisticsResult
     from oemmpa._kramer import KRAMER_FIELDS
 
+    base = TransformStatisticsResult.from_values("[*:1]C>>[*:1]O", "pIC50", [1.0, 3.0])
     unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
-    stats = compute_transform_statistics(
-        _analyzer().transforms(), "pIC50", uncertainty=unc
-    )
+    stats = annotate_kramer_statistics([base], unc)
     row = stats[0].to_dict()
-    # base columns still present
     assert "avg" in row and "count" in row and "transform" in row
-    # kramer columns appended
     for field in KRAMER_FIELDS:
         assert field in row
-    # delegation: wrapper exposes base attributes
     assert stats[0].avg == pytest.approx(stats[0].base.avg)
 
 
 def test_wrapper_exposes_kramer_fields_as_attributes():
-    # HIGH: the flat API must expose Kramer fields directly on the row, not just
-    # via to_dict() or row.kramer.
     pytest.importorskip("scipy.stats")
-    from oemmpa import ExperimentalUncertainty, compute_transform_statistics
+    from oemmpa import ExperimentalUncertainty, annotate_kramer_statistics
+    from oemmpa._analytics import TransformStatisticsResult
 
+    base = TransformStatisticsResult.from_values("[*:1]C>>[*:1]O", "pIC50", [1.0, 3.0])
     unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
-    stats = compute_transform_statistics(
-        _analyzer().transforms(), "pIC50", uncertainty=unc
-    )
+    stats = annotate_kramer_statistics([base], unc)
     row = stats["[*:1]C>>[*:1]O"]
     assert isinstance(row.significant, bool)
     assert row.minimum_significant_difference == pytest.approx(
         row.kramer.minimum_significant_difference
     )
-    # base attributes still reachable through delegation
     assert row.count == row.base.count
 
 
