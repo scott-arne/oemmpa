@@ -779,6 +779,12 @@ from ._rgroup import (
     rgroups_to_recursive_smarts,
 )
 from ._uncertainty import ExperimentalUncertainty
+from ._kramer import (
+    AnalyticKramerModel,
+    KramerConfig,
+    KramerResult,
+    TransformEffectModel,
+)
 from ._results import (
     GeneratedProductCollection,
     GeneratedProductResult,
@@ -838,12 +844,15 @@ __all__ = [
     "__version__",
     "__version_info__",
     "_oemmpa",
+    "AnalyticKramerModel",
     "AnalysisResult",
     "Analyzer",
     "DuckDBStore",
     "ExperimentalUncertainty",
     "GeneratedProductCollection",
     "GeneratedProductResult",
+    "KramerConfig",
+    "KramerResult",
     "LoadReport",
     "Objective",
     "ObjectiveAnalysis",
@@ -865,6 +874,7 @@ __all__ = [
     "RuleSelectionOptions",
     "Selection",
     "TransformCollection",
+    "TransformEffectModel",
     "TransformQuery",
     "TransformResult",
     "TransformStatisticsCollection",
