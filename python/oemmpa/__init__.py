@@ -778,6 +778,7 @@ from ._rgroup import (
     rgroup_smiles_to_smarts,
     rgroups_to_recursive_smarts,
 )
+from ._uncertainty import ExperimentalUncertainty
 from ._results import (
     GeneratedProductCollection,
     GeneratedProductResult,
@@ -840,6 +841,7 @@ __all__ = [
     "AnalysisResult",
     "Analyzer",
     "DuckDBStore",
+    "ExperimentalUncertainty",
     "GeneratedProductCollection",
     "GeneratedProductResult",
     "LoadReport",
