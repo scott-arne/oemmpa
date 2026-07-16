@@ -566,7 +566,7 @@ and their degrees of freedom. It supports three construction methods:
 - `ExperimentalUncertainty.from_sigma(sigma, property_name=None, *, scale=None)` —
   supply sigma_exp directly as a dict mapping property name to standard deviation,
   or as a scalar value with `property_name` specified. The resulting uncertainty
-  is marked as not estimated (degrees of freedom is infinite).
+  is marked as not estimated (degrees of freedom is `None`).
 
 - `ExperimentalUncertainty.from_replicate_groups(groups, property_name=None, *, min_groups=2, min_df=3, scale=None)` —
   estimate sigma_exp from replicate measurements. `groups` is a dict mapping
@@ -583,12 +583,12 @@ and their degrees of freedom. It supports three construction methods:
 Methods and properties:
 
 - `.sigma(property_name)` — return experimental standard deviation for a property.
-- `.degrees_of_freedom(property_name)` — return degrees of freedom for a property.
+- `.degrees_of_freedom(property_name)` — return pooled degrees of freedom for estimated values, or `None` for directly-supplied (`from_sigma`) values.
 - `.is_estimated(property_name)` — return whether the value was estimated from replicates.
 - `.n_groups(property_name)` — return the number of replicate groups (estimated only).
 - `.has(property_name)` — return whether the property is present.
-- `.properties()` — return a list of all property names.
-- `.to_dict()` — return a dictionary representation.
+- `.properties()` — return a set of all property names.
+- `.to_dict()` — return a dictionary representation (df_exp is `None` for `from_sigma` values).
 - `.method` — human-readable estimation method label (property).
 - `.scale` — advisory scale label (property).
 - `.with_sigma(overrides)` — return a new uncertainty with sigma values replaced.
@@ -642,10 +642,14 @@ row (OEMMPA exports these as `KRAMER_FIELDS`):
 - `experimental_variance_fraction` — fraction of observed variance attributable to measurement noise, min(1, 2·σ_exp²/std²) (None when N < 2 or std = 0).
 - `mean_ci_low` — lower bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
 - `mean_ci_high` — upper bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
-- `q_value` — Benjamini-Hochberg FDR-adjusted `noise_p_value`; present only when `fdr="bh"`.
+- `q_value` — Benjamini-Hochberg FDR-adjusted `noise_p_value` (always present when uncertainty is supplied; `None` unless `fdr="bh"`).
 
-All Kramer fields are `None` when uncertainty is not supplied. The base MMPDB
-fields (`count`, `avg`, `std`, etc.) are unchanged by the uncertainty overlay.
+When `uncertainty` is not supplied, `compute_transform_statistics` returns the
+unchanged base collection — no Kramer fields are present at all. When
+`uncertainty` is supplied, every annotated row includes all Kramer fields;
+`q_value` is always present as a key/column but is `None` unless `fdr="bh"`.
+The base MMPDB fields (`count`, `avg`, `std`, etc.) are unchanged by the
+uncertainty overlay.
 
 #### annotate_kramer_statistics
 
