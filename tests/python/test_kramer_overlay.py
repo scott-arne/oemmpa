@@ -162,3 +162,31 @@ def test_all_uncovered_input_without_scipy():
         mp.setitem(sys.modules, "scipy.stats", None)
         results = AnalyticKramerModel().annotate(rows, unc, KramerConfig())
         assert results == [None, None]
+
+def test_bh_fdr_global_scope_pools_all_properties():
+    # Global scope pools every annotated row into one BH family (m = total rows),
+    # whereas per-property forms one family per property. The most-significant row
+    # (rank 1 in both groupings, monotonicity not binding) therefore scales with
+    # family size: global q == 2 x per-property q here (family 4 vs 2).
+    from oemmpa import ExperimentalUncertainty
+    from oemmpa._kramer import AnalyticKramerModel, KramerConfig
+
+    unc = ExperimentalUncertainty.from_sigma({"p": 0.5, "q": 0.5})
+    rows = [
+        _Row("p", count=8, avg=0.9, std=0.7),  # smallest noise_p_value overall
+        _Row("p", count=8, avg=0.1, std=0.7),
+        _Row("q", count=8, avg=0.8, std=0.7),
+        _Row("q", count=8, avg=0.2, std=0.7),
+    ]
+    per = AnalyticKramerModel().annotate(
+        rows, unc, KramerConfig(fdr="bh", fdr_scope="property")
+    )
+    glob = AnalyticKramerModel().annotate(
+        rows, unc, KramerConfig(fdr="bh", fdr_scope="global")
+    )
+    assert all(0.0 <= r.q_value <= 1.0 for r in glob)
+    assert all(0.0 <= r.q_value <= 1.0 for r in per)
+    # Row 0 is the rank-1 minimum in both its property family and the global family.
+    assert per[0].q_value == pytest.approx(per[0].noise_p_value * 2)
+    assert glob[0].q_value == pytest.approx(glob[0].noise_p_value * 4)
+    assert glob[0].q_value == pytest.approx(2 * per[0].q_value)
