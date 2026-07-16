@@ -687,8 +687,9 @@ print(stats.to_dicts()[0]["significant"])
 
 #### predict_transform_delta with uncertainty
 
-`predict_transform_delta()` extends prediction output when uncertainty is
-supplied:
+`predict_transform_delta()` carries the Kramer reliability fields when
+`statistics` was computed with an experimental uncertainty — no extra argument
+is needed; the fields ride on the uncertainty-aware statistics:
 
 ```python
 from oemmpa import predict_transform_delta, ExperimentalUncertainty

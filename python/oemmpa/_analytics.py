@@ -356,16 +356,16 @@ def _find_statistics(statistics, transform):
     return None
 
 
-def predict_transform_delta(statistics, transform, aggregation="avg", *,
-                            uncertainty=None):
+def predict_transform_delta(statistics, transform, aggregation="avg"):
     """Predict a property delta for ``transform`` from statistics.
+
+    When ``statistics`` was computed with an experimental uncertainty (its rows
+    are uncertainty-aware), the returned prediction carries the Kramer
+    reliability fields; ``predicted_delta`` is unchanged either way.
 
     :param statistics: Statistics collection or mapping keyed by transform.
     :param transform: Transform SMILES to predict.
     :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
-    :param uncertainty: Optional :class:`ExperimentalUncertainty`; when the
-        matched row is uncertainty-aware, reliability fields are carried into
-        the prediction. ``predicted_delta`` is unchanged.
     :returns: :class:`PredictionResult`.
     :raises KeyError: If ``transform`` is absent.
     :raises ValueError: If ``aggregation`` is unsupported.

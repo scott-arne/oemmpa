@@ -1120,7 +1120,6 @@ def _predict_stateless(args):
             statistics,
             args.transform,
             aggregation=args.aggregation,
-            uncertainty=uncertainty,
         )
     except KeyError:
         raise ValueError(
