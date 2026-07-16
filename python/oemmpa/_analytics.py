@@ -266,10 +266,11 @@ class PredictionResult:
     count: int
     std: float | None
     p_value: float | None
+    kramer: object | None = None
 
     def to_dict(self):
         """Return a serializable prediction mapping."""
-        return {
+        result = {
             "transform": self.transform,
             "property": self.property_name,
             "aggregation": self.aggregation,
@@ -278,16 +279,34 @@ class PredictionResult:
             "std": self.std,
             "p_value": self.p_value,
         }
+        if self.kramer is not None:
+            result.update(self.kramer.as_dict())
+        return result
 
 
-def compute_transform_statistics(transforms, property_name, min_count=1):
+def compute_transform_statistics(transforms, property_name, min_count=1, *,
+                                 uncertainty=None, confidence=0.95,
+                                 alternative="two-sided", fdr=None,
+                                 fdr_scope="property", model=None):
     """Compute transform-level property-delta statistics.
 
     :param transforms: Iterable of :class:`TransformResult` or raw
         ``_oemmpa.Transform`` objects.
     :param property_name: Property name to aggregate.
     :param min_count: Minimum number of property-bearing pairs required.
-    :returns: :class:`TransformStatisticsCollection`.
+    :param uncertainty: Optional :class:`ExperimentalUncertainty`. When given,
+        the result is annotated with Kramer statistics; when None, behavior is
+        unchanged.
+    :param confidence: Two-sided confidence level for the overlay.
+    :param alternative: ``"two-sided"``, ``"greater"``, or ``"less"``.
+    :param fdr: ``None`` or ``"bh"``.
+    :param fdr_scope: ``"property"`` or ``"global"``.
+    :param model: Optional effect model; defaults to the analytic model.
+    :returns: :class:`TransformStatisticsCollection`, or an
+        :class:`UncertaintyTransformStatisticsCollection` when ``uncertainty``
+        is supplied.
+    :raises ValueError: If ``uncertainty`` is supplied without a value for
+        ``property_name``.
     """
     property_name = str(property_name)
     min_count = int(min_count)
@@ -306,14 +325,24 @@ def compute_transform_statistics(transforms, property_name, min_count=1):
         if len(values) >= min_count:
             rows.append(
                 TransformStatisticsResult.from_values(
-                    transform_smiles,
-                    property_name,
-                    values,
+                    transform_smiles, property_name, values
                 )
             )
 
     rows.sort(key=lambda row: row.transform)
-    return TransformStatisticsCollection(rows)
+    collection = TransformStatisticsCollection(rows)
+    if uncertainty is None:
+        return collection
+    if not uncertainty.has(property_name):
+        raise ValueError(
+            f"no experimental uncertainty supplied for property {property_name!r}"
+        )
+    from ._kramer import annotate_kramer_statistics
+
+    return annotate_kramer_statistics(
+        collection, uncertainty, confidence=confidence,
+        alternative=alternative, fdr=fdr, fdr_scope=fdr_scope, model=model,
+    )
 
 
 def _find_statistics(statistics, transform):
@@ -327,12 +356,16 @@ def _find_statistics(statistics, transform):
     return None
 
 
-def predict_transform_delta(statistics, transform, aggregation="avg"):
+def predict_transform_delta(statistics, transform, aggregation="avg", *,
+                            uncertainty=None):
     """Predict a property delta for ``transform`` from statistics.
 
     :param statistics: Statistics collection or mapping keyed by transform.
     :param transform: Transform SMILES to predict.
     :param aggregation: ``"avg"``, ``"mean"``, or ``"median"``.
+    :param uncertainty: Optional :class:`ExperimentalUncertainty`; when the
+        matched row is uncertainty-aware, reliability fields are carried into
+        the prediction. ``predicted_delta`` is unchanged.
     :returns: :class:`PredictionResult`.
     :raises KeyError: If ``transform`` is absent.
     :raises ValueError: If ``aggregation`` is unsupported.
@@ -344,6 +377,7 @@ def predict_transform_delta(statistics, transform, aggregation="avg"):
 
     predicted_delta = row.predicted_delta(aggregation)
     normalized_aggregation = "avg" if aggregation == "mean" else str(aggregation)
+    kramer = getattr(row, "kramer", None)
     return PredictionResult(
         transform=row.transform,
         property_name=row.property_name,
@@ -352,6 +386,7 @@ def predict_transform_delta(statistics, transform, aggregation="avg"):
         count=row.count,
         std=row.std,
         p_value=row.p_value,
+        kramer=kramer,
     )
 
 

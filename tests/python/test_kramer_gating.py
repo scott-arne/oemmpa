@@ -87,3 +87,87 @@ def test_empty_rule_environment_input_keeps_rule_env_collection():
     assert isinstance(result, UncertaintyRuleEnvironmentStatisticsCollection)
     assert hasattr(result, "filter")
     assert len(result.filter(min_pairs=1)) == 0
+
+
+def test_no_uncertainty_is_byte_for_byte_unchanged():
+    # Golden: no sigma -> identical type, exact key set, exact values; no scipy.
+    from oemmpa import compute_transform_statistics
+    from oemmpa._analytics import TransformStatisticsCollection
+
+    baseline = compute_transform_statistics(_analyzer().transforms(), "pIC50")
+    assert type(baseline) is TransformStatisticsCollection
+    row = baseline["[*:1]C>>[*:1]O"].to_dict()
+    # exactly the historical columns, no Kramer keys
+    assert set(row) == {
+        "transform", "property", "count", "avg", "std", "kurtosis",
+        "skewness", "min", "q1", "median", "q3", "max", "paired_t", "p_value",
+    }
+    # exact golden values (match tests/python/test_analytics.py)
+    assert row["count"] == 2
+    assert row["avg"] == pytest.approx(2.0)
+    assert row["std"] == pytest.approx(2 ** 0.5)
+    assert row["paired_t"] == pytest.approx(2.0)
+    # passing uncertainty=None must return the identical serialized dict
+    explicit_none = compute_transform_statistics(
+        _analyzer().transforms(), "pIC50", uncertainty=None
+    )
+    assert explicit_none["[*:1]C>>[*:1]O"].to_dict() == row
+
+
+def test_missing_property_raises():
+    # Scipy-independent: the raise happens before any overlay computation.
+    from oemmpa import ExperimentalUncertainty, compute_transform_statistics
+
+    unc = ExperimentalUncertainty.from_sigma({"logD": 0.3})
+    with pytest.raises(ValueError, match="no experimental uncertainty"):
+        compute_transform_statistics(_analyzer().transforms(), "pIC50", uncertainty=unc)
+
+
+def test_opt_in_without_scipy_raises_clear_error(monkeypatch):
+    # MED: opting into sigma without scipy must raise a clear, actionable error;
+    # the no-sigma path (above) must stay unaffected. A None entry in
+    # sys.modules makes importlib.import_module("scipy.stats") raise ImportError
+    # (monkeypatching builtins.__import__ would NOT affect importlib).
+    import sys
+
+    from oemmpa import ExperimentalUncertainty, compute_transform_statistics
+
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
+    with pytest.raises(ImportError, match="require scipy"):
+        compute_transform_statistics(
+            _analyzer().transforms(), "pIC50", uncertainty=unc
+        )
+
+
+def test_prediction_carries_reliability_when_uncertainty_aware():
+    pytest.importorskip("scipy.stats")
+    from oemmpa import (
+        ExperimentalUncertainty,
+        compute_transform_statistics,
+        predict_transform_delta,
+    )
+
+    unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
+    stats = compute_transform_statistics(
+        _analyzer().transforms(), "pIC50", uncertainty=unc
+    )
+    prediction = predict_transform_delta(stats, "[*:1]C>>[*:1]O")
+    row = prediction.to_dict()
+    assert "significant" in row
+    assert "minimum_significant_difference" in row
+    # predicted_delta unchanged (avg)
+    assert row["predicted_delta"] == pytest.approx(stats["[*:1]C>>[*:1]O"].avg)
+
+
+def test_prediction_without_uncertainty_is_byte_for_byte():
+    # Golden: no-sigma prediction dict is exactly the historical shape.
+    from oemmpa import compute_transform_statistics, predict_transform_delta
+
+    stats = compute_transform_statistics(_analyzer().transforms(), "pIC50")
+    row = predict_transform_delta(stats, "[*:1]C>>[*:1]O").to_dict()
+    assert set(row) == {
+        "transform", "property", "aggregation", "predicted_delta",
+        "count", "std", "p_value",
+    }
