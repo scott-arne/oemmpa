@@ -11,6 +11,7 @@ import tempfile
 from oemmpa import (
     Analyzer,
     DuckDBStore,
+    KRAMER_FIELDS,
     RuleEnvironmentPredictionResult,
     _oemmpa,
     compute_transform_statistics,
@@ -549,6 +550,113 @@ def _load_properties(analyzer, path, id_column, property_name):
 _UNSET = object()
 
 
+KRAMER_COLUMNS = list(KRAMER_FIELDS)
+
+
+def _add_uncertainty_arguments(parser):
+    parser.add_argument(
+        "--sigma-exp",
+        action="append",
+        default=None,
+        metavar="PROP=VALUE",
+        help="Experimental uncertainty as PROP=VALUE (repeatable) or a bare "
+             "VALUE applied to --property. Enables Kramer statistics.",
+    )
+    parser.add_argument(
+        "--replicate-measurements",
+        default=None,
+        help="Long-format table (CSV/TSV) of replicate measurements with "
+             "columns compound_id, property, value. Estimates sigma_exp.",
+    )
+    parser.add_argument("--confidence", type=float, default=_UNSET,
+                        help="Two-sided confidence level (default 0.95).")
+    parser.add_argument("--alternative", default=_UNSET,
+                        choices=["two-sided", "greater", "less"],
+                        help="Significance alternative (default two-sided).")
+    parser.add_argument("--fdr", default=_UNSET, choices=["bh"],
+                        help="Multiple-testing correction over noise_p_value.")
+    parser.add_argument("--fdr-scope", default=_UNSET,
+                        choices=["property", "global"],
+                        help="BH family scope (default property).")
+
+
+def _read_replicate_measurements(path):
+    delimiter = "\t" if str(path).endswith((".tsv", ".tsv.gz")) else ","
+    with _open_text_input(path) as stream:
+        return list(csv.DictReader(stream, delimiter=delimiter))
+
+
+def _parse_sigma_specs(specs, args):
+    overrides = {}
+    for spec in specs:
+        if "=" in spec:
+            prop, _, value = spec.partition("=")
+            overrides[prop.strip()] = float(value)
+        else:
+            prop = getattr(args, "property", None)
+            if prop is None:
+                raise ValueError(
+                    "--sigma-exp VALUE (without PROP=) requires --property"
+                )
+            overrides[prop] = float(spec)
+    return overrides
+
+
+def _build_uncertainty(args):
+    sigma_specs = getattr(args, "sigma_exp", None)
+    replicate_path = getattr(args, "replicate_measurements", None)
+    if not sigma_specs and replicate_path is None:
+        return None
+    from oemmpa import ExperimentalUncertainty
+
+    uncertainty = None
+    if replicate_path is not None:
+        rows = _read_replicate_measurements(replicate_path)
+        uncertainty = ExperimentalUncertainty.from_measurements(rows)
+    if sigma_specs:
+        overrides = _parse_sigma_specs(sigma_specs, args)
+        if uncertainty is None:
+            uncertainty = ExperimentalUncertainty.from_sigma(overrides)
+        else:
+            uncertainty = uncertainty.with_sigma(overrides)
+    return uncertainty
+
+
+def _resolve_uncertainty_options(args):
+    uncertainty = _build_uncertainty(args)
+    conf = getattr(args, "confidence", _UNSET)
+    alt = getattr(args, "alternative", _UNSET)
+    fdr = getattr(args, "fdr", _UNSET)
+    scope = getattr(args, "fdr_scope", _UNSET)
+    if uncertainty is None:
+        for name, value in (("--confidence", conf), ("--alternative", alt),
+                            ("--fdr", fdr), ("--fdr-scope", scope)):
+            if value is not _UNSET:
+                raise ValueError(
+                    f"{name} requires --sigma-exp or --replicate-measurements"
+                )
+        return None, {}
+    options = {
+        "confidence": 0.95 if conf is _UNSET else conf,
+        "alternative": "two-sided" if alt is _UNSET else alt,
+        "fdr": None if fdr is _UNSET else fdr,
+        "fdr_scope": "property" if scope is _UNSET else scope,
+    }
+    return uncertainty, options
+
+
+def _reject_uncertainty_flags(args, command):
+    if getattr(args, "sigma_exp", None) or getattr(args, "replicate_measurements", None):
+        raise ValueError(
+            f"{command} does not support experimental-uncertainty flags; "
+            "annotate persisted statistics via the Python API instead"
+        )
+    for name in ("confidence", "alternative", "fdr", "fdr_scope"):
+        if getattr(args, name, _UNSET) is not _UNSET:
+            flag = "--" + name.replace("_", "-")
+            raise ValueError(f"{command} does not support {flag}")
+
+
 def _configure_fragmentation(analyzer, args):
     cut_rgroups = getattr(args, "cut_rgroups", None)
     cut_rgroup_file = getattr(args, "cut_rgroup_file", None)
@@ -861,20 +969,25 @@ def _list_store(args):
     return 0
 
 
-def _compute_statistics(args):
+def _compute_statistics(args, *, uncertainty=None, options=None):
     analyzer = _build_analyzer(args, load_properties=True)
+    options = options or {}
     return analyzer, compute_transform_statistics(
         analyzer.transforms(),
         args.property,
         min_count=args.min_evidence,
+        uncertainty=uncertainty,
+        **options,
     )
 
 
 def _refresh_stats(args):
-    _, statistics = _compute_statistics(args)
+    uncertainty, options = _resolve_uncertainty_options(args)
+    _, statistics = _compute_statistics(args, uncertainty=uncertainty, options=options)
+    columns = STAT_COLUMNS if uncertainty is None else STAT_COLUMNS + KRAMER_COLUMNS
     _write_tsv_output(
         [row.to_dict() for row in statistics],
-        STAT_COLUMNS,
+        columns,
         args.output,
     )
     return 0
@@ -972,18 +1085,25 @@ def _reject_stateless_details(args, command):
 def _predict_stateless(args):
     _reject_stateless_details(args, "predict")
     _require_file_inputs(args, "predict")
-    _, statistics = _compute_statistics(args)
+    uncertainty, options = _resolve_uncertainty_options(args)
+    _, statistics = _compute_statistics(args, uncertainty=uncertainty, options=options)
     try:
         prediction = predict_transform_delta(
             statistics,
             args.transform,
             aggregation=args.aggregation,
+            uncertainty=uncertainty,
         )
     except KeyError:
         raise ValueError(
             f"no transform statistics found for transform: {args.transform}"
         ) from None
-    _write_tsv_output([prediction.to_dict()], PREDICTION_COLUMNS, args.output)
+    columns = (
+        PREDICTION_COLUMNS
+        if uncertainty is None
+        else PREDICTION_COLUMNS + KRAMER_COLUMNS
+    )
+    _write_tsv_output([prediction.to_dict()], columns, args.output)
     return 0
 
 
@@ -1002,6 +1122,7 @@ def _find_persisted_matches(args):
 
 
 def _predict_persisted(args):
+    _reject_uncertainty_flags(args, "predict --database")
     _reject_persisted_fragmentation_options(args, "predict")
     _reject_persisted_method_options(args, "predict")
     _ensure_persisted_report_outputs(
@@ -1096,6 +1217,9 @@ def _stateless_generation_rows(products, aggregation):
         row = product.to_dict()
         if product.statistics is not None:
             row["predicted_delta"] = product.predicted_delta(aggregation)
+            kramer = getattr(product.statistics, "kramer", None)
+            if kramer is not None:
+                row.update(kramer.as_dict())
         rows.append(row)
     return rows
 
@@ -1126,6 +1250,7 @@ def _reject_no_property_generate_options(args):
 
 
 def _generate_no_properties(args):
+    _reject_uncertainty_flags(args, "generate")
     _reject_no_property_generate_options(args)
     min_evidence = 1 if args.min_evidence is None else args.min_evidence
     if args.database is not None:
@@ -1157,9 +1282,12 @@ def _generate_stateless(args):
     _reject_persisted_generate_options(args)
     _reject_stateless_details(args, "generate")
     _require_file_inputs(args, "generate")
+    uncertainty, options = _resolve_uncertainty_options(args)
     min_evidence = 1 if args.min_evidence is None else args.min_evidence
     args.min_evidence = min_evidence
-    analyzer, statistics = _compute_statistics(args)
+    analyzer, statistics = _compute_statistics(
+        args, uncertainty=uncertainty, options=options
+    )
     products = generate_products(
         args.source,
         _stateless_generation_transforms(analyzer.transforms(), args.transform),
@@ -1168,15 +1296,21 @@ def _generate_stateless(args):
         statistics=statistics,
         desalter=_resolve_desalter(args),
     )
+    columns = (
+        GENERATION_COLUMNS
+        if uncertainty is None
+        else GENERATION_COLUMNS + KRAMER_COLUMNS
+    )
     _write_tsv_output(
         _stateless_generation_rows(products, args.aggregation),
-        GENERATION_COLUMNS,
+        columns,
         args.output,
     )
     return 0
 
 
 def _generate_persisted(args):
+    _reject_uncertainty_flags(args, "generate --database")
     _reject_persisted_fragmentation_options(args, "generate")
     _reject_persisted_method_options(args, "generate")
     _reject_stateless_generate_options(args)
@@ -1368,6 +1502,7 @@ def _build_parser():
         ),
     )
     _add_desalting_arguments(stats_parser)
+    _add_uncertainty_arguments(stats_parser)
     stats_parser.set_defaults(func=_refresh_stats)
 
     predict_parser = subparsers.add_parser(
@@ -1430,6 +1565,7 @@ def _build_parser():
         help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
     )
     _add_desalting_arguments(predict_parser)
+    _add_uncertainty_arguments(predict_parser)
     predict_parser.set_defaults(func=_predict)
 
     generate_parser = subparsers.add_parser(
@@ -1506,6 +1642,7 @@ def _build_parser():
         help="Write persisted detail reports using PREFIX.rules.tsv and PREFIX.pairs.tsv.",
     )
     _add_desalting_arguments(generate_parser)
+    _add_uncertainty_arguments(generate_parser)
     generate_parser.set_defaults(func=_generate)
 
     return parser
