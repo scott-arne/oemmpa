@@ -331,6 +331,8 @@ subquery expansion and deriving missing constant/query pieces remain deferred.
 
 ## Uncertainty-aware statistics (Kramer 2014)
 
+**Requires SciPy.** The uncertainty overlay needs `scipy.stats` at runtime; install it with `pip install scipy`. SciPy is optional — the base statistics work without it — but supplying an experimental uncertainty requires SciPy, and its absence raises a clear ImportError.
+
 `refresh-stats`, `predict`, and `generate` accept optional uncertainty flags to
 enable significance testing and variance-decomposition statistics:
 

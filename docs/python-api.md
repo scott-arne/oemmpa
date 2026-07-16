@@ -529,6 +529,8 @@ method-3 convention used by MMPDB. SciPy is imported only when needed for
 
 ### Uncertainty-aware statistics (Kramer 2014)
 
+**Requires SciPy.** The uncertainty overlay needs `scipy.stats` at runtime; install it with `pip install scipy`. SciPy is optional — the base statistics work without it — but supplying an experimental uncertainty requires SciPy, and its absence raises a clear ImportError.
+
 Optionally supply an experimental uncertainty to get significance and
 variance-decomposition statistics. Without it, statistics are unchanged.
 
