@@ -135,6 +135,60 @@ def test_generate_no_property_rejects_sigma(tmp_path, capsys):
     assert "does not support experimental-uncertainty" in capsys.readouterr().err
 
 
+def test_replicate_file_empty_rejected(tmp_path, capsys):
+    # A replicate CSV with only a header (no data rows) should raise.
+    smiles, props = _fixture(tmp_path)
+    reps = tmp_path / "reps.csv"
+    reps.write_text("compound_id,property,value\n")
+    with pytest.raises(SystemExit):
+        _run(["refresh-stats", "--smiles", str(smiles),
+              "--properties", str(props), "--property", "pIC50",
+              "--replicate-measurements", str(reps), "--output", "-"])
+    err = capsys.readouterr().err
+    assert "no usable replicate rows" in err
+    assert "pIC50" in err
+
+
+def test_replicate_file_wrong_endpoint_rejected(tmp_path, capsys):
+    # A replicate CSV whose rows are all a different property should raise.
+    smiles, props = _fixture(tmp_path)
+    reps = tmp_path / "reps.csv"
+    reps.write_text(
+        "compound_id,property,value\n"
+        "A,logD,2.0\nA,logD,2.1\n"
+        "B,logD,3.0\nB,logD,3.2\n"
+        "C,logD,1.5\nC,logD,1.6\n"
+    )
+    with pytest.raises(SystemExit):
+        _run(["refresh-stats", "--smiles", str(smiles),
+              "--properties", str(props), "--property", "pIC50",
+              "--replicate-measurements", str(reps), "--output", "-"])
+    err = capsys.readouterr().err
+    assert "no usable replicate rows" in err
+    assert "pIC50" in err
+
+
+def test_replicate_missing_property_for_command_rescued_by_sigma(tmp_path, capsys):
+    # A replicate CSV with only logD rows, but the command also passes
+    # --sigma-exp pIC50=0.4 -> rc==0 and the output row's sigma_exp == "0.4".
+    pytest.importorskip("scipy.stats")
+    smiles, props = _fixture(tmp_path)
+    reps = tmp_path / "reps.csv"
+    reps.write_text(
+        "compound_id,property,value\n"
+        "A,logD,2.0\nA,logD,2.1\n"
+        "B,logD,3.0\nB,logD,3.2\n"
+        "C,logD,1.5\nC,logD,1.6\n"
+    )
+    rc = _run(["refresh-stats", "--smiles", str(smiles),
+               "--properties", str(props), "--property", "pIC50",
+               "--sigma-exp", "pIC50=0.4",
+               "--replicate-measurements", str(reps), "--output", "-"])
+    assert rc == 0
+    rows = list(csv.DictReader(capsys.readouterr().out.splitlines(), delimiter="\t"))
+    assert rows[0]["sigma_exp"] == "0.4"
+
+
 def test_explicit_sigma_overrides_insufficient_replicates(tmp_path, capsys):
     pytest.importorskip("scipy.stats")
     smiles, props = _fixture(tmp_path)

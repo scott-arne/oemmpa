@@ -629,6 +629,17 @@ def _build_uncertainty(args):
         # Only estimate if rows remain.
         if filtered_rows:
             uncertainty = ExperimentalUncertainty.from_measurements(filtered_rows)
+        else:
+            # Replicate file was supplied but yielded no usable rows for the
+            # command's property. If that property is also not covered by an
+            # explicit override, raise a clear error.
+            if cmd_prop is not None and str(cmd_prop) not in overrides:
+                raise ValueError(
+                    f"--replicate-measurements {replicate_path} contained no usable "
+                    f"replicate rows for property {cmd_prop!r}; ensure the file has "
+                    f"columns compound_id, property, value and includes that property, "
+                    f"or pass --sigma-exp {cmd_prop}=VALUE"
+                )
 
     # Apply overrides.
     if overrides:
