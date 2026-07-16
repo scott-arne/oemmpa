@@ -75,3 +75,15 @@ def test_annotate_passthrough_keeps_stable_columns():
     for field in KRAMER_FIELDS:
         assert dicts[1][field] is None
     assert dicts[0]["sigma_exp"] == pytest.approx(0.4)
+
+
+def test_empty_rule_environment_input_keeps_rule_env_collection():
+    from oemmpa import ExperimentalUncertainty, annotate_kramer_statistics
+    from oemmpa._kramer import UncertaintyRuleEnvironmentStatisticsCollection
+    from oemmpa._rule_environment import RuleEnvironmentStatisticsCollection
+
+    unc = ExperimentalUncertainty.from_sigma({"pIC50": 0.4})
+    result = annotate_kramer_statistics(RuleEnvironmentStatisticsCollection(), unc)
+    assert isinstance(result, UncertaintyRuleEnvironmentStatisticsCollection)
+    assert hasattr(result, "filter")
+    assert len(result.filter(min_pairs=1)) == 0

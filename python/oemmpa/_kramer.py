@@ -375,6 +375,9 @@ def annotate_kramer_statistics(rows, uncertainty, *, confidence=0.95,
     :returns: An uncertainty-aware collection (transform or rule-environment
         flavour, inferred from the row type).
     """
+    from ._rule_environment import RuleEnvironmentStatisticsCollection
+
+    is_rule_env_input = isinstance(rows, RuleEnvironmentStatisticsCollection)
     rows = list(rows)
     if model is None:
         model = AnalyticKramerModel()
@@ -382,7 +385,7 @@ def annotate_kramer_statistics(rows, uncertainty, *, confidence=0.95,
                           fdr=fdr, fdr_scope=fdr_scope)
     kramer_results = model.annotate(rows, uncertainty, config)
 
-    rule_environment = any(hasattr(row, "rule_environment_id") for row in rows)
+    rule_environment = is_rule_env_input or any(hasattr(row, "rule_environment_id") for row in rows)
     if rule_environment:
         collection = UncertaintyRuleEnvironmentStatisticsCollection()
     else:
