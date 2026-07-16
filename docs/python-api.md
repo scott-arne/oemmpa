@@ -626,20 +626,17 @@ stats = compute_transform_statistics(
 When uncertainty is supplied, the following fields are added to each statistics
 row (OEMMPA exports these as `KRAMER_FIELDS`):
 
-- `significant` — boolean, True if the transform effect is statistically
-  significant at the specified confidence level.
-- `minimum_significant_difference` — the smallest absolute effect size that
-  would be detectable as significant with the current evidence.
-- `sigma_obs` — observed standard deviation of the property changes.
-- `sigma_exp` — experimental standard deviation (from the uncertainty).
-- `sigma_true` — estimated true standard deviation of the transform effect
-  (variance-decomposition: sigma_true = sqrt(sigma_obs^2 - sigma_exp^2)).
-- `ci_lower` — lower bound of the confidence interval for the mean effect.
-- `ci_upper` — upper bound of the confidence interval for the mean effect.
-- `t_statistic` — t-statistic for the hypothesis test.
-- `p_value_kramer` — p-value for the Kramer hypothesis test (uses the
-  variance-decomposed standard error).
-- `q_value` — FDR-adjusted p-value (only present when `fdr` is supplied).
+- `sigma_exp` — the experimental uncertainty (σ_exp) used for this property.
+- `experimental_se` — standard error of the mean effect under measurement noise alone, √(2·σ_exp²/N).
+- `minimum_significant_difference` — the minimum significant difference (MSD): the smallest mean effect distinguishable from measurement noise at the chosen confidence.
+- `significant` — whether the mean effect meets the MSD under the chosen `alternative`.
+- `noise_p_value` — noise-anchored p-value testing H0 (true effect = 0) against the measurement-noise floor.
+- `sigma_true` — deconvolved true-effect spread, √(max(0, std² − 2·σ_exp²)) (None when N < 2).
+- `variance_clamped` — True when std² < 2·σ_exp² (all observed spread is explained by measurement noise).
+- `experimental_variance_fraction` — fraction of observed variance attributable to measurement noise, min(1, 2·σ_exp²/std²) (None when N < 2 or std = 0).
+- `mean_ci_low` — lower bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
+- `mean_ci_high` — upper bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
+- `q_value` — Benjamini–Hochberg FDR-adjusted `noise_p_value`; present only when `fdr="bh"`.
 
 All Kramer fields are `None` when uncertainty is not supplied. The base MMPDB
 fields (`count`, `avg`, `std`, etc.) are unchanged by the uncertainty overlay.
@@ -689,7 +686,7 @@ stats = compute_transform_statistics(
     analyzer.transforms(), "pIC50", uncertainty=uncertainty
 )
 prediction = predict_transform_delta(stats, "[*:1]C>>[*:1]O")
-print(prediction.significant, prediction.ci_lower, prediction.ci_upper)
+print(prediction.significant, prediction.mean_ci_low, prediction.mean_ci_high)
 ```
 
 The prediction result includes all Kramer fields when uncertainty was used to
