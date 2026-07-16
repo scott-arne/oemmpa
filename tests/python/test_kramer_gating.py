@@ -114,6 +114,26 @@ def test_no_uncertainty_is_byte_for_byte_unchanged():
     assert explicit_none["[*:1]C>>[*:1]O"].to_dict() == row
 
 
+def test_no_uncertainty_without_scipy_still_works(monkeypatch):
+    # The default (no-sigma) path must work WITHOUT scipy. The base p_value
+    # computation already degrades to None when scipy is absent (pre-existing
+    # behavior); this documents that "default behavior unaffected" contract:
+    # it must not raise, and returns the base collection with p_value None.
+    import sys
+
+    from oemmpa import compute_transform_statistics
+    from oemmpa._analytics import TransformStatisticsCollection
+
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    stats = compute_transform_statistics(_analyzer().transforms(), "pIC50")
+    assert type(stats) is TransformStatisticsCollection
+    row = stats["[*:1]C>>[*:1]O"]
+    assert row.count == 2
+    assert row.avg == pytest.approx(2.0)
+    assert row.p_value is None  # scipy blocked -> graceful None, no crash
+
+
 def test_missing_property_raises():
     # Scipy-independent: the raise happens before any overlay computation.
     from oemmpa import ExperimentalUncertainty, compute_transform_statistics
