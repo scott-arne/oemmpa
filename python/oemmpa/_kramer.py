@@ -115,13 +115,17 @@ class AnalyticKramerModel:
         :returns: List of :class:`KramerResult` or None, aligned to ``rows``.
         """
         rows = list(rows)
+        covered = [
+            (_row_property(row) is not None and uncertainty.has(_row_property(row)))
+            for row in rows
+        ]
+        if not any(covered):
+            return [None] * len(rows)
         scipy_stats = _require_scipy_stats()
         results = [
-            self._row_result(row, uncertainty, config, scipy_stats)
-            if (_row_property(row) is not None
-                and uncertainty.has(_row_property(row)))
+            self._row_result(row, uncertainty, config, scipy_stats) if covered[i]
             else None
-            for row in rows
+            for i, row in enumerate(rows)
         ]
         if config.fdr == "bh":
             _apply_bh_fdr(rows, results, config)
@@ -153,18 +157,17 @@ class AnalyticKramerModel:
         variance_clamped = False
         exp_var_fraction = None
         ci_low = ci_high = None
-        if s_obs is not None:
+        if n >= 2 and s_obs is not None:
             obs_var = s_obs * s_obs
             noise_var = 2.0 * sigma * sigma
             variance_clamped = obs_var < noise_var
             sigma_true = math.sqrt(max(0.0, obs_var - noise_var))
             if s_obs > 0.0:
                 exp_var_fraction = min(1.0, noise_var / obs_var)
-            if n >= 2:
-                t_crit = float(scipy_stats.t(n - 1).ppf(1 - alpha / 2))
-                half = t_crit * (s_obs / math.sqrt(n))
-                ci_low = mean - half
-                ci_high = mean + half
+            t_crit = float(scipy_stats.t(n - 1).ppf(1 - alpha / 2))
+            half = t_crit * (s_obs / math.sqrt(n))
+            ci_low = mean - half
+            ci_high = mean + half
 
         return KramerResult(
             sigma_exp=sigma,

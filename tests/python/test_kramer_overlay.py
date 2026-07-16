@@ -132,3 +132,33 @@ def test_seam_dispatches_to_custom_model():
     unc = ExperimentalUncertainty.from_sigma({"p": 0.5})
     annotate_kramer_statistics([_Row("p", 3, 0.5, 0.5)], unc, model=fake)
     assert fake.seen == (1, 0.95)
+
+
+def test_n1_with_std_present_no_variance_decomposition():
+    from oemmpa import ExperimentalUncertainty
+
+    unc = ExperimentalUncertainty.from_sigma({"p": 0.5})
+    row = _Row("p", count=1, avg=1.0, std=0.7)
+    res = _annotate(row, unc)
+    assert res.experimental_se is not None
+    assert res.minimum_significant_difference is not None
+    assert res.sigma_true is None
+    assert res.variance_clamped is False
+    assert res.experimental_variance_fraction is None
+    assert res.mean_ci_low is None
+    assert res.mean_ci_high is None
+
+
+def test_all_uncovered_input_without_scipy():
+    import sys
+    from oemmpa import ExperimentalUncertainty
+    from oemmpa._kramer import AnalyticKramerModel, KramerConfig
+
+    unc = ExperimentalUncertainty.from_sigma({"other": 0.5})
+    rows = [_Row("p", count=5, avg=1.0, std=0.5), _Row("p", count=3, avg=0.5, std=0.3)]
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(sys.modules, "scipy", None)
+        mp.setitem(sys.modules, "scipy.stats", None)
+        results = AnalyticKramerModel().annotate(rows, unc, KramerConfig())
+        assert results == [None, None]
