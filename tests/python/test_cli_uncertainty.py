@@ -133,3 +133,44 @@ def test_generate_no_property_rejects_sigma(tmp_path, capsys):
         _run(["generate", "--smiles", str(smiles), "--source", "Cc1ccccc1",
               "--sigma-exp", "0.4", "--output", "-"])
     assert "does not support experimental-uncertainty" in capsys.readouterr().err
+
+
+def test_explicit_sigma_overrides_insufficient_replicates(tmp_path, capsys):
+    pytest.importorskip("scipy.stats")
+    smiles, props = _fixture(tmp_path)
+    # Write a replicate CSV with only ONE pIC50 group of 2 values (insufficient).
+    reps = tmp_path / "reps.csv"
+    reps.write_text(
+        "compound_id,property,value\n"
+        "A,pIC50,7.0\nA,pIC50,7.4\n"
+    )
+    # The override should rescue it; no crash.
+    rc = _run(["refresh-stats", "--smiles", str(smiles),
+               "--properties", str(props), "--property", "pIC50",
+               "--replicate-measurements", str(reps),
+               "--sigma-exp", "pIC50=0.4", "--output", "-"])
+    assert rc == 0
+    rows = list(csv.DictReader(capsys.readouterr().out.splitlines(), delimiter="\t"))
+    assert rows[0]["sigma_exp"] == "0.4"
+
+
+def test_unrelated_insufficient_property_in_replicate_file_is_ignored(tmp_path, capsys):
+    pytest.importorskip("scipy.stats")
+    smiles, props = _fixture(tmp_path)
+    # Write a replicate CSV with sufficient pIC50 replicates PLUS an unrelated
+    # insufficient logD property.
+    reps = tmp_path / "reps.csv"
+    reps.write_text(
+        "compound_id,property,value\n"
+        "A,pIC50,7.0\nA,pIC50,7.4\n"
+        "B,pIC50,5.0\nB,pIC50,5.2\n"
+        "C,pIC50,6.0\nC,pIC50,6.1\n"
+        "X,logD,2.0\nX,logD,2.2\n"
+    )
+    # The unrelated insufficient logD does not fail the pIC50 command.
+    rc = _run(["refresh-stats", "--smiles", str(smiles),
+               "--properties", str(props), "--property", "pIC50",
+               "--replicate-measurements", str(reps), "--output", "-"])
+    assert rc == 0
+    header = capsys.readouterr().out.splitlines()[0].split("\t")
+    assert "sigma_exp" in header

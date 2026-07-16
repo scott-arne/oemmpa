@@ -609,12 +609,29 @@ def _build_uncertainty(args):
         return None
     from oemmpa import ExperimentalUncertainty
 
-    uncertainty = None
-    if replicate_path is not None:
-        rows = _read_replicate_measurements(replicate_path)
-        uncertainty = ExperimentalUncertainty.from_measurements(rows)
+    # Parse explicit overrides FIRST.
+    overrides = {}
     if sigma_specs:
         overrides = _parse_sigma_specs(sigma_specs, args)
+
+    # Estimate from replicates if provided, scoped to the command property and
+    # excluding any properties already in overrides.
+    uncertainty = None
+    if replicate_path is not None:
+        all_rows = _read_replicate_measurements(replicate_path)
+        # Scope to the command's property (if any).
+        cmd_prop = getattr(args, "property", None)
+        filtered_rows = all_rows
+        if cmd_prop is not None:
+            filtered_rows = [r for r in all_rows if r.get("property") == cmd_prop]
+        # Drop properties already in overrides (explicit sigma wins).
+        filtered_rows = [r for r in filtered_rows if r.get("property") not in overrides]
+        # Only estimate if rows remain.
+        if filtered_rows:
+            uncertainty = ExperimentalUncertainty.from_measurements(filtered_rows)
+
+    # Apply overrides.
+    if overrides:
         if uncertainty is None:
             uncertainty = ExperimentalUncertainty.from_sigma(overrides)
         else:
