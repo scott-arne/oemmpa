@@ -28,6 +28,8 @@ def test_run_reproduction_emits_outputs(tmp_path):
     assert summary["n_transforms"] >= 1
     assert "n_reclassified" in summary  # (a) reclassification
     assert "variance_clamped_fraction" in summary  # (c) variance decomposition
+    assert "msd_inv_sqrt_n_correlation" in summary  # (b) sigma/sqrt(N) law
+    assert "mean_experimental_variance_fraction" in summary  # (c) variance decomposition
     assert (tmp_path / "kramer_reproduction.tsv").exists()
     assert (tmp_path / "kramer_reproduction.html").exists()
     assert summary["private_comparison"] is False
@@ -91,3 +93,19 @@ def test_compare_public_private_correlates_effects():
     assert result["effect_correlation"] is not None
     assert result["effect_correlation"] > 0.9
     assert result["directional_agreement"] == 1.0
+
+
+def test_run_reproduction_raises_on_no_transforms(tmp_path):
+    # Valid measurements whose property does not match any endpoint: zero transforms.
+    from benchmarks.reproduction import run_reproduction
+
+    measurements = [
+        {"compound_id": "tol", "smiles": "Cc1ccccc1", "property": "pIC50", "value": 6.0},
+        {"compound_id": "phenol", "smiles": "Oc1ccccc1", "property": "pIC50", "value": 7.0},
+    ]
+    with pytest.raises(ValueError, match="no transform statistics produced for property 'logP'"):
+        run_reproduction(
+            measurements=measurements,
+            property_name="logP",
+            output_dir=str(tmp_path),
+        )

@@ -91,10 +91,34 @@ def _summarize(stats):
         and r.get("significant") is False
     )
     clamped = sum(1 for r in rows if r.get("variance_clamped"))
+
+    # Reproduction (b): sigma/sqrt(N) law via 1/sqrt(count) vs MSD correlation.
+    inv_sqrt_n = []
+    msd_vals = []
+    for r in rows:
+        cnt = r.get("count")
+        msd = r.get("minimum_significant_difference")
+        if cnt is not None and cnt > 0 and msd is not None:
+            inv_sqrt_n.append(1.0 / math.sqrt(cnt))
+            msd_vals.append(msd)
+    msd_corr = _pearson(inv_sqrt_n, msd_vals) if len(inv_sqrt_n) >= 2 else None
+
+    # Reproduction (c) experimental-variance decomposition (mean fraction).
+    exp_var_fracs = [
+        r["experimental_variance_fraction"]
+        for r in rows
+        if r.get("experimental_variance_fraction") is not None
+    ]
+    mean_exp_var_frac = (
+        sum(exp_var_fracs) / len(exp_var_fracs) if exp_var_fracs else None
+    )
+
     return {
         "n_transforms": n,
         "n_reclassified": reclassified,
         "variance_clamped_fraction": (clamped / n) if n else 0.0,
+        "msd_inv_sqrt_n_correlation": msd_corr,
+        "mean_experimental_variance_fraction": mean_exp_var_frac,
     }
 
 
@@ -200,6 +224,11 @@ def run_reproduction(*, measurements=None, dataset=None, property_name="pIC50",
     out.mkdir(parents=True, exist_ok=True)
     tsv_path = out / "kramer_reproduction.tsv"
     rows = stats.to_dicts()
+    if not rows:
+        raise ValueError(
+            f"no transform statistics produced for property {property_name!r}: "
+            "the dataset yielded no matched pairs with this endpoint"
+        )
     with tsv_path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0].keys()),
                                 delimiter="\t")
