@@ -329,6 +329,43 @@ Stateless `generate` keeps source generation explicit around `--source`,
 `--property`, and optional `--transform`. MMPDB-only generation modes such as
 subquery expansion and deriving missing constant/query pieces remain deferred.
 
+## Uncertainty-aware statistics (Kramer 2014)
+
+`refresh-stats`, `predict`, and `generate` accept optional uncertainty flags to
+enable significance testing and variance-decomposition statistics:
+
+- `--sigma-exp FLOAT` — supply experimental standard deviation directly.
+- `--replicate-measurements PATH` — estimate sigma_exp from replicate
+  measurements (JSON file mapping property name to list of measurement groups).
+- `--confidence FLOAT` — confidence level for intervals (default 0.95).
+- `--alternative {two-sided,less,greater}` — hypothesis test alternative
+  (default `two-sided`).
+- `--fdr FLOAT` — false-discovery rate for multiple-testing correction (default
+  None, no correction).
+- `--fdr-scope {property,global}` — scope of FDR correction: `property` applies
+  correction within each property independently (default), `global` applies
+  correction across all properties together.
+
+Example:
+
+```bash
+oemmpa refresh-stats --smiles mols.smi --properties props.tsv \
+    --property pIC50 --sigma-exp 0.5 --output stats.tsv
+```
+
+### Behavioral rules
+
+- **sigma_exp is never persisted.** Uncertainty flags are rejected when reading
+  a persisted `--database` path (use them only on `build` or the stateless
+  commands `refresh-stats`, `predict`, `generate`).
+- **Uncertainty flags are inert without a sigma source.** If you supply
+  `--confidence`, `--alternative`, `--fdr`, or `--fdr-scope` without
+  `--sigma-exp` or `--replicate-measurements`, they are accepted but have no
+  effect (the Kramer overlay is disabled when no uncertainty is supplied).
+
+Based on Kramer et al., *J. Med. Chem.* 2014, 57(9), 3786-3802 (and Kramer
+et al. 2012 for sigma_exp estimation).
+
 ## Roadmap Boundaries
 
 Phase 17 adds build-time and stateless R-group fragmentation controls plus the

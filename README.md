@@ -97,6 +97,40 @@ products = generate_products(
 print(products.to_dicts())
 ```
 
+### Uncertainty-aware statistics (Kramer 2014)
+
+Optionally supply an experimental uncertainty to get significance and
+variance-decomposition statistics. Without it, statistics are unchanged.
+
+```python
+from oemmpa import (
+    Analyzer,
+    ExperimentalUncertainty,
+    compute_transform_statistics,
+)
+
+analyzer = Analyzer()
+for smiles, cid, pic50 in [
+    ("Cc1ccccc1", "tol", 6.0), ("Oc1ccccc1", "phenol", 7.0),
+    ("Cc1ccccn1", "mpy", 5.0), ("Oc1ccccn1", "hpy", 8.0),
+]:
+    analyzer.add_molecule(smiles, id=cid)
+    analyzer.add_property(cid, "pIC50", pic50)
+analyzer.analyze()
+
+# Estimate sigma_exp from replicate measurements, or supply it directly.
+uncertainty = ExperimentalUncertainty.from_sigma({"pIC50": 0.5})
+
+stats = compute_transform_statistics(
+    analyzer.transforms(), "pIC50", uncertainty=uncertainty
+)
+row = stats["[*:1]C>>[*:1]O"]
+print(row.significant, row.minimum_significant_difference)
+```
+
+Based on Kramer et al., *J. Med. Chem.* 2014, 57(9), 3786-3802 (and Kramer
+et al. 2012 for sigma_exp estimation).
+
 The command-line tool runs common file-based analyses:
 
 ```bash

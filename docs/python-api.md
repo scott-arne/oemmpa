@@ -527,6 +527,193 @@ The statistics result names follow MMPDB conventions: `count`, `avg`, `std`,
 method-3 convention used by MMPDB. SciPy is imported only when needed for
 `p_value`; unsupported p-values are returned as `None`.
 
+### Uncertainty-aware statistics (Kramer 2014)
+
+Optionally supply an experimental uncertainty to get significance and
+variance-decomposition statistics. Without it, statistics are unchanged.
+
+```python
+from oemmpa import (
+    Analyzer,
+    ExperimentalUncertainty,
+    compute_transform_statistics,
+)
+
+analyzer = Analyzer()
+for smiles, cid, pic50 in [
+    ("Cc1ccccc1", "tol", 6.0), ("Oc1ccccc1", "phenol", 7.0),
+    ("Cc1ccccn1", "mpy", 5.0), ("Oc1ccccn1", "hpy", 8.0),
+]:
+    analyzer.add_molecule(smiles, id=cid)
+    analyzer.add_property(cid, "pIC50", pic50)
+analyzer.analyze()
+
+# Estimate sigma_exp from replicate measurements, or supply it directly.
+uncertainty = ExperimentalUncertainty.from_sigma({"pIC50": 0.5})
+
+stats = compute_transform_statistics(
+    analyzer.transforms(), "pIC50", uncertainty=uncertainty
+)
+row = stats["[*:1]C>>[*:1]O"]
+print(row.significant, row.minimum_significant_difference)
+```
+
+#### ExperimentalUncertainty
+
+`ExperimentalUncertainty` encapsulates experimental standard deviation estimates
+and their degrees of freedom. It supports three construction methods:
+
+- `ExperimentalUncertainty.from_sigma(sigma_dict)` — supply sigma_exp directly
+  as a dict mapping property name to standard deviation. The resulting
+  uncertainty is marked as not estimated (degrees of freedom is infinite).
+
+- `ExperimentalUncertainty.from_replicate_groups(property_name, groups)` —
+  estimate sigma_exp from replicate measurements. `groups` is a list of
+  measurement arrays (one array per replicate group). Returns an uncertainty
+  with finite degrees of freedom based on the number of groups and
+  measurements.
+
+- `ExperimentalUncertainty.from_measurements(property_name, measurements)` —
+  estimate sigma_exp from paired measurements. `measurements` is a list of
+  (value1, value2) tuples. Returns an uncertainty with finite degrees of
+  freedom based on the number of pairs.
+
+Properties:
+
+- `.sigma` — dict mapping property name to experimental standard deviation.
+- `.degrees_of_freedom` — dict mapping property name to degrees of freedom
+  (infinite for direct sigma, finite for estimated sigma).
+- `.is_estimated` — dict mapping property name to boolean (False for direct
+  sigma, True for estimated sigma).
+- `.with_sigma(property_name, sigma)` — return a new uncertainty with the sigma
+  for one property replaced (preserves degrees of freedom for other
+  properties).
+
+#### compute_transform_statistics with uncertainty
+
+`compute_transform_statistics()` accepts optional Kramer parameters:
+
+```python
+stats = compute_transform_statistics(
+    analyzer.transforms(),
+    "pIC50",
+    min_count=1,
+    uncertainty=uncertainty,
+    confidence=0.95,
+    alternative="two-sided",
+    fdr=0.05,
+    fdr_scope="property",
+    model=None,
+)
+```
+
+- `uncertainty` — `ExperimentalUncertainty` instance, or None (default, no
+  Kramer overlay).
+- `confidence` — confidence level for intervals (default 0.95).
+- `alternative` — hypothesis test alternative: `"two-sided"`, `"less"`, or
+  `"greater"` (default `"two-sided"`).
+- `fdr` — false-discovery rate for multiple-testing correction, or None
+  (default None, no correction).
+- `fdr_scope` — scope of FDR correction: `"property"` applies correction within
+  each property independently (default), `"global"` applies correction across
+  all properties together.
+- `model` — `TransformEffectModel` instance for Bayesian shrinkage (currently
+  only `AnalyticKramerModel()` is available; `BayesianShrinkageModel` is a
+  documented future extension, not implemented).
+
+#### Kramer fields
+
+When uncertainty is supplied, the following fields are added to each statistics
+row (OEMMPA exports these as `KRAMER_FIELDS`):
+
+- `significant` — boolean, True if the transform effect is statistically
+  significant at the specified confidence level.
+- `minimum_significant_difference` — the smallest absolute effect size that
+  would be detectable as significant with the current evidence.
+- `sigma_obs` — observed standard deviation of the property changes.
+- `sigma_exp` — experimental standard deviation (from the uncertainty).
+- `sigma_true` — estimated true standard deviation of the transform effect
+  (variance-decomposition: sigma_true = sqrt(sigma_obs^2 - sigma_exp^2)).
+- `ci_lower` — lower bound of the confidence interval for the mean effect.
+- `ci_upper` — upper bound of the confidence interval for the mean effect.
+- `t_statistic` — t-statistic for the hypothesis test.
+- `p_value_kramer` — p-value for the Kramer hypothesis test (uses the
+  variance-decomposed standard error).
+- `q_value` — FDR-adjusted p-value (only present when `fdr` is supplied).
+
+All Kramer fields are `None` when uncertainty is not supplied. The base MMPDB
+fields (`count`, `avg`, `std`, etc.) are unchanged by the uncertainty overlay.
+
+#### annotate_kramer_statistics
+
+For workflows that compute base statistics separately, use
+`annotate_kramer_statistics()` to add Kramer fields:
+
+```python
+from oemmpa import (
+    compute_transform_statistics,
+    annotate_kramer_statistics,
+    ExperimentalUncertainty,
+)
+
+base_stats = compute_transform_statistics(analyzer.transforms(), "pIC50")
+uncertainty = ExperimentalUncertainty.from_sigma({"pIC50": 0.5})
+kramer_stats = annotate_kramer_statistics(
+    base_stats, uncertainty=uncertainty, confidence=0.95
+)
+```
+
+#### DuckDBStore with uncertainty
+
+`store.rule_environment_statistics()` accepts the same Kramer parameters:
+
+```python
+from oemmpa import DuckDBStore, ExperimentalUncertainty
+
+store = DuckDBStore("mmp.duckdb")
+uncertainty = ExperimentalUncertainty.from_sigma({"pIC50": 0.5})
+stats = store.rule_environment_statistics("pIC50", uncertainty=uncertainty)
+print(stats.to_dicts()[0]["significant"])
+```
+
+#### predict_transform_delta with uncertainty
+
+`predict_transform_delta()` extends prediction output when uncertainty is
+supplied:
+
+```python
+from oemmpa import predict_transform_delta, ExperimentalUncertainty
+
+uncertainty = ExperimentalUncertainty.from_sigma({"pIC50": 0.5})
+stats = compute_transform_statistics(
+    analyzer.transforms(), "pIC50", uncertainty=uncertainty
+)
+prediction = predict_transform_delta(stats, "[*:1]C>>[*:1]O")
+print(prediction.significant, prediction.ci_lower, prediction.ci_upper)
+```
+
+The prediction result includes all Kramer fields when uncertainty was used to
+compute the statistics.
+
+#### TransformEffectModel seam
+
+The `model` parameter accepts a `TransformEffectModel` instance for Bayesian
+shrinkage. Currently only `AnalyticKramerModel()` is available (the
+variance-decomposition approach from Kramer 2014). `BayesianShrinkageModel` is
+a documented future extension, not implemented.
+
+```python
+from oemmpa import AnalyticKramerModel
+
+model = AnalyticKramerModel()
+stats = compute_transform_statistics(
+    analyzer.transforms(), "pIC50", uncertainty=uncertainty, model=model
+)
+```
+
+Based on Kramer et al., *J. Med. Chem.* 2014, 57(9), 3786-3802 (and Kramer
+et al. 2012 for sigma_exp estimation).
+
 For rule environments generated by `wizepairz` or other MCS-based methods,
 `environment_smirks` provides a representative descriptive environment SMIRKS in
 the paper's `.`-joined form. It is stored in a dedicated `environment_smirks`
