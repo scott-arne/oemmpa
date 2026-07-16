@@ -563,31 +563,37 @@ print(row.significant, row.minimum_significant_difference)
 `ExperimentalUncertainty` encapsulates experimental standard deviation estimates
 and their degrees of freedom. It supports three construction methods:
 
-- `ExperimentalUncertainty.from_sigma(sigma_dict)` — supply sigma_exp directly
-  as a dict mapping property name to standard deviation. The resulting
-  uncertainty is marked as not estimated (degrees of freedom is infinite).
+- `ExperimentalUncertainty.from_sigma(sigma, property_name=None, *, scale=None)` —
+  supply sigma_exp directly as a dict mapping property name to standard deviation,
+  or as a scalar value with `property_name` specified. The resulting uncertainty
+  is marked as not estimated (degrees of freedom is infinite).
 
-- `ExperimentalUncertainty.from_replicate_groups(property_name, groups)` —
-  estimate sigma_exp from replicate measurements. `groups` is a list of
-  measurement arrays (one array per replicate group). Returns an uncertainty
-  with finite degrees of freedom based on the number of groups and
-  measurements.
+- `ExperimentalUncertainty.from_replicate_groups(groups, property_name=None, *, min_groups=2, min_df=3, scale=None)` —
+  estimate sigma_exp from replicate measurements. `groups` is a dict mapping
+  property name to a list of replicate-value lists, or a bare list of replicate-value
+  lists with `property_name` specified. Returns an uncertainty with finite degrees
+  of freedom based on the number of groups and measurements.
 
-- `ExperimentalUncertainty.from_measurements(property_name, measurements)` —
-  estimate sigma_exp from paired measurements. `measurements` is a list of
-  (value1, value2) tuples. Returns an uncertainty with finite degrees of
-  freedom based on the number of pairs.
+- `ExperimentalUncertainty.from_measurements(rows, *, compound_key="compound_id", property_key="property", value_key="value", source_key=None, stratify="pooled", min_groups=2, min_df=3, scale=None)` —
+  estimate sigma_exp from a long-format measurement table. `rows` is an iterable
+  of dict-like rows (or a pandas/polars dataframe). Repeated `(compound, property)`
+  rows are treated as replicate groups. Returns an uncertainty with finite degrees
+  of freedom based on the number of groups and measurements.
 
-Properties:
+Methods and properties:
 
-- `.sigma` — dict mapping property name to experimental standard deviation.
-- `.degrees_of_freedom` — dict mapping property name to degrees of freedom
-  (infinite for direct sigma, finite for estimated sigma).
-- `.is_estimated` — dict mapping property name to boolean (False for direct
-  sigma, True for estimated sigma).
-- `.with_sigma(property_name, sigma)` — return a new uncertainty with the sigma
-  for one property replaced (preserves degrees of freedom for other
-  properties).
+- `.sigma(property_name)` — return experimental standard deviation for a property.
+- `.degrees_of_freedom(property_name)` — return degrees of freedom for a property.
+- `.is_estimated(property_name)` — return whether the value was estimated from replicates.
+- `.n_groups(property_name)` — return the number of replicate groups (estimated only).
+- `.has(property_name)` — return whether the property is present.
+- `.properties()` — return a list of all property names.
+- `.to_dict()` — return a dictionary representation.
+- `.method` — human-readable estimation method label (property).
+- `.scale` — advisory scale label (property).
+- `.with_sigma(overrides)` — return a new uncertainty with sigma values replaced.
+  `overrides` is a dict mapping property name to new sigma value (preserves degrees
+  of freedom for other properties).
 
 #### compute_transform_statistics with uncertainty
 
@@ -601,7 +607,7 @@ stats = compute_transform_statistics(
     uncertainty=uncertainty,
     confidence=0.95,
     alternative="two-sided",
-    fdr=0.05,
+    fdr="bh",
     fdr_scope="property",
     model=None,
 )
@@ -612,8 +618,8 @@ stats = compute_transform_statistics(
 - `confidence` — confidence level for intervals (default 0.95).
 - `alternative` — hypothesis test alternative: `"two-sided"`, `"less"`, or
   `"greater"` (default `"two-sided"`).
-- `fdr` — false-discovery rate for multiple-testing correction, or None
-  (default None, no correction).
+- `fdr` — multiple-testing correction method: `None` (default, no correction)
+  or `"bh"` (Benjamini-Hochberg FDR correction).
 - `fdr_scope` — scope of FDR correction: `"property"` applies correction within
   each property independently (default), `"global"` applies correction across
   all properties together.
@@ -636,7 +642,7 @@ row (OEMMPA exports these as `KRAMER_FIELDS`):
 - `experimental_variance_fraction` — fraction of observed variance attributable to measurement noise, min(1, 2·σ_exp²/std²) (None when N < 2 or std = 0).
 - `mean_ci_low` — lower bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
 - `mean_ci_high` — upper bound of the empirical two-sided confidence interval on the mean effect (None when N < 2).
-- `q_value` — Benjamini–Hochberg FDR-adjusted `noise_p_value`; present only when `fdr="bh"`.
+- `q_value` — Benjamini-Hochberg FDR-adjusted `noise_p_value`; present only when `fdr="bh"`.
 
 All Kramer fields are `None` when uncertainty is not supplied. The base MMPDB
 fields (`count`, `avg`, `std`, etc.) are unchanged by the uncertainty overlay.
@@ -686,7 +692,8 @@ stats = compute_transform_statistics(
     analyzer.transforms(), "pIC50", uncertainty=uncertainty
 )
 prediction = predict_transform_delta(stats, "[*:1]C>>[*:1]O")
-print(prediction.significant, prediction.mean_ci_low, prediction.mean_ci_high)
+pred_dict = prediction.to_dict()
+print(pred_dict["significant"], pred_dict["mean_ci_low"], pred_dict["mean_ci_high"])
 ```
 
 The prediction result includes all Kramer fields when uncertainty was used to

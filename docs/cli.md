@@ -334,14 +334,16 @@ subquery expansion and deriving missing constant/query pieces remain deferred.
 `refresh-stats`, `predict`, and `generate` accept optional uncertainty flags to
 enable significance testing and variance-decomposition statistics:
 
-- `--sigma-exp FLOAT` — supply experimental standard deviation directly.
-- `--replicate-measurements PATH` — estimate sigma_exp from replicate
-  measurements (JSON file mapping property name to list of measurement groups).
+- `--sigma-exp PROP=VALUE` — supply experimental standard deviation directly
+  as `PROP=VALUE` (repeatable) or as a bare `VALUE` applied to `--property`.
+- `--replicate-measurements PATH` — estimate sigma_exp from a long-format CSV/TSV
+  file with columns `compound_id`, `property`, `value`. Repeated
+  `(compound_id, property)` rows are treated as replicate groups.
 - `--confidence FLOAT` — confidence level for intervals (default 0.95).
 - `--alternative {two-sided,less,greater}` — hypothesis test alternative
   (default `two-sided`).
-- `--fdr FLOAT` — false-discovery rate for multiple-testing correction (default
-  None, no correction).
+- `--fdr {bh}` — multiple-testing correction method: Benjamini-Hochberg FDR
+  correction. Omit for no correction.
 - `--fdr-scope {property,global}` — scope of FDR correction: `property` applies
   correction within each property independently (default), `global` applies
   correction across all properties together.
@@ -356,12 +358,12 @@ oemmpa refresh-stats --smiles mols.smi --properties props.tsv \
 ### Behavioral rules
 
 - **sigma_exp is never persisted.** Uncertainty flags are rejected when reading
-  a persisted `--database` path (use them only on `build` or the stateless
-  commands `refresh-stats`, `predict`, `generate`).
-- **Uncertainty flags are inert without a sigma source.** If you supply
-  `--confidence`, `--alternative`, `--fdr`, or `--fdr-scope` without
-  `--sigma-exp` or `--replicate-measurements`, they are accepted but have no
-  effect (the Kramer overlay is disabled when no uncertainty is supplied).
+  a persisted `--database` path (use them only on the stateless commands
+  `refresh-stats`, `predict`, `generate`).
+- **Tuning flags require a sigma source.** If you supply `--confidence`,
+  `--alternative`, `--fdr`, or `--fdr-scope` without `--sigma-exp` or
+  `--replicate-measurements`, the command will fail with an error. These flags
+  configure the Kramer overlay, which requires an uncertainty source.
 
 Based on Kramer et al., *J. Med. Chem.* 2014, 57(9), 3786-3802 (and Kramer
 et al. 2012 for sigma_exp estimation).
