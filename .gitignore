@@ -314,3 +314,7 @@ benchmarks/results/
 # 'git add -A' staging a local proprietary input.
 dhu_glu_ymin.smi
 *_glu_ymin.smi
+# Local, private reproduction datasets (never committed)
+benchmarks/private/
+*.private.csv
+*.private.tsv
