@@ -18,6 +18,15 @@ env:
   # module, not a linkable library.
   DUCKDB_VERSION: "1.5.4"
 
+  # pypi.anaconda.org hosts the OpenEye channel and periodically stalls for
+  # GitHub-hosted runners. pip's 15 s default read timeout turns that into a
+  # hard build failure on an index that is otherwise healthy, so give it room
+  # to ride out a slow edge. Set here rather than per-command so every pip
+  # invocation in the workflow, including those inside the Linux containers,
+  # picks it up.
+  PIP_DEFAULT_TIMEOUT: "60"
+  PIP_RETRIES: "10"
+
 jobs:
   build-linux:
 
