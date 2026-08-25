@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "oemmpa"
 version = "3.1.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "openeye-toolkits>=2025.2",
+    "openeye-toolkits>=2026.1",
 ]
 
 [project.scripts]

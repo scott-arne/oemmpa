@@ -8,7 +8,11 @@ version = "3.1.0"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+# The floor is set by openeye-toolkits, not by anything in this package: 2026.1
+# is the first release with py314 wheels and the first to drop py310, and the
+# extension links its OpenEye shared libraries by versioned soname, so the
+# runtime toolkit has to be the one the wheel was built against.
+requires-python = ">=3.11"
 authors = [
     { name = "Scott Johnson", email = "scott.johnson@bms.com" },
 ]
@@ -21,7 +25,7 @@ classifiers = [
     "Programming Language :: C++",
 ]
 dependencies = [
-    "openeye-toolkits>=2025.2",
+    "openeye-toolkits>=2026.1",
 ]
 
 [project.scripts]

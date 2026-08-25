@@ -179,7 +179,7 @@ storage notes.
 - OpenEye Python Toolkits.
 - CMake >= 3.16.
 - SWIG >= 4.0.
-- Python >= 3.10.
+- Python >= 3.11.
 - DuckDB C++ library and headers for optional persistent-storage development.
 
 Set `OPENEYE_ROOT` to the OpenEye C++ SDK directory containing `include/` and
