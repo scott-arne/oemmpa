@@ -187,3 +187,115 @@ TEST(FragmentSmiles, CleanupRestoresMapIndices) {
     }
     EXPECT_EQ(mapped, 2u);
 }
+
+namespace {
+
+/// Cut the bond between the atoms a SMARTS maps as :1 and :2 the way the
+/// fragmenter does -- DeleteBond, then a fresh dummy bonded to each end --
+/// optionally carrying the :1 end's tetrahedral parity across the cut.
+std::string cut_and_render(const std::string& smiles, const std::string& smarts, bool transfer_parity) {
+    OEChem::OEGraphMol mol = parse(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    OEChem::OEQMol query;
+    EXPECT_TRUE(OEChem::OEParseSmarts(query, smarts.c_str())) << smarts;
+    OEChem::OESubSearch subsearch(query);
+    OEChem::OEAtomBase* begin = nullptr;
+    OEChem::OEAtomBase* end = nullptr;
+    for (OESystem::OEIter<OEChem::OEMatchBase> match = subsearch.Match(mol, true); match; ++match) {
+        for (OESystem::OEIter<OEChem::OEMatchPair<OEChem::OEAtomBase>> pair = match->GetAtoms();
+             pair; ++pair) {
+            if (pair->pattern->GetMapIdx() == 1) {
+                begin = pair->target;
+            }
+            if (pair->pattern->GetMapIdx() == 2) {
+                end = pair->target;
+            }
+        }
+        break;
+    }
+    EXPECT_NE(begin, nullptr) << smarts;
+    EXPECT_NE(end, nullptr) << smarts;
+
+    OEMMPA::TetrahedralParity parity;
+    const bool captured = transfer_parity && OEMMPA::capture_tetrahedral_parity(*begin, parity);
+
+    EXPECT_TRUE(mol.DeleteBond(mol.GetBond(begin, end)));
+    OEChem::OEAtomBase* begin_dummy = mol.NewAtom(0);
+    OEChem::OEAtomBase* end_dummy = mol.NewAtom(0);
+    begin_dummy->SetMapIdx(1);
+    end_dummy->SetMapIdx(1);
+    EXPECT_NE(mol.NewBond(begin, begin_dummy, 1), nullptr);
+    EXPECT_NE(mol.NewBond(end, end_dummy, 1), nullptr);
+
+    if (captured) {
+        EXPECT_TRUE(OEMMPA::assert_tetrahedral_parity(
+            parity, *begin,
+            [&](OEChem::OEAtomBase& nbr) { return nbr.GetIdx() == end->GetIdx() ? begin_dummy : &nbr; }));
+    }
+    return OEMMPA::render_fragment_smiles(mol);
+}
+
+}  // namespace
+
+// Captopril: cutting the alpha carbon's CH2S neighbour is the case Task 2 found
+// inverted against mmpdb. The reference is the parent with the dummy written
+// where the branch was, rendered through the same renderer.
+TEST(FragmentSmiles, ParityTransferPreservesCentreAcrossACut) {
+    const std::string reference = render("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O.[*:1]CS");
+    const std::string parent = "C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O";
+    EXPECT_EQ(cut_and_render(parent, "[CX4:1][CH2:2][SX2]", true), reference);
+    // The untransferred cut is the documented defect. Pinning it keeps the fix
+    // from passing by accident after a refactor of the cut loop.
+    EXPECT_NE(cut_and_render(parent, "[CX4:1][CH2:2][SX2]", false), reference);
+}
+
+// Every neighbour position of the centre must round-trip, including the two
+// that happen to be correct without the transfer.
+TEST(FragmentSmiles, ParityTransferIsPositionIndependent) {
+    const std::string parent = "C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O";
+    EXPECT_EQ(cut_and_render(parent, "[CX4:1][CH3:2]", true),
+              render("[*:1][C@H](CS)C(=O)N1CCC[C@H]1C(=O)O.[*:1]C"));
+    EXPECT_EQ(cut_and_render(parent, "[CX4:1]([CH3])[CX3:2]=O", true),
+              render("C[C@H](CS)[*:1].[*:1]C(=O)N1CCC[C@H]1C(=O)O"));
+}
+
+// Only specified centres are captured, and a capture holds the heavy-atom
+// neighbours the implicit hydrogen completes to four.
+TEST(FragmentSmiles, ParityCaptureIsSelective) {
+    OEChem::OEGraphMol mol = parse("C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O");
+    OEChem::OESuppressHydrogens(mol);
+    unsigned int captured = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        OEMMPA::TetrahedralParity parity;
+        if (OEMMPA::capture_tetrahedral_parity(*atom, parity)) {
+            ++captured;
+            EXPECT_EQ(parity.neighbors.size(), 3u);
+            EXPECT_NE(parity.value, OEChem::OEAtomStereo::Undefined);
+        }
+    }
+    EXPECT_EQ(captured, 2u);
+}
+
+// A translate that cannot place a neighbour is a hard failure, not a silent skip.
+TEST(FragmentSmiles, ParityAssertFailsWhenANeighbourCannotBeTranslated) {
+    OEChem::OEGraphMol mol = parse("N[C@@H](C)C(=O)O");
+    OEChem::OESuppressHydrogens(mol);
+    OEChem::OEAtomBase* centre = nullptr;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+            centre = &*atom;
+        }
+    }
+    ASSERT_NE(centre, nullptr);
+    OEMMPA::TetrahedralParity parity;
+    ASSERT_TRUE(OEMMPA::capture_tetrahedral_parity(*centre, parity));
+    EXPECT_FALSE(OEMMPA::assert_tetrahedral_parity(
+        parity, *centre, [](OEChem::OEAtomBase&) -> OEChem::OEAtomBase* { return nullptr; }));
+}
+
+// Cis/trans survives the fragmenter-style cut on its own. Pinning it keeps the
+// fragmenter change atom-only.
+TEST(FragmentSmiles, BondStereoSurvivesACutWithoutTransfer) {
+    EXPECT_EQ(cut_and_render("C/C=C/Cl", "[CX3:1][Cl:2]", false), render("C/C=C/[*:1].[*:1]Cl"));
+    EXPECT_EQ(cut_and_render("F/C(Cl)=C/Br", "[CX3:1][Cl:2]", false), render("F/C([*:1])=C/Br.[*:1]Cl"));
+}

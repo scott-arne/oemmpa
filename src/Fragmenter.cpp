@@ -506,6 +506,14 @@ bool ApplyCutCombination(
             return false;
         }
 
+        // OEChem stores tetrahedral parity against the neighbour order, which
+        // DeleteBond plus NewBond permutes. Capture both ends now and re-assert
+        // below with the dummy standing in for the removed neighbour.
+        TetrahedralParity begin_parity;
+        const bool begin_is_centre = capture_tetrahedral_parity(*begin_atom, begin_parity);
+        TetrahedralParity end_parity;
+        const bool end_is_centre = capture_tetrahedral_parity(*end_atom, end_parity);
+
         if (!mol.DeleteBond(bond)) {
             return false;
         }
@@ -521,6 +529,21 @@ bool ApplyCutCombination(
         end_dummy->SetMapIdx(attachment_label);
         if (mol.NewBond(begin_atom, begin_dummy, 1) == nullptr ||
             mol.NewBond(end_atom, end_dummy, 1) == nullptr) {
+            return false;
+        }
+
+        if (begin_is_centre && !assert_tetrahedral_parity(
+                begin_parity, *begin_atom,
+                [&](OEChem::OEAtomBase& nbr) {
+                    return nbr.GetIdx() == end_atom->GetIdx() ? begin_dummy : &nbr;
+                })) {
+            return false;
+        }
+        if (end_is_centre && !assert_tetrahedral_parity(
+                end_parity, *end_atom,
+                [&](OEChem::OEAtomBase& nbr) {
+                    return nbr.GetIdx() == begin_atom->GetIdx() ? end_dummy : &nbr;
+                })) {
             return false;
         }
     }

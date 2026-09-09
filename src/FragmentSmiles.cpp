@@ -108,4 +108,38 @@ std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydroge
     return smiles;
 }
 
+bool capture_tetrahedral_parity(OEChem::OEAtomBase& atom, TetrahedralParity& parity) {
+    if (!atom.HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+        return false;
+    }
+    std::vector<OEChem::OEAtomBase*> neighbors;
+    for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom.GetAtoms(); nbr; ++nbr) {
+        neighbors.push_back(&*nbr);
+    }
+    const unsigned int value = atom.GetStereo(neighbors, OEChem::OEAtomStereo::Tetrahedral);
+    if (value != OEChem::OEAtomStereo::Left && value != OEChem::OEAtomStereo::Right) {
+        return false;
+    }
+    parity.neighbors = std::move(neighbors);
+    parity.value = value;
+    return true;
+}
+
+bool assert_tetrahedral_parity(
+    const TetrahedralParity& parity,
+    OEChem::OEAtomBase& target,
+    const std::function<OEChem::OEAtomBase*(OEChem::OEAtomBase&)>& translate
+) {
+    std::vector<OEChem::OEAtomBase*> translated;
+    translated.reserve(parity.neighbors.size());
+    for (OEChem::OEAtomBase* neighbor : parity.neighbors) {
+        OEChem::OEAtomBase* stand_in = translate(*neighbor);
+        if (stand_in == nullptr) {
+            return false;
+        }
+        translated.push_back(stand_in);
+    }
+    return target.SetStereo(translated, OEChem::OEAtomStereo::Tetrahedral, parity.value);
+}
+
 }  // namespace OEMMPA

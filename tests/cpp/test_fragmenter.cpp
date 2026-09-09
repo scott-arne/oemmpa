@@ -3,11 +3,13 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/FragmentationStrategy.h"
+#include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/MoleculeRecord.h"
 
 #include <oechem.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <set>
 #include <string>
@@ -699,6 +701,99 @@ TEST(FragmenterTest, SymmetricRotatableSmartsDeduplicatesUniqueBondEndpoints) {
     fragmenter.SetMaxRotatableBonds(3);
 
     EXPECT_FALSE(fragmenter.Fragment(71, mol).empty());
+}
+
+namespace {
+
+/// The expected fragment SMILES for a cut is the parent with the dummy written
+/// in by hand, rendered through the production renderer. Never a literal.
+std::string ExpectedFragmentSmiles(const std::string& substituted_smiles) {
+    OEChem::OEGraphMol mol = MolFromSmiles(substituted_smiles);
+    OEChem::OESuppressHydrogens(mol);
+    return render_fragment_smiles(mol);
+}
+
+/// Every constant and variable SMILES the fragmenter produced, split into
+/// dot-separated components so a multi-component constant is searchable too.
+std::set<std::string> AllFragmentComponents(const std::vector<Fragmentation>& fragmentations) {
+    std::set<std::string> components;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        for (const std::string& smiles :
+             {fragmentation.GetConstantSmiles(), fragmentation.GetVariableSmiles()}) {
+            std::size_t start = 0;
+            while (start <= smiles.size()) {
+                const std::size_t dot = smiles.find('.', start);
+                components.insert(smiles.substr(start, dot == std::string::npos ? std::string::npos : dot - start));
+                if (dot == std::string::npos) {
+                    break;
+                }
+                start = dot + 1;
+            }
+        }
+    }
+    return components;
+}
+
+OEChem::OEGraphMol CaptoprilForFragmenting() {
+    OEChem::OEGraphMol mol = MolFromSmiles("C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O");
+    OEChem::OESuppressHydrogens(mol);
+    return mol;
+}
+
+}  // namespace
+
+// Captopril single cuts: every fragment that keeps a stereocentre keeps its
+// configuration, whichever neighbour the cut removed.
+TEST(FragmenterTest, SingleCutsPreserveTetrahedralConfiguration) {
+    OEChem::OEGraphMol mol = CaptoprilForFragmenting();
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const std::set<std::string> produced = AllFragmentComponents(fragmenter.Fragment(4, mol));
+
+    // Cut at the alpha carbon's CH2S neighbour: the case that inverted before this task.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O")));
+    EXPECT_FALSE(produced.count(ExpectedFragmentSmiles("C[C@@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O")));
+    // Cut at the alpha carbon's methyl neighbour.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("[*:1][C@H](CS)C(=O)N1CCC[C@H]1C(=O)O")));
+    // Cut at the alpha carbon's carbonyl neighbour.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("C[C@H](CS)[*:1]")));
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("[*:1]C(=O)N1CCC[C@H]1C(=O)O")));
+    // Cut away from both centres: neither moves.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("C[C@H](C[*:1])C(=O)N1CCC[C@H]1C(=O)O")));
+}
+
+// A two-cut combination that touches both centres: each cut end is captured
+// and re-asserted independently, and the labels may land in either order.
+TEST(FragmenterTest, DoubleCutsAtTwoCentresPreserveConfiguration) {
+    OEChem::OEGraphMol mol = CaptoprilForFragmenting();
+    Fragmenter fragmenter;
+    fragmenter.SetMinCuts(2);
+    fragmenter.SetMaxCuts(2);
+
+    const std::set<std::string> produced = AllFragmentComponents(fragmenter.Fragment(4, mol));
+
+    // Cuts at alpha-carbon/CH2S and at the proline carbon/carboxyl.
+    const std::string labels_a = ExpectedFragmentSmiles("C[C@H]([*:1])C(=O)N1CCC[C@H]1[*:2]");
+    const std::string labels_b = ExpectedFragmentSmiles("C[C@H]([*:2])C(=O)N1CCC[C@H]1[*:1]");
+    EXPECT_TRUE(produced.count(labels_a) || produced.count(labels_b)) << labels_a << " / " << labels_b;
+    for (const std::string& epimer : {
+             "C[C@@H]([*:1])C(=O)N1CCC[C@H]1[*:2]", "C[C@@H]([*:2])C(=O)N1CCC[C@H]1[*:1]",
+             "C[C@H]([*:1])C(=O)N1CCC[C@@H]1[*:2]", "C[C@H]([*:2])C(=O)N1CCC[C@@H]1[*:1]"}) {
+        EXPECT_FALSE(produced.count(ExpectedFragmentSmiles(epimer))) << epimer;
+    }
+}
+
+// Cis/trans through the fragmenter, pinned so the fix stays atom-only.
+TEST(FragmenterTest, SingleCutsPreserveDoubleBondGeometry) {
+    OEChem::OEGraphMol mol = MolFromSmiles("C/C=C/CCl");
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const std::set<std::string> produced = AllFragmentComponents(fragmenter.Fragment(5, mol));
+
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("C/C=C/[*:1]")));
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("[*:1]/C=C/CCl")));
 }
 
 }  // namespace test
