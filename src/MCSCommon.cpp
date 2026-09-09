@@ -45,6 +45,64 @@ McsMatch extract_match_record(const OEChem::OEMatchBase& match) {
     return record;
 }
 
+/// Find the atom in the rebuilt region that plays the role of source neighbour
+/// `neighbor_idx` seen from stereo-bond end `bond_end_idx`: its clone when the
+/// region kept it, otherwise the dummy the cut put in its place.
+OEChem::OEAtomBase* resolve_stereo_reference(
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins,
+    unsigned int bond_end_idx,
+    unsigned int neighbor_idx
+) {
+    const auto clone = clones.find(neighbor_idx);
+    if (clone != clones.end()) {
+        return clone->second;
+    }
+    const auto stand_in = stand_ins.find(StandInKey{bond_end_idx, neighbor_idx});
+    return stand_in != stand_ins.end() ? stand_in->second : nullptr;
+}
+
+/// Transfer one double bond's cis/trans descriptor. Returns true once a usable
+/// reference pair has been found and applied.
+bool transfer_one_double_bond(
+    const OEChem::OEBondBase& source_bond,
+    OEChem::OEBondBase& target_bond,
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins
+) {
+    const unsigned int begin_idx = source_bond.GetBgnIdx();
+    const unsigned int end_idx = source_bond.GetEndIdx();
+    for (OESystem::OEIter<OEChem::OEAtomBase> begin_nbr = source_bond.GetBgn()->GetAtoms();
+         begin_nbr; ++begin_nbr) {
+        if (begin_nbr->GetIdx() == end_idx) {
+            continue;
+        }
+        for (OESystem::OEIter<OEChem::OEAtomBase> end_nbr = source_bond.GetEnd()->GetAtoms();
+             end_nbr; ++end_nbr) {
+            if (end_nbr->GetIdx() == begin_idx) {
+                continue;
+            }
+            const std::vector<OEChem::OEAtomBase*> source_nbrs{&*begin_nbr, &*end_nbr};
+            const unsigned int value =
+                source_bond.GetStereo(source_nbrs, OEChem::OEBondStereo::CisTrans);
+            if (value == OEChem::OEBondStereo::Undefined) {
+                continue;
+            }
+            OEChem::OEAtomBase* target_begin = resolve_stereo_reference(
+                clones, stand_ins, begin_idx, begin_nbr->GetIdx());
+            OEChem::OEAtomBase* target_end = resolve_stereo_reference(
+                clones, stand_ins, end_idx, end_nbr->GetIdx());
+            if (target_begin == nullptr || target_end == nullptr) {
+                continue;
+            }
+            const std::vector<OEChem::OEAtomBase*> target_nbrs{target_begin, target_end};
+            target_bond.SetStereo(target_nbrs, OEChem::OEBondStereo::CisTrans, value);
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
@@ -112,6 +170,83 @@ void copy_bond_flags(const OEChem::OEBondBase& source, OEChem::OEBondBase& targe
     target.SetType(source.GetType());
 }
 
+void transfer_bond_stereo(
+    const OEChem::OEMolBase& source,
+    OEChem::OEMolBase& target,
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins
+) {
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = source.GetBonds(); bond; ++bond) {
+        if (bond->GetOrder() != 2) {
+            continue;
+        }
+        const auto begin_clone = clones.find(bond->GetBgnIdx());
+        const auto end_clone = clones.find(bond->GetEndIdx());
+        if (begin_clone == clones.end() || end_clone == clones.end()) {
+            continue;
+        }
+        OEChem::OEBondBase* target_bond = target.GetBond(begin_clone->second, end_clone->second);
+        if (target_bond == nullptr) {
+            continue;
+        }
+        transfer_one_double_bond(*bond, *target_bond, clones, stand_ins);
+    }
+}
+
+void transfer_atom_stereo(
+    const OEChem::OEMolBase& source,
+    OEChem::OEMolBase& /*target*/,
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins
+) {
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = source.GetAtoms(); atom; ++atom) {
+        const auto clone = clones.find(atom->GetIdx());
+        if (clone == clones.end()) {
+            continue;
+        }
+        TetrahedralParity parity;
+        if (!capture_tetrahedral_parity(*atom, parity)) {
+            continue;
+        }
+        const unsigned int centre_idx = atom->GetIdx();
+        const auto translate = [&](OEChem::OEAtomBase& neighbor) -> OEChem::OEAtomBase* {
+            const auto neighbor_clone = clones.find(neighbor.GetIdx());
+            if (neighbor_clone != clones.end()) {
+                return neighbor_clone->second;
+            }
+            const auto stand_in = stand_ins.find(StandInKey{centre_idx, neighbor.GetIdx()});
+            return stand_in == stand_ins.end() ? nullptr : stand_in->second;
+        };
+
+        // A neighbour with neither a clone nor a stand-in means the centre lost a
+        // substituent outright (the candidate-subset clone does this at every
+        // subset boundary). It has no configuration to carry; clear the copied
+        // bit so the clone reads as unspecified instead of scrambled.
+        bool every_neighbor_resolves = true;
+        for (OEChem::OEAtomBase* neighbor : parity.neighbors) {
+            if (translate(*neighbor) == nullptr) {
+                every_neighbor_resolves = false;
+                break;
+            }
+        }
+        if (!every_neighbor_resolves) {
+            std::vector<OEChem::OEAtomBase*> clone_neighbors;
+            for (OESystem::OEIter<OEChem::OEAtomBase> nbr = clone->second->GetAtoms(); nbr; ++nbr) {
+                clone_neighbors.push_back(&*nbr);
+            }
+            clone->second->SetStereo(
+                clone_neighbors, OEChem::OEAtomStereo::Tetrahedral, OEChem::OEAtomStereo::Undefined);
+            continue;
+        }
+
+        if (!assert_tetrahedral_parity(parity, *clone->second, translate)) {
+            throw AnalysisStateError(
+                "could not carry tetrahedral parity into a rebuilt region at source atom " +
+                std::to_string(centre_idx));
+        }
+    }
+}
+
 OEChem::OEGraphMol clone_atom_subset_with_original_maps(
     const OEChem::OEMolBase& mol,
     const std::set<unsigned int>& selected_atoms
@@ -146,6 +281,12 @@ OEChem::OEGraphMol clone_atom_subset_with_original_maps(
         }
         copy_bond_flags(*bond, *clone_bond);
     }
+
+    // The subset boundary drops neighbours outright rather than replacing them
+    // with dummies, so there are no stand-ins: geometry the subset can still
+    // reference is carried, and a centre that lost a substituent is cleared.
+    transfer_bond_stereo(mol, subset, clones, {});
+    transfer_atom_stereo(mol, subset, clones, {});
 
     return subset;
 }
@@ -326,10 +467,14 @@ std::string build_region_smiles(
         copy_bond_flags(*bond, *clone_bond);
     }
 
+    std::map<StandInKey, OEChem::OEAtomBase*> stand_ins;
     for (const Boundary& boundary : boundaries) {
         const unsigned int selected_atom_idx = selected_side_is_constant
             ? boundary.constant_atom_idx
             : boundary.variable_atom_idx;
+        const unsigned int removed_atom_idx = selected_side_is_constant
+            ? boundary.variable_atom_idx
+            : boundary.constant_atom_idx;
         const auto selected_atom = clones.find(selected_atom_idx);
         if (selected_atom == clones.end()) {
             continue;
@@ -344,7 +489,13 @@ std::string build_region_smiles(
         if (region.NewBond(selected_atom->second, dummy, 1) == nullptr) {
             throw AnalysisStateError("failed to add DMCSS attachment bond");
         }
+        stand_ins[StandInKey{selected_atom_idx, removed_atom_idx}] = dummy;
     }
+
+    // Both transfers run after the dummies exist, because a dummy is what a
+    // stereo reference on the far side of a cut resolves to.
+    transfer_bond_stereo(mol, region, clones, stand_ins);
+    transfer_atom_stereo(mol, region, clones, stand_ins);
 
     return render_fragment_smiles(region, render_options.explicit_hydrogens);
 }
@@ -394,10 +545,14 @@ std::string render_mapped_region_with_explicit_h(
         copy_bond_flags(*bond, *clone_bond);
     }
 
+    std::map<StandInKey, OEChem::OEAtomBase*> stand_ins;
     for (const Boundary& boundary : boundaries) {
         const unsigned int selected_atom_idx = selected_side_is_constant
             ? boundary.constant_atom_idx
             : boundary.variable_atom_idx;
+        const unsigned int removed_atom_idx = selected_side_is_constant
+            ? boundary.variable_atom_idx
+            : boundary.constant_atom_idx;
         const auto selected_atom = clones.find(selected_atom_idx);
         if (selected_atom == clones.end()) {
             continue;
@@ -412,7 +567,13 @@ std::string render_mapped_region_with_explicit_h(
         if (region.NewBond(selected_atom->second, dummy, 1) == nullptr) {
             throw AnalysisStateError("failed to add mapped region attachment bond");
         }
+        stand_ins[StandInKey{selected_atom_idx, removed_atom_idx}] = dummy;
     }
+
+    // Both transfers run after the dummies exist, because a dummy is what a
+    // stereo reference on the far side of a cut resolves to.
+    transfer_bond_stereo(mol, region, clones, stand_ins);
+    transfer_atom_stereo(mol, region, clones, stand_ins);
 
     return render_fragment_smiles(region, true);
 }

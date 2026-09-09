@@ -1,11 +1,18 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <map>
+#include <set>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include <oechem.h>
 
+#include "oemmpa/Error.h"
 #include "oemmpa/FragmentSmiles.h"
+#include "oemmpa/MCSCommon.h"
 
 namespace {
 
@@ -298,4 +305,296 @@ TEST(FragmentSmiles, ParityAssertFailsWhenANeighbourCannotBeTranslated) {
 TEST(FragmentSmiles, BondStereoSurvivesACutWithoutTransfer) {
     EXPECT_EQ(cut_and_render("C/C=C/Cl", "[CX3:1][Cl:2]", false), render("C/C=C/[*:1].[*:1]Cl"));
     EXPECT_EQ(cut_and_render("F/C(Cl)=C/Br", "[CX3:1][Cl:2]", false), render("F/C([*:1])=C/Br.[*:1]Cl"));
+}
+
+namespace {
+
+/// Rebuild the subset of `mol` given by `selected`, attaching one dummy per
+/// crossing bond, mirroring what the MCS region rebuilders do.
+OEChem::OEGraphMol rebuild_region(
+    const OEChem::OEMolBase& mol,
+    const std::set<unsigned int>& selected,
+    bool transfer
+) {
+    OEChem::OEGraphMol region;
+    std::unordered_map<unsigned int, OEChem::OEAtomBase*> clones;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (selected.count(atom->GetIdx()) == 0) {
+            continue;
+        }
+        // NewAtom takes an atomic number or a const OEAtomBase&; there is no
+        // pointer overload (graphmol.h:142-146), so dereference the iterator.
+        // This mirrors the production call in build_region_smiles().
+        OEChem::OEAtomBase* clone = region.NewAtom(*atom);
+        clone->SetMapIdx(0);
+        clones[atom->GetIdx()] = clone;
+    }
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        const unsigned int begin_idx = bond->GetBgnIdx();
+        const unsigned int end_idx = bond->GetEndIdx();
+        if (clones.count(begin_idx) == 0 || clones.count(end_idx) == 0) {
+            continue;
+        }
+        region.NewBond(clones[begin_idx], clones[end_idx], bond->GetOrder());
+    }
+
+    std::map<OEMMPA::mcs::StandInKey, OEChem::OEAtomBase*> stand_ins;
+    unsigned int label = 1;
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        const unsigned int begin_idx = bond->GetBgnIdx();
+        const unsigned int end_idx = bond->GetEndIdx();
+        const bool begin_in = selected.count(begin_idx) != 0;
+        const bool end_in = selected.count(end_idx) != 0;
+        if (begin_in == end_in) {
+            continue;
+        }
+        const unsigned int kept = begin_in ? begin_idx : end_idx;
+        const unsigned int gone = begin_in ? end_idx : begin_idx;
+        OEChem::OEAtomBase* dummy = region.NewAtom(0);
+        dummy->SetImplicitHCount(0);
+        dummy->SetMapIdx(label++);
+        region.NewBond(clones[kept], dummy, 1);
+        stand_ins[OEMMPA::mcs::StandInKey{kept, gone}] = dummy;
+    }
+
+    if (transfer) {
+        OEMMPA::mcs::transfer_bond_stereo(mol, region, clones, stand_ins);
+        OEMMPA::mcs::transfer_atom_stereo(mol, region, clones, stand_ins);
+    }
+    return region;
+}
+
+bool has_direction(const std::string& smiles) {
+    return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
+}
+
+/// Number of directional bond markers. One E/Z geometry emits two.
+std::size_t count_directions(const std::string& smiles) {
+    return static_cast<std::size_t>(std::count(smiles.begin(), smiles.end(), '/')) +
+           static_cast<std::size_t>(std::count(smiles.begin(), smiles.end(), '\\'));
+}
+
+}  // namespace
+
+// E/Z entirely inside the region: the rebuild loses it without the transfer.
+TEST(TransferBondStereo, PreservesGeometryDistantFromTheCut) {
+    OEChem::OEGraphMol mol = parse("C/C=C/CCl");
+    const std::set<unsigned int> selected{0, 1, 2, 3};
+    OEChem::OEGraphMol without = rebuild_region(mol, selected, false);
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    EXPECT_FALSE(has_direction(OEMMPA::render_fragment_smiles(without)));
+    EXPECT_TRUE(has_direction(OEMMPA::render_fragment_smiles(with)));
+}
+
+// The cut removed a stereo reference neighbour; the dummy stands in for it.
+TEST(TransferBondStereo, RemapsAReferenceNeighborToItsDummy) {
+    OEChem::OEGraphMol mol = parse("C/C=C/CCl");
+    const std::set<unsigned int> selected{1, 2, 3, 4};
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    EXPECT_TRUE(has_direction(OEMMPA::render_fragment_smiles(with)));
+}
+
+// Both substituents on one end are gone, so the geometry is meaningless; the
+// transfer may set it but the cleanup pass in render_fragment_smiles clears it.
+TEST(TransferBondStereo, DestroyedGeometryIsNotEmitted) {
+    OEChem::OEGraphMol mol = parse("C/C=C(\\F)CCl");
+    const std::set<unsigned int> selected{0, 1, 2};
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    EXPECT_FALSE(has_direction(OEMMPA::render_fragment_smiles(with)));
+}
+
+// B15 regression, on a real molecule rather than on the comparator.
+//
+// hepta-2,5-diene numbers as C0=C1=C2-C3-C4=C5-C6 with double bonds 1=2 (E) and
+// 4=5 (Z). Removing only the central CH2 (atom 3) cuts *two* bonds, and atom 3
+// is a stereo reference neighbour for both geometries: for the 1=2 bond through
+// atom 2, and for the 4=5 bond through atom 4. Two dummies replace it.
+//
+// With the edge key each geometry resolves its own dummy and both survive: four
+// directional markers. An atom-keyed table would hold one entry for atom 3, so
+// the second bond would resolve to the first bond's dummy -- an atom in the
+// other component -- and lose its geometry, leaving two markers. A rebuild with
+// no transfer at all leaves zero. The three counts are distinct, so this test
+// fails loudly for the specific defect B15 describes.
+TEST(TransferBondStereo, StandInKeyDistinguishesEdgesSharingARemovedAtom) {
+    OEChem::OEGraphMol mol = parse("C/C=C/C/C=C\\C");
+    const std::set<unsigned int> selected{0, 1, 2, 4, 5, 6};
+
+    OEChem::OEGraphMol without = rebuild_region(mol, selected, false);
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+
+    EXPECT_EQ(count_directions(OEMMPA::render_fragment_smiles(without)), 0u);
+    EXPECT_EQ(count_directions(OEMMPA::render_fragment_smiles(with)), 4u);
+}
+
+namespace {
+
+/// Captopril with hydrogens suppressed, as the pipeline's loader delivers it.
+OEChem::OEGraphMol captopril() {
+    OEChem::OEGraphMol mol = parse("C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O");
+    OEChem::OESuppressHydrogens(mol);
+    return mol;
+}
+
+/// Every atom index except the sulfur and the carbon bonded to it: the region a
+/// cut at the alpha carbon's CH2S branch leaves behind.
+std::set<unsigned int> captopril_without_thiomethyl(const OEChem::OEMolBase& mol) {
+    std::set<unsigned int> selected;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        bool bonded_to_sulfur = false;
+        for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+            bonded_to_sulfur = bonded_to_sulfur || nbr->GetAtomicNum() == 16;
+        }
+        if (atom->GetAtomicNum() != 16 && !(atom->GetAtomicNum() == 6 && bonded_to_sulfur)) {
+            selected.insert(atom->GetIdx());
+        }
+    }
+    return selected;
+}
+
+std::set<unsigned int> every_atom(const OEChem::OEMolBase& mol) {
+    std::set<unsigned int> selected;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        selected.insert(atom->GetIdx());
+    }
+    return selected;
+}
+
+}  // namespace
+
+// A rebuilt region that keeps a stereocentre keeps its configuration. The
+// reference is the parent with the dummy written where the removed neighbour
+// was, rendered through the production renderer.
+TEST(TransferAtomStereo, RebuiltRegionKeepsTetrahedralConfiguration) {
+    OEChem::OEGraphMol mol = captopril();
+    const std::set<unsigned int> selected = captopril_without_thiomethyl(mol);
+    const std::string reference = render("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O");
+
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    EXPECT_EQ(OEMMPA::render_fragment_smiles(with), reference);
+    // Without the transfer the clone renders a scrambled centre; this pins the
+    // direction of the fix.
+    OEChem::OEGraphMol without = rebuild_region(mol, selected, false);
+    EXPECT_NE(OEMMPA::render_fragment_smiles(without), reference);
+}
+
+// A whole-molecule rebuild in the original atom and bond order is the case
+// that flipped the proline centre without the transfer.
+TEST(TransferAtomStereo, WholeMoleculeRebuildRoundTrips) {
+    OEChem::OEGraphMol mol = captopril();
+    const std::string reference = render("C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O");
+    OEChem::OEGraphMol with = rebuild_region(mol, every_atom(mol), true);
+    EXPECT_EQ(OEMMPA::render_fragment_smiles(with), reference);
+}
+
+// A neighbour with neither a clone nor a stand-in means the centre lost a
+// substituent outright, as the candidate-subset clone does at every subset
+// boundary. The transfer must not throw there, and must not leave the bit
+// NewAtom copied: the clone's centre reads as unspecified afterwards.
+TEST(TransferAtomStereo, MissingStandInClearsTheCentre) {
+    OEChem::OEGraphMol mol = parse("N[C@@H](C)C(=O)O");
+    OEChem::OESuppressHydrogens(mol);
+    OEChem::OEGraphMol region;
+    std::unordered_map<unsigned int, OEChem::OEAtomBase*> clones;
+    OEChem::OEAtomBase* centre_clone = nullptr;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() == 7) {
+            continue;  // drop the amine with no dummy in its place
+        }
+        clones[atom->GetIdx()] = region.NewAtom(*atom);
+        if (atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+            centre_clone = clones[atom->GetIdx()];
+        }
+    }
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        if (clones.count(bond->GetBgnIdx()) == 0 || clones.count(bond->GetEndIdx()) == 0) {
+            continue;
+        }
+        region.NewBond(clones[bond->GetBgnIdx()], clones[bond->GetEndIdx()], bond->GetOrder());
+    }
+    ASSERT_NE(centre_clone, nullptr);
+    // NewAtom copied the parity bit; that is the scrambled state being cleared.
+    ASSERT_TRUE(centre_clone->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral));
+
+    const std::map<OEMMPA::mcs::StandInKey, OEChem::OEAtomBase*> no_stand_ins;
+    EXPECT_NO_THROW(OEMMPA::mcs::transfer_atom_stereo(mol, region, clones, no_stand_ins));
+    EXPECT_FALSE(centre_clone->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral));
+}
+
+namespace {
+
+struct RegionCase {
+    const char* name;
+    const char* smiles;
+    std::set<unsigned int> selected_atoms;
+    std::vector<OEMMPA::mcs::Boundary> boundaries;
+    bool expect_direction;
+};
+
+// C/C=C/CCl numbers as C0=C1=C2-C3-Cl4 with the E geometry on bond 1=2.
+// C/C=C(\F)CCl numbers as C0=C1=C2(-F3)-C4-Cl5 with the geometry on bond 1=2.
+//
+// Boundary::bond_idx and Boundary::sort_constant_idx are not read by
+// build_region_smiles -- its dummy loop uses only the label and the two atom
+// indices -- so they stay zero here rather than carrying values the test would
+// not be checking.
+std::vector<RegionCase> region_cases() {
+    return {
+        // Geometry sits entirely inside the region; only the terminal Cl is cut.
+        {"distant cut", "C/C=C/CCl", {0, 1, 2, 3},
+         {OEMMPA::mcs::Boundary{1, 3, 4, 0, 0}}, true},
+        // The cut removes atom 0, which is the 1-end stereo reference: the
+        // dummy has to stand in for it or the geometry is lost.
+        {"reference-neighbor cut", "C/C=C/CCl", {1, 2, 3, 4},
+         {OEMMPA::mcs::Boundary{1, 1, 0, 0, 0}}, true},
+        // Both substituents on the 2-end are cut away, leaving two
+        // indistinguishable dummies: the geometry is genuinely destroyed.
+        {"end-substituent cut destroys it", "C/C=C(\\F)CCl", {0, 1, 2},
+         {OEMMPA::mcs::Boundary{1, 2, 3, 0, 0}, OEMMPA::mcs::Boundary{2, 2, 4, 0, 0}}, false},
+    };
+}
+
+}  // namespace
+
+TEST(RegionGeometry, BuildRegionSmilesPreservesGeometry) {
+    for (const RegionCase& test_case : region_cases()) {
+        OEChem::OEGraphMol mol = parse(test_case.smiles);
+        const std::string smiles = OEMMPA::mcs::build_region_smiles(
+            mol, test_case.selected_atoms, test_case.boundaries, /*selected_side_is_constant=*/true);
+        EXPECT_EQ(has_direction(smiles), test_case.expect_direction)
+            << test_case.name << " -> " << smiles;
+    }
+}
+
+// The tetrahedral half of the same production path: captopril cut at the alpha
+// carbon's CH2S branch. The reference is the parent with the dummy written
+// where the branch was, so it pins the configuration and not merely the
+// presence of a marker.
+TEST(RegionGeometry, BuildRegionSmilesPreservesTetrahedralConfiguration) {
+    OEChem::OEGraphMol mol = captopril();
+    const std::set<unsigned int> selected = captopril_without_thiomethyl(mol);
+    const std::vector<OEMMPA::mcs::Boundary> boundaries =
+        OEMMPA::mcs::collect_source_boundaries(mol, selected);
+    ASSERT_EQ(boundaries.size(), 1u);
+
+    const std::string smiles = OEMMPA::mcs::build_region_smiles(
+        mol, selected, boundaries, /*selected_side_is_constant=*/true);
+    EXPECT_EQ(smiles, render("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O"));
+}
+
+// The same cut through the explicit-hydrogen rebuilder, which is the region
+// builder the WizePairZ environment SMIRKS are made of. Pinned to the same
+// textual-substitution reference so it checks the configuration, not just that
+// some marker survived -- explicit hydrogens make a marker appear either way.
+TEST(RegionGeometry, MappedRegionWithExplicitHPreservesTetrahedralConfiguration) {
+    OEChem::OEGraphMol mol = captopril();
+    const std::set<unsigned int> selected = captopril_without_thiomethyl(mol);
+    const std::vector<OEMMPA::mcs::Boundary> boundaries =
+        OEMMPA::mcs::collect_source_boundaries(mol, selected);
+
+    const std::string smiles = OEMMPA::mcs::render_mapped_region_with_explicit_h(
+        mol, selected, boundaries, /*selected_side_is_constant=*/true, {});
+
+    OEChem::OEGraphMol reference_mol = parse("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O");
+    EXPECT_EQ(smiles, OEMMPA::render_fragment_smiles(reference_mol, /*explicit_hydrogens=*/true));
 }

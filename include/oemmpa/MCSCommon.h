@@ -7,6 +7,7 @@
 
 #include <oechem.h>
 
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -23,6 +24,68 @@ struct Boundary {
     unsigned int bond_idx = 0;
     unsigned int sort_constant_idx = 0;
 };
+
+/// \brief Identifies the dummy that replaced a specific removed neighbour.
+///
+/// Keyed by the edge, not by the removed atom: the same neighbour atom can be
+/// cut away from two different stereo-bond ends, and an atom-keyed map would
+/// let one dummy answer for both.
+struct StandInKey {
+    unsigned int bond_end_idx = 0;
+    unsigned int removed_neighbor_idx = 0;
+
+    bool operator<(const StandInKey& other) const {
+        if (bond_end_idx != other.bond_end_idx) {
+            return bond_end_idx < other.bond_end_idx;
+        }
+        return removed_neighbor_idx < other.removed_neighbor_idx;
+    }
+};
+
+/// \brief Copy cis/trans descriptors from `source` onto the rebuilt `target`.
+///
+/// NewAtom/NewBond reconstruction does not carry bond stereo, which is stored
+/// against a pair of reference neighbours. Each reference is remapped to its
+/// clone, or -- when the cut removed it -- to the dummy that stands in for it.
+///
+/// \param source Molecule the region was rebuilt from.
+/// \param target Rebuilt region, mutated in place.
+/// \param clones Source atom index to its clone in `target`.
+/// \param stand_ins Edge key to the dummy atom that replaced the removed neighbour.
+void transfer_bond_stereo(
+    const OEChem::OEMolBase& source,
+    OEChem::OEMolBase& target,
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins
+);
+
+/// \brief Re-assert every specified tetrahedral parity of `source` on its clone in `target`.
+///
+/// For each source atom that has a clone, the parity is captured against the
+/// source neighbour order and asserted on the clone against the corresponding
+/// clones, with a neighbour outside `clones` resolved through
+/// `stand_ins[{source_atom_idx, neighbour_idx}]` -- the dummy that replaced it.
+/// Runs after the dummies exist, for the same reason transfer_bond_stereo() does.
+///
+/// A centre with a neighbour that has neither a clone nor a stand-in has lost a
+/// substituent without replacement (the subset clone used for MCS candidates
+/// does this at every subset boundary), so it has no configuration to carry:
+/// its clone's tetrahedral stereo is cleared rather than left as the
+/// neighbour-order-scrambled bit NewAtom copied. This mirrors
+/// transfer_bond_stereo(), which skips a geometry it cannot reference.
+///
+/// \param source Molecule the region was rebuilt from.
+/// \param target Rebuilt region, mutated in place through the clone pointers.
+/// \param clones Source atom index to its clone in `target`.
+/// \param stand_ins Edge key to the dummy atom that replaced the removed neighbour.
+/// \throws AnalysisStateError when every neighbour resolves but OEChem rejects
+///         the assignment: a region must not render with a guessed configuration.
+void transfer_atom_stereo(
+    const OEChem::OEMolBase& source,
+    OEChem::OEMolBase& target,
+    const std::unordered_map<unsigned int, OEChem::OEAtomBase*>& clones,
+    const std::map<StandInKey, OEChem::OEAtomBase*>& stand_ins
+);
 
 /// \brief One MCS solution: the mapped (constant) atoms on each side plus the
 /// target->source atom-index map used to align attachment labels.

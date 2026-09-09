@@ -277,3 +277,60 @@ TEST(WizePairZTest, ParallelMatchesSerial) {
         EXPECT_GT(parallel_workers, 1u);
     }
 }
+
+namespace {
+
+// Duplicated from tests/cpp/test_fragment_smiles.cpp: a four-line predicate is
+// cheaper to repeat than a shared test header would be to introduce.
+bool has_direction(const std::string& smiles) {
+    return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
+}
+
+}  // namespace
+
+// The environment SMIRKS are built by the mapped-region rebuilder, so they lose
+// cis/trans unless the rebuilder transfers it. The three cases are the same
+// three the region-level tests cover, reached through the WizePairZ pipeline
+// instead: WizePairZ picks its own cuts, so a case is selected by corpus plus
+// radius rather than by an atom subset.
+TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesGeometry) {
+    struct SmirksCase {
+        const char* name;
+        const char* first;
+        const char* second;
+        unsigned int radius;
+        bool expect_direction;
+    };
+    const std::vector<SmirksCase> cases{
+        // Both stereo references are inside the region at radius 4, so nothing
+        // needs a stand-in.
+        {"distant cut", "C/C=C/CCl", "C/C=C/CBr", 4, true},
+        // The same pair at radius 3 puts the methyl outside the region, so the
+        // dummy has to stand in for the 1-end reference.
+        {"reference-neighbor cut", "C/C=C/CCl", "C/C=C/CBr", 3, true},
+        // Two dummies on one sp2 atom: the geometry is genuinely unrecoverable,
+        // so this is the over-transfer guard and must stay directionless.
+        {"end-substituent cut destroys it", "C/C=C(\\F)CCl", "C/C=C(\\Cl)CCl", 1, false},
+    };
+
+    for (const SmirksCase& test_case : cases) {
+        Analyzer analyzer("wizepairz");
+        analyzer.AddMolecule(test_case.first, "first");
+        analyzer.AddMolecule(test_case.second, "second");
+        analyzer.Analyze();
+        const auto pairs = analyzer.GetPairs();
+        ASSERT_FALSE(pairs.empty()) << test_case.name;
+
+        // GetPairs is symmetric by default, so both directions are present; the
+        // two are mirror images and agree on whether geometry survived.
+        const auto& entries = pairs.front().GetEnvironmentSmirks();
+        const auto entry = std::find_if(
+            entries.begin(), entries.end(),
+            [&](const OEMMPA::PairEnvironmentSmirks& e) { return e.radius == test_case.radius; });
+        ASSERT_NE(entry, entries.end())
+            << test_case.name << ": no entry at radius " << test_case.radius;
+
+        EXPECT_EQ(has_direction(entry->smirks), test_case.expect_direction)
+            << test_case.name << " -> " << entry->smirks;
+    }
+}
