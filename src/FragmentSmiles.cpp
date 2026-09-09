@@ -1,6 +1,5 @@
 #include "oemmpa/FragmentSmiles.h"
 
-#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -91,44 +90,6 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
 std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydrogens) {
     clear_fragmentation_invalidated_stereo(mol);
 
-    // Normalize map indices to canonical order: save them, zero them to get
-    // canonical atom ordering, then reassign in canonical order. This makes
-    // [*:1]C([*:2])... and [*:2]C([*:1])... collapse to the same string when
-    // the stereo between them is meaningless, which is the test invariant.
-    std::vector<std::pair<OEChem::OEAtomBase*, unsigned int>> saved_maps;
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetMapIdx() != 0) {
-            saved_maps.emplace_back(&*atom, atom->GetMapIdx());
-        }
-    }
-
-    // Zero map indices so they don't affect canonical ordering
-    for (auto& entry : saved_maps) {
-        entry.first->SetMapIdx(0);
-    }
-
-    // Establish canonical atom ordering
-    OEChem::OECanonicalOrderAtoms(mol);
-
-    // Sort the saved map entries by the new (canonical) atom index
-    std::sort(saved_maps.begin(), saved_maps.end(),
-        [](const auto& a, const auto& b) {
-            return a.first->GetIdx() < b.first->GetIdx();
-        });
-
-    // Collect just the map values and sort them
-    std::vector<unsigned int> map_values;
-    for (const auto& entry : saved_maps) {
-        map_values.push_back(entry.second);
-    }
-    std::sort(map_values.begin(), map_values.end());
-
-    // Assign map values to atoms in canonical order
-    for (size_t i = 0; i < saved_maps.size(); ++i) {
-        saved_maps[i].first->SetMapIdx(map_values[i]);
-    }
-
-    // Generate SMILES with normalized map indices
     std::string smiles;
     if (explicit_hydrogens) {
         // OESMILESFlag::Hydrogens only emits hydrogens that already exist as

@@ -30,13 +30,18 @@ bool has_bond_direction(const std::string& smiles) {
 }  // namespace
 
 // A carbon carrying two attachment dummies has no distinguishable substituent
-// pair, so the two label orderings must render identically -- mmpdb drops the
-// tag rather than preserving a meaningless one.
-TEST(FragmentSmiles, InvalidatedCenterCollapsesLabelOrderings) {
-    const std::string left = render("[*:1][C@H]([*:2])c1ccccc1Cl");
-    const std::string right = render("[*:2][C@H]([*:1])c1ccccc1Cl");
-    EXPECT_EQ(left, right);
-    EXPECT_FALSE(has_atom_stereo(left)) << left;
+// pair once the map indices are ignored, so its stereo tag is meaningless --
+// mmpdb drops the tag rather than preserving it. Opposite configurations must
+// therefore collapse to one stereo-free string. OEChem's canonical ordering
+// ignores map indices, so swapped label placements legitimately render as
+// different strings; that is a label property the fragmenter's multi-cut
+// equivalence key already handles, not a stereo one.
+TEST(FragmentSmiles, InvalidatedCenterCollapsesConfigurations) {
+    const std::string clockwise = render("[*:1][C@H]([*:2])c1ccccc1Cl");
+    const std::string anticlockwise = render("[*:1][C@@H]([*:2])c1ccccc1Cl");
+    EXPECT_EQ(clockwise, anticlockwise);
+    EXPECT_FALSE(has_atom_stereo(clockwise)) << clockwise;
+    EXPECT_FALSE(has_atom_stereo(render("[*:2][C@H]([*:1])c1ccccc1Cl")));
 }
 
 // A stereocentre whose four substituents remain distinguishable survives, and
