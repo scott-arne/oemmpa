@@ -61,6 +61,70 @@ CloneAtomIndexMap BuildOriginalToCloneAtomIndexMap(
     return clone_atom_indices;
 }
 
+/// \brief Per-atom chirality classification, mmpdb's get_chiral_flags.
+///
+/// 1 = an explicitly specified tetrahedral centre, 2 = a potential centre with
+/// no tag, 0 = neither. Perception runs on a copy with map indices zeroed, so
+/// two attachment dummies cannot be mistaken for distinguishable substituents.
+/// Keys are indices in `mol`, established by the same parallel traversal
+/// BuildOriginalToCloneAtomIndexMap relies on.
+std::unordered_map<unsigned int, unsigned int> ComputeChiralFlags(const OEChem::OEMolBase& mol) {
+    OEChem::OEGraphMol perceived(mol);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = perceived.GetAtoms(); atom; ++atom) {
+        atom->SetMapIdx(0);
+    }
+    OEChem::OEClearChiralPerception(perceived);
+    OEChem::OEPerceiveChiral(perceived);
+
+    std::unordered_map<unsigned int, unsigned int> flags;
+    OESystem::OEIter<OEChem::OEAtomBase> source_atom = mol.GetAtoms();
+    OESystem::OEIter<OEChem::OEAtomBase> perceived_atom = perceived.GetAtoms();
+    for (; source_atom && perceived_atom; ++source_atom, ++perceived_atom) {
+        unsigned int flag = 0;
+        if (perceived_atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+            flag = 1;
+        } else if (perceived_atom->IsChiral()) {
+            flag = 2;
+        }
+        flags[source_atom->GetIdx()] = flag;
+    }
+    if (source_atom || perceived_atom) {
+        throw FragmentationError("molecule copy changed atom traversal cardinality");
+    }
+    return flags;
+}
+
+/// \brief Stereocentres the cut brought into existence on one side.
+///
+/// A created centre is absent from the parent (flag 0) and a potential centre
+/// after the cut (flag 2) -- the cut made two previously-equivalent branches
+/// distinguishable. Returned in ascending cut-molecule atom index, which is
+/// what fixes the emission order of the enumeration product.
+std::vector<unsigned int> CollectCreatedStereocenters(
+    const std::unordered_map<unsigned int, unsigned int>& parent_flags,
+    const std::unordered_map<unsigned int, unsigned int>& cut_flags,
+    const CloneAtomIndexMap& clone_atom_indices,
+    const std::set<unsigned int>& side_cut_atoms
+) {
+    std::vector<unsigned int> created;
+    for (const auto& entry : clone_atom_indices) {
+        const unsigned int cut_idx = entry.second;
+        if (side_cut_atoms.count(cut_idx) == 0) {
+            continue;
+        }
+        const auto parent_flag = parent_flags.find(entry.first);
+        const auto cut_flag = cut_flags.find(cut_idx);
+        if (parent_flag == parent_flags.end() || cut_flag == cut_flags.end()) {
+            continue;
+        }
+        if (parent_flag->second == 0 && cut_flag->second == 2) {
+            created.push_back(cut_idx);
+        }
+    }
+    std::sort(created.begin(), created.end());
+    return created;
+}
+
 template <typename Callback>
 void EnumerateCutCombinationsRecursive(
     const std::vector<CutBond>& cuts,

@@ -23,6 +23,12 @@ public:
         const std::string& constant_with_hydrogen_smiles
     );
 
+    /// \brief Which up-enumeration group produced this record.
+    ///
+    /// Mirrors mmpdb's ``N``/``C``/``V`` enumeration_label. Transient: the label
+    /// governs pair formation and is never persisted.
+    enum class EnumerationLabel { None, ConstantUp, VariableUp };
+
     unsigned int GetMoleculeId() const;
     const std::string& GetConstantSmiles() const;
     const std::string& GetVariableSmiles() const;
@@ -44,6 +50,9 @@ public:
         std::set<unsigned int> attachment_labels
     );
 
+    void SetEnumerationLabel(EnumerationLabel label);
+    EnumerationLabel GetEnumerationLabel() const;
+
 private:
     unsigned int molecule_id_ = 0;
     std::string constant_smiles_;
@@ -54,6 +63,7 @@ private:
     unsigned int variable_heavy_atom_count_ = 0;
     unsigned int variable_heavy_bond_count_ = 0;
     std::set<unsigned int> variable_attachment_labels_;
+    EnumerationLabel enumeration_label_ = EnumerationLabel::None;
 };
 
 }  // namespace OEMMPA

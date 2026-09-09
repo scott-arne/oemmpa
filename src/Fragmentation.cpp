@@ -68,4 +68,12 @@ void Fragmentation::SetVariableMetrics(
     has_variable_metrics_ = true;
 }
 
+void Fragmentation::SetEnumerationLabel(EnumerationLabel label) {
+    enumeration_label_ = label;
+}
+
+Fragmentation::EnumerationLabel Fragmentation::GetEnumerationLabel() const {
+    return enumeration_label_;
+}
+
 }  // namespace OEMMPA
