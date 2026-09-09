@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <map>
 #include <string>
 
 #include <oechem.h>
@@ -27,6 +28,21 @@ bool has_bond_direction(const std::string& smiles) {
     return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
 }
 
+// Map index -> atomic number of the real atom each attachment dummy is bonded
+// to. This is the binding the labels exist to carry.
+std::map<unsigned int, unsigned int> attachment_neighbors(const OEChem::OEMolBase& mol) {
+    std::map<unsigned int, unsigned int> neighbors;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetAtomicNum() != 0 || atom->GetMapIdx() == 0) {
+            continue;
+        }
+        for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+            neighbors[atom->GetMapIdx()] = nbr->GetAtomicNum();
+        }
+    }
+    return neighbors;
+}
+
 }  // namespace
 
 // A carbon carrying two attachment dummies has no distinguishable substituent
@@ -42,6 +58,32 @@ TEST(FragmentSmiles, InvalidatedCenterCollapsesConfigurations) {
     EXPECT_EQ(clockwise, anticlockwise);
     EXPECT_FALSE(has_atom_stereo(clockwise)) << clockwise;
     EXPECT_FALSE(has_atom_stereo(render("[*:2][C@H]([*:1])c1ccccc1Cl")));
+}
+
+// Attachment labels pair each arm of the variable part with the matching arm
+// of the constant part, so the renderer must emit them verbatim and may not
+// permute them, not even into a canonical order. On an asymmetric fragment the
+// two placements are different labelled fragments and must stay
+// distinguishable, and every label must stay bound to the same endpoint
+// through a render, both in the caller's molecule and in the rendered string.
+TEST(FragmentSmiles, AttachmentLabelsAreRenderedVerbatim) {
+    OEChem::OEGraphMol forward = parse("[*:1]CCO[*:2]");
+    OEChem::OEGraphMol swapped = parse("[*:2]CCO[*:1]");
+    const std::map<unsigned int, unsigned int> forward_before = attachment_neighbors(forward);
+    const std::map<unsigned int, unsigned int> swapped_before = attachment_neighbors(swapped);
+    ASSERT_NE(forward_before, swapped_before);
+
+    const std::string forward_smiles = OEMMPA::render_fragment_smiles(forward);
+    const std::string swapped_smiles = OEMMPA::render_fragment_smiles(swapped);
+    EXPECT_NE(forward_smiles, swapped_smiles);
+
+    EXPECT_EQ(attachment_neighbors(forward), forward_before);
+    EXPECT_EQ(attachment_neighbors(swapped), swapped_before);
+
+    const OEChem::OEGraphMol forward_rendered = parse(forward_smiles);
+    const OEChem::OEGraphMol swapped_rendered = parse(swapped_smiles);
+    EXPECT_EQ(attachment_neighbors(forward_rendered), forward_before) << forward_smiles;
+    EXPECT_EQ(attachment_neighbors(swapped_rendered), swapped_before) << swapped_smiles;
 }
 
 // A stereocentre whose four substituents remain distinguishable survives, and
