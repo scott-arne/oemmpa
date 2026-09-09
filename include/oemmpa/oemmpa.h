@@ -19,6 +19,7 @@
 #include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/FragmentationStrategy.h"
 #include "oemmpa/Fragmenter.h"
+#include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/LoadReport.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MemoryIndex.h"

@@ -103,6 +103,7 @@ set(OEMMPA_SOURCES
     src/Fragmentation.cpp
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
+    src/FragmentSmiles.cpp
     src/EnvironmentFingerprint.cpp
     src/QueryEnvironment.cpp
     src/FragmentationMethod.cpp
