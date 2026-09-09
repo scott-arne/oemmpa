@@ -32,6 +32,13 @@ public:
     ///
     /// \param max_cut_bonds Maximum eligible cut bonds, or 0 for no limit.
     void SetMaxCutBonds(unsigned int max_cut_bonds);
+    /// \brief Cap the records one cut combination may emit.
+    ///
+    /// Up-enumeration is a 3^k product over created stereocentres. The cap
+    /// bounds it; exceeding it throws rather than silently truncating, because
+    /// a truncated enumeration would produce a quietly incomplete index.
+    /// Defaults to 1000, matching mmpdb's --max-up-enumerations.
+    void SetMaxUpEnumerations(unsigned int max_up_enumerations);
     void SetMaxHeavyAtoms(unsigned int max_heavy_atoms);
     void ClearMaxHeavyAtoms();
     bool HasMaxHeavyAtoms() const;
@@ -45,6 +52,7 @@ public:
     unsigned int GetMinCuts() const;
     unsigned int GetMaxCuts() const;
     unsigned int GetMaxCutBonds() const;
+    unsigned int GetMaxUpEnumerations() const;
 
     std::vector<Fragmentation> Fragment(
         unsigned int molecule_id,
@@ -59,6 +67,7 @@ private:
     // combinatorial cut enumeration on molecules with many eligible cut bonds.
     // SetMaxCutBonds(0) restores unlimited enumeration.
     unsigned int max_cut_bonds_ = 20;
+    unsigned int max_up_enumerations_ = 1000;
     bool has_max_heavy_atoms_ = false;
     unsigned int max_heavy_atoms_ = 0;
     bool has_max_rotatable_bonds_ = false;

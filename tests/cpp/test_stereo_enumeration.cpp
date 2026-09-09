@@ -9,6 +9,7 @@
 #include <tuple>
 #include <vector>
 
+#include "oemmpa/Error.h"
 #include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/Fragmenter.h"
@@ -387,4 +388,58 @@ TEST(UpEnumeration, ConstantUpKeepsTheBaselineVariableSide) {
         }
     }
     EXPECT_GT(checked, 0u) << "no ConstantUp records: the loop above proved nothing";
+}
+
+TEST(UpEnumerationCap, DefaultIsOneThousand) {
+    OEMMPA::Fragmenter fragmenter;
+    EXPECT_EQ(fragmenter.GetMaxUpEnumerations(), 1000u);
+}
+
+// The boundary, driven through the real emission path. A cap of N permits N+1
+// records, so a 3-record combination is exactly at the limit when the cap is 2
+// and one record over it when the cap is 1. These two tests bracket the guard:
+// moving it to `>=`, or incrementing before testing, breaks one or the other.
+// The same arithmetic is what makes the default of 1000 throw on record 1002.
+TEST(UpEnumerationCap, ACombinationAtExactlyTheLimitIsAllowed) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+    fragmenter.SetMaxUpEnumerations(2);
+    const OEChem::OEGraphMol mol = parse_smiles("OCC(CO)N");
+    EXPECT_NO_THROW(fragmenter.Fragment(1, mol));
+}
+
+TEST(UpEnumerationCap, ThrowsWhenACombinationExceedsTheLimit) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+    fragmenter.SetMaxUpEnumerations(1);
+    const OEChem::OEGraphMol mol = parse_smiles("OCC(CO)N");
+    EXPECT_THROW(fragmenter.Fragment(1, mol), OEMMPA::FragmentationError);
+}
+
+// The cap is per cut combination, not per molecule. This molecule emits 14
+// records across six combinations with a maximum of 3 in any one of them, so a
+// cap of 2 must pass -- a counter accumulated across the whole molecule would
+// throw on the fourth record instead.
+TEST(UpEnumerationCap, IsScopedToOneCutCombination) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+    fragmenter.SetMaxUpEnumerations(2);
+    const OEChem::OEGraphMol mol = parse_smiles("OCC(CO)N");
+    std::vector<OEMMPA::Fragmentation> fragmentations;
+    ASSERT_NO_THROW(fragmentations = fragmenter.Fragment(1, mol));
+    EXPECT_EQ(fragmentations.size(), 14u);
+}
+
+// The worker fanout copies the Fragmenter; a member left out of the copy
+// operations silently reverts every worker to the default.
+TEST(UpEnumerationCap, SurvivesCopyConstructionAndAssignment) {
+    OEMMPA::Fragmenter source;
+    source.SetMaxUpEnumerations(7);
+
+    OEMMPA::Fragmenter copied(source);
+    EXPECT_EQ(copied.GetMaxUpEnumerations(), 7u);
+
+    OEMMPA::Fragmenter assigned;
+    assigned = source;
+    EXPECT_EQ(assigned.GetMaxUpEnumerations(), 7u);
 }

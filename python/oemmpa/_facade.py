@@ -4,15 +4,14 @@ import operator
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
-from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
     PairCollection,
     PairResult,
     TransformCollection,
     TransformResult,
 )
+from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._smiles_file import iter_smiles_file
-
 
 _UINT_MAX = 2**32 - 1
 
@@ -330,6 +329,25 @@ class Analyzer:
                 self._raw_analyzer.SetWizePairZIdentityFraction(float(identity_fraction))
             if max_environment_radius is not None:
                 self._raw_analyzer.SetWizePairZMaxEnvironmentRadius(int(max_environment_radius))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
+
+    def set_fragmentation_max_up_enumerations(self, max_up_enumerations):
+        """Set the maximum records one cut combination may emit during fragmentation.
+
+        Up-enumeration is a 3^k product over created stereocentres. The cap bounds
+        it; exceeding it throws rather than silently truncating.
+
+        :param max_up_enumerations: Maximum number of records per cut combination.
+        :returns: ``self`` for chaining.
+        :raises ValueError: If the analyzer is not using the fragmentation method.
+        """
+        try:
+            value = self._coerce_fragmentation_uint("max_up_enumerations", max_up_enumerations)
+            if value is None:
+                raise ValueError("max_up_enumerations must be provided")
+            self._raw_analyzer.SetFragmentationMaxUpEnumerations(value)
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
         return self

@@ -88,6 +88,13 @@ public:
     /// \brief Configure fragmentation-method maximum rotatable bond count.
     void SetFragmentationMaxRotatableBonds(unsigned int max_rotatable_bonds);
 
+    /// \brief Cap the records one cut combination may emit during fragmentation.
+    ///
+    /// Forwards to Fragmenter::SetMaxUpEnumerations. Without this the cap is
+    /// unreachable from the public API, because the fragmenter accessors are
+    /// private.
+    void SetFragmentationMaxUpEnumerations(unsigned int max_up_enumerations);
+
     /// \brief Clear fragmentation-method maximum molecule heavy atom count.
     void ClearFragmentationMaxHeavyAtoms();
 

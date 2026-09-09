@@ -274,6 +274,12 @@ void Analyzer::SetFragmentationMaxRotatableBonds(unsigned int max_rotatable_bond
     CommitFragmenter(fragmenter);
 }
 
+void Analyzer::SetFragmentationMaxUpEnumerations(unsigned int max_up_enumerations) {
+    Fragmenter fragmenter = RequireFragmenter();
+    fragmenter.SetMaxUpEnumerations(max_up_enumerations);
+    CommitFragmenter(fragmenter);
+}
+
 void Analyzer::ClearFragmentationMaxHeavyAtoms() {
     Fragmenter fragmenter = RequireFragmenter();
     fragmenter.ClearMaxHeavyAtoms();

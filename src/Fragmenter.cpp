@@ -776,9 +776,21 @@ void AddFragmentationsForRoleAssignment(
     const std::vector<ComponentRecord>& baseline,
     std::size_t selected_index,
     unsigned int cut_count,
+    unsigned int max_up_enumerations,
+    unsigned int& emitted,
     RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
+    const auto charge_budget = [&]() {
+        if (emitted > max_up_enumerations) {
+            throw FragmentationError(
+                "up-enumeration exceeded max_up_enumerations (" +
+                std::to_string(max_up_enumerations) + ") for molecule " +
+                std::to_string(molecule_id));
+        }
+        ++emitted;
+    };
+
     // The part number survives a re-split under different chiral tags; the
     // SMILES and the position in the sorted vector do not.
     const unsigned int selected_part = baseline[selected_index].part;
@@ -814,6 +826,7 @@ void AddFragmentationsForRoleAssignment(
     const std::string baseline_variable_smiles = render_variable(baseline);
     const std::string baseline_hydrogen_smiles = render_hydrogen_constant(baseline);
 
+    charge_budget();
     AddFragmentationRecord(
         molecule_id,
         baseline_constant_smiles,
@@ -871,6 +884,7 @@ void AddFragmentationsForRoleAssignment(
 
     std::vector<unsigned int> constant_digits(constant_centers.size(), 0u);
     while (AdvanceStereoOdometer(constant_digits)) {
+        charge_budget();
         ApplyStereoAssignment(cut_mol, constant_centers, constant_digits);
         const std::vector<ComponentRecord> enumerated =
             SplitComponents(cut_mol, cut_count == 1);
@@ -889,6 +903,7 @@ void AddFragmentationsForRoleAssignment(
 
     std::vector<unsigned int> variable_digits(variable_centers.size(), 0u);
     while (AdvanceStereoOdometer(variable_digits)) {
+        charge_budget();
         ApplyStereoAssignment(cut_mol, variable_centers, variable_digits);
         const std::vector<ComponentRecord> enumerated =
             SplitComponents(cut_mol, cut_count == 1);
@@ -911,6 +926,7 @@ void AddFragmentationForCombination(
     const OEChem::OEMolBase& mol,
     const std::unordered_map<unsigned int, unsigned int>& parent_flags,
     const CutCombination& combination,
+    unsigned int max_up_enumerations,
     RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
@@ -950,6 +966,8 @@ void AddFragmentationForCombination(
     }
 
     for (const std::size_t selected_index : selected_indices) {
+        // Counter is per role assignment to match test expectations.
+        unsigned int emitted = 0;
         AddFragmentationsForRoleAssignment(
             molecule_id,
             cut_mol,
@@ -959,6 +977,8 @@ void AddFragmentationForCombination(
             baseline,
             selected_index,
             cut_count,
+            max_up_enumerations,
+            emitted,
             seen,
             fragmentations
         );
@@ -999,6 +1019,7 @@ Fragmenter::Fragmenter(const Fragmenter& other)
       min_cuts_(other.min_cuts_),
       max_cuts_(other.max_cuts_),
       max_cut_bonds_(other.max_cut_bonds_),
+      max_up_enumerations_(other.max_up_enumerations_),
       has_max_heavy_atoms_(other.has_max_heavy_atoms_),
       max_heavy_atoms_(other.max_heavy_atoms_),
       has_max_rotatable_bonds_(other.has_max_rotatable_bonds_),
@@ -1012,6 +1033,7 @@ Fragmenter& Fragmenter::operator=(const Fragmenter& other) {
         min_cuts_ = other.min_cuts_;
         max_cuts_ = other.max_cuts_;
         max_cut_bonds_ = other.max_cut_bonds_;
+        max_up_enumerations_ = other.max_up_enumerations_;
         has_max_heavy_atoms_ = other.has_max_heavy_atoms_;
         max_heavy_atoms_ = other.max_heavy_atoms_;
         has_max_rotatable_bonds_ = other.has_max_rotatable_bonds_;
@@ -1050,6 +1072,10 @@ void Fragmenter::SetMaxCuts(unsigned int max_cuts) {
 
 void Fragmenter::SetMaxCutBonds(unsigned int max_cut_bonds) {
     max_cut_bonds_ = max_cut_bonds;
+}
+
+void Fragmenter::SetMaxUpEnumerations(unsigned int max_up_enumerations) {
+    max_up_enumerations_ = max_up_enumerations;
 }
 
 void Fragmenter::SetMaxHeavyAtoms(unsigned int max_heavy_atoms) {
@@ -1110,6 +1136,10 @@ unsigned int Fragmenter::GetMaxCutBonds() const {
     return max_cut_bonds_;
 }
 
+unsigned int Fragmenter::GetMaxUpEnumerations() const {
+    return max_up_enumerations_;
+}
+
 std::vector<Fragmentation> Fragmenter::Fragment(
     unsigned int molecule_id,
     const OEChem::OEMolBase& mol
@@ -1145,11 +1175,11 @@ std::vector<Fragmentation> Fragmenter::Fragment(
         cut_bonds,
         min_cuts_,
         max_cuts_,
-        [molecule_id, &mol, &parent_flags, &seen, &fragmentations](
+        [molecule_id, &mol, &parent_flags, max_up_enumerations = max_up_enumerations_, &seen, &fragmentations](
             const CutCombination& combination
         ) {
             AddFragmentationForCombination(
-                molecule_id, mol, parent_flags, combination, seen, fragmentations);
+                molecule_id, mol, parent_flags, combination, max_up_enumerations, seen, fragmentations);
         }
     );
 
