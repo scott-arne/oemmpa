@@ -4,6 +4,7 @@
 #include "oemmpa/FragmentSmiles.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <sstream>
@@ -20,6 +21,13 @@ struct ComponentRecord {
     std::string hydrogen_smiles;
     unsigned int heavy_atom_count = 0;
     std::set<unsigned int> attachment_labels;
+
+    /// Component number from OEDetermineComponents. Stable across re-splits of
+    /// the same cut molecule under different chiral tags, unlike the SMILES or
+    /// the position in the sorted vector.
+    unsigned int part = 0;
+    /// Indices of this component's atoms in the molecule that was split.
+    std::set<unsigned int> atom_indices;
 };
 
 using CutCombination = std::vector<CutBond>;
@@ -168,6 +176,70 @@ OEChem::OEAtomBase* GetAtomByIndex(OEChem::OEMolBase& mol, unsigned int atom_idx
     return mol.GetAtom(OEChem::OEHasAtomIdx(atom_idx));
 }
 
+/// Set (or clear) the tetrahedral tag on one atom.
+void SetTetrahedralStereo(OEChem::OEMolBase& mol, unsigned int atom_idx, unsigned int stereo) {
+    OEChem::OEAtomBase* atom = GetAtomByIndex(mol, atom_idx);
+    if (atom == nullptr) {
+        return;
+    }
+    std::vector<OEChem::OEAtomBase*> nbrs;
+    for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+        nbrs.push_back(&*nbr);
+    }
+    atom->SetStereo(nbrs, OEChem::OEAtomStereo::Tetrahedral, stereo);
+}
+
+unsigned int GetTetrahedralStereo(const OEChem::OEMolBase& mol, unsigned int atom_idx) {
+    const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(atom_idx));
+    if (atom == nullptr) {
+        return OEChem::OEAtomStereo::Undefined;
+    }
+    std::vector<OEChem::OEAtomBase*> nbrs;
+    for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
+        nbrs.push_back(&*nbr);
+    }
+    return atom->GetStereo(nbrs, OEChem::OEAtomStereo::Tetrahedral);
+}
+
+/// \brief Advance a ternary odometer one step; digit i is the choice for centers[i].
+///
+/// Stepping the odometer in place is what keeps the enumeration honest: the
+/// obvious alternative -- computing 3^k and counting an integer from 1 to it --
+/// overflows any fixed-width integer at k >= 41 and then silently enumerates
+/// the wrong number of configurations instead of failing. The odometer has no
+/// such bound: it simply runs until it wraps. Cost is the same O(1) amortized
+/// per step.
+///
+/// \param digits Odometer state, mutated in place.
+/// \returns false when the odometer wraps back to all-zero, which is the input
+///          configuration the enumeration skips. An empty digit vector wraps
+///          immediately, giving the correct zero iterations for k = 0.
+bool AdvanceStereoOdometer(std::vector<unsigned int>& digits) {
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+        if (++digits[i] < 3) {
+            return true;
+        }
+        digits[i] = 0;
+    }
+    return false;
+}
+
+/// Apply one odometer state: digit 0 = Undefined, 1 = Left, 2 = Right.
+void ApplyStereoAssignment(
+    OEChem::OEMolBase& mol,
+    const std::vector<unsigned int>& centers,
+    const std::vector<unsigned int>& digits
+) {
+    static const unsigned int CHOICES[3] = {
+        OEChem::OEAtomStereo::Undefined,
+        OEChem::OEAtomStereo::Left,
+        OEChem::OEAtomStereo::Right
+    };
+    for (std::size_t i = 0; i < centers.size(); ++i) {
+        SetTetrahedralStereo(mol, centers[i], CHOICES[digits[i]]);
+    }
+}
+
 unsigned int CountHeavyAtoms(const OEChem::OEMolBase& mol) {
     unsigned int count = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
@@ -294,6 +366,21 @@ std::vector<ComponentRecord> SplitComponents(
     const unsigned int part_count = OEChem::OEDetermineComponents(mol, parts.data());
     OEChem::OEPartPred part_pred(parts.data(), static_cast<unsigned int>(parts.size()));
 
+    // Keyed by part number, so the record can carry the source-molecule atom
+    // indices the component covers. OESubsetMol renumbers, so the subset
+    // molecule's own indices cannot answer questions about `mol`.
+    std::vector<std::set<unsigned int>> atom_indices_by_part(part_count + 1);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        const unsigned int atom_idx = atom->GetIdx();
+        if (atom_idx >= parts.size()) {
+            continue;
+        }
+        const unsigned int part = parts[atom_idx];
+        if (part >= 1 && part <= part_count) {
+            atom_indices_by_part[part].insert(atom_idx);
+        }
+    }
+
     std::vector<ComponentRecord> components;
     components.reserve(part_count);
 
@@ -310,7 +397,9 @@ std::vector<ComponentRecord> SplitComponents(
             CanonicalSmiles(component),
             hydrogen_smiles,
             CountHeavyAtoms(component),
-            CollectAttachmentLabels(component)
+            CollectAttachmentLabels(component),
+            part,
+            atom_indices_by_part[part]
         });
     }
 
@@ -375,14 +464,31 @@ std::vector<size_t> SelectSingleCutConstantIndices(
     return constant_indices;
 }
 
-std::string JoinOtherComponentSmiles(
+const ComponentRecord* FindComponentByPart(
     const std::vector<ComponentRecord>& components,
-    size_t selected_index
+    unsigned int part
+) {
+    for (const ComponentRecord& component : components) {
+        if (component.part == part) {
+            return &component;
+        }
+    }
+    return nullptr;
+}
+
+/// \brief Join every component except `excluded_part`, in sorted SMILES order.
+///
+/// Excluding by part number rather than by position is what makes the join
+/// comparable across re-splits: enumeration changes a component's SMILES, and
+/// with it its place in the sorted vector, but never its part number.
+std::string JoinOtherComponentSmilesByPart(
+    const std::vector<ComponentRecord>& components,
+    unsigned int excluded_part
 ) {
     std::vector<std::string> component_smiles;
-    for (size_t i = 0; i < components.size(); ++i) {
-        if (i != selected_index) {
-            component_smiles.push_back(components[i].smiles);
+    for (const ComponentRecord& component : components) {
+        if (component.part != excluded_part) {
+            component_smiles.push_back(component.smiles);
         }
     }
 
@@ -474,7 +580,9 @@ std::pair<std::string, std::string> MultiCutAttachmentEquivalenceKey(
 ) {
     // MMPDB deduplicates multi-cut records across equivalent attachment-label
     // permutations; use variable symmetry plus constant component identity for
-    // the key while preserving OEMMPA's mapped-label output.
+    // the key while preserving OEMMPA's mapped-label output. The key
+    // discriminates stereo variants because CanonicalSmiles renders isomeric
+    // SMILES, so an enumerated record never collapses onto its baseline.
     const std::map<unsigned int, std::string> constant_keys =
         ConstantComponentKeysByLabel(constant_smiles);
     const std::map<unsigned int, unsigned int> variable_symmetry_classes =
@@ -509,6 +617,7 @@ void AddFragmentationRecord(
     const std::string& variable_smiles,
     unsigned int cut_count,
     const std::string& constant_with_hydrogen_smiles,
+    Fragmentation::EnumerationLabel label,
     std::set<FragmentationKey>& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
@@ -527,6 +636,11 @@ void AddFragmentationRecord(
             );
     }
 
+    // The enumeration label is deliberately absent from the key. Within one cut
+    // combination an enumerated record always differs from the baseline on the
+    // side it varied, so no two records of one combination can collide; and
+    // because the baseline is emitted first, insertion-ordered dedup gives it
+    // precedence over any cross-combination enumerated duplicate.
     const auto key = std::make_tuple(
         molecule_id,
         dedupe_constant_key,
@@ -537,13 +651,15 @@ void AddFragmentationRecord(
         return;
     }
 
-    fragmentations.emplace_back(
+    Fragmentation record(
         molecule_id,
         constant_smiles,
         variable_smiles,
         cut_count,
         constant_with_hydrogen_smiles
     );
+    record.SetEnumerationLabel(label);
+    fragmentations.push_back(std::move(record));
 }
 
 bool ApplyCutCombination(
@@ -615,6 +731,159 @@ bool ApplyCutCombination(
     return true;
 }
 
+/// \brief Emit one role assignment's baseline record and its up-enumerations.
+///
+/// `selected_index` names whichever component the cut count anchored the roles
+/// on: the constant for a single cut, the variable for a multi-cut. The two
+/// orientations are not symmetric -- on the multi-cut path the constant is the
+/// join of every *other* component -- so the orientation is captured once in
+/// the three renderers and the enumeration loops below stay shared.
+///
+/// Enumeration follows mmpdb: for each stereocentre the cut created on one
+/// side, take the product over (Undefined, Left, Right) and skip the all-
+/// Undefined state, which is the input configuration the baseline record
+/// already carries. Only one side varies per record; the other keeps its
+/// baseline rendering, which is what distinguishes per-side enumeration from a
+/// joint product over both sides.
+void AddFragmentationsForRoleAssignment(
+    unsigned int molecule_id,
+    OEChem::OEMolBase& cut_mol,
+    const CloneAtomIndexMap& clone_atom_indices,
+    const std::unordered_map<unsigned int, unsigned int>& parent_flags,
+    const std::unordered_map<unsigned int, unsigned int>& cut_flags,
+    const std::vector<ComponentRecord>& baseline,
+    std::size_t selected_index,
+    unsigned int cut_count,
+    std::set<FragmentationKey>& seen,
+    std::vector<Fragmentation>& fragmentations
+) {
+    // The part number survives a re-split under different chiral tags; the
+    // SMILES and the position in the sorted vector do not.
+    const unsigned int selected_part = baseline[selected_index].part;
+    const bool selected_is_constant = (cut_count == 1);
+
+    const auto render_constant =
+        [&](const std::vector<ComponentRecord>& components) -> std::string {
+            if (!selected_is_constant) {
+                return JoinOtherComponentSmilesByPart(components, selected_part);
+            }
+            const ComponentRecord* selected = FindComponentByPart(components, selected_part);
+            return selected == nullptr ? std::string() : selected->smiles;
+        };
+    const auto render_variable =
+        [&](const std::vector<ComponentRecord>& components) -> std::string {
+            if (!selected_is_constant) {
+                const ComponentRecord* selected = FindComponentByPart(components, selected_part);
+                return selected == nullptr ? std::string() : selected->smiles;
+            }
+            return JoinOtherComponentSmilesByPart(components, selected_part);
+        };
+    const auto render_hydrogen_constant =
+        [&](const std::vector<ComponentRecord>& components) -> std::string {
+            // MMPDB stores the H-capped constant only for single-cut records.
+            if (!selected_is_constant) {
+                return std::string();
+            }
+            const ComponentRecord* selected = FindComponentByPart(components, selected_part);
+            return selected == nullptr ? std::string() : selected->hydrogen_smiles;
+        };
+
+    const std::string baseline_constant_smiles = render_constant(baseline);
+    const std::string baseline_variable_smiles = render_variable(baseline);
+    const std::string baseline_hydrogen_smiles = render_hydrogen_constant(baseline);
+
+    AddFragmentationRecord(
+        molecule_id,
+        baseline_constant_smiles,
+        baseline_variable_smiles,
+        cut_count,
+        baseline_hydrogen_smiles,
+        Fragmentation::EnumerationLabel::None,
+        seen,
+        fragmentations
+    );
+
+    // Split the cut molecule's atoms by role. That is the selected/other split
+    // only on the single-cut path, where the selected component is the
+    // constant; on the multi-cut path the roles are the other way round.
+    const std::set<unsigned int>& selected_atoms = baseline[selected_index].atom_indices;
+    std::set<unsigned int> other_atoms;
+    for (std::size_t i = 0; i < baseline.size(); ++i) {
+        if (i == selected_index) {
+            continue;
+        }
+        other_atoms.insert(baseline[i].atom_indices.begin(), baseline[i].atom_indices.end());
+    }
+    const std::set<unsigned int>& constant_cut_atoms =
+        selected_is_constant ? selected_atoms : other_atoms;
+    const std::set<unsigned int>& variable_cut_atoms =
+        selected_is_constant ? other_atoms : selected_atoms;
+
+    const std::vector<unsigned int> constant_centers = CollectCreatedStereocenters(
+        parent_flags, cut_flags, clone_atom_indices, constant_cut_atoms);
+    const std::vector<unsigned int> variable_centers = CollectCreatedStereocenters(
+        parent_flags, cut_flags, clone_atom_indices, variable_cut_atoms);
+
+    // Snapshot the input tags so each group starts from the same configuration;
+    // otherwise the VariableUp group would inherit the ConstantUp group's last
+    // assignment. mmpdb re-derives from the input for the same reason.
+    std::vector<unsigned int> baseline_constant_tags;
+    baseline_constant_tags.reserve(constant_centers.size());
+    for (const unsigned int center : constant_centers) {
+        baseline_constant_tags.push_back(GetTetrahedralStereo(cut_mol, center));
+    }
+    std::vector<unsigned int> baseline_variable_tags;
+    baseline_variable_tags.reserve(variable_centers.size());
+    for (const unsigned int center : variable_centers) {
+        baseline_variable_tags.push_back(GetTetrahedralStereo(cut_mol, center));
+    }
+
+    const auto restore = [&](
+        const std::vector<unsigned int>& centers,
+        const std::vector<unsigned int>& tags
+    ) {
+        for (std::size_t i = 0; i < centers.size(); ++i) {
+            SetTetrahedralStereo(cut_mol, centers[i], tags[i]);
+        }
+    };
+
+    std::vector<unsigned int> constant_digits(constant_centers.size(), 0u);
+    while (AdvanceStereoOdometer(constant_digits)) {
+        ApplyStereoAssignment(cut_mol, constant_centers, constant_digits);
+        const std::vector<ComponentRecord> enumerated =
+            SplitComponents(cut_mol, cut_count == 1);
+        AddFragmentationRecord(
+            molecule_id,
+            render_constant(enumerated),
+            baseline_variable_smiles,
+            cut_count,
+            render_hydrogen_constant(enumerated),
+            Fragmentation::EnumerationLabel::ConstantUp,
+            seen,
+            fragmentations
+        );
+        restore(constant_centers, baseline_constant_tags);
+    }
+
+    std::vector<unsigned int> variable_digits(variable_centers.size(), 0u);
+    while (AdvanceStereoOdometer(variable_digits)) {
+        ApplyStereoAssignment(cut_mol, variable_centers, variable_digits);
+        const std::vector<ComponentRecord> enumerated =
+            SplitComponents(cut_mol, cut_count == 1);
+        AddFragmentationRecord(
+            molecule_id,
+            baseline_constant_smiles,
+            render_variable(enumerated),
+            cut_count,
+            baseline_hydrogen_smiles,
+            Fragmentation::EnumerationLabel::VariableUp,
+            seen,
+            fragmentations
+        );
+        restore(variable_centers, baseline_variable_tags);
+    }
+}
+
 void AddFragmentationForCombination(
     unsigned int molecule_id,
     const OEChem::OEMolBase& mol,
@@ -630,44 +899,48 @@ void AddFragmentationForCombination(
     }
 
     const unsigned int cut_count = static_cast<unsigned int>(combination.size());
-    const std::vector<ComponentRecord> components = SplitComponents(cut_mol, cut_count == 1);
-    if (components.size() < 2) {
+    const std::vector<ComponentRecord> baseline = SplitComponents(cut_mol, cut_count == 1);
+    if (baseline.size() < 2) {
         return;
     }
 
+    // Both flag sets describe the input configuration, so they are read once,
+    // before any enumerated tag reaches cut_mol. Every role assignment restores
+    // cut_mol to that configuration before returning.
+    const std::unordered_map<unsigned int, unsigned int> parent_flags = ComputeChiralFlags(mol);
+    const std::unordered_map<unsigned int, unsigned int> cut_flags =
+        ComputeChiralFlags(cut_mol);
+
+    // One role assignment per selected component: the single-cut path emits a
+    // record for every candidate constant, the multi-cut path only for the
+    // all-label variable.
+    std::vector<std::size_t> selected_indices;
     if (cut_count == 1) {
-        const std::vector<size_t> constant_indices =
-            SelectSingleCutConstantIndices(components, cut_count);
-        for (const size_t constant_index : constant_indices) {
-            AddFragmentationRecord(
-                molecule_id,
-                components[constant_index].smiles,
-                JoinOtherComponentSmiles(components, constant_index),
-                cut_count,
-                components[constant_index].hydrogen_smiles,
-                seen,
-                fragmentations
-            );
+        selected_indices = SelectSingleCutConstantIndices(baseline, cut_count);
+    } else {
+        // MMPDB treats the disconnected pieces as the constant for multi-cut
+        // fragmentations. The connected all-label component is the variable.
+        const std::size_t variable_index = SelectMultiCutVariable(baseline, cut_count);
+        if (variable_index >= baseline.size()) {
+            return;
         }
-        return;
+        selected_indices.push_back(variable_index);
     }
 
-    const size_t variable_index = SelectMultiCutVariable(components, cut_count);
-    if (variable_index >= components.size()) {
-        return;
+    for (const std::size_t selected_index : selected_indices) {
+        AddFragmentationsForRoleAssignment(
+            molecule_id,
+            cut_mol,
+            clone_atom_indices,
+            parent_flags,
+            cut_flags,
+            baseline,
+            selected_index,
+            cut_count,
+            seen,
+            fragmentations
+        );
     }
-
-    // MMPDB treats the disconnected pieces as the constant for multi-cut
-    // fragmentations. The connected all-label component is the variable.
-    AddFragmentationRecord(
-        molecule_id,
-        JoinOtherComponentSmiles(components, variable_index),
-        components[variable_index].smiles,
-        cut_count,
-        "",
-        seen,
-        fragmentations
-    );
 }
 
 void SortFragmentations(std::vector<Fragmentation>& fragmentations) {
