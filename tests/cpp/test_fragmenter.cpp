@@ -796,5 +796,26 @@ TEST(FragmenterTest, SingleCutsPreserveDoubleBondGeometry) {
     EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("[*:1]/C=C/CCl")));
 }
 
+// A quaternary centre whose preceding atom is cut. The fragmenter makes the
+// lower-index atom the cut's `begin`, so here the centre is the `end` endpoint
+// and only the end-side re-assertion protects it. Removing a first neighbour is
+// a 4-cycle for a centre with four heavy neighbours, so the untransferred cut
+// inverts; the chlorine cut is the begin-endpoint twin (a transposition).
+TEST(FragmenterTest, EndEndpointQuaternaryCentrePreservesConfiguration) {
+    OEChem::OEGraphMol mol = MolFromSmiles("C[C@](F)(Cl)Br");
+    OEChem::OESuppressHydrogens(mol);
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const std::set<std::string> produced = AllFragmentComponents(fragmenter.Fragment(6, mol));
+
+    // Methyl cut: the centre is the end endpoint.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("[*:1][C@](F)(Cl)Br")));
+    EXPECT_FALSE(produced.count(ExpectedFragmentSmiles("[*:1][C@@](F)(Cl)Br")));
+    // Chlorine cut: the centre is the begin endpoint.
+    EXPECT_TRUE(produced.count(ExpectedFragmentSmiles("C[C@](F)([*:1])Br")));
+    EXPECT_FALSE(produced.count(ExpectedFragmentSmiles("C[C@@](F)([*:1])Br")));
+}
+
 }  // namespace test
 }  // namespace OEMMPA
