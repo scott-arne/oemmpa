@@ -209,13 +209,10 @@ void transfer_atom_stereo(
             continue;
         }
         const unsigned int centre_idx = atom->GetIdx();
+        // One definition of the edge-keyed stand-in rule (B15): the same helper
+        // transfer_one_double_bond uses, so a change to the key lands in one place.
         const auto translate = [&](OEChem::OEAtomBase& neighbor) -> OEChem::OEAtomBase* {
-            const auto neighbor_clone = clones.find(neighbor.GetIdx());
-            if (neighbor_clone != clones.end()) {
-                return neighbor_clone->second;
-            }
-            const auto stand_in = stand_ins.find(StandInKey{centre_idx, neighbor.GetIdx()});
-            return stand_in == stand_ins.end() ? nullptr : stand_in->second;
+            return resolve_stereo_reference(clones, stand_ins, centre_idx, neighbor.GetIdx());
         };
 
         // A neighbour with neither a clone nor a stand-in means the centre lost a
