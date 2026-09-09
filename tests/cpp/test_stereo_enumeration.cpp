@@ -2,12 +2,37 @@
 
 #include <oechem.h>
 
+#include <cstddef>
+#include <ostream>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
+#include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/Fragmenter.h"
+
+namespace OEMMPA {
+
+/// Print the label by name. Found by argument-dependent lookup, so without it a
+/// failed record comparison renders the enum as a raw byte dump.
+void PrintTo(const Fragmentation::EnumerationLabel& label, std::ostream* os) {
+    switch (label) {
+        case Fragmentation::EnumerationLabel::None:
+            *os << "None";
+            return;
+        case Fragmentation::EnumerationLabel::ConstantUp:
+            *os << "ConstantUp";
+            return;
+        case Fragmentation::EnumerationLabel::VariableUp:
+            *os << "VariableUp";
+            return;
+    }
+    *os << "EnumerationLabel(" << static_cast<int>(label) << ")";
+}
+
+}  // namespace OEMMPA
 
 namespace {
 
@@ -53,6 +78,73 @@ const char* const TWO_SIDED_SMILES = "OC(CC(CO)CO)CC(CO)CO";
 /// base set, so either one alone identifies the fragmentation.
 const char* const TWO_SIDED_BASE_VARIABLE = "[*:1]CC([*:2])CO";
 const char* const TWO_SIDED_BASE_CONSTANT = "[*:1]C(CC(CO)CO)O.[*:2]CO";
+
+/// A whole record reduced to the three fields enumeration can move.
+using LabelledRecord =
+    std::tuple<std::string, std::string, OEMMPA::Fragmentation::EnumerationLabel>;
+
+/// The fields the fragmenter deduplicates on, for asserting that no two
+/// surviving records share a key.
+using DedupKey = std::tuple<std::string, std::string, unsigned int>;
+
+LabelledRecord record_of(const OEMMPA::Fragmentation& fragmentation) {
+    return {
+        fragmentation.GetConstantSmiles(),
+        fragmentation.GetVariableSmiles(),
+        fragmentation.GetEnumerationLabel()
+    };
+}
+
+DedupKey key_of(const OEMMPA::Fragmentation& fragmentation) {
+    return {
+        fragmentation.GetConstantSmiles(),
+        fragmentation.GetVariableSmiles(),
+        fragmentation.GetCutCount()
+    };
+}
+
+/// Substitute `to` for the single occurrence of `from`, failing the test when
+/// the anchor is missing or ambiguous. Used to write a stereo tag into a
+/// baseline fragment SMILES by hand.
+std::string replace_once(
+    const std::string& text,
+    const std::string& from,
+    const std::string& to
+) {
+    const std::size_t at = text.find(from);
+    EXPECT_NE(at, std::string::npos) << from << " not in " << text;
+    EXPECT_EQ(text.find(from, at + 1), std::string::npos) << from << " twice in " << text;
+    if (at == std::string::npos) {
+        return text;
+    }
+    return text.substr(0, at) + to + text.substr(at + from.size());
+}
+
+/// Canonicalize a hand-written fragment SMILES through the renderer the
+/// fragmenter itself uses, so an expected string can be derived rather than
+/// copied out of the product's output. Multi-component constants are rendered
+/// one component at a time and rejoined in the given order, which is how the
+/// fragmenter assembles them -- rendering `A.B` as a single molecule would let
+/// OEChem pick its own component order.
+std::string render_expected(const std::string& fragment_smiles) {
+    std::string rendered;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t dot = fragment_smiles.find('.', start);
+        const std::size_t end = dot == std::string::npos ? fragment_smiles.size() : dot;
+        const std::string component = fragment_smiles.substr(start, end - start);
+        OEChem::OEGraphMol mol;
+        EXPECT_TRUE(OEChem::OESmilesToMol(mol, component.c_str())) << component;
+        if (!rendered.empty()) {
+            rendered += ".";
+        }
+        rendered += OEMMPA::render_fragment_smiles(mol);
+        if (dot == std::string::npos) {
+            return rendered;
+        }
+        start = dot + 1;
+    }
+}
 
 unsigned int count_with_label(
     const std::vector<OEMMPA::Fragmentation>& fragmentations,
@@ -127,22 +219,68 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
     const OEChem::OEGraphMol mol = parse_smiles(TWO_SIDED_SMILES);
     const std::vector<OEMMPA::Fragmentation> fragmentations = fragmenter.Fragment(1, mol);
 
+    // The created constant-side centre is the carbon written `C(` immediately
+    // after the first attachment point; the created variable-side one is the
+    // carbon carrying the second attachment point. Both tags are written into
+    // the baseline strings here and canonicalized by the product's own
+    // renderer, so the expectation is derived rather than copied. The constant
+    // is built from the whole two-component baseline, so an implementation that
+    // emitted only the stereogenic component and dropped `.[*:2]CO` matches
+    // nothing in this set.
+    const std::multiset<LabelledRecord> expected = {
+        {
+            render_expected(TWO_SIDED_BASE_CONSTANT),
+            render_expected(TWO_SIDED_BASE_VARIABLE),
+            OEMMPA::Fragmentation::EnumerationLabel::None
+        },
+        {
+            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:1]C(", "[*:1][C@H](")),
+            render_expected(TWO_SIDED_BASE_VARIABLE),
+            OEMMPA::Fragmentation::EnumerationLabel::ConstantUp
+        },
+        {
+            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:1]C(", "[*:1][C@@H](")),
+            render_expected(TWO_SIDED_BASE_VARIABLE),
+            OEMMPA::Fragmentation::EnumerationLabel::ConstantUp
+        },
+        {
+            render_expected(TWO_SIDED_BASE_CONSTANT),
+            render_expected(replace_once(TWO_SIDED_BASE_VARIABLE, "]CC(", "]C[C@H](")),
+            OEMMPA::Fragmentation::EnumerationLabel::VariableUp
+        },
+        {
+            render_expected(TWO_SIDED_BASE_CONSTANT),
+            render_expected(replace_once(TWO_SIDED_BASE_VARIABLE, "]CC(", "]C[C@@H](")),
+            OEMMPA::Fragmentation::EnumerationLabel::VariableUp
+        }
+    };
+
     unsigned int baseline = 0;
     unsigned int constant_up = 0;
     unsigned int variable_up = 0;
+    std::multiset<LabelledRecord> emitted;
+    std::set<std::string> hydrogen_constants;
     for (const OEMMPA::Fragmentation& fragmentation : fragmentations) {
         const bool base_variable = fragmentation.GetVariableSmiles() == TWO_SIDED_BASE_VARIABLE;
         const bool base_constant = fragmentation.GetConstantSmiles() == TWO_SIDED_BASE_CONSTANT;
+        bool in_group = false;
         switch (fragmentation.GetEnumerationLabel()) {
             case OEMMPA::Fragmentation::EnumerationLabel::None:
-                baseline += (base_variable && base_constant) ? 1u : 0u;
+                in_group = base_variable && base_constant;
+                baseline += in_group ? 1u : 0u;
                 break;
             case OEMMPA::Fragmentation::EnumerationLabel::ConstantUp:
-                constant_up += base_variable ? 1u : 0u;
+                in_group = base_variable;
+                constant_up += in_group ? 1u : 0u;
                 break;
             case OEMMPA::Fragmentation::EnumerationLabel::VariableUp:
-                variable_up += base_constant ? 1u : 0u;
+                in_group = base_constant;
+                variable_up += in_group ? 1u : 0u;
                 break;
+        }
+        if (in_group) {
+            emitted.insert(record_of(fragmentation));
+            hydrogen_constants.insert(fragmentation.GetConstantWithHydrogenSmiles());
         }
     }
 
@@ -151,6 +289,52 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
     EXPECT_EQ(variable_up, 2u);
     EXPECT_EQ(baseline + constant_up + variable_up, 5u)
         << "9 here means a joint product over both sides regressed in";
+    EXPECT_EQ(emitted, expected);
+
+    // The hydrogen-terminated constant is a single-cut convenience, so every
+    // record of this two-cut group carries the empty string its baseline
+    // carries -- enumeration must not invent one for the tagged variants.
+    EXPECT_EQ(hydrogen_constants, (std::set<std::string>{""}));
+}
+
+// OCC(CO)N has two symmetry-equivalent C-CH2OH bonds and two symmetry-equivalent
+// hydroxyls, so two of its five single-cut combinations re-emit records another
+// combination already placed: twelve collisions, eight of them between
+// enumerated records. Dedup must therefore keep exactly one record per key, and
+// the label it keeps must not depend on which combination reached the key
+// first. The spellings below are one molecule written four ways, which permutes
+// the atom order and with it the order cut bonds and combinations are
+// enumerated in.
+TEST(UpEnumeration, DuplicateKeysCollapseToOneRecordWithAStableLabel) {
+    const char* const spellings[] = {"OCC(CO)N", "NC(CO)CO", "OCC(N)CO", "C(N)(CO)CO"};
+
+    std::vector<LabelledRecord> reference;
+    for (const char* const spelling : spellings) {
+        OEMMPA::Fragmenter fragmenter;
+        fragmenter.SetMaxCuts(1);
+        const OEChem::OEGraphMol mol = parse_smiles(spelling);
+        const std::vector<OEMMPA::Fragmentation> fragmentations = fragmenter.Fragment(1, mol);
+
+        std::set<DedupKey> keys;
+        std::vector<LabelledRecord> records;
+        for (const OEMMPA::Fragmentation& fragmentation : fragmentations) {
+            EXPECT_TRUE(keys.insert(key_of(fragmentation)).second)
+                << spelling << ": two records survived one key, "
+                << fragmentation.GetConstantSmiles() << " / "
+                << fragmentation.GetVariableSmiles();
+            records.push_back(record_of(fragmentation));
+        }
+        EXPECT_EQ(fragmentations.size(), 14u) << spelling;
+
+        if (reference.empty()) {
+            reference = records;
+        } else {
+            EXPECT_EQ(records, reference)
+                << spelling << " disagrees with " << spellings[0]
+                << ": dedup kept a different record or label for some key";
+        }
+    }
+    EXPECT_EQ(reference.size(), 14u);
 }
 
 // Symmetric to ConstantUpKeepsTheBaselineVariableSide. Together the two are the

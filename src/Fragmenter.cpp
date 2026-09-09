@@ -33,6 +33,11 @@ struct ComponentRecord {
 using CutCombination = std::vector<CutBond>;
 using CloneAtomIndexMap = std::unordered_map<unsigned int, unsigned int>;
 using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
+/// Dedup keys seen so far, each mapped to the index in the emitted vector of the
+/// record retained for it. A plain set cannot express the label precedence rule:
+/// deciding a duplicate needs the retained record, not just the knowledge that one
+/// exists.
+using RetainedFragmentations = std::map<FragmentationKey, std::size_t>;
 
 std::tuple<unsigned int, unsigned int, unsigned int> CutBondSortKey(const CutBond& cut) {
     const auto endpoints = std::minmax(cut.begin_atom_idx, cut.end_atom_idx);
@@ -618,7 +623,7 @@ void AddFragmentationRecord(
     unsigned int cut_count,
     const std::string& constant_with_hydrogen_smiles,
     Fragmentation::EnumerationLabel label,
-    std::set<FragmentationKey>& seen,
+    RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
     if (constant_smiles.empty() || variable_smiles.empty()) {
@@ -636,18 +641,35 @@ void AddFragmentationRecord(
             );
     }
 
-    // The enumeration label is deliberately absent from the key. Within one cut
-    // combination an enumerated record always differs from the baseline on the
-    // side it varied, so no two records of one combination can collide; and
-    // because the baseline is emitted first, insertion-ordered dedup gives it
-    // precedence over any cross-combination enumerated duplicate.
+    // The enumeration label is deliberately absent from the key, so a baseline
+    // record and an enumerated one can compete for the same key. Precedence holds by
+    // construction rather than by arrival order: within one role assignment the
+    // baseline is emitted first, and across cut combinations a later baseline
+    // reclaims a key an enumerated duplicate already took.
     const auto key = std::make_tuple(
         molecule_id,
         dedupe_constant_key,
         dedupe_variable_key,
         cut_count
     );
-    if (!seen.insert(key).second) {
+    const auto insertion = seen.emplace(key, fragmentations.size());
+    if (!insertion.second) {
+        // A key is only ever reclaimed in one direction, baseline over enumerated,
+        // never the reverse. Both records describe the same fragmentation under the
+        // key, so relabelling the retained one is the whole of the reclaim; swapping
+        // the record itself would additionally churn which attachment-label
+        // permutation of a multi-cut fragmentation survives. Today no parent can
+        // reach this branch with a label change -- enumeration only ever tags an
+        // atom the parent leaves unspecified, and baseline rendering never does --
+        // but that guarantee is spread across chiral perception and fragment
+        // rendering, so the rule is enforced here rather than assumed.
+        Fragmentation& retained = fragmentations[insertion.first->second];
+        if (
+            label == Fragmentation::EnumerationLabel::None &&
+            retained.GetEnumerationLabel() != Fragmentation::EnumerationLabel::None
+        ) {
+            retained.SetEnumerationLabel(Fragmentation::EnumerationLabel::None);
+        }
         return;
     }
 
@@ -754,7 +776,7 @@ void AddFragmentationsForRoleAssignment(
     const std::vector<ComponentRecord>& baseline,
     std::size_t selected_index,
     unsigned int cut_count,
-    std::set<FragmentationKey>& seen,
+    RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
     // The part number survives a re-split under different chiral tags; the
@@ -889,7 +911,7 @@ void AddFragmentationForCombination(
     const OEChem::OEMolBase& mol,
     const std::unordered_map<unsigned int, unsigned int>& parent_flags,
     const CutCombination& combination,
-    std::set<FragmentationKey>& seen,
+    RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
     OEChem::OEGraphMol cut_mol(mol);
@@ -1107,7 +1129,7 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     }
 
     std::vector<Fragmentation> fragmentations;
-    std::set<FragmentationKey> seen;
+    RetainedFragmentations seen;
 
     const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(mol));
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
