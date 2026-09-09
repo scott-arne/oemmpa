@@ -781,6 +781,9 @@ void AddFragmentationsForRoleAssignment(
     RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
+    // Guard enforces the per-role-assignment budget. Charged before every
+    // potential emission (baseline and each enumerated configuration), so
+    // configurations discarded by dedup or null lookups still consume budget.
     const auto charge_budget = [&]() {
         if (emitted > max_up_enumerations) {
             throw FragmentationError(
@@ -966,7 +969,10 @@ void AddFragmentationForCombination(
     }
 
     for (const std::size_t selected_index : selected_indices) {
-        // Counter is per role assignment to match test expectations.
+        // Counter is per role assignment (one constant/variable orientation of
+        // one cut combination). mmpdb caps only its multi-cut path, which has
+        // one partition per combination, and enumerates single-cut orientations
+        // separately, so one budget per orientation matches it on every capped path.
         unsigned int emitted = 0;
         AddFragmentationsForRoleAssignment(
             molecule_id,

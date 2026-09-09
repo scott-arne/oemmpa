@@ -32,12 +32,16 @@ public:
     ///
     /// \param max_cut_bonds Maximum eligible cut bonds, or 0 for no limit.
     void SetMaxCutBonds(unsigned int max_cut_bonds);
-    /// \brief Cap the records one cut combination may emit.
+    /// \brief Cap the records one role assignment may emit.
     ///
     /// Up-enumeration is a 3^k product over created stereocentres. The cap
-    /// bounds it; exceeding it throws rather than silently truncating, because
-    /// a truncated enumeration would produce a quietly incomplete index.
-    /// Defaults to 1000, matching mmpdb's --max-up-enumerations.
+    /// bounds it per role assignment (one constant/variable orientation of one
+    /// cut combination); exceeding it throws rather than silently truncating,
+    /// because a truncated enumeration would produce a quietly incomplete index.
+    /// Defaults to 1000, matching mmpdb's --max-up-enumerations. mmpdb caps only
+    /// its multi-cut path, which has one partition per combination, and enumerates
+    /// single-cut orientations separately, so one budget per orientation matches
+    /// it on every capped path.
     void SetMaxUpEnumerations(unsigned int max_up_enumerations);
     void SetMaxHeavyAtoms(unsigned int max_heavy_atoms);
     void ClearMaxHeavyAtoms();

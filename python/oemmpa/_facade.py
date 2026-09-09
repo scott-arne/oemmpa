@@ -334,12 +334,16 @@ class Analyzer:
         return self
 
     def set_fragmentation_max_up_enumerations(self, max_up_enumerations):
-        """Set the maximum records one cut combination may emit during fragmentation.
+        """Set the maximum records one role assignment may emit during fragmentation.
 
         Up-enumeration is a 3^k product over created stereocentres. The cap bounds
-        it; exceeding it throws rather than silently truncating.
+        it per role assignment (one constant/variable orientation of one cut
+        combination); exceeding it throws rather than silently truncating. mmpdb
+        caps only its multi-cut path, which has one partition per combination, and
+        enumerates single-cut orientations separately, so one budget per orientation
+        matches it on every capped path.
 
-        :param max_up_enumerations: Maximum number of records per cut combination.
+        :param max_up_enumerations: Maximum number of records per role assignment.
         :returns: ``self`` for chaining.
         :raises ValueError: If the analyzer is not using the fragmentation method.
         """
