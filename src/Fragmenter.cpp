@@ -887,6 +887,7 @@ void AddFragmentationsForRoleAssignment(
 void AddFragmentationForCombination(
     unsigned int molecule_id,
     const OEChem::OEMolBase& mol,
+    const std::unordered_map<unsigned int, unsigned int>& parent_flags,
     const CutCombination& combination,
     std::set<FragmentationKey>& seen,
     std::vector<Fragmentation>& fragmentations
@@ -904,10 +905,9 @@ void AddFragmentationForCombination(
         return;
     }
 
-    // Both flag sets describe the input configuration, so they are read once,
-    // before any enumerated tag reaches cut_mol. Every role assignment restores
-    // cut_mol to that configuration before returning.
-    const std::unordered_map<unsigned int, unsigned int> parent_flags = ComputeChiralFlags(mol);
+    // Read before any enumerated tag reaches cut_mol; every role assignment
+    // restores cut_mol to that configuration before returning. The parent's
+    // flags are invariant across combinations, so the caller supplies them.
     const std::unordered_map<unsigned int, unsigned int> cut_flags =
         ComputeChiralFlags(cut_mol);
 
@@ -1114,12 +1114,20 @@ std::vector<Fragmentation> Fragmenter::Fragment(
         return fragmentations;
     }
 
+    // Created-stereocentre detection compares the parent's chirality against
+    // each cut molecule's. The parent side is the same for every combination,
+    // so perceive it once here instead of once per combination.
+    const std::unordered_map<unsigned int, unsigned int> parent_flags = ComputeChiralFlags(mol);
+
     EnumerateCutCombinations(
         cut_bonds,
         min_cuts_,
         max_cuts_,
-        [molecule_id, &mol, &seen, &fragmentations](const CutCombination& combination) {
-            AddFragmentationForCombination(molecule_id, mol, combination, seen, fragmentations);
+        [molecule_id, &mol, &parent_flags, &seen, &fragmentations](
+            const CutCombination& combination
+        ) {
+            AddFragmentationForCombination(
+                molecule_id, mol, parent_flags, combination, seen, fragmentations);
         }
     );
 
