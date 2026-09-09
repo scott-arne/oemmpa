@@ -1,5 +1,6 @@
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
@@ -7,8 +8,12 @@
 
 #include <gtest/gtest.h>
 
+#include <oechem.h>
+
 #include <algorithm>
+#include <string>
 #include <thread>
+#include <vector>
 
 using OEMMPA::Analyzer;
 using OEMMPA::MatchedPair;
@@ -286,13 +291,70 @@ bool has_direction(const std::string& smiles) {
     return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
 }
 
+/// Reduce an environment SMIRKS to the bare structure it describes, so it can
+/// be compared against a reference written by hand.
+///
+/// An environment SMIRKS is a '.'-joined descriptive form, not a reaction: it
+/// carries a map index on every RECS atom and spells out the hydrogens needed
+/// for matching. Neither is chemistry, and both would have to be replicated
+/// character for character in an expectation that compared the raw string --
+/// which is how expectations end up being copied from output instead of
+/// derived. Clearing the maps first is what lets the mapped hydrogens
+/// ([H:3] and friends) be suppressed; suppression leaves them in place while
+/// they are still mapped. Parsing the whole joined string as one
+/// multi-component molecule also means the canonical renderer settles the
+/// component order, so the two directions of a symmetric pair -- which emit the
+/// same two components in opposite order -- normalize to one string.
+///
+/// \param smirks The environment SMIRKS as emitted by the WizePairZ pipeline.
+/// \returns The canonical SMILES of the structure, maps and explicit hydrogens
+///     removed.
+std::string normalize_smirks(const std::string& smirks) {
+    OEChem::OEGraphMol mol;
+    EXPECT_TRUE(OEChem::OESmilesToMol(mol, smirks)) << "unparseable SMIRKS: " << smirks;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        // Only the real atoms are stripped. Attachment dummies are part of the
+        // structure being described, so whatever labelling they carry is left
+        // alone for the reference to match.
+        if (atom->GetAtomicNum() != 0) {
+            atom->SetMapIdx(0);
+        }
+    }
+    OEChem::OESuppressHydrogens(mol);
+    return OEMMPA::render_fragment_smiles(mol);
+}
+
+/// Render a hand-derived reference through the same canonical renderer, so the
+/// comparison is between structures rather than between spellings.
+std::string render_reference(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    EXPECT_TRUE(OEChem::OESmilesToMol(mol, smiles)) << "unparseable reference: " << smiles;
+    return OEMMPA::render_fragment_smiles(mol);
+}
+
+/// Find the environment SMIRKS a pair emitted at one radius.
+///
+/// \returns The SMIRKS, or an empty string when the pair has no entry there.
+std::string smirks_at_radius(const OEMMPA::MatchedPair& pair, unsigned int radius) {
+    const auto& entries = pair.GetEnvironmentSmirks();
+    const auto entry = std::find_if(
+        entries.begin(), entries.end(),
+        [&](const OEMMPA::PairEnvironmentSmirks& e) { return e.radius == radius; });
+    return entry == entries.end() ? std::string() : entry->smirks;
+}
+
 }  // namespace
 
 // The environment SMIRKS are built by the mapped-region rebuilder, so they lose
-// cis/trans unless the rebuilder transfers it. The three cases are the same
-// three the region-level tests cover, reached through the WizePairZ pipeline
-// instead: WizePairZ picks its own cuts, so a case is selected by corpus plus
-// radius rather than by an atom subset.
+// cis/trans unless the rebuilder transfers it. The cases are the ones the
+// region-level tests cover, reached through the WizePairZ pipeline instead:
+// WizePairZ picks its own cuts, so a case is selected by corpus plus radius
+// rather than by an atom subset.
+//
+// Each case is pinned to a reference derived from the two input structures --
+// the parent SMILES with '[*]' written at each truncation point -- and rejects
+// the opposite geometry, because a marker-presence check passes just as happily
+// on a transfer that reversed every double bond it touched.
 TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesGeometry) {
     struct SmirksCase {
         const char* name;
@@ -300,17 +362,33 @@ TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesGeometry) {
         const char* second;
         unsigned int radius;
         bool expect_direction;
+        /// The two region structures, '.'-joined, written out by hand.
+        const char* expected;
+        /// The same regions with both double bonds reversed. Null where the cut
+        /// destroys the geometry and there is no opposite to reject.
+        const char* inverted;
     };
     const std::vector<SmirksCase> cases{
         // Both stereo references are inside the region at radius 4, so nothing
-        // needs a stand-in.
-        {"distant cut", "C/C=C/CCl", "C/C=C/CBr", 4, true},
+        // needs a stand-in and the regions are the whole input molecules.
+        {"distant cut, E", "C/C=C/CCl", "C/C=C/CBr", 4, true,
+         "C/C=C/CCl.C/C=C/CBr", "C/C=C\\CCl.C/C=C\\CBr"},
         // The same pair at radius 3 puts the methyl outside the region, so the
         // dummy has to stand in for the 1-end reference.
-        {"reference-neighbor cut", "C/C=C/CCl", "C/C=C/CBr", 3, true},
+        {"reference-neighbor cut, E", "C/C=C/CCl", "C/C=C/CBr", 3, true,
+         "[*]/C=C/CCl.[*]/C=C/CBr", "[*]/C=C\\CCl.[*]/C=C\\CBr"},
+        // The Z inputs through both of the same cuts. Without these, a transfer
+        // that mapped every bond to E would still satisfy the E cases.
+        {"distant cut, Z", "C/C=C\\CCl", "C/C=C\\CBr", 4, true,
+         "C/C=C\\CCl.C/C=C\\CBr", "C/C=C/CCl.C/C=C/CBr"},
+        {"reference-neighbor cut, Z", "C/C=C\\CCl", "C/C=C\\CBr", 3, true,
+         "[*]/C=C\\CCl.[*]/C=C\\CBr", "[*]/C=C/CCl.[*]/C=C/CBr"},
         // Two dummies on one sp2 atom: the geometry is genuinely unrecoverable,
-        // so this is the over-transfer guard and must stay directionless.
-        {"end-substituent cut destroys it", "C/C=C(\\F)CCl", "C/C=C(\\Cl)CCl", 1, false},
+        // so this is the over-transfer guard and must stay directionless. The
+        // central carbon is written as a bracket atom because truncating its
+        // double bond to a dummy does not hand it a hydrogen it never had.
+        {"end-substituent cut destroys it", "C/C=C(\\F)CCl", "C/C=C(\\Cl)CCl", 1, false,
+         "[*][C]([*])F.[*][C]([*])Cl", nullptr},
     };
 
     for (const SmirksCase& test_case : cases) {
@@ -321,16 +399,81 @@ TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesGeometry) {
         const auto pairs = analyzer.GetPairs();
         ASSERT_FALSE(pairs.empty()) << test_case.name;
 
-        // GetPairs is symmetric by default, so both directions are present; the
-        // two are mirror images and agree on whether geometry survived.
-        const auto& entries = pairs.front().GetEnvironmentSmirks();
-        const auto entry = std::find_if(
-            entries.begin(), entries.end(),
-            [&](const OEMMPA::PairEnvironmentSmirks& e) { return e.radius == test_case.radius; });
-        ASSERT_NE(entry, entries.end())
-            << test_case.name << ": no entry at radius " << test_case.radius;
+        // GetPairs is symmetric by default, so both directions are present.
+        // They emit the same two components in opposite order and so normalize
+        // to the same string; checking every pair rather than the first means
+        // neither direction can carry a reversed configuration unnoticed.
+        for (const MatchedPair& pair : pairs) {
+            const std::string smirks = smirks_at_radius(pair, test_case.radius);
+            ASSERT_FALSE(smirks.empty())
+                << test_case.name << ": no entry at radius " << test_case.radius;
 
-        EXPECT_EQ(has_direction(entry->smirks), test_case.expect_direction)
-            << test_case.name << " -> " << entry->smirks;
+            EXPECT_EQ(has_direction(smirks), test_case.expect_direction)
+                << test_case.name << " -> " << smirks;
+            EXPECT_EQ(normalize_smirks(smirks), render_reference(test_case.expected))
+                << test_case.name << " -> " << smirks;
+            if (test_case.inverted != nullptr) {
+                EXPECT_NE(normalize_smirks(smirks), render_reference(test_case.inverted))
+                    << test_case.name << " -> " << smirks;
+            }
+        }
+    }
+}
+
+// The tetrahedral half of the WizePairZ path. This is the pipeline the region
+// rebuilder is actually called from in production -- with populated map indices
+// and selected_side_is_constant false -- which the direct-call unit tests do not
+// exercise.
+//
+// Captopril's alpha carbon is the stereocentre. Radius 2 is not usable for this:
+// there the alpha carbon carries three indistinguishable dummies (both the
+// methyl and the carbonyl are truncated), so its configuration is legitimately
+// undefined. Radius 3 is the smallest radius at which all three heavy
+// neighbours are inside the region, and radius 4 extends it one shell further;
+// both references are the parent with '[*]' at each truncation point. The
+// carbonyl carbon is written '[C]' at radius 3 because its double bond to
+// oxygen was truncated to a single-bonded dummy, which does not give it the
+// implicit hydrogen a bare 'C' would imply.
+TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesTetrahedralConfiguration) {
+    struct SmirksCase {
+        const char* name;
+        unsigned int radius;
+        const char* expected;
+        const char* inverted;
+    };
+    const std::vector<SmirksCase> cases{
+        // Region: methyl, alpha carbon, CH2-X, and the carbonyl carbon with its
+        // oxygen and the ring nitrogen both truncated to dummies.
+        {"radius 3", 3,
+         "C[C@H](CS)[C]([*])[*].C[C@H](CO)[C]([*])[*]",
+         "C[C@@H](CS)[C]([*])[*].C[C@@H](CO)[C]([*])[*]"},
+        // One shell further: the carbonyl oxygen and the ring nitrogen join the
+        // region, and the nitrogen's two ring bonds become the dummies.
+        {"radius 4", 4,
+         "C[C@H](CS)C(=O)N([*])[*].C[C@H](CO)C(=O)N([*])[*]",
+         "C[C@@H](CS)C(=O)N([*])[*].C[C@@H](CO)C(=O)N([*])[*]"},
+    };
+
+    Analyzer analyzer("wizepairz");
+    analyzer.AddMolecule("C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O", "captopril");
+    analyzer.AddMolecule("C[C@H](CO)C(=O)N1CCC[C@H]1C(=O)O", "hydroxy analogue");
+    analyzer.Analyze();
+    const auto pairs = analyzer.GetPairs();
+    ASSERT_FALSE(pairs.empty());
+
+    for (const SmirksCase& test_case : cases) {
+        for (const MatchedPair& pair : pairs) {
+            const std::string smirks = smirks_at_radius(pair, test_case.radius);
+            ASSERT_FALSE(smirks.empty())
+                << test_case.name << ": no entry at radius " << test_case.radius;
+
+            // Explicit hydrogens mean a parity marker is emitted whichever way
+            // the centre was written, so only the reference comparison can tell
+            // a preserved configuration from an inverted one.
+            EXPECT_EQ(normalize_smirks(smirks), render_reference(test_case.expected))
+                << test_case.name << " -> " << smirks;
+            EXPECT_NE(normalize_smirks(smirks), render_reference(test_case.inverted))
+                << test_case.name << " -> " << smirks;
+        }
     }
 }

@@ -377,21 +377,58 @@ std::size_t count_directions(const std::string& smiles) {
 }  // namespace
 
 // E/Z entirely inside the region: the rebuild loses it without the transfer.
+//
+// has_direction() only proves a marker was emitted, so every geometry case also
+// pins the configuration against a textual substitution of the parent -- the
+// parent SMILES with the attachment label written where the cut atom was -- and
+// rejects the opposite geometry. A transfer that carried the reversed cis/trans
+// value would satisfy the presence predicate and silently mirror the molecule.
 TEST(TransferBondStereo, PreservesGeometryDistantFromTheCut) {
     OEChem::OEGraphMol mol = parse("C/C=C/CCl");
     const std::set<unsigned int> selected{0, 1, 2, 3};
     OEChem::OEGraphMol without = rebuild_region(mol, selected, false);
     OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    const std::string smiles = OEMMPA::render_fragment_smiles(with);
     EXPECT_FALSE(has_direction(OEMMPA::render_fragment_smiles(without)));
-    EXPECT_TRUE(has_direction(OEMMPA::render_fragment_smiles(with)));
+    EXPECT_TRUE(has_direction(smiles));
+    EXPECT_EQ(smiles, render("C/C=C/C[*:1]"));
+    EXPECT_NE(smiles, render("C/C=C\\C[*:1]"));
+}
+
+// The Z twin of the case above. Both configurations must round-trip, and they
+// must not collapse onto one another.
+TEST(TransferBondStereo, PreservesZGeometryDistantFromTheCut) {
+    OEChem::OEGraphMol mol = parse("C/C=C\\CCl");
+    const std::set<unsigned int> selected{0, 1, 2, 3};
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    const std::string smiles = OEMMPA::render_fragment_smiles(with);
+    EXPECT_TRUE(has_direction(smiles));
+    EXPECT_EQ(smiles, render("C/C=C\\C[*:1]"));
+    EXPECT_NE(smiles, render("C/C=C/C[*:1]"));
 }
 
 // The cut removed a stereo reference neighbour; the dummy stands in for it.
+// The reference therefore has the label on the double bond itself, which is
+// what makes this the case where a wrong stand-in flips the geometry.
 TEST(TransferBondStereo, RemapsAReferenceNeighborToItsDummy) {
     OEChem::OEGraphMol mol = parse("C/C=C/CCl");
     const std::set<unsigned int> selected{1, 2, 3, 4};
     OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
-    EXPECT_TRUE(has_direction(OEMMPA::render_fragment_smiles(with)));
+    const std::string smiles = OEMMPA::render_fragment_smiles(with);
+    EXPECT_TRUE(has_direction(smiles));
+    EXPECT_EQ(smiles, render("[*:1]/C=C/CCl"));
+    EXPECT_NE(smiles, render("[*:1]/C=C\\CCl"));
+}
+
+// The Z twin of the stand-in case.
+TEST(TransferBondStereo, RemapsAReferenceNeighborToItsDummyForZ) {
+    OEChem::OEGraphMol mol = parse("C/C=C\\CCl");
+    const std::set<unsigned int> selected{1, 2, 3, 4};
+    OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    const std::string smiles = OEMMPA::render_fragment_smiles(with);
+    EXPECT_TRUE(has_direction(smiles));
+    EXPECT_EQ(smiles, render("[*:1]/C=C\\CCl"));
+    EXPECT_NE(smiles, render("[*:1]/C=C/CCl"));
 }
 
 // Both substituents on one end are gone, so the geometry is meaningless; the
@@ -416,15 +453,27 @@ TEST(TransferBondStereo, DestroyedGeometryIsNotEmitted) {
 // other component -- and lose its geometry, leaving two markers. A rebuild with
 // no transfer at all leaves zero. The three counts are distinct, so this test
 // fails loudly for the specific defect B15 describes.
+//
+// Counting markers cannot say *which* geometry each dummy resolved to, so the
+// product is also pinned to the region written by hand: the parent with a label
+// at each of the two cuts, keeping the E on the first bond and the Z on the
+// second. That is what separates "both bonds found a stand-in" from "both bonds
+// found a stand-in and got the right answer".
 TEST(TransferBondStereo, StandInKeyDistinguishesEdgesSharingARemovedAtom) {
     OEChem::OEGraphMol mol = parse("C/C=C/C/C=C\\C");
     const std::set<unsigned int> selected{0, 1, 2, 4, 5, 6};
 
     OEChem::OEGraphMol without = rebuild_region(mol, selected, false);
     OEChem::OEGraphMol with = rebuild_region(mol, selected, true);
+    const std::string smiles = OEMMPA::render_fragment_smiles(with);
 
     EXPECT_EQ(count_directions(OEMMPA::render_fragment_smiles(without)), 0u);
-    EXPECT_EQ(count_directions(OEMMPA::render_fragment_smiles(with)), 4u);
+    EXPECT_EQ(count_directions(smiles), 4u);
+    EXPECT_EQ(smiles, render("C/C=C/[*:1].[*:2]/C=C\\C"));
+    // Either bond alone coming back reversed has to fail.
+    EXPECT_NE(smiles, render("C/C=C\\[*:1].[*:2]/C=C\\C"));
+    EXPECT_NE(smiles, render("C/C=C/[*:1].[*:2]/C=C/C"));
+    EXPECT_NE(smiles, render("C/C=C\\[*:1].[*:2]/C=C/C"));
 }
 
 namespace {
@@ -529,6 +578,14 @@ struct RegionCase {
     std::set<unsigned int> selected_atoms;
     std::vector<OEMMPA::mcs::Boundary> boundaries;
     bool expect_direction;
+    /// The region written out by hand: the parent SMILES with an attachment
+    /// label substituted at each cut. Derived from the atom set, never copied
+    /// from emitted output.
+    const char* expected;
+    /// The same region carrying the opposite geometry. The product must not
+    /// equal it. Null where the cut genuinely destroys the geometry and there
+    /// is therefore no opposite configuration to reject.
+    const char* inverted;
 };
 
 // C/C=C/CCl numbers as C0=C1=C2-C3-Cl4 with the E geometry on bond 1=2.
@@ -542,15 +599,29 @@ std::vector<RegionCase> region_cases() {
     return {
         // Geometry sits entirely inside the region; only the terminal Cl is cut.
         {"distant cut", "C/C=C/CCl", {0, 1, 2, 3},
-         {OEMMPA::mcs::Boundary{1, 3, 4, 0, 0}}, true},
+         {OEMMPA::mcs::Boundary{1, 3, 4, 0, 0}}, true,
+         "C/C=C/C[*:1]", "C/C=C\\C[*:1]"},
+        // The Z twin, so a transfer that only mishandles one of the two
+        // configurations cannot hide behind the other.
+        {"distant cut, Z", "C/C=C\\CCl", {0, 1, 2, 3},
+         {OEMMPA::mcs::Boundary{1, 3, 4, 0, 0}}, true,
+         "C/C=C\\C[*:1]", "C/C=C/C[*:1]"},
         // The cut removes atom 0, which is the 1-end stereo reference: the
         // dummy has to stand in for it or the geometry is lost.
         {"reference-neighbor cut", "C/C=C/CCl", {1, 2, 3, 4},
-         {OEMMPA::mcs::Boundary{1, 1, 0, 0, 0}}, true},
+         {OEMMPA::mcs::Boundary{1, 1, 0, 0, 0}}, true,
+         "[*:1]/C=C/CCl", "[*:1]/C=C\\CCl"},
+        // The Z twin of the stand-in case.
+        {"reference-neighbor cut, Z", "C/C=C\\CCl", {1, 2, 3, 4},
+         {OEMMPA::mcs::Boundary{1, 1, 0, 0, 0}}, true,
+         "[*:1]/C=C\\CCl", "[*:1]/C=C/CCl"},
         // Both substituents on the 2-end are cut away, leaving two
-        // indistinguishable dummies: the geometry is genuinely destroyed.
+        // indistinguishable dummies: the geometry is genuinely destroyed. Every
+        // directional spelling of this region renders identically, so there is
+        // no inverted reference to reject.
         {"end-substituent cut destroys it", "C/C=C(\\F)CCl", {0, 1, 2},
-         {OEMMPA::mcs::Boundary{1, 2, 3, 0, 0}, OEMMPA::mcs::Boundary{2, 2, 4, 0, 0}}, false},
+         {OEMMPA::mcs::Boundary{1, 2, 3, 0, 0}, OEMMPA::mcs::Boundary{2, 2, 4, 0, 0}}, false,
+         "CC=C([*:1])[*:2]", nullptr},
     };
 }
 
@@ -563,6 +634,10 @@ TEST(RegionGeometry, BuildRegionSmilesPreservesGeometry) {
             mol, test_case.selected_atoms, test_case.boundaries, /*selected_side_is_constant=*/true);
         EXPECT_EQ(has_direction(smiles), test_case.expect_direction)
             << test_case.name << " -> " << smiles;
+        EXPECT_EQ(smiles, render(test_case.expected)) << test_case.name;
+        if (test_case.inverted != nullptr) {
+            EXPECT_NE(smiles, render(test_case.inverted)) << test_case.name;
+        }
     }
 }
 
@@ -580,6 +655,7 @@ TEST(RegionGeometry, BuildRegionSmilesPreservesTetrahedralConfiguration) {
     const std::string smiles = OEMMPA::mcs::build_region_smiles(
         mol, selected, boundaries, /*selected_side_is_constant=*/true);
     EXPECT_EQ(smiles, render("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O"));
+    EXPECT_NE(smiles, render("C[C@@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O"));
 }
 
 // The same cut through the explicit-hydrogen rebuilder, which is the region
@@ -597,4 +673,7 @@ TEST(RegionGeometry, MappedRegionWithExplicitHPreservesTetrahedralConfiguration)
 
     OEChem::OEGraphMol reference_mol = parse("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O");
     EXPECT_EQ(smiles, OEMMPA::render_fragment_smiles(reference_mol, /*explicit_hydrogens=*/true));
+
+    OEChem::OEGraphMol inverted_mol = parse("C[C@@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O");
+    EXPECT_NE(smiles, OEMMPA::render_fragment_smiles(inverted_mol, /*explicit_hydrogens=*/true));
 }
