@@ -2,6 +2,7 @@
 
 #include "oedesalt/Desalter.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/MoleculeRecord.h"
 
 #include <map>
@@ -216,11 +217,7 @@ std::set<unsigned int> attachment_labels(
 }
 
 std::string variable_component_smiles(OEChem::OEMolBase& mol) {
-    std::string smirks;
-    const unsigned int smiles_flags =
-        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
-    OEChem::OECreateSmiString(smirks, mol, smiles_flags);
-    return smirks;
+    return render_fragment_smiles(mol);
 }
 
 std::string variable_component_to_smirks(

@@ -1,6 +1,7 @@
 #include "oemmpa/MCSCommon.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/FragmentSmiles.h"
 
 #include <oechem.h>
 
@@ -16,14 +17,6 @@ namespace {
 long long absolute_delta(int value) {
     const long long widened_value = value;
     return widened_value < 0 ? -widened_value : widened_value;
-}
-
-std::string canonical_smiles(const OEChem::OEMolBase& mol) {
-    std::string smiles;
-    const unsigned int smiles_flags =
-        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
-    OEChem::OECreateSmiString(smiles, mol, smiles_flags);
-    return smiles;
 }
 
 McsMatch extract_match_record(const OEChem::OEMatchBase& match) {
@@ -353,17 +346,7 @@ std::string build_region_smiles(
         }
     }
 
-    if (render_options.explicit_hydrogens) {
-        OEChem::OEAddExplicitHydrogens(region);
-        // Use Hydrogens flag to force explicit hydrogen atoms to appear as separate [H] in SMILES.
-        std::string smiles;
-        const unsigned int smiles_flags =
-            OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps | OEChem::OESMILESFlag::Hydrogens;
-        OEChem::OECreateSmiString(smiles, region, smiles_flags);
-        return smiles;
-    }
-
-    return canonical_smiles(region);
+    return render_fragment_smiles(region, render_options.explicit_hydrogens);
 }
 
 std::string render_mapped_region_with_explicit_h(
@@ -431,13 +414,7 @@ std::string render_mapped_region_with_explicit_h(
         }
     }
 
-    OEChem::OEAddExplicitHydrogens(region);
-    // Use Hydrogens flag to force explicit hydrogen atoms to appear as separate [H] in SMILES.
-    std::string smiles;
-    const unsigned int smiles_flags =
-        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps | OEChem::OESMILESFlag::Hydrogens;
-    OEChem::OECreateSmiString(smiles, region, smiles_flags);
-    return smiles;
+    return render_fragment_smiles(region, true);
 }
 
 bool find_mcs_match(

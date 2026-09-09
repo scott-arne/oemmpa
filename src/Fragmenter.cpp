@@ -1,6 +1,7 @@
 #include "oemmpa/Fragmenter.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/FragmentSmiles.h"
 
 #include <algorithm>
 #include <map>
@@ -191,13 +192,8 @@ std::set<unsigned int> CollectAttachmentLabels(const OEChem::OEMolBase& mol) {
     return labels;
 }
 
-std::string CanonicalSmiles(const OEChem::OEMolBase& mol) {
-    std::string smiles;
-    // Excluding the R-group flavor preserves dummy atom maps as [*:n] labels.
-    const unsigned int smiles_flags =
-        OEChem::OESMILESFlag::Canonical | OEChem::OESMILESFlag::AtomMaps;
-    OEChem::OECreateSmiString(smiles, mol, smiles_flags);
-    return smiles;
+std::string CanonicalSmiles(OEChem::OEMolBase& mol) {
+    return render_fragment_smiles(mol);
 }
 
 std::string ConstantWithHydrogenSmiles(const OEChem::OEMolBase& mol) {
