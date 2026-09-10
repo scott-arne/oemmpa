@@ -53,19 +53,21 @@ struct StereoCleanupContext {
     /// configurationally different is only separable once those configurations
     /// are themselves invariants of the ranking.
     ///
-    /// Only *tetrahedral* handedness is folded in. Upstream's ``rerankAtoms``
-    /// also folds bond stereo, so a centre whose two branches differ solely in
-    /// double-bond geometry stays unresolved here where RDKit separates it.
-    /// See build_stereo_cleanup_context() for the reproducer.
+    /// Both kinds of configuration are folded in, as upstream's ``rerankAtoms``
+    /// does: the tetrahedral handedness the resolve loop has settled so far, and
+    /// the class-relative geometry of the stereogenic double bonds, which is
+    /// static and seeded before the first round.
     std::vector<unsigned int> ranks;
     /// Ring-system id per atom index, as written by OEDetermineRingSystems().
     /// Acyclic atoms carry id 0.
     std::vector<unsigned int> ring_systems;
-    /// Bridgehead flag per atom index: three or more ring bonds, and membership
-    /// in two rings of the smallest set of smallest rings that share more than
-    /// two atoms (``Chirality.cpp::queryIsAtomBridgehead``). All false when no
-    /// tagged nitrogen is present, because only the nitrogen clauses ask and
-    /// ring perception is the most expensive step here.
+    /// Bridgehead flag per atom index: three or more ring bonds, and every ring
+    /// holding one of those bonds overlapping some other such ring in at least
+    /// two bonds (``QueryOps.cpp::queryIsAtomBridgehead``). The ring set is every
+    /// shortest cycle through each ring bond, ties included, which is what makes
+    /// the two faces of a strained cage both visible. All false when no tagged
+    /// nitrogen is present, because only the nitrogen clauses ask and ring
+    /// perception is the most expensive step here.
     std::vector<bool> bridgeheads;
     /// Per atom index, whether the resolve loop settled a specified tag there:
     /// the atom's shape can carry chirality and its neighbours are pairwise
@@ -81,16 +83,10 @@ struct StereoCleanupContext {
 /// branches differ only in configuration -- is unresolvable on the first round
 /// and resolvable on the second, which is exactly why the loop exists.
 ///
-/// \note Known and accepted gap. Only tetrahedral handedness is folded into
-///       the refinement invariants; upstream's ``rerankAtoms`` also folds bond
-///       stereo. A centre whose two branches are constitutionally identical
-///       and differ only in double-bond geometry therefore never resolves, and
-///       its tag is dropped where RDKit keeps it. Both of
-///       ``C/C=C/[C@@H](O)/C=C\\C`` and ``C/C=C/[C@H](O)/C=C\\C`` render as
-///       ``C/C=C/C(/C=C\\C)O`` here, while RDKit keeps them distinct as
-///       ``C/C=C\\[C@H](O)/C=C/C`` and ``C/C=C\\[C@@H](O)/C=C/C``. Closing it
-///       means adding a per-bond stereo bit to the invariant tuple and
-///       re-running the same fixed point.
+/// Double-bond geometry joins the same invariant tuple, but before the first
+/// round rather than between rounds: it is static, and a centre whose branches
+/// differ only in geometry settles nothing on its own, so a loop that refines
+/// only after progress would stop before ever folding it in.
 ///
 /// \param mol Molecule to perceive. Not modified. The caller has already run
 ///        OEPerceiveChiral(), OEPerceiveSymmetry() and OEFindRingAtomsAndBonds()

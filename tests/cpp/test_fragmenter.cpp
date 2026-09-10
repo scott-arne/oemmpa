@@ -933,6 +933,32 @@ TEST(FragmenterTest, DependentRingStereoSurvivesTheCut) {
     EXPECT_FALSE(trans.count(cis_constant)) << cis_constant;
 }
 
+// The two stereo rules fixed alongside this test are only worth anything if
+// they reach production fragmentation, so both are asserted here through
+// Fragment() rather than through the renderer. The carbinol epimers differ
+// only in the geometry of their two otherwise identical vinyl branches; the
+// cage differs only in the configuration of a bridgehead nitrogen whose bridge
+// is invisible unless tied shortest rings are perceived. Either loss collapses
+// a pair of distinct parents onto one record set, which silently merges two
+// molecules into one matched pair.
+TEST(FragmenterTest, StereoOnlyEpimersDoNotCollapseOntoOneRecordSet) {
+    const std::set<std::string> geometry_left =
+        AllFragmentComponents(SingleCutFragmentations("C/C=C/[C@@H](O)/C=C\\C"));
+    const std::set<std::string> geometry_right =
+        AllFragmentComponents(SingleCutFragmentations("C/C=C/[C@H](O)/C=C\\C"));
+    EXPECT_TRUE(geometry_left.count(ExpectedFragmentSmiles("C/C=C/[C@@H]([*:1])/C=C\\C")))
+        << ExpectedFragmentSmiles("C/C=C/[C@@H]([*:1])/C=C\\C");
+    EXPECT_NE(geometry_left, geometry_right);
+
+    const std::set<std::string> cage_left =
+        AllFragmentComponents(SingleCutFragmentations("C12(CCO)CC3[N@@]1CC23"));
+    const std::set<std::string> cage_right =
+        AllFragmentComponents(SingleCutFragmentations("C12(CCO)CC3[N@]1CC23"));
+    EXPECT_TRUE(cage_left.count(ExpectedFragmentSmiles("C12(CC[*:1])CC3[N@@]1CC23")))
+        << ExpectedFragmentSmiles("C12(CC[*:1])CC3[N@@]1CC23");
+    EXPECT_NE(cage_left, cage_right);
+}
+
 // Capping the attachment with hydrogen can destroy the stereochemistry the
 // constant was carrying: the ring pair loses the partner that gave it meaning,
 // and the exocyclic alkene loses the substituent that defined its geometry. The

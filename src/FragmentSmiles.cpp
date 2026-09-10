@@ -7,6 +7,7 @@
 #include <iterator>
 #include <map>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -64,23 +65,31 @@ std::vector<OEChem::OEAtomBase*> collect_atoms(const OEChem::OEMolBase& mol) {
 }
 
 // ---------------------------------------------------------------------------
-// Smallest set of smallest rings.
+// Ring perception for the bridgehead test.
 //
-// RDKit's bridgehead test (Chirality.cpp::queryIsAtomBridgehead) asks whether an
-// atom lies in two SSSR rings sharing more than two atoms. OEChem 2025.2.3
-// exposes no ring enumeration at all -- OEDetermineRingSystems() only partitions
-// atoms, and OEIsBridgeHead answers a different question -- so the ring set is
-// perceived here: the smallest cycle through each ring bond, kept when it is
-// linearly independent over GF(2) of the cycles already kept.
+// RDKit's bridgehead test (QueryOps.cpp::queryIsAtomBridgehead) reads RingInfo
+// after symmetrizeSSSR, so rings tied in size are all present, and then asks a
+// question about bond overlap rather than atom overlap. OEChem 2025.2.3 exposes
+// no ring enumeration at all -- OEDetermineRingSystems() only partitions atoms,
+// and OEIsBridgeHead answers a different question -- so the ring set is
+// perceived here: every shortest cycle through each ring bond, ties included.
+// Keeping one arbitrary cycle per ring bond hides the second face of a strained
+// cage, and the bridgehead goes with it.
 // ---------------------------------------------------------------------------
 
-/// A subset of the ring bonds, as a vector over GF(2). Ring selection needs
-/// symmetric difference and a leading-bit test, which is all this provides.
+/// A subset of the ring bonds as a bitset, which is all the overlap counting
+/// below needs.
 using BondSet = std::vector<std::uint64_t>;
 
-/// The atom indices of one perceived ring, sorted so two rings can be
-/// intersected in linear time.
-using RingAtoms = std::vector<unsigned int>;
+/// How many tied cycles are kept per ring bond. This is the work bound the
+/// enumeration needs: the layering is one breadth-first sweep of the ring
+/// subgraph per ring bond, O(ring bonds * (atoms + bonds)), and the path walk
+/// that follows visits at most MAX_TIED_CYCLES paths of at most one ring's
+/// length each, so the whole ring set holds at most MAX_TIED_CYCLES cycles per
+/// ring bond before deduplication. Cages tie two or three ways; the cap only
+/// bites on graphs symmetric enough for the tie count to grow with the ring
+/// size, where it truncates the ring set instead of letting the walk run away.
+const std::size_t MAX_TIED_CYCLES = 64;
 
 void bond_set_add(BondSet& bits, std::size_t bond_id) {
     bits[bond_id / 64] |= std::uint64_t{1} << (bond_id % 64);
@@ -94,218 +103,170 @@ std::size_t bond_set_size(const BondSet& bits) {
     return count;
 }
 
-/// Index of the highest set bit, or -1 for the empty set.
-long bond_set_high_bit(const BondSet& bits) {
-    for (std::size_t word = bits.size(); word-- > 0;) {
-        if (bits[word] == 0) {
-            continue;
-        }
-        for (std::size_t bit = 64; bit-- > 0;) {
-            if (((bits[word] >> bit) & std::uint64_t{1}) != 0) {
-                return static_cast<long>(word * 64 + bit);
-            }
-        }
-    }
-    return -1;
-}
-
-/// Add `candidate` to a row-echelon `basis` keyed by leading bit, and say
-/// whether it was new. False means the cycle is the symmetric difference of
-/// cycles already chosen, so it is not part of a smallest ring set.
-bool bond_set_extends_basis(const BondSet& candidate, std::map<long, BondSet>& basis) {
-    BondSet reduced = candidate;
-    for (long pivot = bond_set_high_bit(reduced); pivot >= 0; pivot = bond_set_high_bit(reduced)) {
-        const std::map<long, BondSet>::const_iterator existing = basis.find(pivot);
-        if (existing == basis.end()) {
-            basis.emplace(pivot, reduced);
+/// Whether `left` and `right` share at least `minimum` bonds.
+bool bond_sets_share(const BondSet& left, const BondSet& right, std::size_t minimum) {
+    std::size_t count = 0;
+    for (std::size_t word = 0; word < left.size(); ++word) {
+        count += std::bitset<64>(left[word] & right[word]).count();
+        if (count >= minimum) {
             return true;
-        }
-        for (std::size_t word = 0; word < reduced.size(); ++word) {
-            reduced[word] ^= existing->second[word];
         }
     }
     return false;
 }
 
-std::vector<RingAtoms> smallest_set_of_smallest_rings(const OEChem::OEMolBase& mol) {
-    // Adjacency over ring bonds only: every ring lives entirely inside it, and
-    // the acyclic remainder can only lengthen the searches.
+/// An undirected bond keyed so the two endpoint orders agree.
+std::pair<unsigned int, unsigned int> atom_pair(unsigned int left, unsigned int right) {
+    return std::pair<unsigned int, unsigned int>(
+        std::min(left, right), std::max(left, right));
+}
+
+/// The ring subgraph: dense identifiers for the ring bonds and the adjacency
+/// they form. Every ring lives entirely inside it, and the acyclic remainder can
+/// only lengthen the searches.
+struct RingBondGraph {
     std::map<std::pair<unsigned int, unsigned int>, std::size_t> bond_ids;
-    std::map<unsigned int, std::vector<unsigned int>> adjacency;
+    std::map<unsigned int, std::vector<std::pair<unsigned int, std::size_t>>> adjacency;
+    std::size_t words = 0;
+};
+
+RingBondGraph build_ring_bond_graph(const OEChem::OEMolBase& mol) {
+    RingBondGraph graph;
     for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
         if (!bond->IsInRing()) {
             continue;
         }
-        const unsigned int begin_idx = bond->GetBgnIdx();
-        const unsigned int end_idx = bond->GetEndIdx();
-        const std::pair<unsigned int, unsigned int> key(
-            std::min(begin_idx, end_idx), std::max(begin_idx, end_idx));
-        if (bond_ids.find(key) != bond_ids.end()) {
+        const std::pair<unsigned int, unsigned int> key =
+            atom_pair(bond->GetBgnIdx(), bond->GetEndIdx());
+        if (graph.bond_ids.find(key) != graph.bond_ids.end()) {
             continue;
         }
-        const std::size_t bond_id = bond_ids.size();
-        bond_ids.emplace(key, bond_id);
-        adjacency[begin_idx].push_back(end_idx);
-        adjacency[end_idx].push_back(begin_idx);
+        const std::size_t bond_id = graph.bond_ids.size();
+        graph.bond_ids.emplace(key, bond_id);
+        graph.adjacency[key.first].emplace_back(key.second, bond_id);
+        graph.adjacency[key.second].emplace_back(key.first, bond_id);
     }
-    if (bond_ids.empty()) {
-        return {};
-    }
+    graph.words = (graph.bond_ids.size() + 63) / 64;
+    return graph;
+}
 
-    std::set<unsigned int> seen;
-    std::size_t components = 0;
-    for (const auto& entry : adjacency) {
-        if (seen.count(entry.first) != 0) {
-            continue;
-        }
-        ++components;
-        std::vector<unsigned int> stack{entry.first};
-        while (!stack.empty()) {
-            const unsigned int current = stack.back();
-            stack.pop_back();
-            if (!seen.insert(current).second) {
-                continue;
-            }
-            const std::vector<unsigned int>& neighbors = adjacency.at(current);
-            stack.insert(stack.end(), neighbors.begin(), neighbors.end());
-        }
-    }
-    // The cyclomatic number: how many independent cycles the ring subgraph has,
-    // and therefore how many rings the smallest set holds.
-    if (bond_ids.size() + components < adjacency.size()) {
-        return {};
-    }
-    const std::size_t ring_count = bond_ids.size() - adjacency.size() + components;
-
-    const std::size_t words = (bond_ids.size() + 63) / 64;
-    std::map<BondSet, RingAtoms> candidates;
-    for (const auto& entry : bond_ids) {
+/// Every shortest cycle through every ring bond, ties included, deduplicated by
+/// bond set. The tied cycles are exactly what a one-cycle-per-bond search throws
+/// away and what symmetrizeSSSR keeps.
+std::vector<BondSet> shortest_cycles_through_ring_bonds(const RingBondGraph& graph) {
+    std::set<BondSet> cycles;
+    for (const auto& entry : graph.bond_ids) {
         const unsigned int source = entry.first.first;
         const unsigned int target = entry.first.second;
+        const std::size_t banned = entry.second;
 
-        // Breadth first from one end of the bond to the other with that bond
-        // banned: the shortest remaining path closes the smallest cycle through
-        // it. Every ring of a smallest ring set is such a cycle.
-        std::map<unsigned int, unsigned int> came_from;
-        came_from.emplace(source, source);
+        // Breadth first from one end of the banned bond to the other: the
+        // shortest remaining path closes the smallest cycle through it.
+        // Recording every predecessor one layer back, rather than the first
+        // one to arrive, is what keeps the ties.
+        std::map<unsigned int, std::size_t> depth;
+        std::map<unsigned int, std::vector<std::pair<unsigned int, std::size_t>>> predecessors;
+        depth.emplace(source, 0);
         std::vector<unsigned int> frontier{source};
-        bool found = false;
-        while (!frontier.empty() && !found) {
+        while (!frontier.empty() && depth.find(target) == depth.end()) {
             std::vector<unsigned int> next;
             for (unsigned int current : frontier) {
-                for (unsigned int neighbor : adjacency.at(current)) {
-                    if (came_from.find(neighbor) != came_from.end()) {
+                const std::size_t layer = depth.at(current) + 1;
+                for (const auto& step : graph.adjacency.at(current)) {
+                    if (step.second == banned) {
                         continue;
                     }
-                    const std::pair<unsigned int, unsigned int> edge(
-                        std::min(current, neighbor), std::max(current, neighbor));
-                    if (edge == entry.first) {
-                        continue;
+                    const std::map<unsigned int, std::size_t>::const_iterator seen =
+                        depth.find(step.first);
+                    if (seen == depth.end()) {
+                        depth.emplace(step.first, layer);
+                        predecessors[step.first].emplace_back(current, step.second);
+                        next.push_back(step.first);
+                    } else if (seen->second == layer) {
+                        predecessors[step.first].emplace_back(current, step.second);
                     }
-                    came_from.emplace(neighbor, current);
-                    if (neighbor == target) {
-                        found = true;
-                        break;
-                    }
-                    next.push_back(neighbor);
-                }
-                if (found) {
-                    break;
                 }
             }
             frontier = std::move(next);
         }
-        if (!found) {
+        if (depth.find(target) == depth.end()) {
             continue;
         }
 
-        RingAtoms ring;
-        for (unsigned int walk = target;; walk = came_from.at(walk)) {
-            ring.push_back(walk);
-            if (walk == source) {
-                break;
+        // Walk the predecessor layers back from the far end. Every node in them
+        // sits on a shortest path, so every partial walk completes and the cap
+        // bounds the whole enumeration.
+        BondSet seed(graph.words, 0);
+        bond_set_add(seed, banned);
+        std::vector<std::pair<unsigned int, BondSet>> pending;
+        pending.emplace_back(target, std::move(seed));
+        std::size_t kept = 0;
+        while (!pending.empty() && kept < MAX_TIED_CYCLES) {
+            std::pair<unsigned int, BondSet> walk = std::move(pending.back());
+            pending.pop_back();
+            if (walk.first == source) {
+                cycles.insert(std::move(walk.second));
+                ++kept;
+                continue;
+            }
+            for (const auto& step : predecessors.at(walk.first)) {
+                BondSet extended = walk.second;
+                bond_set_add(extended, step.second);
+                pending.emplace_back(step.first, std::move(extended));
             }
         }
-        BondSet bits(words, 0);
-        for (std::size_t position = 0; position < ring.size(); ++position) {
-            const unsigned int from = ring[position];
-            const unsigned int to = ring[(position + 1) % ring.size()];
-            const std::pair<unsigned int, unsigned int> edge(
-                std::min(from, to), std::max(from, to));
-            bond_set_add(bits, bond_ids.at(edge));
-        }
-        std::sort(ring.begin(), ring.end());
-        candidates.emplace(std::move(bits), std::move(ring));
     }
-
-    // Smallest first, with the bond set itself as a deterministic tiebreak
-    // between rings of equal size.
-    std::vector<const std::pair<const BondSet, RingAtoms>*> ordered;
-    ordered.reserve(candidates.size());
-    for (const auto& candidate : candidates) {
-        ordered.push_back(&candidate);
-    }
-    std::sort(
-        ordered.begin(), ordered.end(),
-        [](const std::pair<const BondSet, RingAtoms>* left,
-           const std::pair<const BondSet, RingAtoms>* right) {
-            const std::size_t left_size = bond_set_size(left->first);
-            const std::size_t right_size = bond_set_size(right->first);
-            return left_size != right_size ? left_size < right_size
-                                           : left->first < right->first;
-        });
-
-    std::vector<RingAtoms> rings;
-    std::map<long, BondSet> basis;
-    for (const std::pair<const BondSet, RingAtoms>* candidate : ordered) {
-        if (rings.size() == ring_count) {
-            break;
-        }
-        if (bond_set_extends_basis(candidate->first, basis)) {
-            rings.push_back(candidate->second);
-        }
-    }
-    return rings;
+    return std::vector<BondSet>(cycles.begin(), cycles.end());
 }
 
-/// ``Chirality.cpp::queryIsAtomBridgehead``: three or more ring bonds, and two
-/// rings that share more than two atoms. Two rings sharing exactly two atoms are
-/// fused across one bond, which is not a bridge.
+/// ``QueryOps.cpp::queryIsAtomBridgehead``: three or more ring bonds, and every
+/// ring holding one of those bonds overlapping some other such ring in at least
+/// two bonds. Two rings sharing one bond are fused, not bridged, and one ring
+/// left without a two-bond partner is enough to answer no -- which is why an
+/// atom where a bridged cage meets an ordinary fused ring is not a bridgehead.
 std::vector<bool> find_bridgeheads(const OEChem::OEMolBase& mol) {
     std::vector<bool> bridgeheads(mol.GetMaxAtomIdx(), false);
-    const std::vector<RingAtoms> rings = smallest_set_of_smallest_rings(mol);
+    const RingBondGraph graph = build_ring_bond_graph(mol);
+    if (graph.bond_ids.size() < 3) {
+        return bridgeheads;
+    }
+    const std::vector<BondSet> rings = shortest_cycles_through_ring_bonds(graph);
     if (rings.size() < 2) {
         return bridgeheads;
     }
 
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        unsigned int ring_bonds = 0;
+        BondSet atom_ring_bonds(graph.words, 0);
         for (OESystem::OEIter<OEChem::OEBondBase> bond = atom->GetBonds(); bond; ++bond) {
-            if (bond->IsInRing()) {
-                ++ring_bonds;
+            if (!bond->IsInRing()) {
+                continue;
+            }
+            const std::map<std::pair<unsigned int, unsigned int>, std::size_t>::const_iterator
+                found = graph.bond_ids.find(atom_pair(bond->GetBgnIdx(), bond->GetEndIdx()));
+            if (found != graph.bond_ids.end()) {
+                bond_set_add(atom_ring_bonds, found->second);
             }
         }
-        if (ring_bonds < 3) {
+        if (bond_set_size(atom_ring_bonds) < 3) {
             continue;
         }
 
-        std::vector<const RingAtoms*> mine;
-        for (const RingAtoms& ring : rings) {
-            if (std::binary_search(ring.begin(), ring.end(), atom->GetIdx())) {
-                mine.push_back(&ring);
+        std::vector<const BondSet*> touching;
+        for (const BondSet& ring : rings) {
+            if (bond_sets_share(ring, atom_ring_bonds, 1)) {
+                touching.push_back(&ring);
             }
         }
-        for (std::size_t left = 0; left + 1 < mine.size(); ++left) {
-            for (std::size_t right = left + 1; right < mine.size(); ++right) {
-                std::vector<unsigned int> shared;
-                std::set_intersection(
-                    mine[left]->begin(), mine[left]->end(), mine[right]->begin(),
-                    mine[right]->end(), std::back_inserter(shared));
-                if (shared.size() > 2) {
-                    bridgeheads[atom->GetIdx()] = true;
-                }
+        bool every_ring_bridges = touching.size() > 1;
+        for (std::size_t left = 0; left < touching.size() && every_ring_bridges; ++left) {
+            bool bridged = false;
+            for (std::size_t right = 0; right < touching.size() && !bridged; ++right) {
+                bridged = right != left &&
+                    bond_sets_share(*touching[left], *touching[right], 2);
             }
+            every_ring_bridges = bridged;
         }
+        bridgeheads[atom->GetIdx()] = every_ring_bridges;
     }
     return bridgeheads;
 }
@@ -534,33 +495,95 @@ unsigned char class_relative_handedness(
         : 0;
 }
 
-/// Refine `seed_ranks` to a fixed point with `handedness` folded in as an extra
-/// invariant. This is upstream's ``rerankAtoms``: an ordinary Morgan-style
-/// refinement whose seed carries the configurations resolved so far, so two
-/// branches that differ only in handedness stop being equivalent.
+/// The lowest-ranked neighbour of `atom` other than `excluded_idx`, or null when
+/// it has none. A tie cannot matter to the caller: two neighbours of one class
+/// at one end of a double bond make that bond non-stereogenic, and the caller
+/// only asks about bonds OEChem calls stereogenic.
+OEChem::OEAtomBase* lowest_rank_neighbor(
+    OEChem::OEAtomBase& atom,
+    unsigned int excluded_idx,
+    const std::vector<unsigned int>& ranks
+) {
+    OEChem::OEAtomBase* lowest = nullptr;
+    for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom.GetAtoms(); neighbor; ++neighbor) {
+        if (neighbor->GetIdx() == excluded_idx) {
+            continue;
+        }
+        if (lowest == nullptr || ranks[neighbor->GetIdx()] < ranks[lowest->GetIdx()]) {
+            lowest = &*neighbor;
+        }
+    }
+    return lowest;
+}
+
+/// The class-relative geometry of every stereogenic double bond, collected onto
+/// its two end atoms. Reading the geometry against the lowest-ranked neighbour
+/// at each end makes the bit mean the same thing for every bond of the same
+/// class, which is what lets the refinement use it as an invariant -- the same
+/// construction class_relative_handedness() uses for tetrahedral centres.
 ///
-/// \note Known and accepted gap, and the one place to fix it. `handedness`
-///       carries tetrahedral configuration only; upstream also folds bond
-///       stereo into the same tuple. A centre whose two branches are
-///       constitutionally identical and differ only in double-bond geometry
-///       therefore never separates, so the resolve loop never settles it and
-///       its tag is dropped where RDKit keeps it. Both of
-///       ``C/C=C/[C@@H](O)/C=C\\C`` and ``C/C=C/[C@H](O)/C=C\\C`` render as
-///       ``C/C=C/C(/C=C\\C)O`` here; RDKit keeps them distinct. Closing it
-///       means widening the invariant tuple with a per-bond stereo bit -- the
-///       fixed point itself needs no change.
+/// Upstream folds a bond-stereo code into the ``rerankAtoms`` invariant next to
+/// the CIP code; this is that code, kept as the sorted multiset of the bits on
+/// the bonds at an atom rather than upstream's sum, which cannot tell two E
+/// bonds from one Z bond.
+std::vector<std::vector<unsigned char>> collect_geometry_bits(
+    const OEChem::OEMolBase& mol,
+    std::size_t max_idx,
+    const std::vector<unsigned int>& ranks
+) {
+    std::vector<std::vector<unsigned char>> geometry(max_idx);
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        if (!bond->IsChiral() ||
+            !bond->HasStereoSpecified(OEChem::OEBondStereo::CisTrans)) {
+            continue;
+        }
+        OEChem::OEAtomBase* begin = bond->GetBgn();
+        OEChem::OEAtomBase* end = bond->GetEnd();
+        if (begin == nullptr || end == nullptr) {
+            continue;
+        }
+        OEChem::OEAtomBase* begin_reference =
+            lowest_rank_neighbor(*begin, end->GetIdx(), ranks);
+        OEChem::OEAtomBase* end_reference = lowest_rank_neighbor(*end, begin->GetIdx(), ranks);
+        if (begin_reference == nullptr || end_reference == nullptr) {
+            continue;
+        }
+        const std::vector<OEChem::OEAtomBase*> reference{begin_reference, end_reference};
+        const unsigned char bit =
+            bond->GetStereo(reference, OEChem::OEBondStereo::CisTrans) ==
+                OEChem::OEBondStereo::Cis
+            ? 1
+            : 0;
+        geometry[begin->GetIdx()].push_back(bit);
+        geometry[end->GetIdx()].push_back(bit);
+    }
+    for (std::vector<unsigned char>& bits : geometry) {
+        std::sort(bits.begin(), bits.end());
+    }
+    return geometry;
+}
+
+/// Refine `seed_ranks` to a fixed point with `handedness` and `geometry` folded
+/// in as extra invariants. This is upstream's ``rerankAtoms``: an ordinary
+/// Morgan-style refinement whose seed carries the stereochemistry known so far,
+/// so two branches that differ only in configuration -- tetrahedral handedness
+/// or double-bond geometry -- stop being equivalent.
 std::vector<unsigned int> refine_ranks(
     const std::vector<OEChem::OEAtomBase*>& atoms,
     std::size_t max_idx,
     const std::vector<unsigned int>& seed_ranks,
-    const std::vector<unsigned char>& handedness
+    const std::vector<unsigned char>& handedness,
+    const std::vector<std::vector<unsigned char>>& geometry
 ) {
+    /// The invariant tuple the seed pass groups atoms by.
+    using SeedKey = std::tuple<unsigned int, unsigned char, std::vector<unsigned char>>;
+
     std::vector<unsigned int> ranks(max_idx, 0);
     {
-        std::map<std::pair<unsigned int, unsigned char>, unsigned int> order;
+        std::map<SeedKey, unsigned int> order;
         for (const OEChem::OEAtomBase* atom : atoms) {
             const unsigned int idx = atom->GetIdx();
-            order.emplace(std::make_pair(seed_ranks[idx], handedness[idx]), 0u);
+            order.emplace(SeedKey(seed_ranks[idx], handedness[idx], geometry[idx]), 0u);
         }
         unsigned int next = 0;
         for (auto& entry : order) {
@@ -568,7 +591,7 @@ std::vector<unsigned int> refine_ranks(
         }
         for (const OEChem::OEAtomBase* atom : atoms) {
             const unsigned int idx = atom->GetIdx();
-            ranks[idx] = order.at(std::make_pair(seed_ranks[idx], handedness[idx]));
+            ranks[idx] = order.at(SeedKey(seed_ranks[idx], handedness[idx], geometry[idx]));
         }
     }
 
@@ -745,6 +768,21 @@ StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol) 
     // which is what keeps the refinement from splitting a class on nothing.
     const unsigned char unresolved = 2;
     std::vector<unsigned char> handedness(max_idx, unresolved);
+
+    // Double-bond geometry is static -- there is no configuration to settle
+    // first -- but it has to be folded in before the first round rather than
+    // after it. A centre whose branches differ only in geometry settles nothing
+    // on its own, so the loop below would stop for want of progress and never
+    // reach a refinement.
+    const std::vector<std::vector<unsigned char>> geometry =
+        collect_geometry_bits(mol, max_idx, context.ranks);
+    const bool any_geometry = std::any_of(
+        geometry.begin(), geometry.end(),
+        [](const std::vector<unsigned char>& bits) { return !bits.empty(); });
+    if (any_geometry) {
+        context.ranks = refine_ranks(atoms, max_idx, context.ranks, handedness, geometry);
+    }
+
     std::size_t settled = 0;
     for (;;) {
         bool progressed = false;
@@ -764,13 +802,13 @@ StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol) 
         }
         // Refining costs a fixed-point sweep of the whole molecule, and it can
         // only rescue a tag that is still unsettled, so the common case where
-        // the first round settles everything never pays for it. It also cannot
-        // rescue a tag whose branches differ only in bond geometry; see the
-        // note on refine_ranks().
+        // the first round settles everything never pays for it. Geometry is
+        // already in the seed, so these rounds only add newly resolved
+        // handedness.
         if (!progressed || settled == tagged.size()) {
             break;
         }
-        context.ranks = refine_ranks(atoms, max_idx, context.ranks, handedness);
+        context.ranks = refine_ranks(atoms, max_idx, context.ranks, handedness, geometry);
     }
     return context;
 }

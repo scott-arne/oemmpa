@@ -423,6 +423,58 @@ TEST(FragmentSmiles, PseudoAsymmetricCentreResolvesThroughNeighbourConfiguration
     EXPECT_EQ(render_suppressed("CN1C2CCC1C[C@H](O)C2"), render_suppressed("CN1C2CCC1CC(O)C2"));
 }
 
+// The same pseudo-asymmetric shape resolved through double-bond geometry
+// instead of neighbour handedness. The two branches of the carbinol are
+// constitutionally identical, so only their E/Z geometry tells them apart;
+// upstream's rerankAtoms folds a bond-stereo code into the same invariant
+// tuple as the tetrahedral handedness, which separates them and rescues the
+// middle tag. Both configurations therefore survive and render differently,
+// while the two controls whose branches carry the same geometry keep no tag --
+// verified against RDKit 2026.03.6, which reads one tag from each epimer and
+// none from either control.
+TEST(FragmentSmiles, EZDependentCentreResolvesThroughBranchGeometry) {
+    const std::string epimer_left = render_suppressed("C/C=C/[C@@H](O)/C=C\\C");
+    const std::string epimer_right = render_suppressed("C/C=C/[C@H](O)/C=C\\C");
+    EXPECT_EQ(atom_stereo_count(epimer_left), 1u) << epimer_left;
+    EXPECT_EQ(atom_stereo_count(epimer_right), 1u) << epimer_right;
+    EXPECT_NE(epimer_left, epimer_right);
+
+    // Identical branch geometry leaves nothing to re-rank on, either way round.
+    EXPECT_EQ(
+        render_suppressed("C/C=C/[C@@H](O)/C=C/C"), render_suppressed("C/C=C/C(O)/C=C/C"));
+    EXPECT_EQ(
+        render_suppressed("C/C=C\\[C@@H](O)/C=C\\C"),
+        render_suppressed("C/C=C\\C(O)/C=C\\C"));
+}
+
+// Bridgehead nitrogen in a strained cage, where one shortest cycle per ring
+// bond is not enough to see the bridge. Each of these cages has ring bonds
+// with two shortest cycles of equal length through them, and dropping either
+// tie leaves the nitrogen looking like a plain ring fusion, so its tag is lost.
+// Upstream reads RingInfo after symmetrizeSSSR, where the tied rings are all
+// present. RDKit 2026.03.6 and a plain OEChem round trip both keep one tag on
+// every row here and tell the two configurations of each cage apart. The
+// indolizidine control is the shape that must still lose its nitrogen tag: its
+// two rings share exactly one bond, so no ring of the pair has a partner
+// overlapping it in two bonds.
+TEST(FragmentSmiles, TiedShortestRingsExposeCageBridgeheadNitrogen) {
+    const std::vector<std::pair<std::string, std::string>> cages = {
+        {"C12(F)CC3[N@@]1CC23", "C12(F)CC3[N@]1CC23"},
+        {"C1C2(F)[N@]3C(Cl)C2C13C", "C1C2(F)[N@@]3C(Cl)C2C13C"},
+        {"C1C2(F)[N@@]3CC2C13", "C1C2(F)[N@]3CC2C13"},
+    };
+    for (const std::pair<std::string, std::string>& cage : cages) {
+        const std::string left = render_suppressed(cage.first);
+        const std::string right = render_suppressed(cage.second);
+        EXPECT_EQ(atom_stereo_count(left), 1u) << cage.first << " -> " << left;
+        EXPECT_EQ(atom_stereo_count(right), 1u) << cage.second << " -> " << right;
+        EXPECT_NE(left, right) << cage.first;
+    }
+
+    EXPECT_EQ(
+        render_suppressed("C1CC[N@]2CCC[C@H]2C1"), render_suppressed("C1CCN2CCC[C@H]2C1"));
+}
+
 // The cleanup rule widened; the enumeration rule did not. Stereo enumeration
 // asks is_potential_stereocenter(), which is mmpdb's transcription of RDKit's
 // isAtomPotentialChiralCenter and admits three-coordinate atoms only for a
