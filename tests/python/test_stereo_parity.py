@@ -36,12 +36,18 @@ Differences that remain after projection are governed by
   where the divergence is attributable to one of the four mmpdb reference
   defects that OEMMPA deliberately does not replicate.
 
-The enforcement helpers take the difference map and the allowlist rows as
+The enforcement helpers take the difference list and the allowlist rows as
 arguments so the guards themselves can be exercised against synthetic in-memory
-rows without touching the committed fixture.
+rows without touching the committed fixture.  Differences are carried as full
+records, enumeration label included, and are reduced to the allowlist identity
+only inside the two allowlist checks: reducing earlier let one difference
+overwrite another that shared an identity, which could hide a baseline
+divergence behind an allowlisted enumerated one.
 """
 
 import csv
+import re
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -95,13 +101,20 @@ VALID_DEFECTS = {"1", "2", "3", "4"}
 MMPDB_HYDROGEN_CUT_SMILES = "[*][H]"
 
 
-def _silence_rdkit_warnings():
-    """Suppress RDKit's parse warnings for the duration of a test.
+@contextmanager
+def _rdkit_warnings_silenced():
+    """Suppress RDKit's parse warnings for the duration of the block.
 
-    Scoped to individual tests rather than module import so the setting cannot
-    leak into unrelated test modules that rely on seeing RDKit warnings.
+    RDKit's logger is process-global, so disabling it without restoring it
+    would strip warnings from every test that ran afterwards and make the suite
+    order-dependent.  Re-enabling in a ``finally`` keeps the suppression scoped
+    to the caller even when the body fails.
     """
     RDLogger.DisableLog("rdApp.warning")  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
+    try:
+        yield
+    finally:
+        RDLogger.EnableLog("rdApp.warning")  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _enumeration_label_none():
@@ -203,9 +216,27 @@ def _hydrogen_oracle_rows(rows):
     ]
 
 
+def _assert_no_duplicate_records(records, context):
+    """Fail when a raw record list holds the same record twice.
+
+    Both sides are compared as sets, so a regression that emitted a record
+    twice -- the same constant, variable and enumeration label at the same cut
+    count -- would be absorbed by the set and never surface as a difference.
+    The raw lists are therefore checked before either is normalised.
+
+    :param records: The records in emission order, before set conversion.
+    :param context: What produced them, named in the failure message.
+    :raises AssertionError: When any record appears more than once.
+    """
+    assert len(records) == len(set(records)), (
+        f"{context} emitted duplicate records: "
+        f"{sorted({record for record in records if records.count(record) > 1})}"
+    )
+
+
 def _load_oracle():
     """Return ``{title: set of projected records}`` from the committed oracle."""
-    oracle = {}
+    rows_by_title = {}
     for row in _read_oracle_rows():
         assert row["num_cuts"] == "1", row
         assert row["attachment_order"] == "0", row
@@ -218,7 +249,12 @@ def _load_oracle():
         # counts mmpdb stored, or the projection has silently changed the graph.
         assert record[2] == int(row["variable_num_heavies"]), row
         assert record[3] == int(row["constant_num_heavies"]), row
-        oracle.setdefault(row["molecule_id"], set()).add(record)
+        rows_by_title.setdefault(row["molecule_id"], []).append(record)
+
+    oracle = {}
+    for title, records in rows_by_title.items():
+        _assert_no_duplicate_records(records, f"the oracle for {title}")
+        oracle[title] = set(records)
     return oracle
 
 
@@ -228,7 +264,7 @@ def _oemmpa_rows(smiles):
     assert oechem.OESmilesToMol(mol, smiles), smiles
     fragmenter = Fragmenter()
     fragmenter.SetMaxCuts(1)
-    records = set()
+    records = []
     for fragmentation in fragmenter.Fragment(1, mol):
         assert fragmentation.GetCutCount() == 1, smiles
         label = (
@@ -236,14 +272,15 @@ def _oemmpa_rows(smiles):
             if fragmentation.GetEnumerationLabel() == ENUMERATION_LABEL_NONE
             else ENUMERATED
         )
-        records.add(
+        records.append(
             _record(
                 fragmentation.GetVariableSmiles(),
                 fragmentation.GetConstantSmiles(),
                 label,
             )
         )
-    return records
+    _assert_no_duplicate_records(records, f"the fragmenter for {smiles}")
+    return set(records)
 
 
 def _load_allowlist():
@@ -268,10 +305,42 @@ def _allowlist_key(row):
     )
 
 
+def _difference_key(entry):
+    """Return the allowlist identity of a full difference entry."""
+    title, direction, record = entry
+    return (title, direction, record[0], record[1])
+
+
+def _keyed_differences(differences):
+    """Group full difference entries by allowlist identity.
+
+    Two entries can share an identity and differ only in enumeration label, so
+    the grouping keeps every entry.  A plain ``{key: entry}`` mapping would drop
+    one of them in set-iteration order, and an allowlist row for that identity
+    would then excuse a baseline divergence that had been overwritten.
+
+    :param differences: Full ``(molecule_id, direction, record)`` entries.
+    :returns: A mapping from allowlist identity to the list of entries.
+    """
+    keyed = {}
+    for entry in differences:
+        keyed.setdefault(_difference_key(entry), []).append(entry)
+    return keyed
+
+
+def _baseline_differences(differences):
+    """Return the identities of every difference in a baseline record."""
+    return sorted(
+        _difference_key(entry) + (entry[2][4],)
+        for entry in differences
+        if entry[2][4] == BASELINE
+    )
+
+
 def _unexplained_differences(differences, allowlist_rows):
-    """Return the difference keys no allowlist row accounts for."""
+    """Return the difference identities no allowlist row accounts for."""
     allowed = {_allowlist_key(row) for row in allowlist_rows}
-    return sorted(key for key in differences if key not in allowed)
+    return sorted(key for key in _keyed_differences(differences) if key not in allowed)
 
 
 def _stale_allowlist_rows(differences, allowlist_rows):
@@ -280,28 +349,34 @@ def _stale_allowlist_rows(differences, allowlist_rows):
     :raises AssertionError: When a row is malformed, or when it accepts a
         baseline record -- baseline parity is unconditional.
     """
+    keyed = _keyed_differences(differences)
     stale = []
     for row in allowlist_rows:
         assert row["direction"] in VALID_DIRECTIONS, row
         assert row["defect"] in VALID_DEFECTS, row
         assert row["rationale"].strip(), row
         key = _allowlist_key(row)
-        if key not in differences:
+        matched = keyed.get(key, [])
+        if not matched:
             stale.append(key)
         else:
-            # A baseline divergence is a defect in OEMMPA, never an accepted one.
-            assert differences[key][4] == ENUMERATED, row
+            # A baseline divergence is a defect in OEMMPA, never an accepted
+            # one, and an enumerated entry does not excuse a baseline entry
+            # that happens to share its identity.
+            assert all(entry[2][4] == ENUMERATED for entry in matched), row
     return stale
 
 
 def _differences():
     """Return every projected record present on exactly one side.
 
-    :returns: A mapping from ``(molecule_id, direction, variable, constant)``
-        to the full record tuple, covering both directions.
+    :returns: A list of ``(molecule_id, direction, record)`` entries covering
+        both directions.  The full record is kept, enumeration label included,
+        so nothing is reduced to the allowlist identity before the baseline
+        gate has seen it.
     """
     oracle = _load_oracle()
-    differences = {}
+    differences = []
     for title, smiles in _read_cases():
         expected = oracle.get(title, set())
         observed = _oemmpa_rows(smiles)
@@ -309,20 +384,19 @@ def _differences():
             (OEMMPA_SURPLUS, observed - expected),
             (MMPDB_SURPLUS, expected - observed),
         ):
-            for record in records:
-                differences[(title, direction, record[0], record[1])] = record
+            differences.extend((title, direction, record) for record in sorted(records))
     return differences
 
 
 @pytest.fixture(scope="module")
 def differences():
-    _silence_rdkit_warnings()
-    return _differences()
+    with _rdkit_warnings_silenced():
+        return _differences()
 
 
 def test_oracle_covers_every_fixture_structure():
-    _silence_rdkit_warnings()
-    oracle = _load_oracle()
+    with _rdkit_warnings_silenced():
+        oracle = _load_oracle()
     titles = [title for title, _ in _read_cases()]
 
     assert len(titles) == len(set(titles))
@@ -338,24 +412,23 @@ def test_oracle_contains_no_hydrogen_cut_rows():
     transform and predict commands do.  Pinning the absence keeps the oracle
     honest about what it does and does not cover.
     """
-    _silence_rdkit_warnings()
-    rows = _read_oracle_rows()
+    with _rdkit_warnings_silenced():
+        rows = _read_oracle_rows()
 
-    assert rows
-    # The structural test must actually recognise upstream's spelling.
-    assert _is_hydrogen_fragment(_project(MMPDB_HYDROGEN_CUT_SMILES))
-    assert _hydrogen_oracle_rows(rows) == []
+        assert rows
+        # The structural test must actually recognise upstream's spelling.
+        assert _is_hydrogen_fragment(_project(MMPDB_HYDROGEN_CUT_SMILES))
+        assert _hydrogen_oracle_rows(rows) == []
 
 
 def test_no_baseline_record_differs(differences):
-    """Baseline parity is unconditional and cannot be allowlisted."""
-    baseline_differences = sorted(
-        key + (record[4],)
-        for key, record in differences.items()
-        if record[4] == BASELINE
-    )
+    """Baseline parity is unconditional and cannot be allowlisted.
 
-    assert baseline_differences == []
+    The gate reads the full difference entries rather than the allowlist
+    identities, so it sees a baseline divergence even when another difference
+    shares that identity.
+    """
+    assert _baseline_differences(differences) == []
 
 
 def test_every_difference_is_allowlisted(differences):
@@ -377,10 +450,20 @@ SYNTHETIC_VARIABLE = "C[*:1]"
 SYNTHETIC_CONSTANT = "OC[*:1]"
 
 
-def _synthetic_difference(label):
-    """Return a one-entry difference map for a synthetic OEMMPA-surplus record."""
-    record = _record(SYNTHETIC_VARIABLE, SYNTHETIC_CONSTANT, label)
-    return {(SYNTHETIC_ID, OEMMPA_SURPLUS, record[0], record[1]): record}
+def _synthetic_differences(*labels):
+    """Return one synthetic OEMMPA-surplus difference entry per label.
+
+    Every entry carries the same variable and constant, so passing more than
+    one label produces entries that collide on the allowlist identity.
+    """
+    return [
+        (
+            SYNTHETIC_ID,
+            OEMMPA_SURPLUS,
+            _record(SYNTHETIC_VARIABLE, SYNTHETIC_CONSTANT, label),
+        )
+        for label in labels
+    ]
 
 
 def _synthetic_allowlist_row(**overrides):
@@ -411,27 +494,63 @@ def _synthetic_allowlist_row(**overrides):
     ],
 )
 def test_allowlist_guard_rejects_invalid_rows(label, overrides):
-    _silence_rdkit_warnings()
-    differences = _synthetic_difference(label)
+    with _rdkit_warnings_silenced():
+        differences = _synthetic_differences(label)
 
-    with pytest.raises(AssertionError):
-        _stale_allowlist_rows(differences, [_synthetic_allowlist_row(**overrides)])
+        with pytest.raises(AssertionError):
+            _stale_allowlist_rows(differences, [_synthetic_allowlist_row(**overrides)])
 
 
 def test_allowlist_guard_reports_stale_rows():
-    _silence_rdkit_warnings()
-    row = _synthetic_allowlist_row()
+    with _rdkit_warnings_silenced():
+        row = _synthetic_allowlist_row()
 
-    assert _stale_allowlist_rows({}, [row]) == [_allowlist_key(row)]
+        assert _stale_allowlist_rows([], [row]) == [_allowlist_key(row)]
 
 
 def test_allowlist_guard_reports_unlisted_differences():
-    _silence_rdkit_warnings()
-    differences = _synthetic_difference(ENUMERATED)
-    rows = [_synthetic_allowlist_row()]
+    with _rdkit_warnings_silenced():
+        differences = _synthetic_differences(ENUMERATED)
+        rows = [_synthetic_allowlist_row()]
 
-    assert _unexplained_differences(differences, []) == sorted(differences)
-    # The same difference, once allowlisted through a non-canonical rendering,
-    # is neither unexplained nor stale.
-    assert _unexplained_differences(differences, rows) == []
-    assert _stale_allowlist_rows(differences, rows) == []
+        assert _unexplained_differences(differences, []) == [
+            _difference_key(entry) for entry in differences
+        ]
+        # The same difference, once allowlisted through a non-canonical
+        # rendering, is neither unexplained nor stale.
+        assert _unexplained_differences(differences, rows) == []
+        assert _stale_allowlist_rows(differences, rows) == []
+
+
+def test_baseline_gate_survives_an_identity_collision():
+    """A baseline entry stays visible when another entry shares its identity.
+
+    Reducing the differences to ``(molecule_id, direction, variable,
+    constant)`` before the baseline gate ran let one entry overwrite the other
+    in set-iteration order; an allowlist row for that identity then made the
+    unconditional baseline check pass.  Real fragmenter output cannot produce
+    the collision, because both sides deduplicate per key, so the guard is
+    pinned against synthetic entries here.
+    """
+    with _rdkit_warnings_silenced():
+        differences = _synthetic_differences(ENUMERATED, BASELINE)
+        rows = [_synthetic_allowlist_row()]
+
+        assert len({_difference_key(entry) for entry in differences}) == 1
+
+        # Both orderings, because the defect was an ordering artefact.
+        for ordering in (differences, differences[::-1]):
+            assert len(_baseline_differences(ordering)) == 1
+            assert _unexplained_differences(ordering, rows) == []
+            with pytest.raises(AssertionError):
+                _stale_allowlist_rows(ordering, rows)
+
+
+def test_duplicate_record_guard_names_the_repeated_record():
+    """A record emitted twice is caught before the set comparison hides it."""
+    with _rdkit_warnings_silenced():
+        record = _record(SYNTHETIC_VARIABLE, SYNTHETIC_CONSTANT, ENUMERATED)
+
+        _assert_no_duplicate_records([record], "probe")
+        with pytest.raises(AssertionError, match=re.escape(repr(record))):
+            _assert_no_duplicate_records([record, record], "probe")
