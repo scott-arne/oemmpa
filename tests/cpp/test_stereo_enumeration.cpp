@@ -14,6 +14,10 @@
 #include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/Fragmenter.h"
+#include "oemmpa/MatchedPair.h"
+#include "oemmpa/MemoryIndex.h"
+#include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/QueryOptions.h"
 
 namespace OEMMPA {
 
@@ -457,4 +461,68 @@ TEST(UpEnumerationCap, MaximumValueDoesNotDisableTheGuard) {
     std::vector<OEMMPA::Fragmentation> fragmentations;
     EXPECT_NO_THROW(fragmentations = fragmenter.Fragment(1, mol));
     EXPECT_EQ(fragmentations.size(), 14u);
+}
+
+// A shared constant with differing variables is what makes these two molecules
+// a matched pair: cut the C-O bond of one arm of CC(C)(CO)CO and the C-S bond
+// of CC(C)(CO)CS and both leave the same neopentyl-alcohol core.
+constexpr const char* kSharedConstant = "[*:1]CC(C)(C)CO";
+
+// Two enumerated sides would pair one guess against another.
+TEST(EnumerationPairing, RejectsPairsWhereBothSidesAreEnumerated) {
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation left(1, kSharedConstant, "[*:1]O", 1);
+    left.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    OEMMPA::Fragmentation right(2, kSharedConstant, "[*:1]S", 1);
+    right.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(left);
+    index.AddFragmentation(right);
+
+    const std::vector<OEMMPA::MatchedPair> pairs = index.GetPairs(OEMMPA::QueryOptions());
+    EXPECT_TRUE(pairs.empty());
+}
+
+// One enumerated side against a baseline side is the case mmpdb keeps.
+TEST(EnumerationPairing, AllowsOneEnumeratedSide) {
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation left(1, kSharedConstant, "[*:1]O", 1);
+    left.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    OEMMPA::Fragmentation right(2, kSharedConstant, "[*:1]S", 1);
+    index.AddFragmentation(left);
+    index.AddFragmentation(right);
+
+    // Both directions of the one unordered combination, under the symmetric default.
+    EXPECT_EQ(index.GetPairs(OEMMPA::QueryOptions()).size(), 2u);
+}
+
+// Baseline-first insertion order is what gives the unlabeled record precedence
+// in the (molecule, constant, variable, cut_count) dedup.
+TEST(EnumerationPairing, BaselineRecordWinsTheDedup) {
+    // MemoryIndex exposes no per-molecule fragmentation accessor, so read the
+    // survivor's label through the guard this task adds: molecule 2's record is
+    // enumerated, so a surviving baseline for molecule 1 pairs with it and a
+    // surviving enumerated one does not. Pair count is the one-bit readout.
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation baseline(1, kSharedConstant, "[*:1]O", 1);
+    OEMMPA::Fragmentation enumerated(1, kSharedConstant, "[*:1]O", 1);
+    enumerated.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(baseline);
+    index.AddFragmentation(enumerated);
+
+    OEMMPA::Fragmentation other(2, kSharedConstant, "[*:1]S", 1);
+    other.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(other);
+
+    EXPECT_EQ(index.GetPairs(OEMMPA::QueryOptions()).size(), 2u)
+        << "no pairs means the enumerated record won the dedup, so the guard "
+           "saw two guesses instead of a baseline and a guess";
 }

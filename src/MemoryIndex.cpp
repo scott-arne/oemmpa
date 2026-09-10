@@ -782,6 +782,16 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
                     continue;
                 }
 
+                // An enumerated side is a guess about a stereocentre the cut created.
+                // Pairing two guesses asserts a correspondence between two unobserved
+                // configurations, so mmpdb requires at least one baseline side.
+                if (lhs.fragmentation->GetEnumerationLabel() !=
+                        Fragmentation::EnumerationLabel::None &&
+                    rhs.fragmentation->GetEnumerationLabel() !=
+                        Fragmentation::EnumerationLabel::None) {
+                    continue;
+                }
+
                 if (!options.GetSymmetric()) {
                     const bool use_lhs_as_source =
                         lhs_is_asymmetric_source(lhs, rhs, order_key_cache);
