@@ -27,6 +27,20 @@ public:
     /// \returns Cut bonds identified by the strategy.
     virtual std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const = 0;
 
+    /// \brief Whether FindCutBonds reads caller-supplied indices literally.
+    ///
+    /// The fragmenter cuts a stereo-normalized copy of the parent, and an
+    /// OEGraphMol copy renumbers atoms and bonds as it makes them. A strategy
+    /// that answers with indices it was configured with is therefore given the
+    /// caller's molecule, so those indices still name the bonds the caller
+    /// numbered. Every other strategy is given the normalized parent, so that a
+    /// structural query cannot select a cut on a stereo tag the normalization
+    /// has already discarded.
+    ///
+    /// \returns true when the strategy interprets caller-supplied indices
+    ///          literally; false -- the default -- for structural strategies.
+    virtual bool UsesCallerIndices() const { return false; }
+
     /// \brief Create an independent copy of this strategy.
     ///
     /// \returns Heap-owned strategy copy.
@@ -63,6 +77,7 @@ public:
     explicit BondIndexFragmentationStrategy(const std::vector<unsigned int>& bond_indices);
 
     std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const override;
+    bool UsesCallerIndices() const override;
     std::unique_ptr<FragmentationStrategy> Clone() const override;
 
 private:

@@ -194,6 +194,10 @@ std::vector<CutBond> BondIndexFragmentationStrategy::FindCutBonds(
     return cut_bonds;
 }
 
+bool BondIndexFragmentationStrategy::UsesCallerIndices() const {
+    return true;
+}
+
 std::unique_ptr<FragmentationStrategy> BondIndexFragmentationStrategy::Clone() const {
     return std::make_unique<BondIndexFragmentationStrategy>(*this);
 }

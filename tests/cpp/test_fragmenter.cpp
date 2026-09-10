@@ -1015,6 +1015,58 @@ TEST(FragmenterTest, ExplicitBondIndexAboveTheCopiedRangeIsStillValid) {
 
 namespace {
 
+/// A cut SMARTS that only matches a tagged tetrahedral carbon, so what it finds
+/// says which molecule the strategy was handed.
+const char* const STEREO_SENSITIVE_SMARTS = "[C@H:1]-[CH2:2]";
+
+OEChem::OEGraphMol SuppressedMolFromSmiles(const std::string& smiles) {
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    return mol;
+}
+
+std::vector<Fragmentation> StereoSensitiveSmartsFragmentations(const OEChem::OEMolBase& mol) {
+    SmartsFragmentationStrategy strategy(STEREO_SENSITIVE_SMARTS);
+    Fragmenter fragmenter(strategy);
+    fragmenter.SetMaxCuts(1);
+    return fragmenter.Fragment(1, mol);
+}
+
+}  // namespace
+
+// The other half of the same contract: only a strategy that reads indices
+// literally gets the caller's molecule. A structural query has to see the
+// molecule mmpdb would have parsed -- RDKit drops the tag on `C[C@H](C)CO`,
+// whose tagged carbon carries two identical methyls, and upstream then runs its
+// cut SMARTS on the cleaned molecule. Selecting cuts on the caller's molecule
+// let a stereo-sensitive SMARTS match a tag the normalization had already
+// discarded, so a tag that describes nothing decided where the molecule was cut.
+TEST(FragmenterTest, StereoSensitiveSmartsSeesTheNormalizedParent) {
+    const std::set<FragmentationRecord> tagged = NormalizeFragmentations(
+        StereoSensitiveSmartsFragmentations(SuppressedMolFromSmiles("C[C@H](C)CO")));
+    const std::set<FragmentationRecord> plain = NormalizeFragmentations(
+        StereoSensitiveSmartsFragmentations(SuppressedMolFromSmiles("CC(C)CO")));
+
+    EXPECT_EQ(tagged, plain);
+    EXPECT_TRUE(tagged.empty()) << "the invalid tag is gone, so the SMARTS has nothing to match";
+
+    // A tag that survives normalization still selects the cut it names, so the
+    // fix cannot be "stereo never matches".
+    const OEChem::OEGraphMol valid = SuppressedMolFromSmiles("C[C@H](Cl)CCO");
+    const std::vector<CutBond> raw_cuts =
+        SmartsFragmentationStrategy(STEREO_SENSITIVE_SMARTS).FindCutBonds(valid);
+    ASSERT_GT(raw_cuts.size(), 0u) << "the SMARTS matches nothing here, so the test proves nothing";
+
+    // Every single cut is emitted in both orientations.
+    const std::set<FragmentationRecord> kept =
+        NormalizeFragmentations(StereoSensitiveSmartsFragmentations(valid));
+    EXPECT_EQ(kept.size(), 2 * raw_cuts.size());
+    EXPECT_TRUE(kept.count(FragmentationRecord(
+        ExpectedFragmentSmiles("[*:1]CCO"), ExpectedFragmentSmiles("[*:1][C@H](C)Cl"), 1u)));
+}
+
+namespace {
+
 using CountedRecord = std::tuple<unsigned int, std::string, std::string, int>;
 
 /// Every record as (cut count, constant, variable, enumeration label). A
@@ -1075,6 +1127,35 @@ TEST(FragmenterTest, AttachmentLabelsIgnoreAtomTraversalOrder) {
     EXPECT_EQ(
         CountedRecords(TwoCutFragmentations(1, "CC(Cl)CCO", false)),
         CountedRecords(TwoCutFragmentations(1, "CC(Cl)CCO", true)));
+}
+
+// The same invariant along the route a structural strategy now takes. Its cuts
+// are found on the normalized copy, so their order has to be carried back
+// through the inverse of the parallel-traversal map: the copy numbers its atoms
+// in the source's traversal order, and OECanonicalOrderAtoms rewrites traversal
+// order without touching the source's indices, so ordering on the copy's own
+// numbering is ordering on the spelling.
+TEST(FragmenterTest, SmartsLabelsIgnoreTraversalOrderOnTheNormalizedParent) {
+    const std::multiset<CountedRecord> plain =
+        CountedRecords(TwoCutFragmentations(1, "C[C@H](Cl)CCO", false));
+    ASSERT_FALSE(plain.empty()) << "no records at all, so the comparison proves nothing";
+    EXPECT_EQ(plain, CountedRecords(TwoCutFragmentations(1, "C[C@H](Cl)CCO", true)));
+
+    // Which label went where, named outright, because agreement alone is also
+    // satisfied by both spellings swapping the labels together. The variable
+    // side of the chloride/hydroxyl double cut carries both attachments, so one
+    // string settles the whole assignment.
+    const std::string as_numbered = ExpectedFragmentSmiles("[*:2]CC[C@@H]([*:1])C");
+    const std::string swapped = ExpectedFragmentSmiles("[*:1]CC[C@@H]([*:2])C");
+    ASSERT_NE(as_numbered, swapped);
+    for (const bool canonical : {false, true}) {
+        const std::vector<Fragmentation> records =
+            TwoCutFragmentations(1, "C[C@H](Cl)CCO", canonical);
+        EXPECT_NE(RecordWithVariable(records, as_numbered), nullptr)
+            << "canonical order: " << canonical;
+        EXPECT_EQ(RecordWithVariable(records, swapped), nullptr)
+            << "canonical order: " << canonical;
+    }
 }
 
 namespace {

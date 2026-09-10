@@ -83,6 +83,68 @@ CloneAtomIndexMap BuildOriginalToCloneAtomIndexMap(
     return clone_atom_indices;
 }
 
+/// \brief The same parallel traversal read backwards, clone index to original.
+///
+/// Cuts discovered on the copy have to be ordered by the indices the caller can
+/// see, and only this direction can tell what those are.
+CloneAtomIndexMap BuildCloneToOriginalAtomIndexMap(
+    const OEChem::OEMolBase& original_mol,
+    const OEChem::OEMolBase& clone_mol
+) {
+    CloneAtomIndexMap original_atom_indices;
+    for (const auto& entry : BuildOriginalToCloneAtomIndexMap(original_mol, clone_mol)) {
+        original_atom_indices[entry.second] = entry.first;
+    }
+    return original_atom_indices;
+}
+
+/// \brief Order cuts discovered on the copy by their endpoints' original indices.
+///
+/// The cuts themselves stay in the copy's index space, because that is where the
+/// rest of the run happens; only the order comes from the caller's numbering,
+/// which is the one description of the parent that neither the copy nor a
+/// re-traversal can rewrite. The key is the same ascending endpoint pair
+/// CutBondSortKey builds, and it needs no bond-index tiebreak: two atoms name at
+/// most one bond, so no two cuts can share a key.
+std::vector<CutBond> OrderCutBondsByOriginalIndices(
+    const std::vector<CutBond>& cuts,
+    const CloneAtomIndexMap& original_atom_indices
+) {
+    std::vector<std::pair<std::pair<unsigned int, unsigned int>, CutBond>> keyed;
+    keyed.reserve(cuts.size());
+    for (const CutBond& cut : cuts) {
+        const CutBond ordered = OrderCutEndpoints(cut);
+        const auto begin_original = original_atom_indices.find(ordered.begin_atom_idx);
+        const auto end_original = original_atom_indices.find(ordered.end_atom_idx);
+        if (
+            begin_original == original_atom_indices.end() ||
+            end_original == original_atom_indices.end()
+        ) {
+            throw FragmentationError("cut bond endpoint is missing from the caller's molecule");
+        }
+        keyed.push_back({
+            {
+                std::min(begin_original->second, end_original->second),
+                std::max(begin_original->second, end_original->second)
+            },
+            ordered
+        });
+    }
+
+    std::sort(
+        keyed.begin(),
+        keyed.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; }
+    );
+
+    std::vector<CutBond> ordered_cuts;
+    ordered_cuts.reserve(keyed.size());
+    for (const auto& entry : keyed) {
+        ordered_cuts.push_back(entry.second);
+    }
+    return ordered_cuts;
+}
+
 /// \brief Per-atom chirality classification, mmpdb's get_chiral_flags.
 ///
 /// 1 = an explicitly specified tetrahedral centre, 2 = a potential centre with
@@ -1253,19 +1315,33 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     const OEChem::OEMolBase& parent =
         normalized ? static_cast<const OEChem::OEMolBase&>(*normalized) : mol;
 
-    // Discovery runs on the caller's molecule so that a strategy which
-    // interprets indices literally still answers the question the caller asked;
-    // the answer is then moved into the copy's numbering. The order is fixed
-    // first, in the caller's index space, because attachment labels are handed
-    // out in cut order and so must not depend on how the parent happens to be
-    // numbered: an OEGraphMol copy renumbers atoms in traversal order, which
-    // OECanonicalOrderAtoms rewrites without touching the original's indices.
-    // Ordering after the translation would therefore let two spellings of the
-    // same molecule -- or the mere presence of the copy -- swap [*:1] and [*:2],
-    // and the index buckets pairs by exact constant SMILES.
-    std::vector<CutBond> discovered_cuts = NormalizeCutBonds(strategy_->FindCutBonds(mol));
-    if (normalized) {
-        discovered_cuts = TranslateCutBonds(discovered_cuts, mol, *normalized);
+    // Which molecule the strategy is shown has three cases. Without a copy there
+    // is only one molecule to show it. With a copy, a strategy that reads
+    // caller-supplied indices literally still has to be shown the caller's
+    // molecule -- the copy renumbers, so there the same indices name other bonds,
+    // or none -- and its answer is then moved into the copy's numbering. Every
+    // other strategy is shown the normalized parent, which is what mmpdb does:
+    // it runs its cut SMARTS on the parsed-and-cleaned molecule, so a
+    // stereo-sensitive query never selects a cut on a tag RDKit already dropped.
+    //
+    // In all three the order is fixed by the endpoints' indices in the caller's
+    // molecule. Attachment labels are handed out in cut order, so that order has
+    // to be a property of the molecule and not of the order OEChem walks it in:
+    // an OEGraphMol copy numbers its atoms in the source's traversal order, which
+    // OECanonicalOrderAtoms rewrites without touching the source's indices, so
+    // ordering on the copy's numbering would let two spellings of one molecule --
+    // or the mere presence of the copy -- swap [*:1] and [*:2], and the index
+    // buckets pairs by exact constant SMILES.
+    std::vector<CutBond> discovered_cuts;
+    if (!normalized) {
+        discovered_cuts = NormalizeCutBonds(strategy_->FindCutBonds(mol));
+    } else if (strategy_->UsesCallerIndices()) {
+        discovered_cuts = TranslateCutBonds(
+            NormalizeCutBonds(strategy_->FindCutBonds(mol)), mol, *normalized);
+    } else {
+        discovered_cuts = OrderCutBondsByOriginalIndices(
+            strategy_->FindCutBonds(parent),
+            BuildCloneToOriginalAtomIndexMap(mol, *normalized));
     }
     const std::vector<CutBond> cut_bonds = std::move(discovered_cuts);
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
