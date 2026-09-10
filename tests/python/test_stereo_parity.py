@@ -17,11 +17,14 @@ single-cut loop happened to read.
 
 Hydrogen fragmentations are absent from the oracle by construction.  The
 ``mmpdb fragment`` command drives :func:`mmpdblib.fragment_algorithm.fragment_mol`,
-which never emits ``*[H]`` records; ``get_hydrogen_fragmentations`` is reachable
-only from the transform and predict commands.  That is an intentional upstream
-design difference rather than a gap in this fixture, and
+which never emits ``[*][H]`` records; ``get_hydrogen_fragmentations`` -- the sole
+producer of mmpdb's ``_hydrogen_cut_smiles`` constant -- is reachable only from
+the transform and predict commands.  That is an intentional upstream design
+difference rather than a gap in this fixture, and
 :func:`test_oracle_contains_no_hydrogen_cut_rows` pins it so the absence cannot
-drift into an unnoticed loss of coverage.
+drift into an unnoticed loss of coverage.  The pin is structural: a fragment
+whose projected molecule has no heavy atoms is a hydrogen fragment whatever
+spelling upstream chooses for it.
 
 Differences that remain after projection are governed by
 ``tests/data/mmpdb/stereo_expected_differences.tsv``.  Three rules apply:
@@ -32,17 +35,20 @@ Differences that remain after projection are governed by
   is unconditional, and only up-enumerated records may diverge, and then only
   where the divergence is attributable to one of the four mmpdb reference
   defects that OEMMPA deliberately does not replicate.
+
+The enforcement helpers take the difference map and the allowlist rows as
+arguments so the guards themselves can be exercised against synthetic in-memory
+rows without touching the committed fixture.
 """
 
 import csv
 from pathlib import Path
 
 import pytest
+from mmpdb_surplus_classifier import _canonical_smiles
 from oemmpa.oemmpa import Fragmentation, Fragmenter
 from openeye import oechem
 from rdkit import Chem, RDLogger
-
-RDLogger.DisableLog("rdApp.*")
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "mmpdb"
 CASES_PATH = DATA_DIR / "stereo_cases.smi"
@@ -58,6 +64,7 @@ ORACLE_COLUMNS = [
     "attachment_order",
     "constant_num_heavies",
     "constant_smiles",
+    "constant_with_h_smiles",
 ]
 ALLOWLIST_COLUMNS = [
     "molecule_id",
@@ -76,15 +83,25 @@ ENUMERATED = "enumerated"
 # record was enumerated, so both map onto the same value here.
 MMPDB_LABELS = {"N": BASELINE, "C": ENUMERATED, "V": ENUMERATED}
 
-OEMMPA_ONLY = "oemmpa_only"
-MMPDB_ONLY = "mmpdb_only"
-VALID_DIRECTIONS = {OEMMPA_ONLY, MMPDB_ONLY}
+OEMMPA_SURPLUS = "oemmpa-surplus"
+MMPDB_SURPLUS = "mmpdb-surplus"
+VALID_DIRECTIONS = {OEMMPA_SURPLUS, MMPDB_SURPLUS}
 
 # The four mmpdb reference defects OEMMPA deliberately does not replicate; only
 # these may justify an allowlist row.
 VALID_DEFECTS = {"1", "2", "3", "4"}
 
-HYDROGEN_FRAGMENT = "*[H]"
+# mmpdblib.fragment_algorithm._hydrogen_cut_smiles.
+MMPDB_HYDROGEN_CUT_SMILES = "[*][H]"
+
+
+def _silence_rdkit_warnings():
+    """Suppress RDKit's parse warnings for the duration of a test.
+
+    Scoped to individual tests rather than module import so the setting cannot
+    leak into unrelated test modules that rely on seeing RDKit warnings.
+    """
+    RDLogger.DisableLog("rdApp.warning")  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def _enumeration_label_none():
@@ -105,39 +122,45 @@ def _enumeration_label_none():
 
 ENUMERATION_LABEL_NONE = _enumeration_label_none()
 
-_CANONICAL_CACHE: dict[str, str] = {}
-
-
-def _canonical(smiles):
-    """Canonicalise ``smiles`` through RDKit, returning it unchanged if unparsable."""
-    cached = _CANONICAL_CACHE.get(smiles)
-    if cached is not None:
-        return cached
-    mol = Chem.MolFromSmiles(smiles)
-    canonical = smiles if mol is None else Chem.MolToSmiles(mol)
-    _CANONICAL_CACHE[smiles] = canonical
-    return canonical
-
 
 def _project(smiles):
     """Project an mmpdb or OEMMPA fragment SMILES onto the comparison form.
 
-    mmpdb writes bare ``*`` attachment points where OEMMPA writes ``[*:1]``.
-    The oracle contains no ``[*:1]``, so the first replacement only ever fires
-    on mmpdb input; the second undoes the damage the first does to the already
-    mapped OEMMPA input, which keeps the projection idempotent and lets both
-    sides share one code path.
+    mmpdb writes bare ``*`` attachment points, and a bracketed ``[*]`` where the
+    dummy needs brackets (a metal neighbour, or its hydrogen-cut constant);
+    OEMMPA writes ``[*:1]``.  Unbracketing first means the middle replacement
+    covers both mmpdb spellings, and the last replacement undoes the damage that
+    replacement does to already mapped OEMMPA input.  The result is idempotent,
+    so both sides share one code path.
 
     :param smiles: A fragment SMILES from either toolkit.
     :returns: The RDKit-canonical form with mapped attachment points.
+    :raises AssertionError: When the projected SMILES does not parse.
     """
-    return _canonical(smiles.replace("*", "[*:1]").replace("[[*:1]:1]", "[*:1]"))
+    mapped = (
+        smiles.replace("[*]", "*").replace("*", "[*:1]").replace("[[*:1]:1]", "[*:1]")
+    )
+    assert Chem.MolFromSmiles(mapped) is not None, (
+        f"projection of {smiles!r} produced unparsable SMILES {mapped!r}"
+    )
+    return _canonical_smiles(mapped)
 
 
 def _heavy_atoms(projected):
-    """Return the RDKit heavy-atom count of ``projected``, or -1 if unparsable."""
+    """Return the RDKit heavy-atom count of an already projected SMILES."""
     mol = Chem.MolFromSmiles(projected)
-    return -1 if mol is None else mol.GetNumHeavyAtoms()
+    assert mol is not None, projected
+    return mol.GetNumHeavyAtoms()
+
+
+def _is_hydrogen_fragment(projected):
+    """Return whether a projected fragment carries no heavy atom.
+
+    A real variable or constant fragment always has at least one heavy atom, so
+    a heavy-atom count of zero identifies mmpdb's hydrogen cut regardless of how
+    upstream spells the dummy.
+    """
+    return _heavy_atoms(projected) == 0
 
 
 def _record(variable_smiles, constant_smiles, label):
@@ -163,11 +186,21 @@ def _read_cases():
     return cases
 
 
-def _read_oracle_rows():
-    with ORACLE_PATH.open(newline="", encoding="utf-8") as handle:
+def _read_oracle_rows(path=None):
+    with (path or ORACLE_PATH).open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         assert reader.fieldnames == ORACLE_COLUMNS
         return list(reader)
+
+
+def _hydrogen_oracle_rows(rows):
+    """Return the subset of oracle rows that describe a hydrogen fragmentation."""
+    return [
+        row
+        for row in rows
+        if _is_hydrogen_fragment(_project(row["variable_smiles"]))
+        or _is_hydrogen_fragment(_project(row["constant_smiles"]))
+    ]
 
 
 def _load_oracle():
@@ -176,13 +209,16 @@ def _load_oracle():
     for row in _read_oracle_rows():
         assert row["num_cuts"] == "1", row
         assert row["attachment_order"] == "0", row
-        oracle.setdefault(row["molecule_id"], set()).add(
-            _record(
-                row["variable_smiles"],
-                row["constant_smiles"],
-                MMPDB_LABELS[row["enumeration_label"]],
-            )
+        record = _record(
+            row["variable_smiles"],
+            row["constant_smiles"],
+            MMPDB_LABELS[row["enumeration_label"]],
         )
+        # Projection rule 4: the recomputed heavy counts must agree with the
+        # counts mmpdb stored, or the projection has silently changed the graph.
+        assert record[2] == int(row["variable_num_heavies"]), row
+        assert record[3] == int(row["constant_num_heavies"]), row
+        oracle.setdefault(row["molecule_id"], set()).add(record)
     return oracle
 
 
@@ -217,6 +253,47 @@ def _load_allowlist():
         return list(reader)
 
 
+def _allowlist_key(row):
+    """Return the difference key an allowlist row refers to.
+
+    The SMILES columns go through the same projection as the compared records,
+    so a row transcribed from raw mmpdb output or from any other valid rendering
+    still matches instead of reading as stale.
+    """
+    return (
+        row["molecule_id"],
+        row["direction"],
+        _project(row["variable_smiles"]),
+        _project(row["constant_smiles"]),
+    )
+
+
+def _unexplained_differences(differences, allowlist_rows):
+    """Return the difference keys no allowlist row accounts for."""
+    allowed = {_allowlist_key(row) for row in allowlist_rows}
+    return sorted(key for key in differences if key not in allowed)
+
+
+def _stale_allowlist_rows(differences, allowlist_rows):
+    """Return the keys of allowlist rows that describe no observed difference.
+
+    :raises AssertionError: When a row is malformed, or when it accepts a
+        baseline record -- baseline parity is unconditional.
+    """
+    stale = []
+    for row in allowlist_rows:
+        assert row["direction"] in VALID_DIRECTIONS, row
+        assert row["defect"] in VALID_DEFECTS, row
+        assert row["rationale"].strip(), row
+        key = _allowlist_key(row)
+        if key not in differences:
+            stale.append(key)
+        else:
+            # A baseline divergence is a defect in OEMMPA, never an accepted one.
+            assert differences[key][4] == ENUMERATED, row
+    return stale
+
+
 def _differences():
     """Return every projected record present on exactly one side.
 
@@ -229,8 +306,8 @@ def _differences():
         expected = oracle.get(title, set())
         observed = _oemmpa_rows(smiles)
         for direction, records in (
-            (OEMMPA_ONLY, observed - expected),
-            (MMPDB_ONLY, expected - observed),
+            (OEMMPA_SURPLUS, observed - expected),
+            (MMPDB_SURPLUS, expected - observed),
         ):
             for record in records:
                 differences[(title, direction, record[0], record[1])] = record
@@ -239,10 +316,12 @@ def _differences():
 
 @pytest.fixture(scope="module")
 def differences():
+    _silence_rdkit_warnings()
     return _differences()
 
 
 def test_oracle_covers_every_fixture_structure():
+    _silence_rdkit_warnings()
     oracle = _load_oracle()
     titles = [title for title, _ in _read_cases()]
 
@@ -259,15 +338,13 @@ def test_oracle_contains_no_hydrogen_cut_rows():
     transform and predict commands do.  Pinning the absence keeps the oracle
     honest about what it does and does not cover.
     """
+    _silence_rdkit_warnings()
     rows = _read_oracle_rows()
 
     assert rows
-    hydrogen_rows = [
-        row
-        for row in rows
-        if HYDROGEN_FRAGMENT in (row["variable_smiles"], row["constant_smiles"])
-    ]
-    assert hydrogen_rows == []
+    # The structural test must actually recognise upstream's spelling.
+    assert _is_hydrogen_fragment(_project(MMPDB_HYDROGEN_CUT_SMILES))
+    assert _hydrogen_oracle_rows(rows) == []
 
 
 def test_no_baseline_record_differs(differences):
@@ -282,38 +359,79 @@ def test_no_baseline_record_differs(differences):
 
 
 def test_every_difference_is_allowlisted(differences):
-    allowlist = {
-        (
-            row["molecule_id"],
-            row["direction"],
-            row["variable_smiles"],
-            row["constant_smiles"],
-        )
-        for row in _load_allowlist()
-    }
-
-    unexplained = sorted(key for key in differences if key not in allowlist)
-    assert unexplained == []
+    assert _unexplained_differences(differences, _load_allowlist()) == []
 
 
 def test_no_allowlist_row_is_stale(differences):
-    rows = _load_allowlist()
+    assert _stale_allowlist_rows(differences, _load_allowlist()) == []
 
-    stale = []
-    for row in rows:
-        assert row["direction"] in VALID_DIRECTIONS, row
-        assert row["defect"] in VALID_DEFECTS, row
-        assert row["rationale"].strip(), row
-        key = (
-            row["molecule_id"],
-            row["direction"],
-            row["variable_smiles"],
-            row["constant_smiles"],
-        )
-        if key not in differences:
-            stale.append(key)
-        else:
-            # A baseline divergence is a defect in OEMMPA, never an accepted one.
-            assert differences[key][4] == ENUMERATED, row
 
-    assert stale == []
+# --- Guards on the guards -------------------------------------------------
+#
+# The committed allowlist is empty, so the three enforcement rules above are
+# never exercised by real data.  These checks run them against synthetic rows
+# held in memory; they touch no fixture.
+
+SYNTHETIC_ID = "synthetic_case"
+SYNTHETIC_VARIABLE = "C[*:1]"
+SYNTHETIC_CONSTANT = "OC[*:1]"
+
+
+def _synthetic_difference(label):
+    """Return a one-entry difference map for a synthetic OEMMPA-surplus record."""
+    record = _record(SYNTHETIC_VARIABLE, SYNTHETIC_CONSTANT, label)
+    return {(SYNTHETIC_ID, OEMMPA_SURPLUS, record[0], record[1]): record}
+
+
+def _synthetic_allowlist_row(**overrides):
+    row = {
+        "molecule_id": SYNTHETIC_ID,
+        "direction": OEMMPA_SURPLUS,
+        # Deliberately not the canonical rendering, to prove the key is
+        # projected rather than compared literally.
+        "variable_smiles": "[*:1]C",
+        "constant_smiles": "[*:1]CO",
+        "defect": "2",
+        "rationale": "synthetic probe",
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize(
+    "label,overrides",
+    [(BASELINE, {"defect": defect}) for defect in sorted(VALID_DEFECTS)]
+    + [
+        (ENUMERATED, {"direction": "sideways"}),
+        (ENUMERATED, {"direction": ""}),
+        (ENUMERATED, {"defect": "5"}),
+        (ENUMERATED, {"defect": ""}),
+        (ENUMERATED, {"rationale": ""}),
+        (ENUMERATED, {"rationale": "   "}),
+    ],
+)
+def test_allowlist_guard_rejects_invalid_rows(label, overrides):
+    _silence_rdkit_warnings()
+    differences = _synthetic_difference(label)
+
+    with pytest.raises(AssertionError):
+        _stale_allowlist_rows(differences, [_synthetic_allowlist_row(**overrides)])
+
+
+def test_allowlist_guard_reports_stale_rows():
+    _silence_rdkit_warnings()
+    row = _synthetic_allowlist_row()
+
+    assert _stale_allowlist_rows({}, [row]) == [_allowlist_key(row)]
+
+
+def test_allowlist_guard_reports_unlisted_differences():
+    _silence_rdkit_warnings()
+    differences = _synthetic_difference(ENUMERATED)
+    rows = [_synthetic_allowlist_row()]
+
+    assert _unexplained_differences(differences, []) == sorted(differences)
+    # The same difference, once allowlisted through a non-canonical rendering,
+    # is neither unexplained nor stale.
+    assert _unexplained_differences(differences, rows) == []
+    assert _stale_allowlist_rows(differences, rows) == []
