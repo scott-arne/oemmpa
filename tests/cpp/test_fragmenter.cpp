@@ -817,5 +817,144 @@ TEST(FragmenterTest, EndEndpointQuaternaryCentrePreservesConfiguration) {
     EXPECT_FALSE(produced.count(ExpectedFragmentSmiles("C[C@@](F)([*:1])Br")));
 }
 
+namespace {
+
+using LabelledRecord = std::tuple<std::string, std::string, int>;
+
+/// Every record as (constant, variable, enumeration label), as a multiset so a
+/// duplicated record cannot hide inside a set. The label is widened to int
+/// because the PrintTo overload for the scoped enum lives in another
+/// translation unit, so argument-dependent lookup would not find it here.
+std::multiset<LabelledRecord> LabelledRecords(const std::vector<Fragmentation>& fragmentations) {
+    std::multiset<LabelledRecord> records;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        records.insert(LabelledRecord(
+            fragmentation.GetConstantSmiles(),
+            fragmentation.GetVariableSmiles(),
+            static_cast<int>(fragmentation.GetEnumerationLabel())));
+    }
+    return records;
+}
+
+/// The one record whose variable side is `variable_smiles`; null when the cut
+/// is absent or appears more than once, so an ambiguous lookup fails loudly
+/// instead of asserting against an arbitrary record.
+const Fragmentation* RecordWithVariable(
+    const std::vector<Fragmentation>& fragmentations,
+    const std::string& variable_smiles
+) {
+    const Fragmentation* found = nullptr;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        if (fragmentation.GetVariableSmiles() != variable_smiles) {
+            continue;
+        }
+        if (found != nullptr) {
+            return nullptr;
+        }
+        found = &fragmentation;
+    }
+    return found;
+}
+
+/// How many of `characters` appear in `text`. Counting stereo punctuation is
+/// enough to tell "carries a descriptor" from "carries none" without pinning a
+/// canonical output string that OEChem is free to re-spell.
+std::size_t CountAnyOf(const std::string& text, const std::string& characters) {
+    std::size_t total = 0;
+    for (const char character : text) {
+        if (characters.find(character) != std::string::npos) {
+            ++total;
+        }
+    }
+    return total;
+}
+
+std::vector<Fragmentation> SingleCutFragmentations(const std::string& smiles) {
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+    return fragmenter.Fragment(1, mol);
+}
+
+}  // namespace
+
+// `C[C@H](C)CO` tags a carbon carrying two identical methyls, so the tag
+// describes nothing. RDKit strips it at parse time and mmpdb therefore
+// fragments plain isobutanol. OEMMPA has to normalize the parent before
+// cutting: otherwise the phantom tag both survives into the fragments and, by
+// reading as an already-specified centre, suppresses the enumeration the real
+// achiral parent triggers.
+TEST(FragmenterTest, InvalidParentStereoIsNormalizedBeforeCutting) {
+    const std::vector<Fragmentation> tagged = SingleCutFragmentations("C[C@H](C)CO");
+    const std::vector<Fragmentation> plain = SingleCutFragmentations("CC(C)CO");
+
+    EXPECT_EQ(LabelledRecords(tagged), LabelledRecords(plain));
+
+    // Spelled out as well, so a shared regression cannot make both sides
+    // equally wrong and still compare equal.
+    const int none = static_cast<int>(Fragmentation::EnumerationLabel::None);
+    const int variable_up = static_cast<int>(Fragmentation::EnumerationLabel::VariableUp);
+    const std::multiset<LabelledRecord> records = LabelledRecords(tagged);
+    const std::string methyl_constant = ExpectedFragmentSmiles("[*:1]C");
+    EXPECT_EQ(
+        records.count(
+            LabelledRecord(methyl_constant, ExpectedFragmentSmiles("[*:1]C(C)CO"), none)),
+        1u);
+    EXPECT_EQ(
+        records.count(
+            LabelledRecord(methyl_constant, ExpectedFragmentSmiles("[*:1][C@H](C)CO"), variable_up)),
+        1u);
+    EXPECT_EQ(
+        records.count(
+            LabelledRecord(methyl_constant, ExpectedFragmentSmiles("[*:1][C@@H](C)CO"), variable_up)),
+        1u);
+}
+
+// The two tags of a 1,4-disubstituted cyclohexane are dependent: neither carbon
+// is chiral on its own, but together they say cis or trans. Both have to
+// survive the cut, and the two diastereomers must not collapse onto the same
+// constant.
+TEST(FragmenterTest, DependentRingStereoSurvivesTheCut) {
+    const std::string cis_constant = ExpectedFragmentSmiles("C[C@H]1CC[C@@H]([*:1])CC1");
+    const std::string trans_constant = ExpectedFragmentSmiles("C[C@H]1CC[C@H]([*:1])CC1");
+    ASSERT_NE(cis_constant, trans_constant);
+
+    const std::set<std::string> cis =
+        AllFragmentComponents(SingleCutFragmentations("C[C@H]1CC[C@@H](O)CC1"));
+    EXPECT_TRUE(cis.count(cis_constant)) << cis_constant;
+    EXPECT_FALSE(cis.count(trans_constant)) << trans_constant;
+
+    const std::set<std::string> trans =
+        AllFragmentComponents(SingleCutFragmentations("C[C@H]1CC[C@H](O)CC1"));
+    EXPECT_TRUE(trans.count(trans_constant)) << trans_constant;
+    EXPECT_FALSE(trans.count(cis_constant)) << cis_constant;
+}
+
+// Capping the attachment with hydrogen can destroy the stereochemistry the
+// constant was carrying: the ring pair loses the partner that gave it meaning,
+// and the exocyclic alkene loses the substituent that defined its geometry. The
+// capped molecule therefore needs the same cleanup a fragment gets, or it
+// renders a descriptor that describes nothing.
+TEST(FragmenterTest, HydrogenCappedConstantIsCleanedLikeAFragment) {
+    const std::vector<Fragmentation> ring = SingleCutFragmentations("C[C@H]1CC[C@@H](O)CC1");
+    const Fragmentation* hydroxyl_cut = RecordWithVariable(ring, ExpectedFragmentSmiles("[*:1]O"));
+    ASSERT_NE(hydroxyl_cut, nullptr);
+    // The pair is intact on the constant itself, so anything lost below is lost
+    // at capping time rather than at cutting time.
+    EXPECT_EQ(CountAnyOf(hydroxyl_cut->GetConstantSmiles(), "@"), 2u)
+        << hydroxyl_cut->GetConstantSmiles();
+    EXPECT_EQ(CountAnyOf(hydroxyl_cut->GetConstantWithHydrogenSmiles(), "@"), 0u)
+        << hydroxyl_cut->GetConstantWithHydrogenSmiles();
+
+    const std::vector<Fragmentation> alkene = SingleCutFragmentations("O=C1Nc2ccccc2/C1=C/C");
+    const Fragmentation* methyl_cut = RecordWithVariable(alkene, ExpectedFragmentSmiles("[*:1]C"));
+    ASSERT_NE(methyl_cut, nullptr);
+    EXPECT_GT(CountAnyOf(methyl_cut->GetConstantSmiles(), "/\\"), 0u)
+        << methyl_cut->GetConstantSmiles();
+    EXPECT_EQ(CountAnyOf(methyl_cut->GetConstantWithHydrogenSmiles(), "/\\"), 0u)
+        << methyl_cut->GetConstantWithHydrogenSmiles();
+}
+
 }  // namespace test
 }  // namespace OEMMPA

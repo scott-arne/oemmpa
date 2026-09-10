@@ -620,3 +620,45 @@ TEST(EnumerationPairing, HydrogenMetadataEnrichmentKeepsTheEnumeratedLabel) {
         << "2 pairs means enrichment overwrote the enumerated label with the "
            "baseline duplicate's label, contradicting first-insertion-wins";
 }
+
+namespace {
+
+/// Parse and drop the explicit hydrogen a bracketed tag leaves behind, which is
+/// how every production caller hands a molecule to the fragmenter.
+OEChem::OEGraphMol parse_suppressed(const char* smiles) {
+    OEChem::OEGraphMol mol = parse_smiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    return mol;
+}
+
+}  // namespace
+
+// A cut that leaves a nitrogen with three distinguishable arms does not create
+// a stereocentre. RDKit's isAtomPotentialChiralCenter, which mmpdb transcribes,
+// accepts three neighbours and no hydrogen only for sulfur and selenium, so
+// upstream never emits the [N@]/[N@@] configurations that asking
+// OEAtomBase::IsChiral() alone would enumerate. The carbon control keeps the
+// guard honest: it proves the element rule narrowed the detector rather than
+// switching it off.
+TEST(CreatedStereocenters, ThreeCoordinateNitrogenIsNotACreatedCentre) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    for (const char* smiles : {"CN(C)CCO", "CS(=O)(=O)N(C)C"}) {
+        const OEChem::OEGraphMol mol = parse_suppressed(smiles);
+        const std::vector<OEMMPA::Fragmentation> fragmentations = fragmenter.Fragment(1, mol);
+        ASSERT_FALSE(fragmentations.empty()) << smiles;
+        EXPECT_EQ(
+            static_cast<std::size_t>(
+                count_with_label(fragmentations, OEMMPA::Fragmentation::EnumerationLabel::None)),
+            fragmentations.size()) << smiles;
+    }
+
+    const OEChem::OEGraphMol control = parse_suppressed("OCC(C)C");
+    const std::vector<OEMMPA::Fragmentation> enumerated = fragmenter.Fragment(1, control);
+    EXPECT_EQ(enumerated.size(), 10u);
+    EXPECT_EQ(
+        count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::ConstantUp), 2u);
+    EXPECT_EQ(
+        count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::VariableUp), 2u);
+}

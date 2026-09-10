@@ -78,8 +78,12 @@ CloneAtomIndexMap BuildOriginalToCloneAtomIndexMap(
 /// \brief Per-atom chirality classification, mmpdb's get_chiral_flags.
 ///
 /// 1 = an explicitly specified tetrahedral centre, 2 = a potential centre with
-/// no tag, 0 = neither. Perception runs on a copy with map indices zeroed, so
-/// two attachment dummies cannot be mistaken for distinguishable substituents.
+/// no tag, 0 = neither. "Potential" is is_potential_stereocenter() rather than
+/// OEAtomBase::IsChiral(), because the flag drives up-enumeration and upstream
+/// does not enumerate configurations on shapes RDKit refuses to call chiral --
+/// a three-coordinate amine nitrogen most of all. Perception runs on a copy
+/// with map indices zeroed, so two attachment dummies cannot be mistaken for
+/// distinguishable substituents.
 /// Keys are indices in `mol`, established by the same parallel traversal
 /// BuildOriginalToCloneAtomIndexMap relies on.
 std::unordered_map<unsigned int, unsigned int> ComputeChiralFlags(const OEChem::OEMolBase& mol) {
@@ -97,7 +101,7 @@ std::unordered_map<unsigned int, unsigned int> ComputeChiralFlags(const OEChem::
         unsigned int flag = 0;
         if (perceived_atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
             flag = 1;
-        } else if (perceived_atom->IsChiral()) {
+        } else if (is_potential_stereocenter(*perceived_atom)) {
             flag = 2;
         }
         flags[source_atom->GetIdx()] = flag;
@@ -361,6 +365,12 @@ std::string ConstantWithHydrogenSmiles(const OEChem::OEMolBase& mol) {
     dummy_atom->SetAtomicNum(1);
     dummy_atom->SetMapIdx(0);
     OEChem::OESuppressHydrogens(hydrogen_mol);
+    // Capping is itself a structural edit and can invalidate stereo the
+    // constant legitimately carried: a dependent ring pair loses the partner
+    // that gave it meaning, and an exocyclic alkene loses the substituent that
+    // defined its geometry. The capped molecule needs the same cleanup a
+    // fragment gets, or it renders a descriptor that describes nothing.
+    clear_fragmentation_invalidated_stereo(hydrogen_mol);
     return OEChem::OEMolToSmiles(hydrogen_mol);
 }
 
@@ -1168,7 +1178,15 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     std::vector<Fragmentation> fragmentations;
     RetainedFragmentations seen;
 
-    const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(mol));
+    // mmpdb never sees an input tag that RDKit rejected: Chem.MolFromSmiles
+    // strips it during parsing, so everything downstream -- cut selection,
+    // chirality flags, fragment rendering -- works on the normalized parent.
+    // Normalizing here reproduces that. A copy rather than an in-place edit
+    // because the caller's molecule is const and must stay untouched.
+    OEChem::OEGraphMol parent(mol);
+    clear_fragmentation_invalidated_stereo(parent);
+
+    const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(parent));
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
         return fragmentations;
     }
@@ -1176,17 +1194,17 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     // Created-stereocentre detection compares the parent's chirality against
     // each cut molecule's. The parent side is the same for every combination,
     // so perceive it once here instead of once per combination.
-    const std::unordered_map<unsigned int, unsigned int> parent_flags = ComputeChiralFlags(mol);
+    const std::unordered_map<unsigned int, unsigned int> parent_flags = ComputeChiralFlags(parent);
 
     EnumerateCutCombinations(
         cut_bonds,
         min_cuts_,
         max_cuts_,
-        [molecule_id, &mol, &parent_flags, max_up_enumerations = max_up_enumerations_, &seen, &fragmentations](
+        [molecule_id, &parent, &parent_flags, max_up_enumerations = max_up_enumerations_, &seen, &fragmentations](
             const CutCombination& combination
         ) {
             AddFragmentationForCombination(
-                molecule_id, mol, parent_flags, combination, max_up_enumerations, seen, fragmentations);
+                molecule_id, parent, parent_flags, combination, max_up_enumerations, seen, fragmentations);
         }
     );
 
