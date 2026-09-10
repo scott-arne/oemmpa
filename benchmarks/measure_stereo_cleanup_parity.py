@@ -94,38 +94,50 @@ def check_parquet_identity(parquet):
         )
 
 
-def read_stereo_rows(parquet, row_group, limit):
+def read_stereo_rows(parquet, first_row_group, limit):
     """Read stereo-bearing rows from the corpus under the provenance filters.
 
+    The limit counts the rows the measurement will actually classify -- the
+    stereo-bearing ones -- so raising it always widens the measured population.
+    A limit on rows *considered* would not: most corpus rows carry no stereo at
+    all, so the sample size would depend on how the corpus happens to be sorted.
+    Row groups are consumed in order from `first_row_group` until the limit is
+    reached or the file runs out.
+
     :param parquet: Path to the pinned parquet.
-    :param row_group: Parquet row group to read.
-    :param limit: Maximum number of rows to consider before filtering for stereo.
-    :returns: List of ``(identifier, smiles)`` pairs whose SMILES carries a
-        stereo marker.
+    :param first_row_group: Parquet row group to start from.
+    :param limit: Maximum number of stereo-bearing rows to return.
+    :returns: ``(rows, row_groups_consumed, eligible_scanned)`` where `rows` is a
+        list of ``(identifier, smiles)`` pairs whose SMILES carries a stereo
+        marker and `eligible_scanned` counts the rows that passed the provenance
+        filters, stereo-bearing or not.
     """
     import pyarrow.parquet as pq  # lazy: only this tool reads the corpus
 
-    table = (
-        pq.ParquetFile(parquet)
-        .read_row_group(row_group, columns=["id", "smiles", "mol_weight"])
-        .to_pydict()
-    )
-
+    parquet_file = pq.ParquetFile(parquet)
     rows = []
-    considered = 0
-    for identifier, smiles, mol_weight in zip(
-        table["id"], table["smiles"], table["mol_weight"]
-    ):
-        if considered >= limit:
+    eligible = 0
+    consumed = 0
+    for row_group in range(first_row_group, parquet_file.num_row_groups):
+        if len(rows) >= limit:
             break
-        if not smiles or "." in smiles:
-            continue
-        if not MIN_MOL_WEIGHT <= (mol_weight or 0.0) <= MAX_MOL_WEIGHT:
-            continue
-        considered += 1
-        if any(marker in smiles for marker in ("@", "/", "\\")):
-            rows.append((f"S{identifier}", smiles))
-    return rows
+        table = parquet_file.read_row_group(
+            row_group, columns=["id", "smiles", "mol_weight"]
+        ).to_pydict()
+        consumed += 1
+        for identifier, smiles, mol_weight in zip(
+            table["id"], table["smiles"], table["mol_weight"]
+        ):
+            if len(rows) >= limit:
+                break
+            if not smiles or "." in smiles:
+                continue
+            if not MIN_MOL_WEIGHT <= (mol_weight or 0.0) <= MAX_MOL_WEIGHT:
+                continue
+            eligible += 1
+            if any(marker in smiles for marker in ("@", "/", "\\")):
+                rows.append((f"S{identifier}", smiles))
+    return rows, consumed, eligible
 
 
 def rdkit_stereo_counts(mol):
@@ -265,16 +277,25 @@ def main():
         "--limit",
         type=int,
         default=8000,
-        help="Maximum number of filtered corpus rows to consider (default 8000)",
+        help="Maximum number of stereo-bearing corpus rows to measure (default 8000)",
     )
     parser.add_argument(
-        "--row-group", type=int, default=0, help="Parquet row group to read (default 0)"
+        "--row-group",
+        type=int,
+        default=0,
+        help="First parquet row group to read; later groups follow in order (default 0)",
     )
     args = parser.parse_args()
 
     check_parquet_identity(args.parquet)
-    rows = read_stereo_rows(args.parquet, args.row_group, args.limit)
-    print(f"stereo-bearing rows: {len(rows)} (of at most {args.limit} considered)")
+    rows, consumed, eligible = read_stereo_rows(
+        args.parquet, args.row_group, args.limit
+    )
+    print(
+        f"stereo-bearing rows: {len(rows)} (limit {args.limit}); "
+        f"row groups consumed: {consumed} from {args.row_group}; "
+        f"eligible rows scanned: {eligible}"
+    )
 
     render_fragment_smiles = import_worktree_renderer()
     counts = dict.fromkeys(CLASSES, 0)
