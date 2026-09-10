@@ -27,6 +27,15 @@ std::string render(const std::string& smiles) {
     return OEMMPA::render_fragment_smiles(mol);
 }
 
+/// Render after dropping the explicit hydrogen OESmilesToMol keeps for a
+/// bracketed `[C@H]`, so an expectation written by hand is compared against a
+/// molecule in the same hydrogen convention as the one under test.
+std::string render_suppressed(const std::string& smiles) {
+    OEChem::OEGraphMol mol = parse(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    return OEMMPA::render_fragment_smiles(mol);
+}
+
 bool has_atom_stereo(const std::string& smiles) {
     return smiles.find('@') != std::string::npos;
 }
@@ -161,6 +170,73 @@ TEST(FragmentSmiles, UnfragmentedBondStereoIsUntouched) {
 TEST(FragmentSmiles, DuplicateRealSubstituentBondIsCleared) {
     const std::string smiles = render("C/C(C)=C/CCl");
     EXPECT_FALSE(has_bond_direction(smiles)) << smiles;
+}
+
+// Two tags on the same ring system whose individual centres are not chiral
+// still encode a real descriptor: the cis/trans relationship between the two
+// substituents. Neither atom passes symmetry-based perception on its own --
+// the two ring paths joining them are equivalent -- so a rule that asks only
+// IsChiral() erases one of medicinal chemistry's commonest motifs. RDKit keeps
+// the pair, and mmpdb inherits that, so the pair survives here too. Ring size
+// is irrelevant, an attachment dummy is an ordinary substituent, and two rings
+// joined at a spiro atom are one ring system.
+TEST(FragmentSmiles, DependentRingStereoSurvivesInPairs) {
+    const std::string cis = render_suppressed("C[C@H]1CC[C@@H](O)CC1");
+    const std::string trans = render_suppressed("C[C@H]1CC[C@H](O)CC1");
+    EXPECT_NE(cis, trans);
+    EXPECT_TRUE(has_atom_stereo(cis)) << cis;
+    EXPECT_TRUE(has_atom_stereo(trans)) << trans;
+
+    for (const std::string& smiles : {
+             std::string("C[C@H]1C[C@@H](O)C1"),
+             std::string("C[C@H]1CCC[C@@H](O)CCC1"),
+             std::string("C[C@H]1CC[C@@H]([*:1])CC1"),
+             std::string("C[C@H]1CCC2(CC1)CC[C@@H](O)CC2")}) {
+        const std::string rendered = render_suppressed(smiles);
+        EXPECT_TRUE(has_atom_stereo(rendered)) << smiles << " -> " << rendered;
+    }
+}
+
+// The pair is the descriptor, so half a pair describes nothing. A tag whose
+// would-be partner position carries no tag of its own is meaningless and RDKit
+// drops it; so does a lone tag on a symmetric ring with no second substituted
+// position at all.
+TEST(FragmentSmiles, LoneDependentTagIsCleared) {
+    EXPECT_EQ(render_suppressed("C[C@H]1CCC(O)CC1"), render_suppressed("CC1CCC(O)CC1"));
+    EXPECT_EQ(render_suppressed("CN1CC[C@H](CC1)O"), render_suppressed("CN1CCC(O)CC1"));
+    EXPECT_EQ(render_suppressed("O[C@@H]1CCCC1"), render_suppressed("OC1CCCC1"));
+}
+
+// A partner must itself be a dependent candidate, not merely another tagged
+// atom on the ring. Both methyl-bearing centres here are independently chiral,
+// so they are kept on their own merits and neither can rescue the hydroxyl
+// centre, whose two ring paths remain equivalent.
+TEST(FragmentSmiles, DependentCandidateNeedsADependentPartner) {
+    EXPECT_EQ(
+        render_suppressed("C[C@H]1C[C@H](C)C[C@@H](O)C1"),
+        render_suppressed("C[C@H]1C[C@H](C)CC(O)C1"));
+}
+
+// Three distinguishable substituents are not enough on their own. mmpdb's
+// is_potential_chiral_center accepts a three-neighbour atom only when it
+// carries exactly one hydrogen, or when it is a sulfur or selenium at the
+// valence a sulfoxide-like centre has, so amine nitrogen is not a stereocentre
+// however distinguishable its three arms are while a sulfoxide is.
+TEST(FragmentSmiles, ThreeCoordinateNitrogenTagIsCleared) {
+    EXPECT_EQ(render_suppressed("[*:1][N@](C)CCO"), render_suppressed("[*:1]N(C)CCO"));
+
+    const std::string left = render_suppressed("C[S@](=O)c1ccccc1");
+    const std::string right = render_suppressed("C[S@@](=O)c1ccccc1");
+    EXPECT_NE(left, right);
+    EXPECT_TRUE(has_atom_stereo(left)) << left;
+    EXPECT_TRUE(has_atom_stereo(right)) << right;
+}
+
+// The bond rule is untouched by the atom work: geminal methyls make a written
+// direction meaningless and it goes, while a genuine geometry stays.
+TEST(FragmentSmiles, InvalidGeminalBondStereoIsCleared) {
+    EXPECT_EQ(render_suppressed("C/C=C(/C)C"), render_suppressed("CC=C(C)C"));
+    EXPECT_TRUE(has_bond_direction(render_suppressed("C/C=C/C(=O)O")));
 }
 
 TEST(FragmentSmiles, IsotopesSurvive) {

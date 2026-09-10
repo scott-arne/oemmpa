@@ -8,6 +8,48 @@
 
 namespace OEMMPA {
 
+/// \brief Whether a specified tetrahedral tag on `atom` describes a real centre.
+///
+/// Two independent questions have to be answered yes. OEChem's perception must
+/// find the substituents distinguishable, and the atom's valence shape must be
+/// one that can carry tetrahedral chirality at all. The second is RDKit's
+/// ``Code/GraphMol/Chirality.cpp::isAtomPotentialChiralCenter``, which OEMMPA
+/// reaches through mmpdb's transcription of it in
+/// ``mmpdblib/fragment_algorithm.py:203-238``: four heavy neighbours always
+/// qualify, three qualify when exactly one hydrogen is present, and three with
+/// no hydrogen qualify only for sulfur or selenium at a sulfoxide-like valence.
+/// Asking only OEAtomBase::IsChiral() admits three-coordinate amine nitrogen,
+/// which upstream does not treat as a stereocentre.
+///
+/// \param atom Atom to test. The caller has already run OEPerceiveChiral() on a
+///        molecule whose attachment map indices are zero.
+/// \returns true when the tag stands on its own merits.
+bool is_potential_stereocenter(const OEChem::OEAtomBase& atom);
+
+/// \brief Whether a specified tetrahedral tag on `atom` is half of a ring pair.
+///
+/// RDKit's ring-stereo special case, applied by
+/// ``AssignStereochemistry(cleanIt=True)`` and inherited by mmpdb through
+/// ``Chem.MolFromSmiles``. In a 1,4-disubstituted cyclohexane neither
+/// substituted carbon is chiral on its own, because the two ring paths joining
+/// them are symmetry-equivalent, yet the two tags together encode the cis/trans
+/// relationship of the substituents. The tag therefore survives when this atom
+/// is a candidate -- tagged, not chiral, in a ring, with exactly two ring
+/// neighbours of equal symmetry class, and otherwise substituted so that it
+/// would be stereogenic if those two ring paths could be told apart -- and some
+/// other candidate shares its ring system. Half a pair describes nothing, so a
+/// lone candidate is not kept.
+///
+/// Symmetry refinement cannot replace the pairing rule: the mirror plane
+/// through the two centres keeps the ring paths equivalent however much stereo
+/// information the refinement carries, so no amount of refining separates them.
+///
+/// \param atom Atom to test. The caller has already run OEPerceiveChiral(),
+///        OEPerceiveSymmetry() and OEFindRingAtomsAndBonds() on a molecule whose
+///        attachment map indices are zero.
+/// \returns true when the tag survives as one half of a dependent pair.
+bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom);
+
 /// \brief Clear stereo descriptors that fragmentation invalidated.
 ///
 /// A cut can leave a tagged stereocentre whose substituents are no longer

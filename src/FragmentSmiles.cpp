@@ -39,7 +39,130 @@ OEChem::OEAtomBase* first_other_neighbor(OEChem::OEAtomBase& atom, unsigned int 
     return nullptr;
 }
 
+/// The atoms bonded to `atom` through a ring bond and through a non-ring bond.
+/// Hydrogens are excluded from both, so the split is over heavy substituents
+/// whether or not OESuppressHydrogens has run.
+struct HeavyNeighborSplit {
+    std::vector<OEChem::OEAtomBase*> ring;
+    std::vector<OEChem::OEAtomBase*> exocyclic;
+};
+
+HeavyNeighborSplit split_heavy_neighbors(const OEChem::OEAtomBase& atom) {
+    HeavyNeighborSplit split;
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = atom.GetBonds(); bond; ++bond) {
+        OEChem::OEAtomBase* neighbor = bond->GetNbr(&atom);
+        if (neighbor == nullptr || neighbor->GetAtomicNum() == 1) {
+            continue;
+        }
+        (bond->IsInRing() ? split.ring : split.exocyclic).push_back(neighbor);
+    }
+    return split;
+}
+
+/// One half of RDKit's dependent ring-stereo pair: a tagged ring atom that
+/// fails perception only because its two ring neighbours are symmetry
+/// equivalent, and whose remaining substitution would make it stereogenic if
+/// they were not. Deliberately silent about partners -- has_dependent_ring_stereo()
+/// pairs candidates up, and it needs to ask this question about other atoms.
+bool is_dependent_ring_stereo_candidate(const OEChem::OEAtomBase& atom) {
+    if (!atom.HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+        return false;
+    }
+    if (atom.IsChiral() || !atom.IsInRing()) {
+        return false;
+    }
+
+    const HeavyNeighborSplit neighbors = split_heavy_neighbors(atom);
+    if (neighbors.ring.size() != 2) {
+        return false;
+    }
+    if (neighbors.ring[0]->GetSymmetryClass() != neighbors.ring[1]->GetSymmetryClass()) {
+        return false;
+    }
+
+    // The same shapes is_potential_stereocenter() accepts, minus the ring pair
+    // whose equivalence is the whole point: a CH with one exocyclic
+    // substituent, or a fully substituted carbon whose two exocyclic
+    // substituents already differ.
+    const unsigned int heavy_degree = atom.GetHvyDegree();
+    if (heavy_degree == 3) {
+        return atom.GetTotalHCount() == 1;
+    }
+    if (heavy_degree == 4 && neighbors.exocyclic.size() == 2) {
+        return neighbors.exocyclic[0]->GetSymmetryClass() !=
+            neighbors.exocyclic[1]->GetSymmetryClass();
+    }
+    return false;
+}
+
 }  // namespace
+
+bool is_potential_stereocenter(const OEChem::OEAtomBase& atom) {
+    if (!atom.IsChiral()) {
+        return false;
+    }
+
+    // GetHvyDegree() and GetTotalHCount() are the two counts mmpdb's rule reads,
+    // and both are stable across OESuppressHydrogens. Deriving them from
+    // GetDegree() would not be: OEChem counts implicit hydrogens in the degree,
+    // so a suppressed CH stereocentre would read as four-coordinate.
+    const unsigned int heavy_degree = atom.GetHvyDegree();
+    if (heavy_degree == 4) {
+        return true;
+    }
+    if (heavy_degree != 3) {
+        return false;
+    }
+    if (atom.GetTotalHCount() == 1) {
+        return true;
+    }
+
+    // Sulfur and selenium carry the lone pair that stands in for the missing
+    // fourth substituent, but only at the valence of a sulfoxide or of a
+    // sulfonium-like cation.
+    const unsigned int atomic_num = atom.GetAtomicNum();
+    if (atomic_num != 16 && atomic_num != 34) {
+        return false;
+    }
+    const unsigned int valence = atom.GetValence();
+    return valence == 4 || (valence == 3 && atom.GetFormalCharge() == 1);
+}
+
+bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom) {
+    if (!is_dependent_ring_stereo_candidate(atom)) {
+        return false;
+    }
+
+    const OEChem::OEMolBase* parent = atom.GetParent();
+    if (parent == nullptr) {
+        return false;
+    }
+
+    // Ring systems rather than rings, so that two rings sharing a spiro atom
+    // pair across the junction the way RDKit pairs them. Computed here rather
+    // than by the caller because the predicate's contract is a single atom;
+    // the candidate test above keeps the cost off every ordinary fragment.
+    std::vector<unsigned int> ring_systems(parent->GetMaxAtomIdx(), 0);
+    OEChem::OEDetermineRingSystems(*parent, ring_systems.data());
+    const unsigned int atom_idx = atom.GetIdx();
+    if (atom_idx >= ring_systems.size()) {
+        return false;
+    }
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> other = parent->GetAtoms(); other; ++other) {
+        const unsigned int other_idx = other->GetIdx();
+        if (other_idx == atom_idx || other_idx >= ring_systems.size()) {
+            continue;
+        }
+        if (ring_systems[other_idx] != ring_systems[atom_idx]) {
+            continue;
+        }
+        if (is_dependent_ring_stereo_candidate(*other)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
     // Perception is the expensive part; most fragments carry no stereo at all.
@@ -57,11 +180,24 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
 
     OEChem::OEClearChiralPerception(mol);
     OEChem::OEPerceiveChiral(mol);
+    OEChem::OEPerceiveSymmetry(mol);
+    OEChem::OEFindRingAtomsAndBonds(mol);
 
+    // Decide every atom before clearing any. has_dependent_ring_stereo() reads
+    // its partner's tag, so clearing one half of a pair first would orphan the
+    // other and the pair would unravel one atom at a time.
+    std::vector<OEChem::OEAtomBase*> doomed;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (!atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral) || atom->IsChiral()) {
+        if (!atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
             continue;
         }
+        if (is_potential_stereocenter(*atom) || has_dependent_ring_stereo(*atom)) {
+            continue;
+        }
+        doomed.push_back(&*atom);
+    }
+
+    for (OEChem::OEAtomBase* atom : doomed) {
         std::vector<OEChem::OEAtomBase*> nbrs;
         for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
             nbrs.push_back(&*nbr);
