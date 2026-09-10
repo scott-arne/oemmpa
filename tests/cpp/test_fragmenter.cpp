@@ -956,5 +956,60 @@ TEST(FragmenterTest, HydrogenCappedConstantIsCleanedLikeAFragment) {
         << methyl_cut->GetConstantWithHydrogenSmiles();
 }
 
+namespace {
+
+/// A molecule whose bond indices are sparse. `[C@H]` parses with an explicit
+/// hydrogen, OESuppressHydrogens takes bond 1 away with it, and the remaining
+/// bonds keep their original numbers: {0, 2, 3, 4, 5}. An OEGraphMol copy
+/// renumbers them {0, 1, 2, 3, 4}, so every index from 2 up means a different
+/// bond in the copy than it does here -- and index 5 does not exist there at all.
+OEChem::OEGraphMol SparselyIndexedChloroAlcohol() {
+    OEChem::OEGraphMol mol = MolFromSmiles("C[C@H](Cl)CCO");
+    OEChem::OESuppressHydrogens(mol);
+    return mol;
+}
+
+std::vector<Fragmentation> FragmentAtBondIndex(
+    const OEChem::OEMolBase& mol,
+    unsigned int bond_index
+) {
+    BondIndexFragmentationStrategy strategy({bond_index});
+    Fragmenter fragmenter(strategy);
+    return fragmenter.Fragment(1, mol);
+}
+
+}  // namespace
+
+// Cut discovery has to run on the caller's molecule. BondIndexFragmentationStrategy
+// interprets its configured indices literally against whatever molecule it is
+// handed, so searching the normalized copy silently redirects the cut: index 2
+// is the C-Cl bond here and the C-C bond to the hydroxyethyl arm in the copy.
+TEST(FragmenterTest, ExplicitBondIndexCutsTheBondTheCallerNumbered) {
+    const OEChem::OEGraphMol mol = SparselyIndexedChloroAlcohol();
+    const std::vector<Fragmentation> fragmentations = FragmentAtBondIndex(mol, 2);
+
+    const Fragmentation* chloride_cut =
+        RecordWithVariable(fragmentations, ExpectedFragmentSmiles("[*:1]Cl"));
+    ASSERT_NE(chloride_cut, nullptr) << "bond 2 is C-Cl, but that is not the bond that was cut";
+
+    // The reference is the parent with Cl rewritten as the dummy in place, which
+    // leaves the neighbour order -- and so the parity -- exactly as written.
+    EXPECT_EQ(chloride_cut->GetConstantSmiles(), ExpectedFragmentSmiles("C[C@H]([*:1])CCO"));
+}
+
+// The copy has one bond fewer, so the caller's highest valid index falls off
+// the end of it. Rejecting a bond the caller can see is the louder half of the
+// same defect.
+TEST(FragmenterTest, ExplicitBondIndexAboveTheCopiedRangeIsStillValid) {
+    const OEChem::OEGraphMol mol = SparselyIndexedChloroAlcohol();
+    std::vector<Fragmentation> fragmentations;
+    ASSERT_NO_THROW(fragmentations = FragmentAtBondIndex(mol, 5));
+
+    const Fragmentation* hydroxyl_cut =
+        RecordWithVariable(fragmentations, ExpectedFragmentSmiles("[*:1]O"));
+    ASSERT_NE(hydroxyl_cut, nullptr) << "bond 5 is C-O, but that is not the bond that was cut";
+    EXPECT_EQ(hydroxyl_cut->GetConstantSmiles(), ExpectedFragmentSmiles("C[C@H](Cl)CC[*:1]"));
+}
+
 }  // namespace test
 }  // namespace OEMMPA

@@ -187,6 +187,50 @@ OEChem::OEAtomBase* GetAtomByIndex(OEChem::OEMolBase& mol, unsigned int atom_idx
     return mol.GetAtom(OEChem::OEHasAtomIdx(atom_idx));
 }
 
+/// \brief Re-express cuts found on `original` in `clone`'s index space.
+///
+/// OEGraphMol compacts sparse atom and bond indices when it copies, and
+/// OESuppressHydrogens leaves exactly that kind of gap behind. So cut discovery
+/// has to stay on the caller's molecule -- BondIndexFragmentationStrategy reads
+/// its configured indices literally, and in the copy they would name different
+/// bonds, or none at all -- while everything downstream works on the copy. The
+/// bridge is the parallel-traversal invariant ComputeChiralFlags already relies
+/// on: a copy visits its atoms in the source's order, whatever it renumbers them
+/// to. The bond index is re-derived from the translated endpoints rather than
+/// carried over, so a CutBond never mixes the two numbering schemes.
+std::vector<CutBond> TranslateCutBonds(
+    const std::vector<CutBond>& cuts,
+    const OEChem::OEMolBase& original,
+    OEChem::OEMolBase& clone
+) {
+    const CloneAtomIndexMap clone_atom_indices =
+        BuildOriginalToCloneAtomIndexMap(original, clone);
+
+    std::vector<CutBond> translated;
+    translated.reserve(cuts.size());
+    for (const CutBond& cut : cuts) {
+        const auto begin_index = clone_atom_indices.find(cut.begin_atom_idx);
+        const auto end_index = clone_atom_indices.find(cut.end_atom_idx);
+        if (begin_index == clone_atom_indices.end() || end_index == clone_atom_indices.end()) {
+            throw FragmentationError("cut bond endpoint is missing from the normalized parent");
+        }
+
+        OEChem::OEAtomBase* begin_atom = GetAtomByIndex(clone, begin_index->second);
+        OEChem::OEAtomBase* end_atom = GetAtomByIndex(clone, end_index->second);
+        OEChem::OEBondBase* bond =
+            (begin_atom == nullptr || end_atom == nullptr)
+                ? nullptr
+                : clone.GetBond(begin_atom, end_atom);
+        if (bond == nullptr) {
+            throw FragmentationError("cut bond is missing from the normalized parent");
+        }
+
+        translated.push_back({begin_index->second, end_index->second, bond->GetIdx()});
+    }
+
+    return translated;
+}
+
 /// Set (or clear) the tetrahedral tag on one atom.
 void SetTetrahedralStereo(OEChem::OEMolBase& mol, unsigned int atom_idx, unsigned int stereo) {
     OEChem::OEAtomBase* atom = GetAtomByIndex(mol, atom_idx);
@@ -1197,7 +1241,15 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     const OEChem::OEMolBase& parent =
         normalized ? static_cast<const OEChem::OEMolBase&>(*normalized) : mol;
 
-    const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(parent));
+    // Discovery runs on the caller's molecule so that a strategy which
+    // interprets indices literally still answers the question the caller asked;
+    // the answer is then moved into the copy's numbering. Ordering comes last so
+    // that it is imposed on the indices the rest of the run will actually use.
+    std::vector<CutBond> discovered_cuts = strategy_->FindCutBonds(mol);
+    if (normalized) {
+        discovered_cuts = TranslateCutBonds(discovered_cuts, mol, *normalized);
+    }
+    const std::vector<CutBond> cut_bonds = NormalizeCutBonds(std::move(discovered_cuts));
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
         return fragmentations;
     }
