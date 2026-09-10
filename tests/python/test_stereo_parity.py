@@ -40,11 +40,28 @@ Reference defect 5 is mmpdb's asymmetric bond-direction transfer in
 ``fragment_on_atom_pairs``, which inverts the E/Z geometry of exactly one of
 the two cuts flanking an acyclic stereogenic double bond.  That divergence
 lands in a baseline record, so covering acyclic alkenes at all requires the one
-exception above.  The exception cannot be turned into a way of excusing an
-OEMMPA error, because
-:func:`test_defect_5_rows_agree_with_rdkit_fragment_on_bonds` re-derives every
-defect-5 row from RDKit's own ``Chem.FragmentOnBonds`` and requires RDKit to
-corroborate the OEMMPA side of the pair and to contradict the mmpdb side.
+exception above.
+
+The exception is bound to the defect mechanically rather than by label, so it
+cannot be widened into a way of excusing an OEMMPA error.  A defect-5 row is
+corroborated -- and only a corroborated row excuses anything -- when
+:func:`_defect_5_verdicts` can tie it to one specific cut of the parent:
+
+* exactly one bond matching mmpdb's own default cut SMARTS reproduces the
+  row's fragment pair, an ``oemmpa-surplus`` row against the pair RDKit's
+  ``Chem.FragmentOnBonds`` produces there and an ``mmpdb-surplus`` row against
+  the same pair with the alkene's geometry inverted, which must differ from
+  RDKit's;
+* that bond flanks an acyclic double bond RDKit assigns a geometry to; and
+* the row is one corner of a complete quartet -- that cut in both
+  orientations, each in both directions.
+
+Restricting the arbitration to mmpdb-cuttable bonds matters: RDKit will
+happily cut an ester or a CH2-CH2 bond that ``mmpdb fragment`` never touches,
+and a row naming such a cut would otherwise be corroborated by a fragmentation
+mmpdb had no part in.  The isotope handling matters for the same reason -- only
+the dummies ``FragmentOnBonds`` appends have their isotope cleared, so a row
+that had quietly dropped a real isotope label no longer matches.
 
 The enforcement helpers take the difference list and the allowlist rows as
 arguments so the guards themselves can be exercised against synthetic in-memory
@@ -114,6 +131,32 @@ DEFECT_EZ_DIRECTION_TRANSFER = "5"
 
 # mmpdblib.fragment_algorithm._hydrogen_cut_smiles.
 MMPDB_HYDROGEN_CUT_SMILES = "[*][H]"
+
+# The SMARTS behind mmpdb's "default" cut alias, transcribed from
+# mmpdblib/smarts_aliases.py: "Cut all C-[!H] non-ring single bonds except for
+# Amides/Esters/Amidines/Sulfonamides and CH2-CH2 and CH2-CH3 bonds".  It is
+# copied rather than imported because the suite must run without an mmpdb
+# install, and it bounds the defect-5 exception: a bond mmpdb would never cut
+# cannot be the bond whose geometry mmpdb inverted.
+MMPDB_DEFAULT_CUT_SMARTS = (
+    "[#6+0;!$(*=,#[!#6])]!@!=!#[!#0;!#1;!$([CH2]);!$([CH3][CH2])]"
+)
+
+# RDKit's E/Z flags paired with the flag that inverts each one.  Membership
+# doubles as the test for "RDKit assigned this double bond a geometry".
+OPPOSITE_STEREO = {
+    Chem.BondStereo.STEREOE: Chem.BondStereo.STEREOZ,
+    Chem.BondStereo.STEREOZ: Chem.BondStereo.STEREOE,
+    Chem.BondStereo.STEREOCIS: Chem.BondStereo.STEREOTRANS,
+    Chem.BondStereo.STEREOTRANS: Chem.BondStereo.STEREOCIS,
+}
+
+# Which side of a difference row carries the alkene-bearing fragment.  Both
+# cuts of a flipped bond are emitted in both orientations, so the two values
+# index the halves of a complete defect-5 quartet.
+ALKENE_IS_VARIABLE = "alkene-is-variable"
+ALKENE_IS_CONSTANT = "alkene-is-constant"
+ORIENTATIONS = {ALKENE_IS_VARIABLE, ALKENE_IS_CONSTANT}
 
 
 @contextmanager
@@ -343,27 +386,266 @@ def _keyed_differences(differences):
     return keyed
 
 
-def _defect_5_keys(allowlist_rows):
-    """Return the allowlist identities claimed under reference defect 5."""
-    return {
-        _allowlist_key(row)
-        for row in allowlist_rows
-        if row["defect"] == DEFECT_EZ_DIRECTION_TRANSFER
-    }
+def _mmpdb_cuttable_bonds(mol):
+    """Return the indices of the bonds mmpdb's default cut SMARTS matches.
+
+    ``uniquify=False`` keeps every atom ordering of every match.  The pattern
+    is asymmetric and only the bond identity is wanted, so taking all the
+    orderings costs nothing and removes any question of which one RDKit would
+    have kept.
+
+    :param mol: The RDKit parent molecule.
+    :returns: The set of matching bond indices.
+    :raises AssertionError: When the transcribed SMARTS does not parse.
+    """
+    pattern = Chem.MolFromSmarts(MMPDB_DEFAULT_CUT_SMARTS)
+    assert pattern is not None, MMPDB_DEFAULT_CUT_SMARTS
+    bonds = set()
+    for begin, end in mol.GetSubstructMatches(pattern, uniquify=False):
+        bond = mol.GetBondBetweenAtoms(begin, end)
+        assert bond is not None, (begin, end)
+        bonds.add(bond.GetIdx())
+    return bonds
 
 
-def _baseline_differences(differences, allowlist_rows):
+def _stereogenic_acyclic_alkenes(mol):
+    """Return the acyclic C=C bonds RDKit assigns a definite geometry to.
+
+    Reference defect 5 is specific to this shape: mmpdb's direction transfer
+    only has a geometry to invert where an acyclic double bond carries a
+    perceived E/Z assignment.
+    """
+    return [
+        bond
+        for bond in mol.GetBonds()
+        if bond.GetBondType() == Chem.BondType.DOUBLE
+        and not bond.IsInRing()
+        and bond.GetStereo() in OPPOSITE_STEREO
+        and bond.GetBeginAtom().GetAtomicNum() == 6
+        and bond.GetEndAtom().GetAtomicNum() == 6
+    ]
+
+
+def _fragment_on_bond(mol, bond_index):
+    """Return the two RDKit fragments produced by cutting one bond.
+
+    ``FragmentOnBonds`` appends one dummy per severed end and labels it with
+    the isotope of the atom it replaced.  Only those appended atoms have their
+    isotope cleared: clearing every atom instead would erase a real isotope
+    from the parent, and a row that had itself dropped one would then match a
+    fragmentation nobody produces.
+
+    :param mol: The RDKit parent molecule.
+    :param bond_index: The index of the bond to cut.
+    :returns: The two fragments, or ``None`` when the cut does not separate
+        the molecule into exactly two pieces.
+    :raises AssertionError: When ``FragmentOnBonds`` appends anything but
+        dummy atoms.
+    """
+    fragmented = Chem.FragmentOnBonds(mol, [bond_index], addDummies=True)
+    for index in range(mol.GetNumAtoms(), fragmented.GetNumAtoms()):
+        atom = fragmented.GetAtomWithIdx(index)
+        assert atom.GetAtomicNum() == 0, index
+        atom.SetIsotope(0)
+    pieces = Chem.GetMolFrags(fragmented, asMols=True, sanitizeFrags=True)
+    return pieces if len(pieces) == 2 else None
+
+
+def _ez_inverted_smiles(fragment):
+    """Return ``fragment``'s SMILES with its one stereogenic alkene inverted.
+
+    The molecule is round-tripped through SMILES first.  A fragment handed
+    back by ``FragmentOnBonds`` still carries the parent's explicit bond
+    directions on the single bonds flanking the alkene, and the SMILES writer
+    honours those in preference to the double bond's stereo flag, so setting
+    the flag in place has no visible effect.  Re-parsing drops the stale
+    directions and lets the flag drive the output.
+
+    :param fragment: One piece of a cut, as an RDKit molecule.
+    :returns: The inverted SMILES, or ``None`` when the fragment does not
+        carry exactly one invertible acyclic alkene.
+    """
+    mol = Chem.MolFromSmiles(Chem.MolToSmiles(fragment))
+    assert mol is not None, fragment
+    alkenes = _stereogenic_acyclic_alkenes(mol)
+    if len(alkenes) != 1:
+        return None
+    bond = alkenes[0]
+    # The flag only means anything relative to a pair of reference atoms, so a
+    # bond that never got one cannot be inverted by flipping the flag.
+    if len(bond.GetStereoAtoms()) != 2:
+        return None
+    bond.SetStereo(OPPOSITE_STEREO[bond.GetStereo()])
+    return Chem.MolToSmiles(mol)
+
+
+def _defect_5_cut_witnesses(smiles):
+    """Return what RDKit makes of every bond mmpdb would cut in ``smiles``.
+
+    Each witness is the evidence a defect-5 allowlist row has to match: the
+    fragment pair RDKit's own ``Chem.FragmentOnBonds`` produces at that bond,
+    the pair the same cut yields once the alkene's geometry is inverted, and
+    whether the bond flanks a stereogenic acyclic alkene at all.  Enumerating
+    only mmpdb-cuttable bonds is what keeps the exception tied to the defect:
+    mmpdb can only invert a geometry at a bond it actually cuts.
+
+    :param smiles: A parent SMILES.
+    :returns: A list of witness mappings, one per cuttable separating bond.
+    :raises AssertionError: When the parent SMILES does not parse.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None, smiles
+    alkene_ends = set()
+    for alkene in _stereogenic_acyclic_alkenes(mol):
+        alkene_ends.update((alkene.GetBeginAtomIdx(), alkene.GetEndAtomIdx()))
+
+    witnesses = []
+    for bond_index in sorted(_mmpdb_cuttable_bonds(mol)):
+        pieces = _fragment_on_bond(mol, bond_index)
+        if pieces is None:
+            continue
+        projected = [_project(Chem.MolToSmiles(piece)) for piece in pieces]
+        carriers = [
+            index
+            for index, piece in enumerate(pieces)
+            if _stereogenic_acyclic_alkenes(piece)
+        ]
+        alkene = inverted_alkene = inverted_pair = None
+        # A cut with the alkene on both sides, or on neither, has no single
+        # geometry to invert and so cannot be the flipped one.
+        if len(carriers) == 1:
+            carrier = carriers[0]
+            inverted = _ez_inverted_smiles(pieces[carrier])
+            if inverted is not None:
+                alkene = projected[carrier]
+                inverted_alkene = _project(inverted)
+                inverted_pair = frozenset({inverted_alkene, projected[1 - carrier]})
+        bond = mol.GetBondWithIdx(bond_index)
+        witnesses.append(
+            {
+                "bond": bond_index,
+                "pair": frozenset(projected),
+                "alkene": alkene,
+                "inverted_alkene": inverted_alkene,
+                "inverted_pair": inverted_pair,
+                "flanks_alkene": bool(
+                    {bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()} & alkene_ends
+                ),
+            }
+        )
+    return witnesses
+
+
+def _defect_5_verdicts(allowlist_rows, smiles_by_title):
+    """Bind every defect-5 row to the mmpdb-cuttable bond whose E/Z it inverts.
+
+    A row is corroborated only when every one of the following holds, and an
+    uncorroborated row excuses nothing:
+
+    * exactly one mmpdb-cuttable bond of the parent reproduces the row's
+      fragment pair -- ``oemmpa-surplus`` rows against the pair RDKit itself
+      produces there, ``mmpdb-surplus`` rows against the E/Z-inverted pair,
+      which must differ from RDKit's;
+    * that bond flanks a stereogenic acyclic alkene; and
+    * the row is one corner of a complete quartet, the same cut in both
+      orientations and each orientation in both directions.
+
+    :param allowlist_rows: The allowlist rows, already read.
+    :param smiles_by_title: Parent SMILES keyed by fixture title.
+    :returns: A ``(corroborated keys, complaints)`` pair, where the complaints
+        are sorted ``(allowlist identity, reason)`` tuples.
+    :raises AssertionError: When a defect-5 row names no known structure.
+    """
+    complaints = []
+    quartets = {}
+    witnesses_by_title = {}
+    for row in allowlist_rows:
+        if row["defect"] != DEFECT_EZ_DIRECTION_TRANSFER:
+            continue
+        title = row["molecule_id"]
+        assert title in smiles_by_title, row
+        if title not in witnesses_by_title:
+            witnesses_by_title[title] = _defect_5_cut_witnesses(smiles_by_title[title])
+        key = _allowlist_key(row)
+        pair = frozenset(key[2:])
+        oemmpa_side = row["direction"] == OEMMPA_SURPLUS
+        if oemmpa_side:
+            matched = [w for w in witnesses_by_title[title] if w["pair"] == pair]
+        else:
+            # Requiring the inverted pair to differ from RDKit's rules out a
+            # cut whose geometry the inversion happens to leave alone.
+            matched = [
+                w
+                for w in witnesses_by_title[title]
+                if w["inverted_pair"] == pair and w["pair"] != pair
+            ]
+        if len(matched) != 1:
+            complaints.append(
+                (key, f"{len(matched)} mmpdb-cuttable bonds yield this fragment pair")
+            )
+            continue
+        witness = matched[0]
+        if not witness["flanks_alkene"]:
+            complaints.append(
+                (key, "the matching cut does not flank a stereogenic acyclic alkene")
+            )
+            continue
+        alkene = witness["alkene"] if oemmpa_side else witness["inverted_alkene"]
+        if key[2] == alkene:
+            orientation = ALKENE_IS_VARIABLE
+        elif key[3] == alkene:
+            orientation = ALKENE_IS_CONSTANT
+        else:
+            complaints.append((key, "neither side of the row is the alkene fragment"))
+            continue
+        corners = quartets.setdefault((title, witness["bond"]), {})
+        corners.setdefault(orientation, {}).setdefault(row["direction"], []).append(key)
+
+    corroborated = set()
+    for (title, bond_index), corners in quartets.items():
+        keys = [
+            key
+            for by_direction in corners.values()
+            for corner in by_direction.values()
+            for key in corner
+        ]
+        complete = set(corners) == ORIENTATIONS and all(
+            set(by_direction) == VALID_DIRECTIONS
+            and all(len(corner) == 1 for corner in by_direction.values())
+            for by_direction in corners.values()
+        )
+        if complete:
+            corroborated.update(keys)
+        else:
+            complaints.extend(
+                (key, f"incomplete defect-5 quartet for {title} at bond {bond_index}")
+                for key in keys
+            )
+    return corroborated, sorted(complaints)
+
+
+def _corroborated_defect_5_keys(allowlist_rows, smiles_by_title):
+    """Return the allowlist identities the RDKit binding actually corroborates."""
+    corroborated, _ = _defect_5_verdicts(allowlist_rows, smiles_by_title)
+    return corroborated
+
+
+def _baseline_differences(differences, allowlist_rows, smiles_by_title):
     """Return the identities of every baseline difference that is not excused.
 
-    Only reference defect 5 excuses a baseline difference; a row citing any
-    other defect leaves the difference in the returned list, so baseline parity
-    stays unconditional everywhere the E/Z direction transfer is not involved.
+    Only reference defect 5 excuses a baseline difference, and only once the
+    row claiming it has been bound to the mmpdb-cuttable bond whose geometry
+    mmpdb inverted.  A row citing any other defect, and a defect-5 row the
+    binding does not corroborate, both leave the difference in the returned
+    list, so baseline parity stays unconditional everywhere the E/Z direction
+    transfer is not demonstrably in play.
 
     :param differences: Full ``(molecule_id, direction, record)`` entries.
     :param allowlist_rows: The allowlist rows, already read.
+    :param smiles_by_title: Parent SMILES keyed by fixture title.
     :returns: The sorted identities, each extended with the enumeration label.
     """
-    excused = _defect_5_keys(allowlist_rows)
+    excused = _corroborated_defect_5_keys(allowlist_rows, smiles_by_title)
     return sorted(
         _difference_key(entry) + (entry[2][4],)
         for entry in differences
@@ -400,89 +682,6 @@ def _stale_allowlist_rows(differences, allowlist_rows):
             # baseline entry that happens to share its identity.
             assert all(entry[2][4] == ENUMERATED for entry in matched), row
     return stale
-
-
-def _rdkit_single_cut_pairs(smiles):
-    """Return the fragment pairs RDKit produces for every single acyclic bond.
-
-    This is the independent arbiter for reference defect 5.  RDKit is the
-    toolkit mmpdb itself is built on, so a cut where ``Chem.FragmentOnBonds``
-    disagrees with ``mmpdb fragment`` is an mmpdb defect rather than a toolkit
-    difference, and one where it agrees with OEMMPA settles the direction of
-    the divergence without appeal to prose.
-
-    ``FragmentOnBonds`` labels each dummy with the isotope of the atom it
-    replaced, which the projection would otherwise carry into the compared
-    SMILES, so the isotopes are cleared first.  Cuts that do not separate the
-    molecule into two pieces are skipped: they cannot correspond to a
-    single-cut record.
-
-    :param smiles: A parent SMILES from the fixture.
-    :returns: A set of unordered ``frozenset`` fragment pairs, projected.
-    :raises AssertionError: When the parent SMILES does not parse.
-    """
-    mol = Chem.MolFromSmiles(smiles)
-    assert mol is not None, smiles
-    pairs = set()
-    for bond in mol.GetBonds():
-        if bond.GetBondType() != Chem.BondType.SINGLE or bond.IsInRing():
-            continue
-        fragmented = Chem.FragmentOnBonds(mol, [bond.GetIdx()], addDummies=True)
-        for atom in fragmented.GetAtoms():
-            atom.SetIsotope(0)
-        parts = Chem.MolToSmiles(fragmented).split(".")
-        if len(parts) != 2:
-            continue
-        pairs.add(frozenset(_project(part) for part in parts))
-    return pairs
-
-
-def _defect_5_rows_rdkit_disagrees_with(allowlist_rows, smiles_by_title):
-    """Return the defect-5 rows RDKit does not corroborate.
-
-    An ``oemmpa-surplus`` row claims OEMMPA produced a cut mmpdb did not, so
-    RDKit must produce that same fragment pair; the paired ``mmpdb-surplus``
-    row claims mmpdb produced a cut nobody else does, so RDKit must not.  A row
-    that fails either way is returned rather than raised on, so the caller can
-    report all of them at once.
-
-    :param allowlist_rows: The allowlist rows, already read.
-    :param smiles_by_title: Parent SMILES keyed by fixture title.
-    :returns: A sorted list of the offending allowlist identities.
-    :raises AssertionError: When a defect-5 row names no fixture structure.
-    """
-    pairs_by_title = {}
-    disagreed = []
-    for row in allowlist_rows:
-        if row["defect"] != DEFECT_EZ_DIRECTION_TRANSFER:
-            continue
-        title = row["molecule_id"]
-        assert title in smiles_by_title, row
-        if title not in pairs_by_title:
-            pairs_by_title[title] = _rdkit_single_cut_pairs(smiles_by_title[title])
-        key = _allowlist_key(row)
-        corroborated = frozenset(key[2:]) in pairs_by_title[title]
-        if corroborated != (row["direction"] == OEMMPA_SURPLUS):
-            disagreed.append(key)
-    return sorted(disagreed)
-
-
-def _one_sided_defect_5_titles(allowlist_rows):
-    """Return the titles whose defect-5 rows do not come in both directions.
-
-    A flipped cut always shows up twice, once as the record OEMMPA emits and
-    once as the record mmpdb emits instead.  A title carrying only one of them
-    would mean half the flip had been dropped from the allowlist, which would
-    leave the surviving row corroborated but unpaired.
-    """
-    directions = {}
-    for row in allowlist_rows:
-        if row["defect"] != DEFECT_EZ_DIRECTION_TRANSFER:
-            continue
-        directions.setdefault(row["molecule_id"], set()).add(row["direction"])
-    return sorted(
-        title for title, seen in directions.items() if seen != VALID_DIRECTIONS
-    )
 
 
 def _differences():
@@ -545,9 +744,14 @@ def test_no_baseline_record_differs(differences):
     The gate reads the full difference entries rather than the allowlist
     identities, so it sees a baseline divergence even when another difference
     shares that identity.  A defect-5 row excuses the difference it names and
-    nothing else; every other baseline divergence still fails here.
+    nothing else, and only once :func:`_defect_5_verdicts` has bound it to the
+    cut mmpdb inverted; every other baseline divergence still fails here.
     """
-    assert _baseline_differences(differences, _load_allowlist()) == []
+    with _rdkit_warnings_silenced():
+        assert (
+            _baseline_differences(differences, _load_allowlist(), dict(_read_cases()))
+            == []
+        )
 
 
 def test_every_difference_is_allowlisted(differences):
@@ -559,31 +763,34 @@ def test_no_allowlist_row_is_stale(differences):
 
 
 def test_defect_5_rows_agree_with_rdkit_fragment_on_bonds():
-    """Every defect-5 row is re-derived from RDKit rather than trusted.
+    """Every defect-5 row is bound to a real mmpdb cut rather than trusted.
 
     Defect 5 is the one exception to unconditional baseline parity, so it is
     the one place where the allowlist could be used to bless an OEMMPA E/Z
-    error.  Attribution is therefore mechanical: ``Chem.FragmentOnBonds`` cuts
-    the same bonds on the same parent, and each row must fall on the side of
-    that evidence its direction claims.  No row is admitted on the strength of
-    its rationale alone.
+    error.  Attribution is therefore mechanical: each row has to name a bond
+    mmpdb's own default cut SMARTS matches, flanking an acyclic alkene RDKit
+    perceives, and has to fall on the side of ``Chem.FragmentOnBonds`` its
+    direction claims -- the OEMMPA rows on RDKit's own fragments, the mmpdb
+    rows on the E/Z-inverted ones.  No row is admitted on the strength of its
+    rationale alone.
     """
     with _rdkit_warnings_silenced():
         allowlist_rows = _load_allowlist()
         smiles_by_title = dict(_read_cases())
-        defect_5_rows = [
-            row
+        defect_5_keys = {
+            _allowlist_key(row)
             for row in allowlist_rows
             if row["defect"] == DEFECT_EZ_DIRECTION_TRANSFER
-        ]
+        }
 
         # The fixture must actually reach the acyclic alkene territory; an
         # empty defect-5 set would make the two checks below vacuous.
-        assert defect_5_rows
-        assert _one_sided_defect_5_titles(allowlist_rows) == []
-        assert (
-            _defect_5_rows_rdkit_disagrees_with(allowlist_rows, smiles_by_title) == []
-        )
+        assert defect_5_keys
+
+        corroborated, complaints = _defect_5_verdicts(allowlist_rows, smiles_by_title)
+
+        assert complaints == []
+        assert corroborated == defect_5_keys
 
 
 # --- Guards on the guards -------------------------------------------------
@@ -630,6 +837,52 @@ def _synthetic_allowlist_row(**overrides):
 
 NON_BASELINE_DEFECTS = sorted(VALID_DEFECTS - {DEFECT_EZ_DIRECTION_TRANSFER})
 
+# The defect-5 binding re-derives its evidence from a structure, so the probes
+# below carry their own parent SMILES instead of reading the fixture.  The
+# structure is the fixture's pentenol, whose C0-C1 cut is one mmpdb inverts.
+SYNTHETIC_PENTENOL = "C/C=C/CCO"
+SYNTHETIC_PARENTS = {SYNTHETIC_ID: SYNTHETIC_PENTENOL}
+PENTENOL_METHYL = "C[*:1]"
+PENTENOL_TRANS = "OCC/C=C/[*:1]"
+PENTENOL_CIS = "OCC/C=C\\[*:1]"
+
+
+def _defect_5_row(direction, variable, constant):
+    """Return an in-memory defect-5 allowlist row."""
+    return _synthetic_allowlist_row(
+        direction=direction,
+        variable_smiles=variable,
+        constant_smiles=constant,
+        defect=DEFECT_EZ_DIRECTION_TRANSFER,
+    )
+
+
+def _pentenol_quartet():
+    """Return the four rows mmpdb's flip of pentenol's C0-C1 cut produces.
+
+    RDKit and OEMMPA keep the parent's E geometry on both sides of that cut;
+    mmpdb inverts it there and nowhere else on this molecule.  Each cut is
+    emitted in both orientations, so one flip surfaces as four rows.
+    """
+    return [
+        _defect_5_row(OEMMPA_SURPLUS, PENTENOL_METHYL, PENTENOL_TRANS),
+        _defect_5_row(OEMMPA_SURPLUS, PENTENOL_TRANS, PENTENOL_METHYL),
+        _defect_5_row(MMPDB_SURPLUS, PENTENOL_METHYL, PENTENOL_CIS),
+        _defect_5_row(MMPDB_SURPLUS, PENTENOL_CIS, PENTENOL_METHYL),
+    ]
+
+
+def _differences_for(rows, label=BASELINE):
+    """Return the difference entry each allowlist row would be covering."""
+    return [
+        (
+            row["molecule_id"],
+            row["direction"],
+            _record(row["variable_smiles"], row["constant_smiles"], label),
+        )
+        for row in rows
+    ]
+
 
 @pytest.mark.parametrize(
     "label,overrides",
@@ -652,55 +905,150 @@ def test_allowlist_guard_rejects_invalid_rows(label, overrides):
 
 
 def test_allowlist_guard_admits_a_baseline_row_only_under_defect_5():
-    """The baseline exception is exactly one defect wide.
+    """The baseline exception is one defect wide, and only when it is bound.
 
     mmpdb's E/Z direction transfer lands in a baseline record, so defect 5 has
-    to be allowlistable there.  Nothing else is: the same row at defects 1-4 is
-    rejected outright, and a baseline difference with no defect-5 row covering
-    it still reaches the caller.
+    to be allowlistable there.  Nothing else is: the same rows at defects 1-4
+    are rejected outright, a baseline difference with no row covering it still
+    reaches the caller, and a defect-5 quartet the RDKit binding cannot
+    corroborate is worth no more than no row at all.
     """
     with _rdkit_warnings_silenced():
-        differences = _synthetic_differences(BASELINE)
-        excused = [_synthetic_allowlist_row(defect=DEFECT_EZ_DIRECTION_TRANSFER)]
+        quartet = _pentenol_quartet()
+        differences = _differences_for(quartet)
+        expected = len(differences)
 
-        assert _stale_allowlist_rows(differences, excused) == []
-        assert _baseline_differences(differences, excused) == []
+        assert _stale_allowlist_rows(differences, quartet) == []
+        assert _baseline_differences(differences, quartet, SYNTHETIC_PARENTS) == []
 
-        assert len(_baseline_differences(differences, [])) == 1
+        assert len(_baseline_differences(differences, [], {})) == expected
         for defect in NON_BASELINE_DEFECTS:
-            rows = [_synthetic_allowlist_row(defect=defect)]
-            assert len(_baseline_differences(differences, rows)) == 1
+            rows = [dict(row, defect=defect) for row in quartet]
+            actual = _baseline_differences(differences, rows, SYNTHETIC_PARENTS)
+            assert len(actual) == expected
+
+        # Three quarters of a flip corroborates nothing, so all four baseline
+        # differences stay unexcused even though every row still says "5".
+        orphaned = _baseline_differences(differences, quartet[:3], SYNTHETIC_PARENTS)
+        assert len(orphaned) == expected
 
 
 def test_defect_5_guard_requires_rdkit_to_take_the_oemmpa_side():
     """A defect-5 row RDKit does not corroborate is reported, not accepted.
 
-    The synthetic molecule is the fixture's own pentenol, whose bond 0-1 cut is
-    the one mmpdb inverts.  Swapping the two directions makes each row claim
-    the opposite of what ``Chem.FragmentOnBonds`` produces, and both rows must
-    then be returned; a one-sided pair is reported separately.
+    Swapping the two directions makes every row claim the opposite of what
+    ``Chem.FragmentOnBonds`` produces: the ``oemmpa-surplus`` rows then carry
+    the inverted pair RDKit never emits, and the ``mmpdb-surplus`` rows carry
+    RDKit's own pair, which is not an inversion of anything.  Neither binds,
+    so the whole quartet must be reported.
     """
     with _rdkit_warnings_silenced():
-        smiles_by_title = {SYNTHETIC_ID: "C/C=C/CCO"}
-        trans = "C[*:1]", "OCC/C=C/[*:1]"
-        cis = "C[*:1]", "OCC/C=C\\[*:1]"
-
-        def row(direction, pair):
-            return _synthetic_allowlist_row(
-                direction=direction,
-                variable_smiles=pair[0],
-                constant_smiles=pair[1],
-                defect=DEFECT_EZ_DIRECTION_TRANSFER,
+        honest = _pentenol_quartet()
+        swapped = [
+            dict(
+                row,
+                direction=(
+                    MMPDB_SURPLUS
+                    if row["direction"] == OEMMPA_SURPLUS
+                    else OEMMPA_SURPLUS
+                ),
             )
+            for row in honest
+        ]
 
-        honest = [row(OEMMPA_SURPLUS, trans), row(MMPDB_SURPLUS, cis)]
-        swapped = [row(MMPDB_SURPLUS, trans), row(OEMMPA_SURPLUS, cis)]
+        corroborated, complaints = _defect_5_verdicts(honest, SYNTHETIC_PARENTS)
+        assert complaints == []
+        assert corroborated == {_allowlist_key(row) for row in honest}
 
-        assert _defect_5_rows_rdkit_disagrees_with(honest, smiles_by_title) == []
-        assert _one_sided_defect_5_titles(honest) == []
+        corroborated, complaints = _defect_5_verdicts(swapped, SYNTHETIC_PARENTS)
+        assert corroborated == set()
+        assert [key for key, _ in complaints] == sorted(
+            _allowlist_key(row) for row in swapped
+        )
 
-        assert len(_defect_5_rows_rdkit_disagrees_with(swapped, smiles_by_title)) == 2
-        assert _one_sided_defect_5_titles(honest[:1]) == [SYNTHETIC_ID]
+
+# Rows that name a real RDKit fragmentation of a real fixture structure but not
+# mmpdb's flip.  Title-wide set membership over every acyclic single bond
+# accepted all four; binding each row to an mmpdb-cuttable bond next to a
+# perceived alkene is what rejects them.
+DEFECT_5_FORGERIES = {
+    # mmpdb's default cut SMARTS excludes ester bonds, so mmpdb never makes
+    # this cut and cannot have inverted anything at it.
+    "ester_bond_mmpdb_never_cuts": (
+        "O=C(O)/C=C/c1ccccc1",
+        "O=C(/C=C/c1ccccc1)[*:1]",
+        "O[*:1]",
+    ),
+    # Clearing every isotope rather than only the appended dummies turned the
+    # parent's [13CH3] into a plain methyl, which matched this row.
+    "isotope_dropped_from_a_real_atom": (
+        "[13CH3]c1ccccc1O",
+        "[*:1]C",
+        "Oc1ccccc1[*:1]",
+    ),
+    # CH2-CH2 bonds are excluded from the same SMARTS.
+    "methylene_bond_mmpdb_never_cuts": (
+        SYNTHETIC_PENTENOL,
+        "C/C=C/C[*:1]",
+        "OC[*:1]",
+    ),
+    # A cuttable bond, but three bonds away from the alkene, so it is not one
+    # of the two cuts the direction transfer can flip.
+    "cut_too_far_from_the_alkene": (SYNTHETIC_PENTENOL, "C/C=C/CC[*:1]", "O[*:1]"),
+}
+
+
+@pytest.mark.parametrize(
+    "parent,variable,constant",
+    list(DEFECT_5_FORGERIES.values()),
+    ids=list(DEFECT_5_FORGERIES),
+)
+def test_defect_5_guard_rejects_a_row_it_cannot_bind_to_the_flip(
+    parent, variable, constant
+):
+    """A defect-5 row that names no invertible mmpdb cut excuses nothing.
+
+    Each forgery is a genuine RDKit fragmentation, so it is not enough for the
+    binding to check that RDKit can produce the pair; it has to check that
+    mmpdb could have produced it and could have inverted it.  The baseline
+    difference the row would have covered is asserted to survive, because
+    rejecting the row is only useful if the exception goes with it.
+    """
+    with _rdkit_warnings_silenced():
+        row = _defect_5_row(OEMMPA_SURPLUS, variable, constant)
+        parents = {SYNTHETIC_ID: parent}
+        differences = _differences_for([row])
+
+        corroborated, complaints = _defect_5_verdicts([row], parents)
+
+        assert corroborated == set()
+        assert [key for key, _ in complaints] == [_allowlist_key(row)]
+        assert _baseline_differences(differences, [row], parents) == [
+            _difference_key(differences[0]) + (BASELINE,)
+        ]
+
+
+def test_defect_5_guard_rejects_an_incomplete_quartet():
+    """Every corner of a flip has to be present, and each orphan is named.
+
+    A flipped cut always produces four difference rows: that cut in both
+    orientations, each on both sides of the disagreement.  Dropping any one of
+    them leaves three rows describing half a flip, and the binding has to
+    report all three rather than let them stand -- otherwise a forged row
+    could be dropped in beside genuine ones and inherit their standing.
+    """
+    with _rdkit_warnings_silenced():
+        quartet = _pentenol_quartet()
+
+        for dropped in range(len(quartet)):
+            rows = quartet[:dropped] + quartet[dropped + 1 :]
+
+            corroborated, complaints = _defect_5_verdicts(rows, SYNTHETIC_PARENTS)
+
+            assert corroborated == set()
+            assert [key for key, _ in complaints] == sorted(
+                _allowlist_key(row) for row in rows
+            )
 
 
 def test_allowlist_guard_reports_stale_rows():
@@ -742,7 +1090,7 @@ def test_baseline_gate_survives_an_identity_collision():
 
         # Both orderings, because the defect was an ordering artefact.
         for ordering in (differences, differences[::-1]):
-            assert len(_baseline_differences(ordering, rows)) == 1
+            assert len(_baseline_differences(ordering, rows, {})) == 1
             assert _unexplained_differences(ordering, rows) == []
             with pytest.raises(AssertionError):
                 _stale_allowlist_rows(ordering, rows)
