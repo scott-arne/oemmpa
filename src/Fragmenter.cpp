@@ -41,9 +41,16 @@ using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsi
 /// exists.
 using RetainedFragmentations = std::map<FragmentationKey, std::size_t>;
 
-std::tuple<unsigned int, unsigned int, unsigned int> CutBondSortKey(const CutBond& cut) {
+/// The same cut with its endpoints in ascending index order, so that which end
+/// of the bond a strategy reported first cannot change the cut's identity.
+CutBond OrderCutEndpoints(const CutBond& cut) {
     const auto endpoints = std::minmax(cut.begin_atom_idx, cut.end_atom_idx);
     return {endpoints.first, endpoints.second, cut.bond_idx};
+}
+
+std::tuple<unsigned int, unsigned int, unsigned int> CutBondSortKey(const CutBond& cut) {
+    const CutBond ordered = OrderCutEndpoints(cut);
+    return {ordered.begin_atom_idx, ordered.end_atom_idx, ordered.bond_idx};
 }
 
 std::vector<CutBond> NormalizeCutBonds(std::vector<CutBond> cuts) {
@@ -198,6 +205,10 @@ OEChem::OEAtomBase* GetAtomByIndex(OEChem::OEMolBase& mol, unsigned int atom_idx
 /// on: a copy visits its atoms in the source's order, whatever it renumbers them
 /// to. The bond index is re-derived from the translated endpoints rather than
 /// carried over, so a CutBond never mixes the two numbering schemes.
+///
+/// The incoming order is preserved: the caller has already fixed it, and the
+/// renumbering is free to invert it. Only each cut's own endpoints are re-sorted,
+/// which the translation can swap without changing which bond is named.
 std::vector<CutBond> TranslateCutBonds(
     const std::vector<CutBond>& cuts,
     const OEChem::OEMolBase& original,
@@ -225,7 +236,8 @@ std::vector<CutBond> TranslateCutBonds(
             throw FragmentationError("cut bond is missing from the normalized parent");
         }
 
-        translated.push_back({begin_index->second, end_index->second, bond->GetIdx()});
+        translated.push_back(
+            OrderCutEndpoints({begin_index->second, end_index->second, bond->GetIdx()}));
     }
 
     return translated;
@@ -1243,13 +1255,19 @@ std::vector<Fragmentation> Fragmenter::Fragment(
 
     // Discovery runs on the caller's molecule so that a strategy which
     // interprets indices literally still answers the question the caller asked;
-    // the answer is then moved into the copy's numbering. Ordering comes last so
-    // that it is imposed on the indices the rest of the run will actually use.
-    std::vector<CutBond> discovered_cuts = strategy_->FindCutBonds(mol);
+    // the answer is then moved into the copy's numbering. The order is fixed
+    // first, in the caller's index space, because attachment labels are handed
+    // out in cut order and so must not depend on how the parent happens to be
+    // numbered: an OEGraphMol copy renumbers atoms in traversal order, which
+    // OECanonicalOrderAtoms rewrites without touching the original's indices.
+    // Ordering after the translation would therefore let two spellings of the
+    // same molecule -- or the mere presence of the copy -- swap [*:1] and [*:2],
+    // and the index buckets pairs by exact constant SMILES.
+    std::vector<CutBond> discovered_cuts = NormalizeCutBonds(strategy_->FindCutBonds(mol));
     if (normalized) {
         discovered_cuts = TranslateCutBonds(discovered_cuts, mol, *normalized);
     }
-    const std::vector<CutBond> cut_bonds = NormalizeCutBonds(std::move(discovered_cuts));
+    const std::vector<CutBond> cut_bonds = std::move(discovered_cuts);
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
         return fragmentations;
     }

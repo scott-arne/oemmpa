@@ -4,7 +4,9 @@
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/FragmentationStrategy.h"
 #include "oemmpa/FragmentSmiles.h"
+#include "oemmpa/MemoryIndex.h"
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/QueryOptions.h"
 
 #include <oechem.h>
 
@@ -1009,6 +1011,106 @@ TEST(FragmenterTest, ExplicitBondIndexAboveTheCopiedRangeIsStillValid) {
         RecordWithVariable(fragmentations, ExpectedFragmentSmiles("[*:1]O"));
     ASSERT_NE(hydroxyl_cut, nullptr) << "bond 5 is C-O, but that is not the bond that was cut";
     EXPECT_EQ(hydroxyl_cut->GetConstantSmiles(), ExpectedFragmentSmiles("C[C@H](Cl)CC[*:1]"));
+}
+
+namespace {
+
+using CountedRecord = std::tuple<unsigned int, std::string, std::string, int>;
+
+/// Every record as (cut count, constant, variable, enumeration label). A
+/// multiset rather than a set so a duplicated record cannot hide, and the cut
+/// count is carried because a mislabelled multi-cut record can otherwise
+/// collide with a single-cut one.
+std::multiset<CountedRecord> CountedRecords(const std::vector<Fragmentation>& fragmentations) {
+    std::multiset<CountedRecord> records;
+    for (const Fragmentation& fragmentation : fragmentations) {
+        records.insert(CountedRecord(
+            fragmentation.GetCutCount(),
+            fragmentation.GetConstantSmiles(),
+            fragmentation.GetVariableSmiles(),
+            static_cast<int>(fragmentation.GetEnumerationLabel())));
+    }
+    return records;
+}
+
+/// The same molecule, optionally renumbered into OEChem's canonical atom order
+/// first. Canonical ordering is a pure relabelling -- same graph, same
+/// stereochemistry -- so nothing downstream of it is entitled to notice.
+OEChem::OEGraphMol MolFromSmilesInTraversalOrder(const std::string& smiles, bool canonical) {
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    if (canonical) {
+        OEChem::OECanonicalOrderAtoms(mol);
+        OEChem::OECanonicalOrderBonds(mol);
+    }
+    return mol;
+}
+
+std::vector<Fragmentation> TwoCutFragmentations(
+    unsigned int molecule_id,
+    const std::string& smiles,
+    bool canonical
+) {
+    const OEChem::OEGraphMol mol = MolFromSmilesInTraversalOrder(smiles, canonical);
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(2);
+    return fragmenter.Fragment(molecule_id, mol);
+}
+
+}  // namespace
+
+// Attachment labels are handed out in cut order, so the cut order must be a
+// property of the molecule and not of the order OEChem happens to walk it in.
+// The stereo-bearing parent is the case that can go wrong: it is fragmented on
+// a normalized copy, and an OEGraphMol copy numbers its atoms in the source's
+// traversal order, which canonical ordering rewrites. Ordering the cuts after
+// that translation therefore lets [*:1] and [*:2] swap sides.
+TEST(FragmenterTest, AttachmentLabelsIgnoreAtomTraversalOrder) {
+    EXPECT_EQ(
+        CountedRecords(TwoCutFragmentations(1, "C[C@H](Cl)CCO", false)),
+        CountedRecords(TwoCutFragmentations(1, "C[C@H](Cl)CCO", true)));
+
+    // The achiral analogue never takes the copy path, so this half pins the
+    // behaviour the stereo case has to match.
+    EXPECT_EQ(
+        CountedRecords(TwoCutFragmentations(1, "CC(Cl)CCO", false)),
+        CountedRecords(TwoCutFragmentations(1, "CC(Cl)CCO", true)));
+}
+
+namespace {
+
+/// Both molecules cut at the chloride and the hydroxyl, so they share the
+/// two-cut constant `[*:1]Cl.[*:2]O` and differ only in the variable part.
+const char* const SHARED_CONSTANT_SMILES = "C[C@H](Cl)CCO";
+const char* const SHARED_CONSTANT_HOMOLOGUE_SMILES = "CC[C@H](Cl)CCO";
+
+std::size_t PairCountWithReorderedPartner(bool canonical) {
+    MemoryIndex index;
+    index.AddMolecule(MoleculeRecord::FromSmiles(1, SHARED_CONSTANT_SMILES));
+    index.AddMolecule(MoleculeRecord::FromSmiles(2, SHARED_CONSTANT_HOMOLOGUE_SMILES));
+
+    for (const Fragmentation& fragmentation :
+         TwoCutFragmentations(1, SHARED_CONSTANT_SMILES, false)) {
+        index.AddFragmentation(fragmentation);
+    }
+    for (const Fragmentation& fragmentation :
+         TwoCutFragmentations(2, SHARED_CONSTANT_HOMOLOGUE_SMILES, canonical)) {
+        index.AddFragmentation(fragmentation);
+    }
+
+    return index.GetPairs(QueryOptions()).size();
+}
+
+}  // namespace
+
+// The consequence of the label swap, one layer up: the index buckets by exact
+// constant SMILES, so a pair whose constant is spelled `[*:1]Cl.[*:2]O` on one
+// side and `[*:1]O.[*:2]Cl` on the other is not found at all. Nothing throws
+// and nothing is logged -- the pair simply is not there.
+TEST(FragmenterTest, TraversalOrderDoesNotLoseMatchedPairs) {
+    const std::size_t baseline = PairCountWithReorderedPartner(false);
+    ASSERT_GT(baseline, 0u) << "the two molecules share no pair at all, so the test proves nothing";
+    EXPECT_EQ(PairCountWithReorderedPartner(true), baseline);
 }
 
 }  // namespace test
