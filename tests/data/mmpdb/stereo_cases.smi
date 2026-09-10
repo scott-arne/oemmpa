@@ -19,3 +19,12 @@ CCC(CC)CO	ethylbutanol_created_frag2
 OCC(C)CO	methylpropanediol_created
 CC(C)c1ccccc1	cumene_achiral_control
 CC(C)N1CCC(O)CC1	piperidinol_achiral_control
+C[C@H]1CC[C@@H](O)CC1	ring_cis_1_4_dependent
+C[C@H]1CC[C@H](O)CC1	ring_trans_1_4_dependent
+C[C@H]1CCC(O)CC1	ring_1_4_lone_tag_cleared
+C[C@H]1C[C@@H](O)C1	cyclobutane_1_3_dependent
+CN1CC[C@H](CC1)O	piperidinol_lone_tag_cleared
+C[C@H](C)CO	invalid_parent_stereo_normalized
+CN(C)CCO	n_dimethylamine_not_enumerated
+CS(=O)(=O)N(C)C	n_dialkyl_sulfonamide_not_enumerated
+C/C=C(/C)C	invalid_geminal_ez_normalized
