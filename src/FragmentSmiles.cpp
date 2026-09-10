@@ -15,20 +15,6 @@ const unsigned int FRAGMENT_SMILES_FLAGS =
     OEChem::OESMILESFlag::BondStereo |
     OEChem::OESMILESFlag::Isotopes;
 
-bool has_specified_stereo(const OEChem::OEMolBase& mol) {
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
-            return true;
-        }
-    }
-    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
-        if (bond->HasStereoSpecified(OEChem::OEBondStereo::CisTrans)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// Any neighbour of `atom` other than `excluded_idx`; null when none exists.
 OEChem::OEAtomBase* first_other_neighbor(OEChem::OEAtomBase& atom, unsigned int excluded_idx) {
     for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom.GetAtoms(); nbr; ++nbr) {
@@ -97,6 +83,20 @@ bool is_dependent_ring_stereo_candidate(const OEChem::OEAtomBase& atom) {
 
 }  // namespace
 
+bool has_specified_stereo(const OEChem::OEMolBase& mol) {
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+            return true;
+        }
+    }
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        if (bond->HasStereoSpecified(OEChem::OEBondStereo::CisTrans)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool is_potential_stereocenter(const OEChem::OEAtomBase& atom) {
     if (!atom.IsChiral()) {
         return false;
@@ -129,6 +129,8 @@ bool is_potential_stereocenter(const OEChem::OEAtomBase& atom) {
 }
 
 bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom) {
+    // The candidate test first, so the ring-system perception this overload has
+    // to do for itself stays off every atom that could never pair anyway.
     if (!is_dependent_ring_stereo_candidate(atom)) {
         return false;
     }
@@ -138,17 +140,31 @@ bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom) {
         return false;
     }
 
-    // Ring systems rather than rings, so that two rings sharing a spiro atom
-    // pair across the junction the way RDKit pairs them. Computed here rather
-    // than by the caller because the predicate's contract is a single atom;
-    // the candidate test above keeps the cost off every ordinary fragment.
     std::vector<unsigned int> ring_systems(parent->GetMaxAtomIdx(), 0);
     OEChem::OEDetermineRingSystems(*parent, ring_systems.data());
+    return has_dependent_ring_stereo(atom, ring_systems);
+}
+
+bool has_dependent_ring_stereo(
+    const OEChem::OEAtomBase& atom,
+    const std::vector<unsigned int>& ring_systems
+) {
+    if (!is_dependent_ring_stereo_candidate(atom)) {
+        return false;
+    }
+
+    const OEChem::OEMolBase* parent = atom.GetParent();
+    if (parent == nullptr) {
+        return false;
+    }
+
     const unsigned int atom_idx = atom.GetIdx();
     if (atom_idx >= ring_systems.size()) {
         return false;
     }
 
+    // Ring systems rather than rings, so that two rings sharing a spiro atom
+    // pair across the junction the way RDKit pairs them.
     for (OESystem::OEIter<OEChem::OEAtomBase> other = parent->GetAtoms(); other; ++other) {
         const unsigned int other_idx = other->GetIdx();
         if (other_idx == atom_idx || other_idx >= ring_systems.size()) {
@@ -183,6 +199,11 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
     OEChem::OEPerceiveSymmetry(mol);
     OEChem::OEFindRingAtomsAndBonds(mol);
 
+    // The ring-system partition is a property of the molecule, so derive it once
+    // here instead of letting each pairing test re-derive the same answer.
+    std::vector<unsigned int> ring_systems(mol.GetMaxAtomIdx(), 0);
+    OEChem::OEDetermineRingSystems(mol, ring_systems.data());
+
     // Decide every atom before clearing any. has_dependent_ring_stereo() reads
     // its partner's tag, so clearing one half of a pair first would orphan the
     // other and the pair would unravel one atom at a time.
@@ -191,7 +212,7 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
         if (!atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
             continue;
         }
-        if (is_potential_stereocenter(*atom) || has_dependent_ring_stereo(*atom)) {
+        if (is_potential_stereocenter(*atom) || has_dependent_ring_stereo(*atom, ring_systems)) {
             continue;
         }
         doomed.push_back(&*atom);

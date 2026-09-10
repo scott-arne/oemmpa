@@ -8,6 +8,18 @@
 
 namespace OEMMPA {
 
+/// \brief Whether `mol` carries any specified tetrahedral or cis/trans stereo.
+///
+/// The cheap precondition of clear_fragmentation_invalidated_stereo(): a scan of
+/// the descriptors already on the molecule, with no perception and no
+/// allocation. A caller that would have to copy a molecule before normalizing it
+/// can ask this first and skip both the copy and the perception, which is the
+/// common case -- most inputs and most fragments carry no stereo at all.
+///
+/// \param mol Molecule to scan. Not modified.
+/// \returns true when at least one atom or bond has a specified descriptor.
+bool has_specified_stereo(const OEChem::OEMolBase& mol);
+
 /// \brief Whether a specified tetrahedral tag on `atom` describes a real centre.
 ///
 /// Two independent questions have to be answered yes. OEChem's perception must
@@ -44,11 +56,32 @@ bool is_potential_stereocenter(const OEChem::OEAtomBase& atom);
 /// through the two centres keeps the ring paths equivalent however much stereo
 /// information the refinement carries, so no amount of refining separates them.
 ///
+/// This overload derives the ring systems itself; prefer the two-argument form
+/// when testing several atoms of the same molecule.
+///
 /// \param atom Atom to test. The caller has already run OEPerceiveChiral(),
 ///        OEPerceiveSymmetry() and OEFindRingAtomsAndBonds() on a molecule whose
 ///        attachment map indices are zero.
 /// \returns true when the tag survives as one half of a dependent pair.
 bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom);
+
+/// \brief has_dependent_ring_stereo() against precomputed ring-system ids.
+///
+/// The pairing search ranges over one ring system, so ring-system perception is
+/// a property of the molecule rather than of the atom. A caller that tests every
+/// tagged atom -- clear_fragmentation_invalidated_stereo() does -- would
+/// otherwise re-derive the same partition once per candidate.
+///
+/// \param atom Atom to test, under the same perception preconditions as the
+///        single-argument overload.
+/// \param ring_systems One ring-system id per atom index, as written by
+///        OEDetermineRingSystems() over `atom`'s parent into a buffer of
+///        GetMaxAtomIdx() entries. Acyclic atoms carry id 0.
+/// \returns true when the tag survives as one half of a dependent pair.
+bool has_dependent_ring_stereo(
+    const OEChem::OEAtomBase& atom,
+    const std::vector<unsigned int>& ring_systems
+);
 
 /// \brief Clear stereo descriptors that fragmentation invalidated.
 ///

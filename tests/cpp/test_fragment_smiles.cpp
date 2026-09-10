@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <oechem.h>
@@ -180,21 +181,42 @@ TEST(FragmentSmiles, DuplicateRealSubstituentBondIsCleared) {
 // the pair, and mmpdb inherits that, so the pair survives here too. Ring size
 // is irrelevant, an attachment dummy is an ordinary substituent, and two rings
 // joined at a spiro atom are one ring system.
+// Every row asserts the configuration, not just the markers: cis and trans
+// must both keep their tags *and* render apart. Surviving markers alone would
+// also be satisfied by a pass that kept the tags but scrambled them onto the
+// same string, which is the failure mode that matters here.
 TEST(FragmentSmiles, DependentRingStereoSurvivesInPairs) {
-    const std::string cis = render_suppressed("C[C@H]1CC[C@@H](O)CC1");
-    const std::string trans = render_suppressed("C[C@H]1CC[C@H](O)CC1");
-    EXPECT_NE(cis, trans);
-    EXPECT_TRUE(has_atom_stereo(cis)) << cis;
-    EXPECT_TRUE(has_atom_stereo(trans)) << trans;
+    const std::vector<std::pair<std::string, std::string>> dependent_pairs = {
+        // 1,4-cyclohexane, the motif the rule exists for.
+        {"C[C@H]1CC[C@@H](O)CC1", "C[C@H]1CC[C@H](O)CC1"},
+        // 1,3-cyclobutane: ring size is irrelevant to the rule.
+        {"C[C@H]1C[C@@H](O)C1", "C[C@H]1C[C@H](O)C1"},
+        // 1,5-cyclooctane: so is the count of atoms between the centres.
+        {"C[C@H]1CCC[C@@H](O)CCC1", "C[C@H]1CCC[C@H](O)CCC1"},
+        // An attachment dummy is an ordinary substituent.
+        {"C[C@H]1CC[C@@H]([*:1])CC1", "C[C@H]1CC[C@H]([*:1])CC1"},
+    };
 
-    for (const std::string& smiles : {
-             std::string("C[C@H]1C[C@@H](O)C1"),
-             std::string("C[C@H]1CCC[C@@H](O)CCC1"),
-             std::string("C[C@H]1CC[C@@H]([*:1])CC1"),
-             std::string("C[C@H]1CCC2(CC1)CC[C@@H](O)CC2")}) {
-        const std::string rendered = render_suppressed(smiles);
-        EXPECT_TRUE(has_atom_stereo(rendered)) << smiles << " -> " << rendered;
+    for (const auto& [cis_smiles, trans_smiles] : dependent_pairs) {
+        const std::string cis = render_suppressed(cis_smiles);
+        const std::string trans = render_suppressed(trans_smiles);
+        EXPECT_TRUE(has_atom_stereo(cis)) << cis_smiles << " -> " << cis;
+        EXPECT_TRUE(has_atom_stereo(trans)) << trans_smiles << " -> " << trans;
+        EXPECT_NE(cis, trans) << cis_smiles << " vs " << trans_smiles;
     }
+
+    // Two rings joined at a spiro atom are one ring system, so the pair spans
+    // the junction. The configuration cannot be the assertion here: all four
+    // tag combinations of this skeleton are one molecule to RDKit and to
+    // OEChem alike, so there is no trans form to render apart from the cis
+    // one. What is observable, and is what the row is for, is the pairing --
+    // with a partner the tag survives, and without one the same tag is a lone
+    // tag and is cleared, exactly as RDKit clears it.
+    const std::string spiro_pair = render_suppressed("C[C@H]1CCC2(CC1)CC[C@@H](O)CC2");
+    EXPECT_TRUE(has_atom_stereo(spiro_pair)) << spiro_pair;
+    EXPECT_EQ(
+        render_suppressed("CC1CCC2(CC1)CC[C@@H](O)CC2"),
+        render_suppressed("CC1CCC2(CC1)CCC(O)CC2"));
 }
 
 // The pair is the descriptor, so half a pair describes nothing. A tag whose

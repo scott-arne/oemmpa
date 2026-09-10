@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -1181,10 +1182,20 @@ std::vector<Fragmentation> Fragmenter::Fragment(
     // mmpdb never sees an input tag that RDKit rejected: Chem.MolFromSmiles
     // strips it during parsing, so everything downstream -- cut selection,
     // chirality flags, fragment rendering -- works on the normalized parent.
-    // Normalizing here reproduces that. A copy rather than an in-place edit
-    // because the caller's molecule is const and must stay untouched.
-    OEChem::OEGraphMol parent(mol);
-    clear_fragmentation_invalidated_stereo(parent);
+    // Normalizing here reproduces that, on a copy because the caller's molecule
+    // is const and must stay untouched. Most inputs carry no stereo at all and
+    // normalization could not change them, so the copy is worth its own guard:
+    // it is a deep clone of every atom and bond, paid once per molecule.
+    std::optional<OEChem::OEGraphMol> normalized;
+    if (has_specified_stereo(mol)) {
+        normalized.emplace(mol);
+        clear_fragmentation_invalidated_stereo(*normalized);
+    }
+    // The cast is what makes the conditional well formed: OEGraphMol converts
+    // to and from OEMolBase, so without it the common type is ambiguous and the
+    // compiler would be free to pick the one that copies.
+    const OEChem::OEMolBase& parent =
+        normalized ? static_cast<const OEChem::OEMolBase&>(*normalized) : mol;
 
     const std::vector<CutBond> cut_bonds = NormalizeCutBonds(strategy_->FindCutBonds(parent));
     if (max_cut_bonds_ > 0 && cut_bonds.size() > max_cut_bonds_) {
