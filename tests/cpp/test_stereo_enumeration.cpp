@@ -553,3 +553,70 @@ TEST(EnumerationPairing, IndexKeepsTheFirstInsertionRegardlessOfLabel) {
            "the first-insertion rule (enumerated from mol 1 vs enumerated from mol 2 "
            "must be blocked by the guard)";
 }
+
+// When a duplicate fragmentation arrives with hydrogen metadata, the index
+// enriches the already-stored record with that metadata. Enrichment must keep
+// the first insertion's enumeration label (baseline here), not adopt the
+// duplicate's label (enumerated), so the guard still sees a baseline side.
+TEST(EnumerationPairing, HydrogenMetadataEnrichmentKeepsTheBaselineLabel) {
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation baseline(1, kSharedConstant, "[*:1]O", 1);
+    index.AddFragmentation(baseline);
+
+    OEMMPA::Fragmentation enumerated_with_metadata(1, kSharedConstant, "[*:1]O", 1, "CC(C)(C)CO");
+    enumerated_with_metadata.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(enumerated_with_metadata);
+
+    OEMMPA::Fragmentation other(2, kSharedConstant, "[*:1]S", 1);
+    other.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(other);
+
+    const std::vector<OEMMPA::MatchedPair> pairs = index.GetPairs(OEMMPA::QueryOptions());
+    unsigned int relevant_pairs = 0;
+    for (const OEMMPA::MatchedPair& pair : pairs) {
+        const std::string transform =
+            pair.GetSourceVariableSmiles() + ">>" + pair.GetTargetVariableSmiles();
+        if (transform == "[*:1]O>>[*:1]S" || transform == "[*:1]S>>[*:1]O") {
+            ++relevant_pairs;
+        }
+    }
+    EXPECT_EQ(relevant_pairs, 2u)
+        << "0 pairs means enrichment overwrote the baseline label with the "
+           "enumerated duplicate's label, so the guard saw two guesses";
+}
+
+// Mirror of the previous test: enumerated first, baseline duplicate with
+// metadata second. Enrichment must keep the enumerated label so the guard
+// blocks the pair, proving that label follows insertion order (not metadata).
+TEST(EnumerationPairing, HydrogenMetadataEnrichmentKeepsTheEnumeratedLabel) {
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation enumerated(1, kSharedConstant, "[*:1]O", 1);
+    enumerated.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(enumerated);
+
+    OEMMPA::Fragmentation baseline_with_metadata(1, kSharedConstant, "[*:1]O", 1, "CC(C)(C)CO");
+    index.AddFragmentation(baseline_with_metadata);
+
+    OEMMPA::Fragmentation other(2, kSharedConstant, "[*:1]S", 1);
+    other.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(other);
+
+    const std::vector<OEMMPA::MatchedPair> pairs = index.GetPairs(OEMMPA::QueryOptions());
+    unsigned int relevant_pairs = 0;
+    for (const OEMMPA::MatchedPair& pair : pairs) {
+        const std::string transform =
+            pair.GetSourceVariableSmiles() + ">>" + pair.GetTargetVariableSmiles();
+        if (transform == "[*:1]O>>[*:1]S" || transform == "[*:1]S>>[*:1]O") {
+            ++relevant_pairs;
+        }
+    }
+    EXPECT_EQ(relevant_pairs, 0u)
+        << "2 pairs means enrichment overwrote the enumerated label with the "
+           "baseline duplicate's label, contradicting first-insertion-wins";
+}

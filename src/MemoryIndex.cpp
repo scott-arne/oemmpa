@@ -679,7 +679,14 @@ void MemoryIndex::InsertFragmentation(Fragmentation stored) {
                     existing.GetVariableSmiles() == stored.GetVariableSmiles() &&
                     existing.GetCutCount() == stored.GetCutCount() &&
                     existing.GetConstantWithHydrogenSmiles().empty()) {
+                    // Enrichment adds hydrogen metadata to an already-observed
+                    // record and must not change which observation (baseline vs
+                    // enumerated guess) the record represents; the label follows
+                    // insertion order, consistent with IndexKeepsTheFirstInsertionRegardlessOfLabel.
+                    const Fragmentation::EnumerationLabel retained_label =
+                        existing.GetEnumerationLabel();
                     existing = stored;
+                    existing.SetEnumerationLabel(retained_label);
                     break;
                 }
             }
