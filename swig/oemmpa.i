@@ -421,6 +421,22 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/RuleEnvironmentStatistics.h"
 %include "../include/oemmpa/TransformApplication.h"
 %include "../include/oemmpa/QueryOptions.h"
+// The fragment renderer, so a Python measurement can compare OEMMPA's
+// stereo cleanup against RDKit's parse-time cleanup on the same molecule.
+// Everything else in the header is C++-only plumbing: StereoCleanupContext and
+// TetrahedralParity hold raw OEAtomBase pointers and std::vector<bool> with no
+// cross-runtime typemap, assert_tetrahedral_parity() takes a std::function, and
+// the three predicates are meaningless without a context to pass them.
+%ignore OEMMPA::StereoCleanupContext;
+%ignore OEMMPA::TetrahedralParity;
+%ignore OEMMPA::build_stereo_cleanup_context;
+%ignore OEMMPA::rdkit_keeps_tetrahedral_tag;
+%ignore OEMMPA::has_dependent_ring_stereo;
+%ignore OEMMPA::has_specified_stereo;
+%ignore OEMMPA::is_potential_stereocenter;
+%ignore OEMMPA::capture_tetrahedral_parity;
+%ignore OEMMPA::assert_tetrahedral_parity;
+%include "../include/oemmpa/FragmentSmiles.h"
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"
 %include "../include/oemmpa/MemoryIndex.h"
