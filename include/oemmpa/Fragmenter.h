@@ -41,7 +41,8 @@ public:
     /// Defaults to 1000, matching mmpdb's --max-up-enumerations. mmpdb caps only
     /// its multi-cut path, which has one partition per combination, and enumerates
     /// single-cut orientations separately, so one budget per orientation matches
-    /// it on every capped path.
+    /// it on every capped path. Every unsigned int value is honoured, including
+    /// the maximum.
     void SetMaxUpEnumerations(unsigned int max_up_enumerations);
     void SetMaxHeavyAtoms(unsigned int max_heavy_atoms);
     void ClearMaxHeavyAtoms();

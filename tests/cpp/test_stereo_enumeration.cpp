@@ -3,6 +3,7 @@
 #include <oechem.h>
 
 #include <cstddef>
+#include <limits>
 #include <ostream>
 #include <set>
 #include <string>
@@ -443,4 +444,17 @@ TEST(UpEnumerationCap, SurvivesCopyConstructionAndAssignment) {
     OEMMPA::Fragmenter assigned;
     assigned = source;
     EXPECT_EQ(assigned.GetMaxUpEnumerations(), 7u);
+}
+
+// The maximum unsigned int value must remain effective (not silently disable
+// the cap). With the uint64 counter, emitted > UINT_MAX is satisfiable, so the
+// guard throws at record UINT_MAX + 2 instead of never.
+TEST(UpEnumerationCap, MaximumValueDoesNotDisableTheGuard) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+    fragmenter.SetMaxUpEnumerations(std::numeric_limits<unsigned int>::max());
+    const OEChem::OEGraphMol mol = parse_smiles("OCC(CO)N");
+    std::vector<OEMMPA::Fragmentation> fragmentations;
+    EXPECT_NO_THROW(fragmentations = fragmenter.Fragment(1, mol));
+    EXPECT_EQ(fragmentations.size(), 14u);
 }

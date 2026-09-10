@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <sstream>
@@ -777,7 +778,7 @@ void AddFragmentationsForRoleAssignment(
     std::size_t selected_index,
     unsigned int cut_count,
     unsigned int max_up_enumerations,
-    unsigned int& emitted,
+    std::uint64_t& emitted,
     RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
@@ -973,7 +974,7 @@ void AddFragmentationForCombination(
         // one cut combination). mmpdb caps only its multi-cut path, which has
         // one partition per combination, and enumerates single-cut orientations
         // separately, so one budget per orientation matches it on every capped path.
-        unsigned int emitted = 0;
+        std::uint64_t emitted = 0;
         AddFragmentationsForRoleAssignment(
             molecule_id,
             cut_mol,
