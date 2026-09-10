@@ -28,3 +28,6 @@ C[C@H](C)CO	invalid_parent_stereo_normalized
 CN(C)CCO	n_dimethylamine_not_enumerated
 CS(=O)(=O)N(C)C	n_dialkyl_sulfonamide_not_enumerated
 C/C=C(/C)C	invalid_geminal_ez_normalized
+C/C=C/CCO	pentenol_acyclic_ez
+O=C(O)/C=C/c1ccccc1	cinnamic_acid_acyclic_ez
+OC/C=C/c1ccccc1	cinnamyl_alcohol_acyclic_ez
