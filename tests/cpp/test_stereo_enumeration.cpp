@@ -526,3 +526,30 @@ TEST(EnumerationPairing, BaselineRecordWinsTheDedup) {
         << "no pairs means the enumerated record won the dedup, so the guard "
            "saw two guesses instead of a baseline and a guess";
 }
+
+// The index keeps the first insertion and does not relabel. Within one molecule
+// the fragmenter emits baseline-precedent records (Task 5), so the previous test
+// (baseline-first insertion) is the production case. This test documents that the
+// index itself has no special baseline semantics: it keeps whichever record arrived
+// first, so an enumerated-first insertion (legal when called directly but impossible
+// from Fragment()) keeps the enumerated record.
+TEST(EnumerationPairing, IndexKeepsTheFirstInsertionRegardlessOfLabel) {
+    OEMMPA::MemoryIndex index;
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(1, "CC(C)(CO)CO"));
+    index.AddMolecule(OEMMPA::MoleculeRecord::FromSmiles(2, "CC(C)(CO)CS"));
+
+    OEMMPA::Fragmentation enumerated(1, kSharedConstant, "[*:1]O", 1);
+    enumerated.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    OEMMPA::Fragmentation baseline(1, kSharedConstant, "[*:1]O", 1);
+    index.AddFragmentation(enumerated);
+    index.AddFragmentation(baseline);
+
+    OEMMPA::Fragmentation other(2, kSharedConstant, "[*:1]S", 1);
+    other.SetEnumerationLabel(OEMMPA::Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(other);
+
+    EXPECT_EQ(index.GetPairs(OEMMPA::QueryOptions()).size(), 0u)
+        << "pairs here means the baseline record won the dedup, contradicting "
+           "the first-insertion rule (enumerated from mol 1 vs enumerated from mol 2 "
+           "must be blocked by the guard)";
+}
