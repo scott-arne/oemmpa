@@ -31,3 +31,12 @@ C/C=C(/C)C	invalid_geminal_ez_normalized
 C/C=C/CCO	pentenol_acyclic_ez
 O=C(O)/C=C/c1ccccc1	cinnamic_acid_acyclic_ez
 OC/C=C/c1ccccc1	cinnamyl_alcohol_acyclic_ez
+C[C@H]1CC[S@](=O)CC1	ring_sulfoxide_dependent_pair
+C1CC[C@H]2CCCC[C@@H]2C1	decalin_cis_fusion_pair
+O[C@]12CC[C@@](C)(CC1)CC2	bicyclo222_bridgehead_pair
+OC[C@@H](O)[C@H](O)[C@@H](O)CO	ribitol_pseudo_asymmetric
+CN1[C@H]2CC[C@@H]1C[C@H](O)C2	tropine_pseudo_asymmetric
+C[C@@H]1C[N@]2CC[C@H]1C2	bridgehead_nitrogen_kept
+C[N@]1C[C@H]1C	aziridine_nitrogen_kept
+C1CC[N@]2CCC[C@H]2C1	indolizidine_nitrogen_cleared
+C[P@](CC)c1ccccc1	phosphine_kept_not_enumerated

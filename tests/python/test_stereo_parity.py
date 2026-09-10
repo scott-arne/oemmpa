@@ -712,13 +712,31 @@ def differences():
 
 
 def test_oracle_covers_every_fixture_structure():
+    """A fixture structure has oracle rows exactly when mmpdb can cut it.
+
+    ``mmpdb fragment`` emits nothing for a molecule whose every bond is a ring
+    bond, so a fixture may legitimately carry a structure the oracle is silent
+    about -- a cis-fused decalin and an indolizidine are in the fixture for the
+    stereo cleanup their rings drive, not for a fragmentation.  The pin is
+    therefore structural rather than a count: presence in the oracle is tied to
+    mmpdb's own default cut SMARTS, so a structure that quietly stopped being
+    fragmented would still fail here.
+    """
     with _rdkit_warnings_silenced():
         oracle = _load_oracle()
-    titles = [title for title, _ in _read_cases()]
+        cases = _read_cases()
+        cuttable = {
+            title: bool(_mmpdb_cuttable_bonds(Chem.MolFromSmiles(smiles)))
+            for title, smiles in cases
+        }
+    titles = [title for title, _ in cases]
 
     assert len(titles) == len(set(titles))
-    assert set(titles) == set(oracle)
-    for title in titles:
+    assert set(oracle) <= set(titles)
+    # Both directions, so neither a missing fragmentation nor a stray oracle
+    # title can hide behind the exemption.
+    assert {title for title in titles if cuttable[title]} == set(oracle)
+    for title in oracle:
         assert oracle[title], title
 
 
