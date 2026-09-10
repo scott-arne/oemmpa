@@ -396,7 +396,7 @@ TEST(UpEnumerationCap, DefaultIsOneThousand) {
 }
 
 // The boundary, driven through the real emission path. A cap of N permits N+1
-// records, so a 3-record combination is exactly at the limit when the cap is 2
+// records, so a 3-record role assignment is exactly at the limit when the cap is 2
 // and one record over it when the cap is 1. These two tests bracket the guard:
 // moving it to `>=`, or incrementing before testing, breaks one or the other.
 // The same arithmetic is what makes the default of 1000 throw on record 1002.
@@ -416,10 +416,11 @@ TEST(UpEnumerationCap, ThrowsWhenACombinationExceedsTheLimit) {
     EXPECT_THROW(fragmenter.Fragment(1, mol), OEMMPA::FragmentationError);
 }
 
-// The cap is per cut combination, not per molecule. This molecule emits 14
-// records across six combinations with a maximum of 3 in any one of them, so a
-// cap of 2 must pass -- a counter accumulated across the whole molecule would
-// throw on the fourth record instead.
+// The cap is per role assignment (one constant/variable orientation of one cut
+// combination), not per molecule. This molecule emits 14 records across six
+// combinations with a maximum of 3 in any one role assignment, so a cap of 2
+// must pass -- a counter accumulated across the whole molecule would throw on
+// the fourth record instead.
 TEST(UpEnumerationCap, IsScopedToOneCutCombination) {
     OEMMPA::Fragmenter fragmenter;
     fragmenter.SetMaxCuts(1);

@@ -1,8 +1,7 @@
-import pathlib
 import sys
+import pathlib
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "python"))
 sys.path.insert(0, str(REPO_ROOT / "tests" / "python"))
 
 import pytest
@@ -18,8 +17,8 @@ pytestmark = pytest.mark.skipif(
     reason="DuckDB storage helpers require a DuckDB-enabled build",
 )
 
-import _duckdb_dump as dump
 import duckdb
+import _duckdb_dump as dump
 
 FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
 
@@ -42,19 +41,49 @@ def test_up_enumeration_cap_survives_worker_fanout():
     """The cap must propagate to every parallel worker's Fragmenter copy."""
     import oemmpa
 
-    # OCC(CO)N at max_cuts=1 emits 14 records (6 baseline + 8 enumerated), with a
-    # maximum of 3 records per role assignment. A permissive cap must work under both
-    # single-threaded and parallel execution; a restrictive cap must throw under both.
-    stereo_rich_smiles = "OCC(CO)N"
+    # Use two stereo-rich molecules to ensure molecule_count > 1, forcing the
+    # parallel path. Each molecule creates stereocentres when fragmented.
+    molecules = [
+        ("OCC(CO)N", "mol1"),
+        ("OC(CC(CO)CO)CC(CO)CO", "mol2"),
+    ]
 
-    # Verify that a permissive cap succeeds under both threads=1 and threads=4.
+    # Verify identical pair sets at threads=1 and threads=4 with a permissive
+    # cap. Collect pairs as (source_id, target_id, constant, source_var, target_var).
+    pair_sets = {}
     for threads in (1, 4):
         analyzer = oemmpa.Analyzer()
         analyzer.configure_fragmentation(max_cuts=1)
-        analyzer.set_fragmentation_max_up_enumerations(10)
-        analyzer.add_molecule(stereo_rich_smiles, id="mol1")
-        # Should not throw with a permissive cap.
+        analyzer.set_fragmentation_max_up_enumerations(100)
+        for smiles, mol_id in molecules:
+            analyzer.add_molecule(smiles, id=mol_id)
         analyzer.analyze(threads)
+
+        # Verify we actually used the expected number of workers.
+        expected_workers = 1 if threads == 1 else min(threads, len(molecules))
+        assert analyzer._raw_analyzer.LastAnalyzeWorkerCount() == expected_workers, (
+            f"threads={threads}: expected {expected_workers} workers, "
+            f"got {analyzer._raw_analyzer.LastAnalyzeWorkerCount()}"
+        )
+
+        # Collect pairs via raw analyzer API.
+        pairs = analyzer._raw_analyzer.GetPairs()
+        pair_sets[threads] = {
+            (
+                p.GetSourceMoleculeId(),
+                p.GetTargetMoleculeId(),
+                p.GetConstantSmiles(),
+                p.GetSourceVariableSmiles(),
+                p.GetTargetVariableSmiles(),
+            )
+            for p in pairs
+        }
+
+    # Assert the sets are identical and non-empty.
+    assert pair_sets[1] == pair_sets[4], (
+        "Pair sets differ across threads: cap likely not propagated to workers"
+    )
+    assert len(pair_sets[1]) > 0, "No pairs produced"
 
     # Verify that a restrictive cap throws under both thread counts. If the cap
     # weren't propagated to workers, threads=4 would silently use the default (1000)
@@ -63,9 +92,9 @@ def test_up_enumeration_cap_survives_worker_fanout():
         analyzer = oemmpa.Analyzer()
         analyzer.configure_fragmentation(max_cuts=1)
         analyzer.set_fragmentation_max_up_enumerations(1)
-        analyzer.add_molecule(stereo_rich_smiles, id="mol1")
-        with pytest.raises(Exception) as exc_info:
+        for smiles, mol_id in molecules:
+            analyzer.add_molecule(smiles, id=mol_id)
+        with pytest.raises(
+            RuntimeError, match=r"up-enumeration exceeded max_up_enumerations"
+        ):
             analyzer.analyze(threads)
-        assert "up-enumeration exceeded max_up_enumerations" in str(exc_info.value), (
-            f"threads={threads}: Expected cap exception, got {exc_info.value}"
-        )

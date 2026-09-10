@@ -4,14 +4,15 @@ import operator
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
+from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
     PairCollection,
     PairResult,
     TransformCollection,
     TransformResult,
 )
-from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._smiles_file import iter_smiles_file
+
 
 _UINT_MAX = 2**32 - 1
 
