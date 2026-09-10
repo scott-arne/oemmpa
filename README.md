@@ -427,3 +427,10 @@ vrzn set 1.0.0
 ## License
 
 MIT
+
+### Third-party code
+
+`src/RingPerception.cpp` contains ring-perception code derived from RDKit's
+`Code/GraphMol/FindRings.cpp` and is redistributed under RDKit's BSD 3-Clause
+license; the copyright notice and the full license text are retained in that
+file's header comment.

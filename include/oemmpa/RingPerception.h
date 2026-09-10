@@ -1,5 +1,11 @@
 #pragma once
 
+/// \file
+/// Ring perception derived from RDKit's ``Code/GraphMol/FindRings.cpp``. RDKit
+/// is BSD-3-Clause licensed and this repository is MIT, so the implementation
+/// file retains RDKit's copyright notice and the full text of its license:
+/// see the header comment of ``src/RingPerception.cpp``.
+
 #include <vector>
 
 #include <oechem.h>
