@@ -94,23 +94,24 @@ def check_parquet_identity(parquet):
         )
 
 
-def read_stereo_rows(parquet, first_row_group, limit):
-    """Read stereo-bearing rows from the corpus under the provenance filters.
+def read_corpus_rows(parquet, first_row_group, limit, stereo_only=True):
+    """Read rows from the corpus under the provenance filters.
 
-    The limit counts the rows the measurement will actually classify -- the
-    stereo-bearing ones -- so raising it always widens the measured population.
-    A limit on rows *considered* would not: most corpus rows carry no stereo at
-    all, so the sample size would depend on how the corpus happens to be sorted.
-    Row groups are consumed in order from `first_row_group` until the limit is
-    reached or the file runs out.
+    The limit counts the rows the measurement will actually classify, so raising
+    it always widens the measured population. For a stereo measurement that has
+    to mean stereo-bearing rows: a limit on rows *considered* would not widen
+    it, because most corpus rows carry no stereo at all and the sample size
+    would then depend on how the corpus happens to be sorted. Row groups are
+    consumed in order from `first_row_group` until the limit is reached or the
+    file runs out.
 
     :param parquet: Path to the pinned parquet.
     :param first_row_group: Parquet row group to start from.
-    :param limit: Maximum number of stereo-bearing rows to return.
+    :param limit: Maximum number of rows to return.
+    :param stereo_only: Keep only rows whose SMILES carries a stereo marker.
     :returns: ``(rows, row_groups_consumed, eligible_scanned)`` where `rows` is a
-        list of ``(identifier, smiles)`` pairs whose SMILES carries a stereo
-        marker and `eligible_scanned` counts the rows that passed the provenance
-        filters, stereo-bearing or not.
+        list of ``(identifier, smiles)`` pairs and `eligible_scanned` counts the
+        rows that passed the provenance filters, stereo-bearing or not.
     """
     import pyarrow.parquet as pq  # lazy: only this tool reads the corpus
 
@@ -135,7 +136,7 @@ def read_stereo_rows(parquet, first_row_group, limit):
             if not MIN_MOL_WEIGHT <= (mol_weight or 0.0) <= MAX_MOL_WEIGHT:
                 continue
             eligible += 1
-            if any(marker in smiles for marker in ("@", "/", "\\")):
+            if not stereo_only or any(marker in smiles for marker in ("@", "/", "\\")):
                 rows.append((f"S{identifier}", smiles))
     return rows, consumed, eligible
 
@@ -180,8 +181,8 @@ def oechem_stereo_counts(mol):
     return tetrahedral, cis_trans
 
 
-def import_worktree_renderer():
-    """Import ``render_fragment_smiles`` from the bindings built in this tree.
+def import_worktree_bindings():
+    """Import the ``oemmpa.oemmpa`` bindings built in this tree.
 
     The repository is normally installed editable, so a bare ``import oemmpa``
     resolves through an ``_oemmpa_editable`` finder that points at the checkout
@@ -189,7 +190,7 @@ def import_worktree_renderer():
     measurement would silently compare against stale bindings. Follow
     ``benchmarks/rdkit_compare.py`` and take the local package instead.
 
-    :returns: The ``render_fragment_smiles`` binding from ``PYTHON_ROOT``.
+    :returns: The bindings module loaded from ``PYTHON_ROOT``.
     :raises ImportError: If the import still resolves outside ``PYTHON_ROOT``.
     """
     if PYTHON_ROOT.is_dir() and str(PYTHON_ROOT) not in sys.path:
@@ -213,7 +214,15 @@ def import_worktree_renderer():
     resolved = Path(bindings.__file__).resolve()
     if not resolved.is_relative_to(PYTHON_ROOT.resolve()):
         raise ImportError(f"imported non-worktree oemmpa bindings: {resolved}")
-    return bindings.render_fragment_smiles
+    return bindings
+
+
+def import_worktree_renderer():
+    """``render_fragment_smiles`` from the bindings built in this tree.
+
+    :returns: The ``render_fragment_smiles`` binding from ``PYTHON_ROOT``.
+    """
+    return import_worktree_bindings().render_fragment_smiles
 
 
 def classify(smiles, render_fragment_smiles):
@@ -288,7 +297,7 @@ def main():
     args = parser.parse_args()
 
     check_parquet_identity(args.parquet)
-    rows, consumed, eligible = read_stereo_rows(
+    rows, consumed, eligible = read_corpus_rows(
         args.parquet, args.row_group, args.limit
     )
     print(

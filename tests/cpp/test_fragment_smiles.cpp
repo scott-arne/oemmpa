@@ -14,6 +14,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentSmiles.h"
 #include "oemmpa/MCSCommon.h"
+#include "oemmpa/RingPerception.h"
 
 namespace {
 
@@ -447,17 +448,16 @@ TEST(FragmentSmiles, EZDependentCentreResolvesThroughBranchGeometry) {
         render_suppressed("C/C=C\\C(O)/C=C\\C"));
 }
 
-// Bridgehead nitrogen in a strained cage, where one shortest cycle per ring
-// bond is not enough to see the bridge. Each of these cages has ring bonds
-// with two shortest cycles of equal length through them, and dropping either
-// tie leaves the nitrogen looking like a plain ring fusion, so its tag is lost.
-// Upstream reads RingInfo after symmetrizeSSSR, where the tied rings are all
-// present. RDKit 2026.03.6 and a plain OEChem round trip both keep one tag on
-// every row here and tell the two configurations of each cage apart. The
-// indolizidine control is the shape that must still lose its nitrogen tag: its
-// two rings share exactly one bond, so no ring of the pair has a partner
-// overlapping it in two bonds.
-TEST(FragmentSmiles, TiedShortestRingsExposeCageBridgeheadNitrogen) {
+// Bridgehead nitrogen in a strained cage, where a single ring per ring bond is
+// not enough to see the bridge. Each of these cages has ring bonds carried by
+// two rings of equal size, and dropping either leaves the nitrogen looking like
+// a plain ring fusion, so its tag is lost. Upstream reads RingInfo after
+// symmetrizeSSSR, where both are present. RDKit 2026.03.6 and a plain OEChem
+// round trip both keep one tag on every row here and tell the two
+// configurations of each cage apart. The indolizidine control is the shape that
+// must still lose its nitrogen tag: its two rings share exactly one bond, so no
+// ring of the pair has a partner overlapping it in two bonds.
+TEST(FragmentSmiles, SymmetrizedRingSetExposesCageBridgeheadNitrogen) {
     const std::vector<std::pair<std::string, std::string>> cages = {
         {"C12(F)CC3[N@@]1CC23", "C12(F)CC3[N@]1CC23"},
         {"C1C2(F)[N@]3C(Cl)C2C13C", "C1C2(F)[N@@]3C(Cl)C2C13C"},
@@ -473,6 +473,58 @@ TEST(FragmentSmiles, TiedShortestRingsExposeCageBridgeheadNitrogen) {
 
     EXPECT_EQ(
         render_suppressed("C1CC[N@]2CCC[C@H]2C1"), render_suppressed("C1CCN2CCC[C@H]2C1"));
+}
+
+// The bridgehead a ring-by-ring shortest-cycle search cannot find. This azacage
+// has five symmetrized rings of sizes 3, 4, 4, 4 and 5, and the five-ring is not
+// the shortest cycle through any of its own bonds: every search that keeps only
+// the shortest cycle per ring bond misses it, and without it the tagged nitrogen
+// has a ring with no two-bond partner and loses its tag. Only a real
+// symmetrized SSSR finds it. RDKit 2026.03.6 reports both configurations
+// distinctly, and so does a plain OEChem round trip.
+TEST(FragmentSmiles, NonShortestSssrRingExposesAzacageBridgeheadNitrogen) {
+    const std::string left = render_suppressed("[13C]123C4C1CC41[14C](C)(C2)[N@@]3[15C]1(C)CC");
+    const std::string right = render_suppressed("[13C]123C4C1CC41[14C](C)(C2)[N@]3[15C]1(C)CC");
+    EXPECT_EQ(atom_stereo_count(left), 1u) << left;
+    EXPECT_EQ(atom_stereo_count(right), 1u) << right;
+    EXPECT_NE(left, right);
+}
+
+// The ported ring perception itself, checked against the answers RDKit 2026.03.6
+// gives for the same SMILES through Chem.GetSymmSSSR() and
+// rdqueries.IsBridgeheadQueryAtom(). Every count below was read from RDKit
+// first. The shapes are the textbook ones the bridgehead rule has to separate:
+// two bridged bicyclics, a cage, a polycyclic cage, a fused bicyclic and a
+// spiro bicyclic -- the last two being the pair that must report no bridgehead
+// at all, one because its rings share a single bond and the other because they
+// share no bond. None of these SMILES makes either toolkit materialize a
+// hydrogen, so the atom indices are directly comparable.
+TEST(FragmentSmiles, SymmetrizedRingSetMatchesRDKit) {
+    struct Row {
+        std::string smiles;
+        std::vector<std::size_t> ring_sizes;
+        std::vector<unsigned int> bridgeheads;
+    };
+    const std::vector<Row> rows = {
+        {"C1CC2CCC1C2", {5, 5}, {2, 5}},                       // norbornane
+        {"C1C2CC3CC1CC(C2)C3", {6, 6, 6, 6}, {1, 3, 5, 7}},    // adamantane
+        {"C12C3C4C1C5C4C3C25", {4, 4, 4, 4, 4, 4}, {}},        // cubane
+        {"C1CC2CCC1CC2", {6, 6, 6}, {2, 5}},                   // bicyclo[2.2.2]octane
+        {"C1CCC2CCCCC2C1", {6, 6}, {}},                        // decalin
+        {"C1CCC2(CC1)CCCCC2", {6, 6}, {}},                     // spiro[5.5]undecane
+        {"[13C]123C4C1CC41[14C](C)(C2)[N@@]3[15C]1(C)CC", {3, 4, 4, 4, 5}, {5, 8}},
+    };
+
+    for (const Row& row : rows) {
+        const OEChem::OEGraphMol mol = parse(row.smiles);
+        std::vector<std::size_t> sizes;
+        for (const std::vector<unsigned int>& ring : OEMMPA::symmetrized_sssr(mol)) {
+            sizes.push_back(ring.size());
+        }
+        std::sort(sizes.begin(), sizes.end());
+        EXPECT_EQ(sizes, row.ring_sizes) << row.smiles;
+        EXPECT_EQ(OEMMPA::bridgehead_atoms(mol), row.bridgeheads) << row.smiles;
+    }
 }
 
 // The cleanup rule widened; the enumeration rule did not. Stereo enumeration

@@ -104,6 +104,7 @@ set(OEMMPA_SOURCES
     src/FragmentationStrategy.cpp
     src/Fragmenter.cpp
     src/FragmentSmiles.cpp
+    src/RingPerception.cpp
     src/EnvironmentFingerprint.cpp
     src/QueryEnvironment.cpp
     src/FragmentationMethod.cpp

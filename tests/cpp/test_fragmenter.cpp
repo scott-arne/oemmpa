@@ -933,14 +933,16 @@ TEST(FragmenterTest, DependentRingStereoSurvivesTheCut) {
     EXPECT_FALSE(trans.count(cis_constant)) << cis_constant;
 }
 
-// The two stereo rules fixed alongside this test are only worth anything if
-// they reach production fragmentation, so both are asserted here through
-// Fragment() rather than through the renderer. The carbinol epimers differ
-// only in the geometry of their two otherwise identical vinyl branches; the
-// cage differs only in the configuration of a bridgehead nitrogen whose bridge
-// is invisible unless tied shortest rings are perceived. Either loss collapses
-// a pair of distinct parents onto one record set, which silently merges two
-// molecules into one matched pair.
+// The stereo rules fixed alongside this test are only worth anything if they
+// reach production fragmentation, so each is asserted here through Fragment()
+// rather than through the renderer. The carbinol epimers differ only in the
+// geometry of their two otherwise identical vinyl branches; the small cage
+// differs only in the configuration of a bridgehead nitrogen whose bridge is
+// invisible unless both rings sharing a ring bond are perceived; the azacage
+// hides its bridge behind a ring that is not the shortest cycle through any of
+// its own bonds, so only a real symmetrized SSSR finds it. Any of those losses
+// collapses a pair of distinct parents onto one record set, which silently
+// merges two molecules into one matched pair.
 TEST(FragmenterTest, StereoOnlyEpimersDoNotCollapseOntoOneRecordSet) {
     const std::set<std::string> geometry_left =
         AllFragmentComponents(SingleCutFragmentations("C/C=C/[C@@H](O)/C=C\\C"));
@@ -957,6 +959,15 @@ TEST(FragmenterTest, StereoOnlyEpimersDoNotCollapseOntoOneRecordSet) {
     EXPECT_TRUE(cage_left.count(ExpectedFragmentSmiles("C12(CC[*:1])CC3[N@@]1CC23")))
         << ExpectedFragmentSmiles("C12(CC[*:1])CC3[N@@]1CC23");
     EXPECT_NE(cage_left, cage_right);
+
+    const std::set<std::string> azacage_left =
+        AllFragmentComponents(SingleCutFragmentations("[13C]123C4C1CC41[14C](C)(C2)[N@@]3[15C]1(C)CC"));
+    const std::set<std::string> azacage_right =
+        AllFragmentComponents(SingleCutFragmentations("[13C]123C4C1CC41[14C](C)(C2)[N@]3[15C]1(C)CC"));
+    EXPECT_TRUE(azacage_left.count(
+        ExpectedFragmentSmiles("[13C]123C4C1CC41[14C](C)(C2)[N@@]3[15C]1([*:1])CC")))
+        << ExpectedFragmentSmiles("[13C]123C4C1CC41[14C](C)(C2)[N@@]3[15C]1([*:1])CC");
+    EXPECT_NE(azacage_left, azacage_right);
 }
 
 // Capping the attachment with hydrogen can destroy the stereochemistry the

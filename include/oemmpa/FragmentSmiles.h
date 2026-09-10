@@ -61,13 +61,11 @@ struct StereoCleanupContext {
     /// Ring-system id per atom index, as written by OEDetermineRingSystems().
     /// Acyclic atoms carry id 0.
     std::vector<unsigned int> ring_systems;
-    /// Bridgehead flag per atom index: three or more ring bonds, and every ring
-    /// holding one of those bonds overlapping some other such ring in at least
-    /// two bonds (``QueryOps.cpp::queryIsAtomBridgehead``). The ring set is every
-    /// shortest cycle through each ring bond, ties included, which is what makes
-    /// the two faces of a strained cage both visible. All false when no tagged
-    /// nitrogen is present, because only the nitrogen clauses ask and ring
-    /// perception is the most expensive step here.
+    /// Bridgehead flag per atom index, from find_bridgeheads(): RDKit's
+    /// ``QueryOps.cpp::queryIsAtomBridgehead`` evaluated over the symmetrized
+    /// SSSR that oemmpa/RingPerception.h carries from RDKit. All false when no
+    /// tagged nitrogen is present, because only the nitrogen clauses ask and
+    /// ring perception is the most expensive step here.
     std::vector<bool> bridgeheads;
     /// Per atom index, whether the resolve loop settled a specified tag there:
     /// the atom's shape can carry chirality and its neighbours are pairwise

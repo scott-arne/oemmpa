@@ -30,6 +30,7 @@
 #include "oemmpa/PairScoring.h"
 #include "oemmpa/QueryEnvironment.h"
 #include "oemmpa/QueryOptions.h"
+#include "oemmpa/RingPerception.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"

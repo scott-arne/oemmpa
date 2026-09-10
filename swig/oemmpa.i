@@ -353,6 +353,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 %template(StringVector) std::vector<std::string>;
 %template(UnsignedIntVector) std::vector<unsigned int>;
+%template(UnsignedIntVectorVector) std::vector<std::vector<unsigned int>>;
 %template(LoadErrorVector) std::vector<OEMMPA::LoadError>;
 %template(AcceptedMoleculeVector) std::vector<OEMMPA::AcceptedMolecule>;
 %template(CutBondVector) std::vector<OEMMPA::CutBond>;
@@ -437,6 +438,13 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::capture_tetrahedral_parity;
 %ignore OEMMPA::assert_tetrahedral_parity;
 %include "../include/oemmpa/FragmentSmiles.h"
+// The ported ring perception, so a Python measurement can score OEMMPA's
+// symmetrized SSSR and bridgehead set against RDKit's Chem.GetSymmSSSR() and
+// rdqueries.IsBridgeheadQueryAtom() on the same molecule. find_bridgeheads()
+// returns a std::vector<bool> with no cross-runtime typemap and is redundant
+// with bridgehead_atoms(), which is the form the measurement consumes.
+%ignore OEMMPA::find_bridgeheads;
+%include "../include/oemmpa/RingPerception.h"
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"
 %include "../include/oemmpa/MemoryIndex.h"
