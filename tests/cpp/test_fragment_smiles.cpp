@@ -41,6 +41,19 @@ bool has_atom_stereo(const std::string& smiles) {
     return smiles.find('@') != std::string::npos;
 }
 
+// How many tetrahedral tags a rendered SMILES carries. Counting '@' characters
+// would count '@@' twice, so re-read the string as a molecule instead.
+std::size_t atom_stereo_count(const std::string& smiles) {
+    const OEChem::OEGraphMol mol = parse(smiles);
+    std::size_t count = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool has_bond_direction(const std::string& smiles) {
     return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
 }
@@ -252,6 +265,203 @@ TEST(FragmentSmiles, ThreeCoordinateNitrogenTagIsCleared) {
     EXPECT_NE(left, right);
     EXPECT_TRUE(has_atom_stereo(left)) << left;
     EXPECT_TRUE(has_atom_stereo(right)) << right;
+}
+
+// RDKit's ring-stereo candidate rule (Chirality.cpp
+// atomIsCandidateForRingStereochem) is written over the split between ring and
+// non-ring neighbours, not over a fixed ring-neighbour count. A cis-decalin
+// fusion carbon has three ring bonds and no exocyclic bond at all, and it
+// qualifies through the "three ring neighbours with two different ranks" case.
+// Both fusion tags together are the cis/trans descriptor, so they must render
+// apart; a single fusion tag has no partner and is meaningless.
+TEST(FragmentSmiles, RingFusionDependentPairSurvives) {
+    const std::string cis = render_suppressed("C1CC[C@H]2CCCC[C@@H]2C1");
+    const std::string trans = render_suppressed("C1CC[C@H]2CCCC[C@H]2C1");
+    EXPECT_EQ(atom_stereo_count(cis), 2u) << cis;
+    EXPECT_EQ(atom_stereo_count(trans), 2u) << trans;
+    EXPECT_NE(cis, trans);
+
+    EXPECT_EQ(render_suppressed("C1CC[C@H]2CCCCC2C1"), render_suppressed("C1CCC2CCCCC2C1"));
+}
+
+// A ring sulfoxide sulfur carries three heavy neighbours and no hydrogen, so
+// the previous candidate shape test rejected it. RDKit does not: the exocyclic
+// oxygen is its single non-ring neighbour and the two ring neighbours share a
+// rank, which is the "one non-ring neighbour" case. The sulfur and the
+// methyl-bearing carbon are each other's partner, and the pair is the ring's
+// cis/trans descriptor.
+TEST(FragmentSmiles, RingSulfoxideDependentPairSurvives) {
+    const std::string cis = render_suppressed("C[C@H]1CC[S@](=O)CC1");
+    const std::string trans = render_suppressed("C[C@H]1CC[S@@](=O)CC1");
+    EXPECT_EQ(atom_stereo_count(cis), 2u) << cis;
+    EXPECT_EQ(atom_stereo_count(trans), 2u) << trans;
+    EXPECT_NE(cis, trans);
+
+    // Either half alone is still half a descriptor.
+    EXPECT_EQ(render_suppressed("CC1CC[S@](=O)CC1"), render_suppressed("CC1CCS(=O)CC1"));
+    EXPECT_EQ(render_suppressed("C[C@H]1CCS(=O)CC1"), render_suppressed("CC1CCS(=O)CC1"));
+}
+
+// Bridgehead centres reach the candidate rule through the same neighbour
+// split. A 1,4-disubstituted bicyclo[2.2.2]octane bridgehead has one exocyclic
+// substituent and three equivalent ring neighbours; an adamantane-1,3-diol
+// bridgehead has one exocyclic substituent and three ring neighbours of two
+// ranks. Both are the "one non-ring neighbour" case, and both pair across the
+// cage. A lone cage tag is dropped.
+TEST(FragmentSmiles, BridgeheadDependentPairSurvives) {
+    const std::string cage_left = render_suppressed("O[C@]12CC[C@@](C)(CC1)CC2");
+    const std::string cage_right = render_suppressed("O[C@]12CC[C@](C)(CC1)CC2");
+    EXPECT_EQ(atom_stereo_count(cage_left), 2u) << cage_left;
+    EXPECT_EQ(atom_stereo_count(cage_right), 2u) << cage_right;
+    EXPECT_NE(cage_left, cage_right);
+
+    const std::string diol_left = render_suppressed("O[C@]12C[C@@]3(O)CC(C1)CC(C2)C3");
+    const std::string diol_right = render_suppressed("O[C@]12C[C@]3(O)CC(C1)CC(C2)C3");
+    EXPECT_EQ(atom_stereo_count(diol_left), 2u) << diol_left;
+    EXPECT_NE(diol_left, diol_right);
+
+    EXPECT_EQ(
+        render_suppressed("O[C@]12CCC(C)(CC1)CC2"), render_suppressed("OC12CCC(C)(CC1)CC2"));
+    EXPECT_EQ(
+        render_suppressed("O[C@H]1C2CC3CC(C2)CC1C3"),
+        render_suppressed("OC1C2CC3CC(C2)CC1C3"));
+}
+
+// Pairing is a "some other candidate shares the ring system" test, not a
+// two-at-a-time matching, so an odd number of candidates is not a problem.
+// Adamantane-1,3,5-triol is the strong form: not one of its three tagged
+// bridgeheads is a stereocentre on its own, each has one exocyclic hydroxyl
+// and three ring neighbours of two ranks, and all three tags survive together
+// while any one of them alone is dropped. Cyclohexane-1,3,5-triol is the same
+// shape in a single ring.
+TEST(FragmentSmiles, ThreeCandidatesInOneRingSurvive) {
+    const std::string cage_left = render_suppressed("C1[C@]2(O)C[C@]3(O)C[C@]1(O)CC(C2)C3");
+    const std::string cage_right = render_suppressed("C1[C@]2(O)C[C@]3(O)C[C@@]1(O)CC(C2)C3");
+    EXPECT_EQ(atom_stereo_count(cage_left), 3u) << cage_left;
+    EXPECT_EQ(atom_stereo_count(cage_right), 3u) << cage_right;
+    EXPECT_NE(cage_left, cage_right);
+
+    EXPECT_EQ(
+        render_suppressed("C1[C@]2(O)CC3(O)CC1(O)CC(C2)C3"),
+        render_suppressed("C1C2(O)CC3(O)CC1(O)CC(C2)C3"));
+
+    const std::string triol_meso = render_suppressed("O[C@H]1C[C@H](O)C[C@@H](O)C1");
+    const std::string triol_other = render_suppressed("O[C@H]1C[C@@H](O)C[C@@H](O)C1");
+    EXPECT_EQ(atom_stereo_count(triol_meso), 3u) << triol_meso;
+    EXPECT_EQ(atom_stereo_count(triol_other), 3u) << triol_other;
+    EXPECT_NE(triol_meso, triol_other);
+}
+
+// Three-coordinate nitrogen inverts too fast to be a stereocentre in general,
+// but RDKit keeps the tag where inversion is blocked: inside a three-membered
+// ring (a rule it takes from InChI) or at a bridgehead (its own extension).
+// Everywhere else -- an azetidine, a piperidine, the ring-fusion nitrogen of
+// an indolizidine, an acyclic amine -- the tag goes.
+TEST(FragmentSmiles, NitrogenTagKeptOnlyInThreeRingsOrBridgeheads) {
+    const std::string aziridine_left = render_suppressed("C[N@]1C[C@H]1C");
+    const std::string aziridine_right = render_suppressed("C[N@@]1C[C@H]1C");
+    EXPECT_EQ(atom_stereo_count(aziridine_left), 2u) << aziridine_left;
+    EXPECT_NE(aziridine_left, aziridine_right);
+
+    const std::string cage_left = render_suppressed("C[C@@H]1C[N@]2CC[C@H]1C2");
+    const std::string cage_right = render_suppressed("C[C@@H]1C[N@@]2CC[C@H]1C2");
+    EXPECT_EQ(atom_stereo_count(cage_left), 3u) << cage_left;
+    EXPECT_NE(cage_left, cage_right);
+
+    EXPECT_EQ(render_suppressed("C[N@]1CC(O)C1"), render_suppressed("CN1CC(O)C1"));
+    EXPECT_EQ(render_suppressed("C[N@]1CCC(O)CC1"), render_suppressed("CN1CCC(O)CC1"));
+    // A 6-5 ring fusion is not a bridgehead: the two rings share one bond, so
+    // the nitrogen's tag goes while the carbon stereocentre keeps its own.
+    EXPECT_EQ(
+        render_suppressed("C1CC[N@]2CCC[C@H]2C1"), render_suppressed("C1CCN2CCC[C@H]2C1"));
+    EXPECT_EQ(render_suppressed("[*:1][N@](C)CCO"), render_suppressed("[*:1]N(C)CCO"));
+}
+
+// Trivalent phosphorus and arsenic pyramids are configurationally stable, and
+// RDKit keeps their tags on the strength of three distinguishable neighbours
+// alone -- no hydrogen and no sulfoxide-like valence required. The ring
+// phospholane is the control: its two ring arms are equivalent, so the tag is
+// a lone dependent tag and goes.
+TEST(FragmentSmiles, TrivalentPhosphorusAndArsenicKeepDistinctNeighbourTags) {
+    const std::string phosphine_left = render_suppressed("C[P@](CC)c1ccccc1");
+    const std::string phosphine_right = render_suppressed("C[P@@](CC)c1ccccc1");
+    EXPECT_EQ(atom_stereo_count(phosphine_left), 1u) << phosphine_left;
+    EXPECT_NE(phosphine_left, phosphine_right);
+
+    const std::string arsine_left = render_suppressed("C[As@](CC)c1ccccc1");
+    const std::string arsine_right = render_suppressed("C[As@@](CC)c1ccccc1");
+    EXPECT_EQ(atom_stereo_count(arsine_left), 1u) << arsine_left;
+    EXPECT_NE(arsine_left, arsine_right);
+
+    EXPECT_EQ(render_suppressed("C[P@]1CCCC1"), render_suppressed("CP1CCCC1"));
+}
+
+// A pseudo-asymmetric centre has two constitutionally identical neighbour
+// branches that differ only in their configurations, so plain symmetry
+// perception calls them equivalent and the tag looks meaningless. RDKit
+// resolves the unambiguous centres first and then re-ranks with the resolved
+// handedness folded into the invariants, which splits mirror-image branches
+// and rescues the middle tag. The centre tag therefore survives in ribitol and
+// in tropine, and inverting it gives a different molecule -- but the same
+// middle tag is dropped when the branches carry no configuration to re-rank
+// on.
+TEST(FragmentSmiles, PseudoAsymmetricCentreResolvesThroughNeighbourConfigurations) {
+    const std::string ribitol = render_suppressed("OC[C@@H](O)[C@H](O)[C@@H](O)CO");
+    const std::string ribitol_inverted = render_suppressed("OC[C@@H](O)[C@@H](O)[C@@H](O)CO");
+    EXPECT_EQ(atom_stereo_count(ribitol), 3u) << ribitol;
+    EXPECT_EQ(atom_stereo_count(ribitol_inverted), 3u) << ribitol_inverted;
+    EXPECT_NE(ribitol, ribitol_inverted);
+
+    const std::string tropine = render_suppressed("CN1[C@H]2CC[C@@H]1C[C@H](O)C2");
+    const std::string tropine_inverted = render_suppressed("CN1[C@H]2CC[C@@H]1C[C@@H](O)C2");
+    EXPECT_EQ(atom_stereo_count(tropine), 3u) << tropine;
+    EXPECT_NE(tropine, tropine_inverted);
+
+    // Untagged branches carry no configuration, so nothing separates them and
+    // the middle tag is meaningless after all.
+    EXPECT_EQ(render_suppressed("CC(O)[C@H](O)C(O)C"), render_suppressed("CC(O)C(O)C(O)C"));
+    EXPECT_EQ(render_suppressed("CN1C2CCC1C[C@H](O)C2"), render_suppressed("CN1C2CCC1CC(O)C2"));
+}
+
+// The cleanup rule widened; the enumeration rule did not. Stereo enumeration
+// asks is_potential_stereocenter(), which is mmpdb's transcription of RDKit's
+// isAtomPotentialChiralCenter and admits three-coordinate atoms only for a
+// single hydrogen or a sulfoxide-like sulfur or selenium. Trivalent
+// phosphorus, aziridine nitrogen and bridgehead nitrogen all keep their
+// written tags through cleanup now, and none of them may become an
+// enumeration site.
+TEST(FragmentSmiles, EnumerationRuleIsUntouched) {
+    struct Row {
+        std::string smiles;
+        unsigned int atomic_number;
+        bool potential;
+    };
+    const std::vector<Row> rows = {
+        {"C[P@](CC)c1ccccc1", 15, false},
+        {"C[As@](CC)c1ccccc1", 33, false},
+        {"C[N@]1C[C@H]1C", 7, false},
+        {"C[C@@H]1C[N@]2CC[C@H]1C2", 7, false},
+        {"C[S@](=O)c1ccccc1", 16, true},
+        {"C[C@H](O)CC", 6, true},
+    };
+
+    for (const Row& row : rows) {
+        OEChem::OEGraphMol mol = parse(row.smiles);
+        OEChem::OESuppressHydrogens(mol);
+        OEChem::OEPerceiveChiral(mol);
+        bool seen = false;
+        for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+            if (atom->GetAtomicNum() != row.atomic_number) {
+                continue;
+            }
+            if (!atom->HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
+                continue;
+            }
+            seen = true;
+            EXPECT_EQ(OEMMPA::is_potential_stereocenter(*atom), row.potential) << row.smiles;
+        }
+        EXPECT_TRUE(seen) << row.smiles;
+    }
 }
 
 // The bond rule is untouched by the atom work: geminal methyls make a written

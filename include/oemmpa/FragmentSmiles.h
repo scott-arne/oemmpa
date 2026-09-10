@@ -38,26 +38,99 @@ bool has_specified_stereo(const OEChem::OEMolBase& mol);
 /// \returns true when the tag stands on its own merits.
 bool is_potential_stereocenter(const OEChem::OEAtomBase& atom);
 
+/// \brief Molecule-wide perception the tag-retention rules read.
+///
+/// RDKit decides which tetrahedral tags a parse keeps in
+/// ``Code/GraphMol/Chirality.cpp::assignStereochemistry``, and every test it
+/// applies reads something that belongs to the whole molecule rather than to
+/// the atom. Deriving them per atom would re-perceive the molecule once per
+/// tag, and the refined ranks cannot be derived per atom at all: they are the
+/// fixed point of a loop that runs over every tagged atom at once.
+struct StereoCleanupContext {
+    /// Symmetry class per atom index, refined by the handedness of every tag
+    /// the resolve loop has settled. This is upstream's ``rerankAtoms`` step. A
+    /// centre whose neighbour branches are constitutionally identical but
+    /// configurationally different is only separable once those configurations
+    /// are themselves invariants of the ranking.
+    std::vector<unsigned int> ranks;
+    /// Ring-system id per atom index, as written by OEDetermineRingSystems().
+    /// Acyclic atoms carry id 0.
+    std::vector<unsigned int> ring_systems;
+    /// Bridgehead flag per atom index: three or more ring bonds, and membership
+    /// in two rings of the smallest set of smallest rings that share more than
+    /// two atoms (``Chirality.cpp::queryIsAtomBridgehead``). All false when no
+    /// tagged nitrogen is present, because only the nitrogen clauses ask and
+    /// ring perception is the most expensive step here.
+    std::vector<bool> bridgeheads;
+    /// Per atom index, whether the resolve loop settled a specified tag there:
+    /// the atom's shape can carry chirality and its neighbours are pairwise
+    /// distinct under `ranks`.
+    std::vector<bool> resolved;
+};
+
+/// \brief Perceive `mol` and run RDKit's resolve loop over its specified tags.
+///
+/// The loop mirrors ``assignStereochemistry``: settle every tag whose
+/// neighbours are already pairwise distinct, fold the settled handedness into
+/// the ranks, and go round again. A pseudo-asymmetric centre -- one whose two
+/// branches differ only in configuration -- is unresolvable on the first round
+/// and resolvable on the second, which is exactly why the loop exists.
+///
+/// \param mol Molecule to perceive. Not modified. The caller has already run
+///        OEPerceiveChiral(), OEPerceiveSymmetry() and OEFindRingAtomsAndBonds()
+///        on it with attachment map indices zeroed, because the canonical
+///        ranking must not treat ``[*:1]`` and ``[*:2]`` as different
+///        substituents.
+/// \returns The context, with every vector sized to GetMaxAtomIdx().
+StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol);
+
+/// \brief Whether RDKit's parse-time cleanup would keep `atom`'s tetrahedral tag.
+///
+/// The cleanup rule, and the only question
+/// clear_fragmentation_invalidated_stereo() asks. A tag survives when the
+/// resolve loop settled it on its own merits, or when it is one half of a
+/// dependent ring pair. Everything else -- the element clauses, the
+/// conjugation gate on nitrogen, the ring-candidate shapes -- is folded into
+/// those two answers.
+///
+/// Deliberately distinct from is_potential_stereocenter(), which is the
+/// enumeration rule and must not widen: stereo enumeration asks which centres
+/// it may invert, and admitting a phosphine or an aziridine nitrogen there
+/// would invent structures mmpdb never generates.
+///
+/// \param atom Atom to test, under the preconditions of
+///        build_stereo_cleanup_context().
+/// \param context The context built from `atom`'s parent.
+/// \returns true when the tag survives cleanup.
+bool rdkit_keeps_tetrahedral_tag(
+    const OEChem::OEAtomBase& atom,
+    const StereoCleanupContext& context
+);
+
 /// \brief Whether a specified tetrahedral tag on `atom` is half of a ring pair.
 ///
 /// RDKit's ring-stereo special case, applied by
 /// ``AssignStereochemistry(cleanIt=True)`` and inherited by mmpdb through
 /// ``Chem.MolFromSmiles``. In a 1,4-disubstituted cyclohexane neither
-/// substituted carbon is chiral on its own, because the two ring paths joining
-/// them are symmetry-equivalent, yet the two tags together encode the cis/trans
-/// relationship of the substituents. The tag therefore survives when this atom
-/// is a candidate -- tagged, not chiral, in a ring, with exactly two ring
-/// neighbours of equal symmetry class, and otherwise substituted so that it
-/// would be stereogenic if those two ring paths could be told apart -- and some
-/// other candidate shares its ring system. Half a pair describes nothing, so a
-/// lone candidate is not kept.
+/// substituted carbon is resolvable on its own, because the two ring paths
+/// joining them are symmetry-equivalent, yet the two tags together encode the
+/// cis/trans relationship of the substituents. The tag therefore survives when
+/// this atom is a candidate and some other candidate shares its ring system.
+/// Half a pair describes nothing, so a lone candidate is not kept.
 ///
-/// Symmetry refinement cannot replace the pairing rule: the mirror plane
-/// through the two centres keeps the ring paths equivalent however much stereo
+/// A candidate is a tagged atom the resolve loop could not settle, whose shape
+/// can carry chirality at all, and which passes
+/// ``Chirality.cpp::atomIsCandidateForRingStereochem``: a rule written over the
+/// split between ring and non-ring neighbours, not over a fixed ring-neighbour
+/// count, so it also covers ring-fusion carbons with three ring bonds and cage
+/// bridgeheads with one exocyclic substituent.
+///
+/// Rank refinement cannot replace the pairing rule: the mirror plane through
+/// the two centres keeps the ring paths equivalent however much stereo
 /// information the refinement carries, so no amount of refining separates them.
 ///
-/// This overload derives the ring systems itself; prefer the two-argument form
-/// when testing several atoms of the same molecule.
+/// This overload builds the context itself; prefer the two-argument form when
+/// testing several atoms of the same molecule.
 ///
 /// \param atom Atom to test. The caller has already run OEPerceiveChiral(),
 ///        OEPerceiveSymmetry() and OEFindRingAtomsAndBonds() on a molecule whose
@@ -65,22 +138,20 @@ bool is_potential_stereocenter(const OEChem::OEAtomBase& atom);
 /// \returns true when the tag survives as one half of a dependent pair.
 bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom);
 
-/// \brief has_dependent_ring_stereo() against precomputed ring-system ids.
+/// \brief has_dependent_ring_stereo() against a precomputed context.
 ///
-/// The pairing search ranges over one ring system, so ring-system perception is
-/// a property of the molecule rather than of the atom. A caller that tests every
-/// tagged atom -- clear_fragmentation_invalidated_stereo() does -- would
-/// otherwise re-derive the same partition once per candidate.
+/// The pairing search ranges over one ring system and reads the refined ranks,
+/// so both are properties of the molecule rather than of the atom. A caller
+/// that tests every tagged atom -- clear_fragmentation_invalidated_stereo()
+/// does -- would otherwise re-perceive the same molecule once per candidate.
 ///
 /// \param atom Atom to test, under the same perception preconditions as the
 ///        single-argument overload.
-/// \param ring_systems One ring-system id per atom index, as written by
-///        OEDetermineRingSystems() over `atom`'s parent into a buffer of
-///        GetMaxAtomIdx() entries. Acyclic atoms carry id 0.
+/// \param context The context built from `atom`'s parent.
 /// \returns true when the tag survives as one half of a dependent pair.
 bool has_dependent_ring_stereo(
     const OEChem::OEAtomBase& atom,
-    const std::vector<unsigned int>& ring_systems
+    const StereoCleanupContext& context
 );
 
 /// \brief Clear stereo descriptors that fragmentation invalidated.
