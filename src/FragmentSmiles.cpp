@@ -538,6 +538,17 @@ unsigned char class_relative_handedness(
 /// invariant. This is upstream's ``rerankAtoms``: an ordinary Morgan-style
 /// refinement whose seed carries the configurations resolved so far, so two
 /// branches that differ only in handedness stop being equivalent.
+///
+/// \note Known and accepted gap, and the one place to fix it. `handedness`
+///       carries tetrahedral configuration only; upstream also folds bond
+///       stereo into the same tuple. A centre whose two branches are
+///       constitutionally identical and differ only in double-bond geometry
+///       therefore never separates, so the resolve loop never settles it and
+///       its tag is dropped where RDKit keeps it. Both of
+///       ``C/C=C/[C@@H](O)/C=C\\C`` and ``C/C=C/[C@H](O)/C=C\\C`` render as
+///       ``C/C=C/C(/C=C\\C)O`` here; RDKit keeps them distinct. Closing it
+///       means widening the invariant tuple with a per-bond stereo bit -- the
+///       fixed point itself needs no change.
 std::vector<unsigned int> refine_ranks(
     const std::vector<OEChem::OEAtomBase*>& atoms,
     std::size_t max_idx,
@@ -753,7 +764,9 @@ StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol) 
         }
         // Refining costs a fixed-point sweep of the whole molecule, and it can
         // only rescue a tag that is still unsettled, so the common case where
-        // the first round settles everything never pays for it.
+        // the first round settles everything never pays for it. It also cannot
+        // rescue a tag whose branches differ only in bond geometry; see the
+        // note on refine_ranks().
         if (!progressed || settled == tagged.size()) {
             break;
         }

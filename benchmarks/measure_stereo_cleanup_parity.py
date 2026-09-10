@@ -207,6 +207,10 @@ def import_worktree_renderer():
 def classify(smiles, render_fragment_smiles):
     """Classify one structure by how the two cleanups disagree on it.
 
+    Tag totals are compared before configurations, so a molecule that both
+    drops one tag and keeps one extra has equal totals and lands in
+    ``configuration-differs`` rather than in either count-based class.
+
     :param smiles: The corpus SMILES.
     :param render_fragment_smiles: The binding from import_worktree_renderer().
     :returns: ``(class label, detail)``, where the detail is a short string

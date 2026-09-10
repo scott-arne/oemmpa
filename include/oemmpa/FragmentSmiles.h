@@ -52,6 +52,11 @@ struct StereoCleanupContext {
     /// centre whose neighbour branches are constitutionally identical but
     /// configurationally different is only separable once those configurations
     /// are themselves invariants of the ranking.
+    ///
+    /// Only *tetrahedral* handedness is folded in. Upstream's ``rerankAtoms``
+    /// also folds bond stereo, so a centre whose two branches differ solely in
+    /// double-bond geometry stays unresolved here where RDKit separates it.
+    /// See build_stereo_cleanup_context() for the reproducer.
     std::vector<unsigned int> ranks;
     /// Ring-system id per atom index, as written by OEDetermineRingSystems().
     /// Acyclic atoms carry id 0.
@@ -75,6 +80,17 @@ struct StereoCleanupContext {
 /// the ranks, and go round again. A pseudo-asymmetric centre -- one whose two
 /// branches differ only in configuration -- is unresolvable on the first round
 /// and resolvable on the second, which is exactly why the loop exists.
+///
+/// \note Known and accepted gap. Only tetrahedral handedness is folded into
+///       the refinement invariants; upstream's ``rerankAtoms`` also folds bond
+///       stereo. A centre whose two branches are constitutionally identical
+///       and differ only in double-bond geometry therefore never resolves, and
+///       its tag is dropped where RDKit keeps it. Both of
+///       ``C/C=C/[C@@H](O)/C=C\\C`` and ``C/C=C/[C@H](O)/C=C\\C`` render as
+///       ``C/C=C/C(/C=C\\C)O`` here, while RDKit keeps them distinct as
+///       ``C/C=C\\[C@H](O)/C=C/C`` and ``C/C=C\\[C@@H](O)/C=C/C``. Closing it
+///       means adding a per-bond stereo bit to the invariant tuple and
+///       re-running the same fixed point.
 ///
 /// \param mol Molecule to perceive. Not modified. The caller has already run
 ///        OEPerceiveChiral(), OEPerceiveSymmetry() and OEFindRingAtomsAndBonds()
@@ -109,7 +125,8 @@ bool rdkit_keeps_tetrahedral_tag(
 
 /// \brief Whether a specified tetrahedral tag on `atom` is half of a ring pair.
 ///
-/// RDKit's ring-stereo special case, applied by
+/// RDKit's ring-stereo special case
+/// (``Code/GraphMol/Chirality.cpp::findChiralAtomSpecialCases``), applied by
 /// ``AssignStereochemistry(cleanIt=True)`` and inherited by mmpdb through
 /// ``Chem.MolFromSmiles``. In a 1,4-disubstituted cyclohexane neither
 /// substituted carbon is resolvable on its own, because the two ring paths
