@@ -640,11 +640,24 @@ OEChem::OEGraphMol parse_suppressed(const char* smiles) {
 // OEAtomBase::IsChiral() alone would enumerate. The carbon control keeps the
 // guard honest: it proves the element rule narrowed the detector rather than
 // switching it off.
+//
+// Retained labels alone cannot police this. A detector that wrongly calls the
+// nitrogen a created centre still emits [N@] and [N@@] configurations, and the
+// cleanup pass then renders both onto the baseline string so dedup folds them
+// away -- the output is identical and every label assertion below still passes.
+// What the erroneous configurations cannot hide from is the budget: they are
+// charged before dedup sees them. So the pin is driven at a cap of zero, which
+// permits exactly one emission per role assignment. A molecule with no created
+// centre emits only its baseline and must not throw; one with a real created
+// centre must.
 TEST(CreatedStereocenters, ThreeCoordinateNitrogenIsNotACreatedCentre) {
+    constexpr const char* AMINE_FIXTURES[] = {"CN(C)CCO", "CS(=O)(=O)N(C)C"};
+    const OEChem::OEGraphMol control = parse_suppressed("OCC(C)C");
+
     OEMMPA::Fragmenter fragmenter;
     fragmenter.SetMaxCuts(1);
 
-    for (const char* smiles : {"CN(C)CCO", "CS(=O)(=O)N(C)C"}) {
+    for (const char* smiles : AMINE_FIXTURES) {
         const OEChem::OEGraphMol mol = parse_suppressed(smiles);
         const std::vector<OEMMPA::Fragmentation> fragmentations = fragmenter.Fragment(1, mol);
         ASSERT_FALSE(fragmentations.empty()) << smiles;
@@ -654,11 +667,31 @@ TEST(CreatedStereocenters, ThreeCoordinateNitrogenIsNotACreatedCentre) {
             fragmentations.size()) << smiles;
     }
 
-    const OEChem::OEGraphMol control = parse_suppressed("OCC(C)C");
     const std::vector<OEMMPA::Fragmentation> enumerated = fragmenter.Fragment(1, control);
     EXPECT_EQ(enumerated.size(), 10u);
     EXPECT_EQ(
         count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::ConstantUp), 2u);
     EXPECT_EQ(
         count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::VariableUp), 2u);
+
+    // The budget arm. A cap of N permits N+1 records per role assignment, so a
+    // cap of zero leaves room for the baseline and nothing else.
+    OEMMPA::Fragmenter capped;
+    capped.SetMaxCuts(1);
+    capped.SetMaxUpEnumerations(0);
+
+    for (const char* smiles : AMINE_FIXTURES) {
+        const OEChem::OEGraphMol mol = parse_suppressed(smiles);
+        std::vector<OEMMPA::Fragmentation> fragmentations;
+        ASSERT_NO_THROW(fragmentations = capped.Fragment(1, mol)) << smiles;
+        ASSERT_FALSE(fragmentations.empty()) << smiles;
+        EXPECT_EQ(
+            static_cast<std::size_t>(
+                count_with_label(fragmentations, OEMMPA::Fragmentation::EnumerationLabel::None)),
+            fragmentations.size()) << smiles;
+    }
+
+    // Positive control: the same cap must still be reachable, or the arm above
+    // would pass for a detector that had been switched off entirely.
+    EXPECT_THROW(capped.Fragment(1, control), OEMMPA::FragmentationError);
 }
