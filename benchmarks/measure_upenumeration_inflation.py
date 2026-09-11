@@ -68,9 +68,9 @@ def _label_names(wrapper) -> dict[int, str]:
     names = {}
     for attr, value in vars(wrapper.Fragmentation).items():
         if "EnumerationLabel" in attr and isinstance(value, int):
-            # Extract suffix after "EnumerationLabel_" and strip one leading underscore
+            # Extract suffix after "EnumerationLabel_" and strip exactly one leading underscore
             suffix = attr.split("EnumerationLabel_", 1)[-1]
-            short_name = suffix.lstrip("_") if suffix.startswith("_") else suffix
+            short_name = suffix.removeprefix("_")
             names[value] = short_name
     expected = {"None", "ConstantUp", "VariableUp"}
     if set(names.values()) != expected:
@@ -98,6 +98,7 @@ def _label_counts(oemmpa, corpus: Path) -> dict[str, int]:
     # Resolved on first use, not up front: on a pre-Task-4 build the enum does
     # not exist and looking for it would abort a legitimate baseline run.
     names: dict[int, str] | None = None
+    # read_smiles yields (smiles, id) tuples (benchmarks/rdkit_compare.py)
     for index, (smiles, _title) in enumerate(read_smiles(corpus), start=1):
         mol = oechem.OEGraphMol()
         if not oechem.OESmilesToMol(mol, smiles):
@@ -132,6 +133,8 @@ def main() -> None:
     parser.add_argument("--json", type=Path, required=True, help="where to write the result")
     args = parser.parse_args()
 
+    if args.corpus and not args.corpus.is_absolute():
+        parser.error("--corpus must be an absolute path")
     corpus = args.corpus.resolve() if args.corpus else ensure_corpus(args.size)
     # One guarded import for the whole run. oemmpa_stages() calls the same
     # helper internally and gets the module from sys.modules, so both halves of
