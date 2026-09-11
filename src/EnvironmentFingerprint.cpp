@@ -66,6 +66,12 @@ std::string atom_element_token(const OEChem::OEAtomBase& atom) {
 /// labelled ones are taken back out. The X invariant needs no such
 /// correction: OEChem's GetDegree() already counts the labelled hydrogen as a
 /// connection, as RDKit's GetTotalDegree() does.
+///
+/// \throws EnvironmentFingerprintError If OEChem reports fewer hydrogens in
+///         total than the atom has labelled hydrogen neighbours. That cannot
+///         happen while GetTotalHCount() counts labelled hydrogens, and the
+///         subtraction below is unsigned, so the invariant is checked rather
+///         than left to wrap.
 unsigned int deletable_hydrogen_count(const OEChem::OEAtomBase& atom) {
     unsigned int labelled_hydrogens = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom.GetAtoms(); neighbor; ++neighbor) {
@@ -73,7 +79,13 @@ unsigned int deletable_hydrogen_count(const OEChem::OEAtomBase& atom) {
             ++labelled_hydrogens;
         }
     }
-    return atom.GetTotalHCount() - labelled_hydrogens;
+    const unsigned int hydrogens = atom.GetTotalHCount();
+    if (labelled_hydrogens > hydrogens) {
+        throw EnvironmentFingerprintError(
+            "OEChem reported fewer hydrogens on an atom than it has isotope-labelled "
+            "hydrogen neighbours; the H invariant cannot be derived");
+    }
+    return hydrogens - labelled_hydrogens;
 }
 
 std::string atom_smarts_token(const OEChem::OEAtomBase& atom) {
