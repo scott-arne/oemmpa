@@ -1,5 +1,6 @@
 #include "oemmpa/FragmentSmiles.h"
 
+#include "oemmpa/Error.h"
 #include "oemmpa/RingPerception.h"
 
 #include <algorithm>
@@ -33,12 +34,15 @@ OEChem::OEAtomBase* first_other_neighbor(OEChem::OEAtomBase& atom, unsigned int 
     return nullptr;
 }
 
-/// Whether `atom` is a hydrogen of the kind upstream deletes. RDKit's RemoveHs,
-/// which runs on every mmpdb parse, drops an explicit hydrogen only when it
-/// carries no isotope label; a labelled one survives as an atom of the graph
-/// with a symmetry class of its own. Everything below therefore treats a
-/// labelled hydrogen as a substituent, so that a centre whose only
-/// distinguishing arm is the label reads as stereogenic here too.
+/// Whether `atom` is a hydrogen carrying no isotope label.
+///
+/// The label is one of several conditions under which RDKit's RemoveHs -- which
+/// every mmpdb parse runs -- keeps an explicit hydrogen as an atom of the graph
+/// instead of deleting it; a charged hydrogen, a degree-zero one, one bonded to
+/// another hydrogen and a bridging one are also kept. Only the label is read
+/// here, because only the label changes what the rules below have to count: a
+/// labelled hydrogen gets a symmetry class of its own, so a centre whose only
+/// distinguishing arm is the label is stereogenic upstream and must be here.
 bool is_plain_hydrogen(const OEChem::OEAtomBase& atom) {
     return atom.GetAtomicNum() == 1 && atom.GetIsotope() == 0;
 }
@@ -52,12 +56,20 @@ struct NeighborCounts {
 };
 
 /// GetHvyDegree() and GetTotalHCount() are the two counts the upstream rules are
-/// written over, and both are stable across OESuppressHydrogens, which removes
-/// only unlabelled explicit hydrogens. Deriving them from GetDegree() would not
-/// be: OEChem counts implicit hydrogens in the degree, so a suppressed CH
-/// stereocentre would read as four-coordinate. OEChem puts every hydrogen,
-/// labelled or not, on the hydrogen side of that pair, so the labelled ones are
-/// moved across here.
+/// written over. Deriving them from GetDegree() would not work: OEChem counts
+/// implicit hydrogens in the degree, so a suppressed CH stereocentre would read
+/// as four-coordinate. OEChem puts every hydrogen on the hydrogen side of that
+/// pair whatever its isotope, so the labelled ones are moved across here.
+///
+/// Both counts survive OESuppressHydrogens at its default arguments, which keep
+/// isotopes (`retainIsotope=true`). A caller that suppressed with
+/// `retainIsotope=false` would have deleted the labels before this ever saw
+/// them, and the atom really would have the hydrogens this then reports.
+///
+/// \throws FragmentationError If OEChem reports fewer hydrogens in total than
+///         the atom has labelled hydrogen neighbours. That cannot happen while
+///         GetTotalHCount() counts labelled hydrogens, and the subtraction below
+///         is unsigned, so the invariant is checked rather than left to wrap.
 NeighborCounts count_neighbors(const OEChem::OEAtomBase& atom) {
     unsigned int labelled_hydrogens = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom.GetAtoms(); neighbor; ++neighbor) {
@@ -65,9 +77,14 @@ NeighborCounts count_neighbors(const OEChem::OEAtomBase& atom) {
             ++labelled_hydrogens;
         }
     }
+    const unsigned int hydrogens = atom.GetTotalHCount();
+    if (labelled_hydrogens > hydrogens) {
+        throw FragmentationError(
+            "OEChem reported fewer hydrogens on an atom than it has isotope-labelled "
+            "hydrogen neighbours; the substituent split cannot be derived");
+    }
     return NeighborCounts{
-        atom.GetHvyDegree() + labelled_hydrogens,
-        atom.GetTotalHCount() - labelled_hydrogens};
+        atom.GetHvyDegree() + labelled_hydrogens, hydrogens - labelled_hydrogens};
 }
 
 /// The atoms bonded to `atom` through a ring bond and through a non-ring bond.
@@ -538,6 +555,16 @@ bool is_potential_stereocenter(const OEChem::OEAtomBase& atom) {
     }
 
     const NeighborCounts counts = count_neighbors(atom);
+
+    // mmpdb's leading gate (fragment_algorithm.py:205-209): only a total degree
+    // of 3 or 4 can be tetrahedral. Without it a five-coordinate atom with four
+    // substituents and a hydrogen -- [PH](C)(CC)(CCC)[2H], which OEChem parses
+    // and calls chiral -- would fall through the four-substituent clause below
+    // and be admitted as an enumeration site that upstream rejects.
+    const unsigned int total_degree = counts.substituents + counts.hydrogens;
+    if (total_degree < 3 || total_degree > 4) {
+        return false;
+    }
     if (counts.substituents == 4) {
         return true;
     }

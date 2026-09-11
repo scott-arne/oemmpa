@@ -27,9 +27,10 @@ bool has_specified_stereo(const OEChem::OEMolBase& mol);
 /// one that can carry tetrahedral chirality at all. The second is RDKit's
 /// ``Code/GraphMol/Chirality.cpp::isAtomPotentialChiralCenter``, which OEMMPA
 /// reaches through mmpdb's transcription of it in
-/// ``mmpdblib/fragment_algorithm.py:203-238``: four substituents always
-/// qualify, three qualify when exactly one hydrogen is present, and three with
-/// no hydrogen qualify only for sulfur or selenium at a sulfoxide-like valence.
+/// ``mmpdblib/fragment_algorithm.py:203-238``: the total degree must be 3 or 4,
+/// and then four substituents always qualify, three qualify when exactly one
+/// hydrogen is present, and three with no hydrogen qualify only for sulfur or
+/// selenium at a sulfoxide-like valence.
 /// An isotope-labelled hydrogen is a substituent rather than a hydrogen in that
 /// count, because RDKit's ``RemoveHs`` -- which every mmpdb parse runs -- keeps
 /// it as an atom of the graph while deleting an unlabelled one.
@@ -39,6 +40,8 @@ bool has_specified_stereo(const OEChem::OEMolBase& mol);
 /// \param atom Atom to test. The caller has already run OEPerceiveChiral() on a
 ///        molecule whose attachment map indices are zero.
 /// \returns true when the tag stands on its own merits.
+/// \throws FragmentationError If OEChem reports fewer hydrogens on `atom` than
+///         it has isotope-labelled hydrogen neighbours.
 bool is_potential_stereocenter(const OEChem::OEAtomBase& atom);
 
 /// \brief Molecule-wide perception the tag-retention rules read.
@@ -115,6 +118,8 @@ StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol);
 ///        build_stereo_cleanup_context().
 /// \param context The context built from `atom`'s parent.
 /// \returns true when the tag survives cleanup.
+/// \throws FragmentationError If OEChem reports fewer hydrogens on `atom` than
+///         it has isotope-labelled hydrogen neighbours.
 bool rdkit_keeps_tetrahedral_tag(
     const OEChem::OEAtomBase& atom,
     const StereoCleanupContext& context

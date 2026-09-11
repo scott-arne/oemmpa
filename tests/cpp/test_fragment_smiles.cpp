@@ -704,6 +704,69 @@ TEST(FragmentSmiles, IsotopicHydrogenDefinesAStereocentre) {
     EXPECT_EQ(atom_stereo_count(render("[C@H]([2H])([2H])C")), 0u);
 }
 
+// The two branches the reclassification moves an atom between, which the
+// acyclic cases above never reach.
+//
+// The ring carbon of the 1,4 pair has two ring neighbours and the label. Read
+// as a hydrogen the label leaves it with no exocyclic substituent, which is
+// case 0 of the dependent-ring-stereo rule and needs three or four ring
+// neighbours, so the atom is not a candidate and both tags fall out -- the
+// methyl carbon's too, since a lone ring tag has nothing to be read against.
+// Read as a substituent it is case 1, the two ring branches tie, and the pair
+// of tags survives together.
+//
+// The sulfoxide moves the other way through keeps_tag_by_element: two heavy
+// neighbours plus a hydrogen takes the phosphorus/arsenic exit and is refused,
+// while three substituents and no hydrogen reaches the sulfur clause and is
+// admitted at the sulfoxide valence.
+//
+// Verified against RDKit 2026.03.6 before being encoded: it reads both members
+// of the ring pair as two-tag molecules it tells apart, and both members of the
+// sulfoxide pair as one-tag molecules it tells apart.
+TEST(FragmentSmiles, IsotopicHydrogenReachesTheRingAndHeteroatomBranches) {
+    // The methyl-bearing ring carbon is the other tag the deuterated one is
+    // counted against, so exactly one tag stands beside the one under test.
+    expect_tag_kept_iff_informative("C[C@H]1CC[C@H]([2H])CC1", "C[C@H]1CC[C@@H]([2H])CC1", 1u);
+
+    // Sulfur's lone pair is the fourth arm, so the label is the only tag here.
+    expect_tag_kept_iff_informative("[2H][S@](=O)C", "[2H][S@@](=O)C", 0u);
+}
+
+// mmpdb gates on total degree before anything else
+// (fragment_algorithm.py:205-209), and OEChem will build molecules that reach
+// past it. Five-coordinate phosphorus with four substituents satisfies the
+// four-substituent clause of the rule body, so without the gate it would be
+// admitted as an enumeration site upstream rejects. Both rows below are atoms
+// OEChem parses and calls chiral; mmpdb's own is_potential_chiral_center
+// returns false for both, its RDKit GetTotalDegree() being 5.
+//
+// The first row is reachable only because a labelled hydrogen now counts as a
+// substituent; the second was already reachable and was already wrong.
+TEST(FragmentSmiles, FiveCoordinateAtomsAreNotPotentialStereocentres) {
+    const std::vector<std::string> five_coordinate = {
+        "[PH](C)(CC)(CCC)[2H]",
+        "[PH](C)(CC)(CCC)F",
+    };
+    for (const std::string& smiles : five_coordinate) {
+        OEChem::OEGraphMol mol = parse(smiles);
+        OEChem::OESuppressHydrogens(mol);
+        OEChem::OEPerceiveChiral(mol);
+        bool seen = false;
+        for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+            if (atom->GetAtomicNum() != 15) {
+                continue;
+            }
+            seen = true;
+            // The gate is only load-bearing where the rule body would otherwise
+            // say yes, so the premise is asserted rather than assumed.
+            ASSERT_TRUE(atom->IsChiral()) << smiles;
+            EXPECT_EQ(atom->GetHvyDegree() + atom->GetTotalHCount(), 5u) << smiles;
+            EXPECT_FALSE(OEMMPA::is_potential_stereocenter(*atom)) << smiles;
+        }
+        EXPECT_TRUE(seen) << smiles;
+    }
+}
+
 // Explicit hydrogens must be materialized as atoms, not merely flagged -- and
 // materializing them must not mutate the caller's molecule.
 TEST(FragmentSmiles, ExplicitHydrogensAreOptInAndDoNotMutateCaller) {
