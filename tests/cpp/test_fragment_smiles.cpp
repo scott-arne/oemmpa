@@ -782,17 +782,57 @@ TEST(FragmentSmiles, ExplicitHydrogensAreOptInAndDoNotMutateCaller) {
     EXPECT_EQ(mol.NumAtoms(), atoms_before);
 }
 
-// Map indices are perception scaffolding; they must come back untouched.
-TEST(FragmentSmiles, CleanupRestoresMapIndices) {
-    OEChem::OEGraphMol mol = parse("[*:1][C@H]([*:2])c1ccccc1Cl");
-    OEMMPA::clear_fragmentation_invalidated_stereo(mol);
-    unsigned int mapped = 0;
+namespace {
+
+/// Every non-zero map index in `mol`, keyed by the atom index carrying it.
+std::map<unsigned int, unsigned int> map_indices_by_atom(const OEChem::OEMolBase& mol) {
+    std::map<unsigned int, unsigned int> indices;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
         if (atom->GetMapIdx() != 0) {
-            ++mapped;
+            indices[atom->GetIdx()] = atom->GetMapIdx();
         }
     }
-    EXPECT_EQ(mapped, 2u);
+    return indices;
+}
+
+}  // namespace
+
+// Map indices are perception scaffolding; they must come back untouched -- on
+// the atoms that carried them and with the labels they carried, because a
+// fragment whose [*:1] and [*:2] changed places is a different fragment.
+TEST(FragmentSmiles, CleanupRestoresMapIndices) {
+    OEChem::OEGraphMol mol = parse("[*:1][C@H]([*:2])c1ccccc1Cl");
+    const std::map<unsigned int, unsigned int> before = map_indices_by_atom(mol);
+    ASSERT_EQ(before.size(), 2u);
+
+    OEMMPA::clear_fragmentation_invalidated_stereo(mol);
+
+    EXPECT_EQ(map_indices_by_atom(mol), before);
+}
+
+// The same restoration on the failure path. The window in which the labels are
+// zeroed runs the tag-retention rules, and those throw when a molecule's
+// hydrogen counts contradict each other, so restoration has to be tied to the
+// scope rather than to reaching the end of it -- otherwise a throw hands the
+// caller back a molecule that has lost its attachment identities. The throw is
+// raised by the test because no molecule OEChem will build can violate that
+// invariant: what needs proving is the restoration, not the trigger.
+TEST(FragmentSmiles, MapIndicesSurviveAnExceptionInsideTheClearedWindow) {
+    OEChem::OEGraphMol mol = parse("[*:1][C@H]([*:2])c1ccccc1Cl");
+    const std::map<unsigned int, unsigned int> before = map_indices_by_atom(mol);
+    ASSERT_EQ(before.size(), 2u);
+
+    bool caught = false;
+    try {
+        OEMMPA::ScopedMapIndexClear cleared_maps(mol);
+        EXPECT_TRUE(map_indices_by_atom(mol).empty());
+        throw OEMMPA::FragmentationError("stand-in for a tag-retention failure");
+    } catch (const OEMMPA::FragmentationError&) {
+        caught = true;
+    }
+
+    EXPECT_TRUE(caught);
+    EXPECT_EQ(map_indices_by_atom(mol), before);
 }
 
 namespace {

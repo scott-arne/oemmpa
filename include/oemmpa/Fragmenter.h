@@ -59,6 +59,15 @@ public:
     unsigned int GetMaxCutBonds() const;
     unsigned int GetMaxUpEnumerations() const;
 
+    /// \brief Fragment a molecule into normalized records.
+    ///
+    /// \param molecule_id Internal id stamped on every record.
+    /// \param mol Molecule to fragment. Not modified; stereo normalization and
+    ///        every cut happen on copies.
+    /// \returns One record per retained cut combination and role assignment.
+    /// \throws FragmentationError When no strategy is set, when the
+    ///         up-enumeration cap is exceeded, or when the stereo cleanup pass
+    ///         cannot derive a substituent count for an atom.
     std::vector<Fragmentation> Fragment(
         unsigned int molecule_id,
         const OEChem::OEMolBase& mol

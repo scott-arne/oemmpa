@@ -722,19 +722,31 @@ bool has_dependent_ring_stereo(
     return false;
 }
 
+ScopedMapIndexClear::ScopedMapIndexClear(OEChem::OEMolBase& mol) {
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        if (atom->GetMapIdx() != 0) {
+            saved_maps_.emplace_back(&*atom, atom->GetMapIdx());
+            atom->SetMapIdx(0);
+        }
+    }
+}
+
+ScopedMapIndexClear::~ScopedMapIndexClear() {
+    for (const auto& entry : saved_maps_) {
+        entry.first->SetMapIdx(entry.second);
+    }
+}
+
 void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
     // Perception is the expensive part; most fragments carry no stereo at all.
     if (!has_specified_stereo(mol)) {
         return;
     }
 
-    std::vector<std::pair<OEChem::OEAtomBase*, unsigned int>> saved_maps;
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetMapIdx() != 0) {
-            saved_maps.emplace_back(&*atom, atom->GetMapIdx());
-            atom->SetMapIdx(0);
-        }
-    }
+    // The molecule is the caller's, and the tag-retention rules below can throw,
+    // so the labels are restored by scope exit rather than by a trailing loop
+    // the throw would skip.
+    const ScopedMapIndexClear cleared_maps(mol);
 
     OEChem::OEClearChiralPerception(mol);
     OEChem::OEPerceiveChiral(mol);
@@ -779,10 +791,6 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol) {
         }
         const std::vector<OEChem::OEAtomBase*> nbrs{begin_nbr, end_nbr};
         bond->SetStereo(nbrs, OEChem::OEBondStereo::CisTrans, OEChem::OEBondStereo::Undefined);
-    }
-
-    for (const auto& entry : saved_maps) {
-        entry.first->SetMapIdx(entry.second);
     }
 }
 

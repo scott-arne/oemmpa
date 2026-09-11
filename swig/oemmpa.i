@@ -426,10 +426,13 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // stereo cleanup against RDKit's parse-time cleanup on the same molecule.
 // Everything else in the header is C++-only plumbing: StereoCleanupContext and
 // TetrahedralParity hold raw OEAtomBase pointers and std::vector<bool> with no
-// cross-runtime typemap, assert_tetrahedral_parity() takes a std::function, and
-// the three predicates are meaningless without a context to pass them.
+// cross-runtime typemap, assert_tetrahedral_parity() takes a std::function, the
+// three predicates are meaningless without a context to pass them, and
+// ScopedMapIndexClear is a C++ scope guard whose whole contract is the point at
+// which its destructor runs.
 %ignore OEMMPA::StereoCleanupContext;
 %ignore OEMMPA::TetrahedralParity;
+%ignore OEMMPA::ScopedMapIndexClear;
 %ignore OEMMPA::build_stereo_cleanup_context;
 %ignore OEMMPA::rdkit_keeps_tetrahedral_tag;
 %ignore OEMMPA::has_dependent_ring_stereo;

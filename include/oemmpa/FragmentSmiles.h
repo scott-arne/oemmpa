@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <oechem.h>
@@ -173,6 +174,35 @@ bool has_dependent_ring_stereo(
     const StereoCleanupContext& context
 );
 
+/// \brief Zero a molecule's attachment map indices for the length of a scope.
+///
+/// Perception must not treat ``[*:1]`` and ``[*:2]`` as different substituents,
+/// so clear_fragmentation_invalidated_stereo() zeroes the labels before it
+/// perceives and puts them back afterwards. The molecule belongs to the caller
+/// and the work in between can throw, so the restore has to run on every exit
+/// from the window rather than only on the successful one; a caller left
+/// holding a fragment whose attachment identities have been erased would
+/// otherwise render it as an unlabelled one.
+///
+/// An implementation detail of clear_fragmentation_invalidated_stereo(),
+/// declared here rather than in the source file only so the C++ tests can drive
+/// its failure path directly. It is not part of the Python API.
+class ScopedMapIndexClear {
+public:
+    /// \param mol Molecule whose non-zero map indices are saved and then zeroed.
+    ///        It must outlive the guard.
+    explicit ScopedMapIndexClear(OEChem::OEMolBase& mol);
+
+    /// Restores every saved label onto the atom it was read from.
+    ~ScopedMapIndexClear();
+
+    ScopedMapIndexClear(const ScopedMapIndexClear&) = delete;
+    ScopedMapIndexClear& operator=(const ScopedMapIndexClear&) = delete;
+
+private:
+    std::vector<std::pair<OEChem::OEAtomBase*, unsigned int>> saved_maps_;
+};
+
 /// \brief Clear stereo descriptors that fragmentation invalidated.
 ///
 /// A cut can leave a tagged stereocentre whose substituents are no longer
@@ -182,7 +212,11 @@ bool has_dependent_ring_stereo(
 /// duration of perception and restored afterwards, because the canonical
 /// ranking must not treat ``[*:1]`` and ``[*:2]`` as different substituents.
 ///
-/// \param mol Molecule mutated in place. Map indices are preserved.
+/// \param mol Molecule mutated in place. Map indices are preserved, including
+///        when the pass throws.
+/// \throws FragmentationError If OEChem reports fewer hydrogens on an atom than
+///         it has isotope-labelled hydrogen neighbours, which leaves the
+///         tag-retention rules with no substituent count to apply.
 void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol);
 
 /// \brief Render a fragment as isomeric, attachment-mapped canonical SMILES.
@@ -195,6 +229,8 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol);
 ///        never by hydrogen materialization -- that happens on a copy.
 /// \param explicit_hydrogens Materialize hydrogens as atoms and emit them.
 /// \returns The rendered SMILES.
+/// \throws FragmentationError Propagated from the cleanup pass; `mol` keeps its
+///         map indices.
 std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydrogens = false);
 
 /// \brief One atom's tetrahedral parity, read against an explicit neighbour order.
