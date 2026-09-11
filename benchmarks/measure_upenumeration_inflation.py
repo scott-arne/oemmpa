@@ -52,13 +52,12 @@ def _build_fingerprint(oemmpa) -> dict[str, str]:
 def _label_names(wrapper) -> dict[int, str]:
     """Map EnumerationLabel integer values to their canonical names.
 
-    SWIG 4.5.1 flattens ``enum class`` into module-level integer constants and
-    returns them from getters as plain ``int``: probed against the shipped
-    ``ScoringMode``, ``ScoringOptions().GetMode()`` gives ``0`` of type ``int``
-    and ``oemmpa.oemmpa.ScoringMode`` does not exist. A label therefore cannot
-    be decoded with ``str()``; it has to be matched by value. The constants'
-    exact spelling depends on how SWIG mangles the nested enum's scope, so it is
-    discovered rather than assumed.
+    SWIG 4.5.1 flattens ``enum class`` into class attributes on
+    ``Fragmentation``: ``EnumerationLabel_ConstantUp``,
+    ``EnumerationLabel_VariableUp``, and ``EnumerationLabel__None`` (double
+    underscore: SWIG prefixes the keyword ``None`` with an underscore). They are
+    returned from getters as plain ``int``, so a label cannot be decoded with
+    ``str()``; it has to be matched by value.
 
     :param wrapper: The ``oemmpa.oemmpa`` SWIG wrapper module.
     :returns: Integer value to short label name.
@@ -66,17 +65,19 @@ def _label_names(wrapper) -> dict[int, str]:
         enum declares. A wrong prefix would collapse every record into one
         bucket and still print a plausible-looking inflation ratio.
     """
-    names = {
-        value: attr.rsplit("_", 1)[-1]
-        for attr, value in vars(wrapper).items()
-        if "EnumerationLabel" in attr and isinstance(value, int)
-    }
+    names = {}
+    for attr, value in vars(wrapper.Fragmentation).items():
+        if "EnumerationLabel" in attr and isinstance(value, int):
+            # Extract suffix after "EnumerationLabel_" and strip one leading underscore
+            suffix = attr.split("EnumerationLabel_", 1)[-1]
+            short_name = suffix.lstrip("_") if suffix.startswith("_") else suffix
+            names[value] = short_name
     expected = {"None", "ConstantUp", "VariableUp"}
-    if set(names.values()) == expected:
-        return names
-    # Fallback: SWIG does not export the enum constants in some configurations.
-    # Use the C++ enum's literal values (include/oemmpa/Fragmentation.h).
-    return {0: "None", 1: "ConstantUp", 2: "VariableUp"}
+    if set(names.values()) != expected:
+        raise SystemExit(
+            f"expected EnumerationLabel constants {sorted(expected)}, "
+            f"found {sorted(names.values())}")
+    return names
 
 
 def _label_counts(oemmpa, corpus: Path) -> dict[str, int]:
