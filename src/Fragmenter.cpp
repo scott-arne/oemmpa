@@ -447,10 +447,19 @@ unsigned int CountUniqueBondMatches(
     return static_cast<unsigned int>(seen_bonds.size());
 }
 
+/// \brief Is this atom one of the cut's attachment points?
+///
+/// A map index alone is not enough: the caller's molecule may carry map indices
+/// of its own on real atoms (`[CH3:1]CC(Cl)CCO` parses that way), and those are
+/// not attachments and must not be relabelled or ranked as such.
+bool IsAttachmentDummy(const OEChem::OEAtomBase& atom) {
+    return atom.GetAtomicNum() == 0 && atom.GetMapIdx() > 0;
+}
+
 std::set<unsigned int> CollectAttachmentLabels(const OEChem::OEMolBase& mol) {
     std::set<unsigned int> labels;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
+        if (IsAttachmentDummy(*atom)) {
             labels.insert(atom->GetMapIdx());
         }
     }
@@ -888,29 +897,32 @@ bool ApplyCutCombination(
 const unsigned int CONSTANT_ROLE = 1;
 const unsigned int VARIABLE_ROLE = 2;
 
-/// \brief Where one attachment sits in its part's canonical atom order.
-struct AttachmentSiteRank {
-    /// The smallest canonical position in the attachment atom's symmetry orbit.
-    /// The raw position separates any two atoms, but only up to automorphism:
-    /// OEChem settles an orbit in the order the atoms were handed to it, so two
-    /// spellings of one molecule disagree about which equivalent site comes
-    /// first while agreeing on the set of positions the orbit occupies.
-    /// Collapsing the orbit to its smallest position is therefore the part's
-    /// own, spelling-independent opinion about the site.
-    unsigned int orbit = 0;
-    /// The dummy's own canonical position, which is the order the SMILES writer
-    /// reaches the labels in.
-    unsigned int dummy = 0;
-};
+/// Ties left over after the structural ranking are settled by rendering every
+/// assignment still open, so their number has to stay small. Three cuts is
+/// mmpdb's ceiling and this fragmenter's default, and six covers every tie a
+/// three-cut fragmentation can produce; twenty-four leaves room for four.
+/// `SetMaxCuts` has no upper bound, though, and a wholly symmetric molecule cut
+/// more often than that would grow factorially, so the search declines rather
+/// than paying for it.
+const std::size_t MAX_TIE_BREAK_CANDIDATES = 24;
 
-/// \brief Rank every labelled attachment of one part in its canonical atom order.
+/// \brief Rank every labelled attachment of one part by its symmetry orbit.
+///
+/// The rank is the smallest canonical position in the attachment atom's
+/// symmetry orbit, not the atom's own position. A raw position separates any two
+/// atoms, but only up to automorphism: OEChem settles an orbit in the order the
+/// atoms were handed to it, so two spellings of one molecule disagree about
+/// which equivalent site comes first while agreeing on the set of positions the
+/// orbit occupies. Collapsing the orbit to its smallest position is the part's
+/// own, spelling-independent opinion about the site; anything finer would smuggle
+/// the input numbering back in.
 ///
 /// \param part One side of a cut molecule. Not modified; the ranking runs on a
 ///        copy whose map indices are zeroed, because the labels are what the
 ///        ranking decides and OEPerceiveSymmetry would otherwise let two labels
 ///        make two equivalent sites look different.
-/// \returns One entry per attachment label found on `part`.
-std::map<unsigned int, AttachmentSiteRank> RankAttachmentSites(const OEChem::OEMolBase& part) {
+/// \returns Orbit rank per attachment label found on `part`.
+std::map<unsigned int, unsigned int> RankAttachmentSites(const OEChem::OEMolBase& part) {
     OEChem::OEGraphMol scratch(part);
 
     // Atom indices survive both the perception and the canonical reordering
@@ -918,11 +930,12 @@ std::map<unsigned int, AttachmentSiteRank> RankAttachmentSites(const OEChem::OEM
     // not see the labels themselves.
     std::map<unsigned int, unsigned int> dummy_by_label;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
-        const unsigned int label = atom->GetMapIdx();
-        if (label == 0) {
-            continue;
+        if (IsAttachmentDummy(*atom)) {
+            dummy_by_label[atom->GetMapIdx()] = atom->GetIdx();
         }
-        dummy_by_label[label] = atom->GetIdx();
+        // Every map index goes, not just the attachments': the ranking must not
+        // see any of them, and a caller's own map index is no more neutral than
+        // a label the fragmenter is about to reassign.
         atom->SetMapIdx(0);
     }
 
@@ -937,16 +950,14 @@ std::map<unsigned int, AttachmentSiteRank> RankAttachmentSites(const OEChem::OEM
     // that order also makes the first sighting of a symmetry class its smallest
     // position, which is what emplace keeps.
     OEChem::OECanonicalOrderAtoms(scratch);
-    std::map<unsigned int, unsigned int> positions;
     std::map<unsigned int, unsigned int> orbit_positions;
     unsigned int position = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
-        positions[atom->GetIdx()] = position;
         orbit_positions.emplace(symmetry_classes[atom->GetIdx()], position);
         ++position;
     }
 
-    std::map<unsigned int, AttachmentSiteRank> ranks;
+    std::map<unsigned int, unsigned int> ranks;
     for (const auto& entry : dummy_by_label) {
         OEChem::OEAtomBase* dummy = GetAtomByIndex(scratch, entry.second);
         if (dummy == nullptr) {
@@ -956,129 +967,9 @@ std::map<unsigned int, AttachmentSiteRank> RankAttachmentSites(const OEChem::OEM
         if (!site) {
             continue;
         }
-        ranks[entry.first] = {
-            orbit_positions[symmetry_classes[site->GetIdx()]],
-            positions[entry.second]
-        };
+        ranks[entry.first] = orbit_positions[symmetry_classes[site->GetIdx()]];
     }
     return ranks;
-}
-
-/// \brief Give a multi-cut fragmentation labels that describe only its fragments.
-///
-/// Cut order decided which attachment got `[*:1]` before this, and cut order is
-/// fixed by the parent's atom numbering. Two spellings of one molecule therefore
-/// labelled the same fragmentation differently, and the index, which buckets by
-/// exact constant SMILES, lost every pair between them. mmpdb is immune because
-/// it relabels each multi-cut fragmentation from the constant's canonical atom
-/// order (`mmpdblib/index_algorithm.py:441-476`); this is that rule in OEChem
-/// terms.
-///
-/// Attachments are ordered by the canonical rank of the constant atom each is
-/// bonded to, and the same permutation reaches the variable because both dummies
-/// of a cut share a label. Symmetry-equivalent constant sites tie there, the
-/// constant having no way to tell them apart, and the variable's own ranks break
-/// the tie. Should the variable tie as well, the two labels are interchangeable
-/// in both parts and any order will do, so the last key is only there to make
-/// the sort total.
-///
-/// \param cut_mol Cut molecule, whose dummies are relabelled in place.
-/// \param cut_count Number of cuts, and so the number of labels.
-/// \returns false, with the labels untouched, when the fragmentation has no one
-///          component carrying every label to serve as the variable.
-bool RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int cut_count) {
-    std::vector<unsigned int> parts(cut_mol.GetMaxAtomIdx(), 0);
-    const unsigned int part_count = OEChem::OEDetermineComponents(cut_mol, parts.data());
-
-    std::vector<std::set<unsigned int>> labels_by_part(part_count + 1);
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
-        const unsigned int label = atom->GetMapIdx();
-        const unsigned int atom_idx = atom->GetIdx();
-        if (label == 0 || atom_idx >= parts.size()) {
-            continue;
-        }
-        const unsigned int part = parts[atom_idx];
-        if (part >= 1 && part <= part_count) {
-            labels_by_part[part].insert(label);
-        }
-    }
-
-    // The variable is the component carrying every label and the constant is
-    // everything else, the same split the caller makes. Relabelling only permutes
-    // 1..cut_count, so the split is the same before and after.
-    unsigned int variable_part = 0;
-    for (unsigned int part = 1; part <= part_count; ++part) {
-        if (labels_by_part[part].size() != cut_count) {
-            continue;
-        }
-        if (variable_part != 0) {
-            // Two components carry every label, so which one is the variable is
-            // not a property of the fragmentation. That needs a pair of ring
-            // cuts, which the multi-cut dedup key rejects downstream anyway;
-            // returning here keeps this function from inventing an answer.
-            return false;
-        }
-        variable_part = part;
-    }
-    if (variable_part == 0) {
-        return false;
-    }
-
-    std::vector<unsigned int> roles(parts.size(), 0);
-    for (std::size_t atom_idx = 0; atom_idx < parts.size(); ++atom_idx) {
-        if (parts[atom_idx] == 0) {
-            continue;
-        }
-        roles[atom_idx] = parts[atom_idx] == variable_part ? VARIABLE_ROLE : CONSTANT_ROLE;
-    }
-
-    OEChem::OEPartPred role_pred(roles.data(), static_cast<unsigned int>(roles.size()));
-    OEChem::OEGraphMol constant_side;
-    role_pred.SelectPart(CONSTANT_ROLE);
-    if (!OEChem::OESubsetMol(constant_side, cut_mol, role_pred)) {
-        return false;
-    }
-    OEChem::OEGraphMol variable_side;
-    role_pred.SelectPart(VARIABLE_ROLE);
-    if (!OEChem::OESubsetMol(variable_side, cut_mol, role_pred)) {
-        return false;
-    }
-
-    const std::map<unsigned int, AttachmentSiteRank> constant_ranks =
-        RankAttachmentSites(constant_side);
-    const std::map<unsigned int, AttachmentSiteRank> variable_ranks =
-        RankAttachmentSites(variable_side);
-
-    using LabelOrderKey = std::tuple<unsigned int, unsigned int, unsigned int, unsigned int>;
-    std::vector<LabelOrderKey> ordered;
-    ordered.reserve(cut_count);
-    for (unsigned int label = 1; label <= cut_count; ++label) {
-        const auto constant_rank = constant_ranks.find(label);
-        const auto variable_rank = variable_ranks.find(label);
-        if (constant_rank == constant_ranks.end() || variable_rank == variable_ranks.end()) {
-            return false;
-        }
-        ordered.emplace_back(
-            constant_rank->second.orbit,
-            variable_rank->second.orbit,
-            variable_rank->second.dummy,
-            label
-        );
-    }
-    std::sort(ordered.begin(), ordered.end());
-
-    std::map<unsigned int, unsigned int> relabelled;
-    for (std::size_t i = 0; i < ordered.size(); ++i) {
-        relabelled[std::get<3>(ordered[i])] = static_cast<unsigned int>(i + 1);
-    }
-
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
-        const auto entry = relabelled.find(atom->GetMapIdx());
-        if (entry != relabelled.end()) {
-            atom->SetMapIdx(entry->second);
-        }
-    }
-    return true;
 }
 
 /// \brief Put a relabelled cut molecule in an atom order the renderer can trust.
@@ -1110,7 +1001,7 @@ void OrderAtomsForLabelStableRendering(OEChem::OEMolBase& cut_mol) {
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
         positions[atom->GetIdx()] = position;
         ++position;
-        if (atom->GetMapIdx() != 0) {
+        if (IsAttachmentDummy(*atom)) {
             atom->SetIsotope(atom->GetMapIdx());
         }
     }
@@ -1129,6 +1020,312 @@ void OrderAtomsForLabelStableRendering(OEChem::OEMolBase& cut_mol) {
         return;
     }
     cut_mol.OrderAtoms(ordered);
+}
+
+/// \brief Move every attachment onto the label an ordering gave it.
+///
+/// \param cut_mol Cut molecule, whose dummies are relabelled in place.
+/// \param assignment Old label to new label. Labels absent from the map, and
+///        map indices the caller put on real atoms, are left alone.
+void ApplyAttachmentRelabelling(
+    OEChem::OEMolBase& cut_mol,
+    const std::map<unsigned int, unsigned int>& assignment
+) {
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
+        if (!IsAttachmentDummy(*atom)) {
+            continue;
+        }
+        const auto entry = assignment.find(atom->GetMapIdx());
+        if (entry != assignment.end()) {
+            atom->SetMapIdx(entry->second);
+        }
+    }
+}
+
+/// \brief One candidate labelling's fragments, exactly as a record would carry them.
+struct RenderedFragmentPair {
+    std::string constant;
+    std::string variable;
+
+    bool operator<(const RenderedFragmentPair& other) const {
+        return std::tie(constant, variable) < std::tie(other.constant, other.variable);
+    }
+};
+
+/// \brief Render what a candidate labelling would put in the record.
+///
+/// The comparison that picks between candidates is only as trustworthy as its
+/// agreement with what actually gets stored, so this walks the caller's own
+/// path -- relabel, reorder, split, pick the all-label component as the
+/// variable and join the rest as the constant -- rather than approximating it.
+///
+/// \param cut_mol Cut molecule. Not modified; the candidate is applied to a copy.
+/// \param assignment Candidate labelling, as taken by ApplyAttachmentRelabelling.
+/// \param cut_count Number of cuts, and so the number of labels.
+/// \param rendered Receives the pair on success.
+/// \returns false when the split has no single all-label component, which is
+///          the same shape the caller declines to emit a record for.
+bool RenderCandidatePair(
+    const OEChem::OEMolBase& cut_mol,
+    const std::map<unsigned int, unsigned int>& assignment,
+    unsigned int cut_count,
+    RenderedFragmentPair& rendered
+) {
+    OEChem::OEGraphMol scratch(cut_mol);
+    ApplyAttachmentRelabelling(scratch, assignment);
+    OrderAtomsForLabelStableRendering(scratch);
+
+    // Hydrogen-capped constants are a single-cut concept, and nothing here is
+    // single-cut, so the extra rendering they cost is skipped.
+    const std::vector<ComponentRecord> components = SplitComponents(scratch, false);
+    const std::size_t variable_index = SelectMultiCutVariable(components, cut_count);
+    if (variable_index >= components.size()) {
+        return false;
+    }
+
+    const unsigned int variable_part = components[variable_index].part;
+    rendered.constant = JoinOtherComponentSmilesByPart(components, variable_part);
+    rendered.variable = components[variable_index].smiles;
+    return true;
+}
+
+/// Sort key for one attachment: its constant-side orbit rank, then its
+/// variable-side orbit rank, which is only filled in when the constant ties.
+using LabelOrderKey = std::pair<unsigned int, unsigned int>;
+
+/// \brief Enumerate every labelling the structural ranking leaves open.
+///
+/// \param ordered Labels with their sort keys, already sorted.
+/// \returns Candidate label orders, the structural order first; empty when the
+///          tied sites are too numerous to enumerate under
+///          MAX_TIE_BREAK_CANDIDATES.
+std::vector<std::vector<unsigned int>> ExpandTiedOrders(
+    const std::vector<std::pair<LabelOrderKey, unsigned int>>& ordered
+) {
+    // One entry per run of equal keys, holding every permutation of that run's
+    // labels. A run of one contributes a single permutation, so a fragmentation
+    // whose sites the ranking separated expands to just its structural order.
+    std::vector<std::vector<std::vector<unsigned int>>> runs;
+    std::size_t total = 1;
+    std::size_t begin = 0;
+    while (begin < ordered.size()) {
+        std::size_t end = begin + 1;
+        while (end < ordered.size() && ordered[end].first == ordered[begin].first) {
+            ++end;
+        }
+
+        std::vector<unsigned int> labels;
+        labels.reserve(end - begin);
+        for (std::size_t i = begin; i < end; ++i) {
+            labels.push_back(ordered[i].second);
+        }
+        std::sort(labels.begin(), labels.end());
+
+        // Counted before the permutations are built, because building them is
+        // the cost the cap exists to refuse. Dividing rather than multiplying
+        // keeps the check itself from overflowing.
+        std::size_t factorial = 1;
+        for (std::size_t n = 2; n <= labels.size(); ++n) {
+            factorial *= n;
+        }
+        if (factorial > MAX_TIE_BREAK_CANDIDATES / total) {
+            return {};
+        }
+        total *= factorial;
+
+        std::vector<std::vector<unsigned int>> permutations;
+        do {
+            permutations.push_back(labels);
+        } while (std::next_permutation(labels.begin(), labels.end()));
+        runs.push_back(std::move(permutations));
+
+        begin = end;
+    }
+
+    std::vector<std::vector<unsigned int>> candidates;
+    candidates.reserve(total);
+    std::vector<std::size_t> odometer(runs.size(), 0);
+    for (std::size_t emitted = 0; emitted < total; ++emitted) {
+        std::vector<unsigned int> candidate;
+        candidate.reserve(ordered.size());
+        for (std::size_t run = 0; run < runs.size(); ++run) {
+            const std::vector<unsigned int>& permutation = runs[run][odometer[run]];
+            candidate.insert(candidate.end(), permutation.begin(), permutation.end());
+        }
+        candidates.push_back(std::move(candidate));
+
+        for (std::size_t run = runs.size(); run > 0; --run) {
+            if (++odometer[run - 1] < runs[run - 1].size()) {
+                break;
+            }
+            odometer[run - 1] = 0;
+        }
+    }
+    return candidates;
+}
+
+/// \brief Turn a label order into the relabelling it stands for.
+std::map<unsigned int, unsigned int> AttachmentAssignmentFor(
+    const std::vector<unsigned int>& order
+) {
+    std::map<unsigned int, unsigned int> assignment;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        assignment[order[i]] = static_cast<unsigned int>(i + 1);
+    }
+    return assignment;
+}
+
+/// \brief Give a multi-cut fragmentation labels that describe only its fragments.
+///
+/// Cut order decided which attachment got `[*:1]` before this, and cut order is
+/// fixed by the parent's atom numbering. Two spellings of one molecule therefore
+/// labelled the same fragmentation differently, and the index, which buckets by
+/// exact constant SMILES, lost every pair between them. mmpdb is immune because
+/// it relabels each multi-cut fragmentation from the constant's canonical atom
+/// order (`mmpdblib/index_algorithm.py:441-476`); this is that rule in OEChem
+/// terms.
+///
+/// Attachments are ordered by the canonical rank of the constant atom each is
+/// bonded to, and the same permutation reaches the variable because both dummies
+/// of a cut share a label. Symmetry-equivalent constant sites tie there, the
+/// constant having no way to tell them apart, and the variable's own ranks break
+/// the tie. A tie surviving both does not mean the labels are interchangeable:
+/// symmetry classes are constitutional, so diastereotopic sites -- the two
+/// hydroxymethyl arms of `OC[C@@]1(O)CO[C@](O)(CO)CO1`, say -- tie on either
+/// part while rendering different fragments. Every labelling still open is
+/// therefore rendered and the lexicographically smallest pair wins, which is a
+/// property of the fragments and so of the molecule.
+///
+/// \param cut_mol Cut molecule, whose dummies are relabelled in place.
+/// \param cut_count Number of cuts, and so the number of labels.
+void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int cut_count) {
+    std::vector<unsigned int> parts(cut_mol.GetMaxAtomIdx(), 0);
+    const unsigned int part_count = OEChem::OEDetermineComponents(cut_mol, parts.data());
+
+    std::vector<std::set<unsigned int>> labels_by_part(part_count + 1);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
+        const unsigned int atom_idx = atom->GetIdx();
+        if (!IsAttachmentDummy(*atom) || atom_idx >= parts.size()) {
+            continue;
+        }
+        const unsigned int part = parts[atom_idx];
+        if (part >= 1 && part <= part_count) {
+            labels_by_part[part].insert(atom->GetMapIdx());
+        }
+    }
+
+    // The variable is the component carrying every label and the constant is
+    // everything else, the same split the caller makes. Relabelling only permutes
+    // 1..cut_count, so the split is the same before and after.
+    unsigned int variable_part = 0;
+    for (unsigned int part = 1; part <= part_count; ++part) {
+        if (labels_by_part[part].size() != cut_count) {
+            continue;
+        }
+        if (variable_part != 0) {
+            // Two components carry every label, so which one is the variable is
+            // not a property of the fragmentation. That needs a pair of ring
+            // cuts, which the multi-cut dedup key rejects downstream anyway;
+            // returning here keeps this function from inventing an answer.
+            return;
+        }
+        variable_part = part;
+    }
+    if (variable_part == 0) {
+        return;
+    }
+
+    std::vector<unsigned int> roles(parts.size(), 0);
+    for (std::size_t atom_idx = 0; atom_idx < parts.size(); ++atom_idx) {
+        if (parts[atom_idx] == 0) {
+            continue;
+        }
+        roles[atom_idx] = parts[atom_idx] == variable_part ? VARIABLE_ROLE : CONSTANT_ROLE;
+    }
+
+    OEChem::OEPartPred role_pred(roles.data(), static_cast<unsigned int>(roles.size()));
+    OEChem::OEGraphMol constant_side;
+    role_pred.SelectPart(CONSTANT_ROLE);
+    if (!OEChem::OESubsetMol(constant_side, cut_mol, role_pred)) {
+        return;
+    }
+    const std::map<unsigned int, unsigned int> constant_ranks =
+        RankAttachmentSites(constant_side);
+
+    std::vector<std::pair<LabelOrderKey, unsigned int>> ordered;
+    ordered.reserve(cut_count);
+    for (unsigned int label = 1; label <= cut_count; ++label) {
+        const auto constant_rank = constant_ranks.find(label);
+        if (constant_rank == constant_ranks.end()) {
+            return;
+        }
+        ordered.emplace_back(LabelOrderKey(constant_rank->second, 0), label);
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    const bool constant_ties = std::adjacent_find(
+        ordered.begin(),
+        ordered.end(),
+        [](const std::pair<LabelOrderKey, unsigned int>& lhs,
+           const std::pair<LabelOrderKey, unsigned int>& rhs) {
+            return lhs.first.first == rhs.first.first;
+        }
+    ) != ordered.end();
+
+    // Ranking the variable costs a symmetry perception, a canonical ordering and
+    // a subset molecule, and it can only ever change an order the constant left
+    // tied, so nothing is spent on it until the constant actually ties.
+    if (constant_ties) {
+        OEChem::OEGraphMol variable_side;
+        role_pred.SelectPart(VARIABLE_ROLE);
+        if (!OEChem::OESubsetMol(variable_side, cut_mol, role_pred)) {
+            return;
+        }
+        const std::map<unsigned int, unsigned int> variable_ranks =
+            RankAttachmentSites(variable_side);
+        for (auto& entry : ordered) {
+            const auto variable_rank = variable_ranks.find(entry.second);
+            if (variable_rank == variable_ranks.end()) {
+                return;
+            }
+            entry.first.second = variable_rank->second;
+        }
+        std::sort(ordered.begin(), ordered.end());
+    }
+
+    std::vector<std::vector<unsigned int>> candidates = ExpandTiedOrders(ordered);
+    if (candidates.empty()) {
+        // More tied sites than the cap will enumerate. The structural order is
+        // then the best available answer: it can still depend on the input's
+        // numbering, but only for a cut count far past the three mmpdb indexes.
+        std::vector<unsigned int> structural;
+        structural.reserve(ordered.size());
+        for (const auto& entry : ordered) {
+            structural.push_back(entry.second);
+        }
+        candidates.push_back(std::move(structural));
+    }
+
+    std::size_t best = 0;
+    if (candidates.size() > 1) {
+        RenderedFragmentPair best_rendered;
+        bool have_best = false;
+        for (std::size_t i = 0; i < candidates.size(); ++i) {
+            RenderedFragmentPair rendered;
+            const std::map<unsigned int, unsigned int> assignment =
+                AttachmentAssignmentFor(candidates[i]);
+            if (!RenderCandidatePair(cut_mol, assignment, cut_count, rendered)) {
+                continue;
+            }
+            if (!have_best || rendered < best_rendered) {
+                best_rendered = rendered;
+                best = i;
+                have_best = true;
+            }
+        }
+    }
+
+    ApplyAttachmentRelabelling(cut_mol, AttachmentAssignmentFor(candidates[best]));
 }
 
 /// \brief Emit one role assignment's baseline record and its up-enumerations.
@@ -1321,7 +1518,9 @@ void AddFragmentationForCombination(
     const unsigned int cut_count = static_cast<unsigned int>(combination.size());
     if (cut_count > 1) {
         // Before anything renders, and once for every role assignment and every
-        // enumerated variant below, all of which reuse these labels.
+        // enumerated variant below, all of which reuse these labels. A
+        // fragmentation with no single all-label component keeps the labels the
+        // cut gave it, and the split below then declines to emit a record for it.
         RelabelAttachmentsByCanonicalOrder(cut_mol, cut_count);
         OrderAtomsForLabelStableRendering(cut_mol);
     }

@@ -1257,9 +1257,28 @@ TEST(FragmenterTest, TraversalOrderDoesNotLoseMatchedPairs) {
 
 namespace {
 
+/// A record plus its enumeration label. Two spellings that agreed on the
+/// fragments could still disagree about which of them is a baseline and which
+/// an up-enumerated variant, and a comparison blind to the label would not see
+/// it.
+using LabelledFragmentationRecord =
+    std::tuple<std::string, std::string, unsigned int, std::string>;
+
+std::string EnumerationLabelName(Fragmentation::EnumerationLabel label) {
+    switch (label) {
+        case Fragmentation::EnumerationLabel::ConstantUp:
+            return "ConstantUp";
+        case Fragmentation::EnumerationLabel::VariableUp:
+            return "VariableUp";
+        case Fragmentation::EnumerationLabel::None:
+            break;
+    }
+    return "None";
+}
+
 /// The default fragmenter's records for one spelling, as a set: two spellings
 /// are free to emit in a different order, but not to emit different records.
-std::set<FragmentationRecord> RecordsForSpelling(
+std::set<LabelledFragmentationRecord> RecordsForSpelling(
     const std::string& smiles,
     unsigned int max_cuts
 ) {
@@ -1267,7 +1286,17 @@ std::set<FragmentationRecord> RecordsForSpelling(
     OEChem::OESuppressHydrogens(mol);
     Fragmenter fragmenter;
     fragmenter.SetMaxCuts(max_cuts);
-    return NormalizeFragmentations(fragmenter.Fragment(1, mol));
+
+    std::set<LabelledFragmentationRecord> records;
+    for (const Fragmentation& fragmentation : fragmenter.Fragment(1, mol)) {
+        records.insert({
+            fragmentation.GetConstantSmiles(),
+            fragmentation.GetVariableSmiles(),
+            fragmentation.GetCutCount(),
+            EnumerationLabelName(fragmentation.GetEnumerationLabel())
+        });
+    }
+    return records;
 }
 
 /// Asserted rather than assumed: a typo in either spelling would quietly turn
@@ -1301,6 +1330,12 @@ TEST(FragmenterTest, MultiCutLabelsAreIndependentOfInputAtomOrder) {
         // Neither side can order the sites. The assignment is then genuinely
         // free, but it still has to come out the same way for both spellings.
         {"ClCCCl", "C(Cl)CCl"},
+        // The two hydroxymethyl arms of this dioxane are constitutionally
+        // equivalent and diastereotopic: symmetry classes, which are
+        // constitutional, tie on both the constant `[*:1]O.[*:2]O` and the
+        // variable, so no ranking of either part can order the sites. Only the
+        // rendered fragments tell them apart.
+        {"OC[C@@]1(O)CO[C@](O)(CO)CO1", "C1[C@@](OC[C@](O1)(CO)O)(CO)O"},
     };
 
     for (const auto& spelling : spellings) {
@@ -1308,7 +1343,31 @@ TEST(FragmenterTest, MultiCutLabelsAreIndependentOfInputAtomOrder) {
         // Three cuttable bonds are reachable in every pair above, so max_cuts=3
         // exercises the three-label permutation and not just the two-label swap.
         for (const unsigned int max_cuts : {2u, 3u}) {
-            const std::set<FragmentationRecord> as_written =
+            const std::set<LabelledFragmentationRecord> as_written =
+                RecordsForSpelling(spelling.first, max_cuts);
+            ASSERT_FALSE(as_written.empty()) << spelling.first;
+            EXPECT_EQ(as_written, RecordsForSpelling(spelling.second, max_cuts))
+                << spelling.first << " vs " << spelling.second
+                << " at max_cuts=" << max_cuts;
+        }
+    }
+}
+
+// A map index does not make an atom an attachment point. Callers annotate their
+// own molecules -- `[CH3:1]CC(Cl)CCO` parses with a map index on a real carbon
+// -- and counting those as attachments gives a two-cut fragmentation a third
+// label, which is either a different labelling or, as here, no fragmentation at
+// all.
+TEST(FragmenterTest, CallerMapIndicesOnRealAtomsAreNotAttachments) {
+    const std::vector<std::pair<std::string, std::string>> spellings = {
+        {"[CH3:1]CC(Cl)CCO", "OCCC(Cl)C[CH3:1]"},
+        {"Cl[CH2:1]CC(C)Cl", "ClC(C)C[CH2:1]Cl"},
+    };
+
+    for (const auto& spelling : spellings) {
+        ExpectSameMolecule(spelling.first, spelling.second);
+        for (const unsigned int max_cuts : {2u, 3u}) {
+            const std::set<LabelledFragmentationRecord> as_written =
                 RecordsForSpelling(spelling.first, max_cuts);
             ASSERT_FALSE(as_written.empty()) << spelling.first;
             EXPECT_EQ(as_written, RecordsForSpelling(spelling.second, max_cuts))
@@ -1337,12 +1396,13 @@ TEST(FragmenterTest, SymmetricAttachmentSitesRenderIdentically) {
     });
     EXPECT_EQ(symmetric_constant, swapped_constant);
 
-    const std::set<FragmentationRecord> records = RecordsForSpelling("ClCCCl", 2);
+    const std::set<LabelledFragmentationRecord> records = RecordsForSpelling("ClCCCl", 2);
     EXPECT_EQ(
         records.count({
             symmetric_constant,
             ExpectedFragmentSmiles("[*:1]CC[*:2]"),
-            2
+            2,
+            "None"
         }),
         1);
 
