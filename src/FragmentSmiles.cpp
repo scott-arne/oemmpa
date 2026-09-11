@@ -723,11 +723,20 @@ bool has_dependent_ring_stereo(
 }
 
 ScopedMapIndexClear::ScopedMapIndexClear(OEChem::OEMolBase& mol) {
+    // Collect first, mutate second. Every allocation this constructor performs
+    // happens while the molecule is still intact, so a throw during collection
+    // leaves it unchanged and there is nothing to undo. The second loop calls
+    // nothing that can throw, so no operation that can throw runs after the
+    // first label is cleared: once mutation starts, construction completes and
+    // the destructor is guaranteed to run.
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
         if (atom->GetMapIdx() != 0) {
             saved_maps_.emplace_back(&*atom, atom->GetMapIdx());
-            atom->SetMapIdx(0);
         }
+    }
+
+    for (const auto& entry : saved_maps_) {
+        entry.first->SetMapIdx(0);
     }
 }
 
