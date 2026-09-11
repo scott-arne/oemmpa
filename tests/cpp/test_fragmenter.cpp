@@ -971,6 +971,31 @@ TEST(FragmenterTest, StereoOnlyEpimersDoNotCollapseOntoOneRecordSet) {
     EXPECT_NE(azacage_left, azacage_right);
 }
 
+// The same collapse, driven by an isotope label rather than by a distant
+// configuration. These two epimers differ only at a centre whose fourth arm is
+// a deuterium; counting that label as a hydrogen leaves the centre looking
+// two-substituent over two hydrogens, so the tag falls out of both parents and
+// two molecules reach one record set. mmpdb keeps them apart -- see
+// deuterium_defined_centre in tests/data/mmpdb/stereo_fragmentations.tsv, whose
+// fragments carry the tag through both cuts of the ether.
+TEST(FragmenterTest, IsotopicHydrogenEpimersDoNotCollapseOntoOneRecordSet) {
+    const std::set<std::string> left =
+        AllFragmentComponents(SingleCutFragmentations("[C@H]([2H])(C)Oc1ccccc1"));
+    const std::set<std::string> right =
+        AllFragmentComponents(SingleCutFragmentations("[C@@H]([2H])(C)Oc1ccccc1"));
+    EXPECT_NE(left, right);
+
+    // A derived expectation is rendered through the same cleanup, so on its own
+    // it would follow a regression down; the tag itself is pinned alongside it.
+    EXPECT_TRUE(std::any_of(left.begin(), left.end(), [](const std::string& component) {
+        return component.find('@') != std::string::npos;
+    }));
+    EXPECT_TRUE(left.count(ExpectedFragmentSmiles("[2H][C@@H](C)O[*:1]")))
+        << ExpectedFragmentSmiles("[2H][C@@H](C)O[*:1]");
+    EXPECT_TRUE(left.count(ExpectedFragmentSmiles("[2H][C@@H](C)[*:1]")))
+        << ExpectedFragmentSmiles("[2H][C@@H](C)[*:1]");
+}
+
 // The diaziridine's mutually dependent nitrogen pair, carried through
 // production fragmentation. With the two nitrogen pyramids opposed the ring
 // carbon is pseudo-asymmetric, so its epimers are two molecules and must reach

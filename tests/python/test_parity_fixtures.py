@@ -28,8 +28,8 @@ EXPECTED_TEXT_LINE_COUNTS = {
     "tests/data/mmpdb/fragment/two_tabs.smi": 2,
     "tests/data/mmpdb/fragment/comma.smi": 3,
     "tests/data/mmpdb/phase13_6_multicut_hydrogen_cases.tsv": 6,
-    "tests/data/mmpdb/stereo_cases.smi": 42,
-    "tests/data/mmpdb/stereo_fragmentations.tsv": 245,
+    "tests/data/mmpdb/stereo_cases.smi": 45,
+    "tests/data/mmpdb/stereo_fragmentations.tsv": 257,
     "tests/data/mmpdb/stereo_expected_differences.tsv": 13,
 }
 

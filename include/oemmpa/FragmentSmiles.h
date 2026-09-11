@@ -27,9 +27,12 @@ bool has_specified_stereo(const OEChem::OEMolBase& mol);
 /// one that can carry tetrahedral chirality at all. The second is RDKit's
 /// ``Code/GraphMol/Chirality.cpp::isAtomPotentialChiralCenter``, which OEMMPA
 /// reaches through mmpdb's transcription of it in
-/// ``mmpdblib/fragment_algorithm.py:203-238``: four heavy neighbours always
+/// ``mmpdblib/fragment_algorithm.py:203-238``: four substituents always
 /// qualify, three qualify when exactly one hydrogen is present, and three with
 /// no hydrogen qualify only for sulfur or selenium at a sulfoxide-like valence.
+/// An isotope-labelled hydrogen is a substituent rather than a hydrogen in that
+/// count, because RDKit's ``RemoveHs`` -- which every mmpdb parse runs -- keeps
+/// it as an atom of the graph while deleting an unlabelled one.
 /// Asking only OEAtomBase::IsChiral() admits three-coordinate amine nitrogen,
 /// which upstream does not treat as a stereocentre.
 ///

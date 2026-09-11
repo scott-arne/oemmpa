@@ -135,6 +135,13 @@ std::string replace_once(
 /// one component at a time and rejoined in the given order, which is how the
 /// fragmenter assembles them -- rendering `A.B` as a single molecule would let
 /// OEChem pick its own component order.
+///
+/// Each component is suppressed first, as the fragmenter's own input is. That
+/// only matters where a bracketed tag sits next to an isotope-labelled
+/// hydrogen: OEChem materializes the tag's hydrogen as an atom there, and the
+/// writer then spells the centre `[C@]([H])([2H])` rather than `[C@H]([2H])`.
+/// Suppression removes the unlabelled hydrogen and leaves the labelled one, so
+/// the expectation is written in the same form the fragmenter produces.
 std::string render_expected(const std::string& fragment_smiles) {
     std::string rendered;
     std::size_t start = 0;
@@ -144,6 +151,7 @@ std::string render_expected(const std::string& fragment_smiles) {
         const std::string component = fragment_smiles.substr(start, end - start);
         OEChem::OEGraphMol mol;
         EXPECT_TRUE(OEChem::OESmilesToMol(mol, component.c_str())) << component;
+        OEChem::OESuppressHydrogens(mol);
         if (!rendered.empty()) {
             rendered += ".";
         }
@@ -706,4 +714,56 @@ TEST(CreatedStereocenters, ThreeCoordinateNitrogenIsNotACreatedCentre) {
     // Positive control: the same cap must still be reachable, or the arm above
     // would pass for a detector that had been switched off entirely.
     EXPECT_THROW(capped.Fragment(1, control), OEMMPA::FragmentationError);
+}
+
+// A deuterium can be the only arm that makes a cut-created centre stereogenic.
+// The central carbon of 2-deuterio-1,3-propanediol carries two equivalent
+// hydroxymethyl arms, so the parent has no potential centre there; cutting one
+// arm's C-O bond leaves a fragment whose central carbon has a dummy arm, an
+// intact arm and the deuterium over a single hydrogen. That is a created
+// centre only if the label counts as a substituent rather than as a second
+// hydrogen. mmpdb 3.1.4 enumerates exactly this cut -- two constant-up and two
+// variable-up records over the two baseline orientations, recorded in
+// tests/data/mmpdb/stereo_fragmentations.tsv under deuterium_created_centre.
+//
+// Configurations, not markers: the enumerated fragments must be the two
+// epimers of the baseline fragment, so the constants of the constant-up pair
+// are two distinct strings and neither is the baseline's.
+//
+// The undeuterated control keeps the detector honest. 1,3-propanediol's
+// central carbon holds two hydrogens after the same cut, so no cut of it
+// creates anything and every record must stay unenumerated.
+TEST(CreatedStereocenters, ADeuteriumCanBeTheOnlyDistinguishingArm) {
+    OEMMPA::Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(1);
+
+    const OEChem::OEGraphMol deuterated = parse_suppressed("OCC([2H])CO");
+    const std::vector<OEMMPA::Fragmentation> enumerated = fragmenter.Fragment(1, deuterated);
+    EXPECT_EQ(count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::None), 2u);
+    EXPECT_EQ(
+        count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::ConstantUp), 2u);
+    EXPECT_EQ(
+        count_with_label(enumerated, OEMMPA::Fragmentation::EnumerationLabel::VariableUp), 2u);
+    EXPECT_EQ(enumerated.size(), 6u);
+
+    const std::string baseline_constant = render_expected("[*:1]CC([2H])CO");
+    std::set<std::string> enumerated_constants;
+    for (const OEMMPA::Fragmentation& fragmentation : enumerated) {
+        if (fragmentation.GetEnumerationLabel() ==
+            OEMMPA::Fragmentation::EnumerationLabel::ConstantUp) {
+            enumerated_constants.insert(fragmentation.GetConstantSmiles());
+        }
+    }
+    EXPECT_EQ(enumerated_constants.size(), 2u);
+    EXPECT_EQ(enumerated_constants.count(baseline_constant), 0u) << baseline_constant;
+    EXPECT_EQ(enumerated_constants.count(render_expected("[*:1]C[C@H]([2H])CO")), 1u);
+    EXPECT_EQ(enumerated_constants.count(render_expected("[*:1]C[C@@H]([2H])CO")), 1u);
+
+    const OEChem::OEGraphMol control = parse_suppressed("OCCCO");
+    const std::vector<OEMMPA::Fragmentation> unenumerated = fragmenter.Fragment(1, control);
+    ASSERT_FALSE(unenumerated.empty());
+    EXPECT_EQ(
+        static_cast<std::size_t>(
+            count_with_label(unenumerated, OEMMPA::Fragmentation::EnumerationLabel::None)),
+        unenumerated.size());
 }

@@ -40,3 +40,6 @@ C[C@@H]1C[N@]2CC[C@H]1C2	bridgehead_nitrogen_kept
 C[N@]1C[C@H]1C	aziridine_nitrogen_kept
 C1CC[N@]2CCC[C@H]2C1	indolizidine_nitrogen_cleared
 C[P@](CC)c1ccccc1	phosphine_kept_not_enumerated
+[C@H]([2H])(C)Oc1ccccc1	deuterium_defined_centre
+[C@H]([2H])([3H])CO	deuterium_tritium_centre
+OCC([2H])CO	deuterium_created_centre

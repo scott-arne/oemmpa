@@ -33,19 +33,56 @@ OEChem::OEAtomBase* first_other_neighbor(OEChem::OEAtomBase& atom, unsigned int 
     return nullptr;
 }
 
+/// Whether `atom` is a hydrogen of the kind upstream deletes. RDKit's RemoveHs,
+/// which runs on every mmpdb parse, drops an explicit hydrogen only when it
+/// carries no isotope label; a labelled one survives as an atom of the graph
+/// with a symmetry class of its own. Everything below therefore treats a
+/// labelled hydrogen as a substituent, so that a centre whose only
+/// distinguishing arm is the label reads as stereogenic here too.
+bool is_plain_hydrogen(const OEChem::OEAtomBase& atom) {
+    return atom.GetAtomicNum() == 1 && atom.GetIsotope() == 0;
+}
+
+/// `atom`'s neighbours counted the way upstream counts them. The sum is the
+/// total degree either way; the split only decides which side a labelled
+/// hydrogen falls on.
+struct NeighborCounts {
+    unsigned int substituents;
+    unsigned int hydrogens;
+};
+
+/// GetHvyDegree() and GetTotalHCount() are the two counts the upstream rules are
+/// written over, and both are stable across OESuppressHydrogens, which removes
+/// only unlabelled explicit hydrogens. Deriving them from GetDegree() would not
+/// be: OEChem counts implicit hydrogens in the degree, so a suppressed CH
+/// stereocentre would read as four-coordinate. OEChem puts every hydrogen,
+/// labelled or not, on the hydrogen side of that pair, so the labelled ones are
+/// moved across here.
+NeighborCounts count_neighbors(const OEChem::OEAtomBase& atom) {
+    unsigned int labelled_hydrogens = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom.GetAtoms(); neighbor; ++neighbor) {
+        if (neighbor->GetAtomicNum() == 1 && neighbor->GetIsotope() != 0) {
+            ++labelled_hydrogens;
+        }
+    }
+    return NeighborCounts{
+        atom.GetHvyDegree() + labelled_hydrogens,
+        atom.GetTotalHCount() - labelled_hydrogens};
+}
+
 /// The atoms bonded to `atom` through a ring bond and through a non-ring bond.
-/// Hydrogens are excluded from both, so the split is over heavy substituents
-/// whether or not OESuppressHydrogens has run.
-struct HeavyNeighborSplit {
+/// Deletable hydrogens are excluded from both, so the split is over the
+/// substituents whether or not OESuppressHydrogens has run.
+struct SubstituentSplit {
     std::vector<OEChem::OEAtomBase*> ring;
     std::vector<OEChem::OEAtomBase*> exocyclic;
 };
 
-HeavyNeighborSplit split_heavy_neighbors(const OEChem::OEAtomBase& atom) {
-    HeavyNeighborSplit split;
+SubstituentSplit split_substituent_neighbors(const OEChem::OEAtomBase& atom) {
+    SubstituentSplit split;
     for (OESystem::OEIter<OEChem::OEBondBase> bond = atom.GetBonds(); bond; ++bond) {
         OEChem::OEAtomBase* neighbor = bond->GetNbr(&atom);
-        if (neighbor == nullptr || neighbor->GetAtomicNum() == 1) {
+        if (neighbor == nullptr || is_plain_hydrogen(*neighbor)) {
             continue;
         }
         (bond->IsInRing() ? split.ring : split.exocyclic).push_back(neighbor);
@@ -201,32 +238,31 @@ bool has_conjugated_bond(const OEChem::OEAtomBase& atom) {
 }
 
 /// ``Chirality.cpp::isAtomPotentialChiralCenter``, the shape half of the cleanup
-/// rule. Four heavy neighbours always qualify; three qualify with one hydrogen,
+/// rule. Four substituents always qualify; three qualify with one hydrogen,
 /// for phosphorus and arsenic unconditionally, for sulfur and selenium at a
 /// sulfoxide-like valence, and for nitrogen only where inversion is blocked --
-/// inside a three-membered ring, or at a bridgehead. Two heavy neighbours reach
-/// the rule at all only for phosphorus and arsenic, whose lone pair stands in
-/// for the missing substituent.
+/// inside a three-membered ring, or at a bridgehead. Two substituents reach the
+/// rule at all only for phosphorus and arsenic, whose lone pair stands in for
+/// the missing substituent.
 ///
 /// Wider than is_potential_stereocenter(), deliberately: that function is
 /// mmpdb's transcription of the same upstream rule, but mmpdb only copied the
 /// clauses stereo enumeration needs.
 bool keeps_tag_by_element(const OEChem::OEAtomBase& atom, const std::vector<bool>& bridgeheads) {
-    const unsigned int heavy_degree = atom.GetHvyDegree();
-    const unsigned int hydrogens = atom.GetTotalHCount();
-    const unsigned int total_degree = heavy_degree + hydrogens;
+    const NeighborCounts counts = count_neighbors(atom);
+    const unsigned int total_degree = counts.substituents + counts.hydrogens;
     const unsigned int atomic_num = atom.GetAtomicNum();
 
     if (total_degree < 3 || total_degree > 4) {
         return false;
     }
-    if (heavy_degree < 3) {
+    if (counts.substituents < 3) {
         return atomic_num == 15 || atomic_num == 33;
     }
-    if (heavy_degree == 4) {
+    if (counts.substituents == 4) {
         return true;
     }
-    if (hydrogens == 1) {
+    if (counts.hydrogens == 1) {
         return true;
     }
     if (atomic_num == 16 || atomic_num == 34) {
@@ -460,7 +496,7 @@ bool is_dependent_ring_stereo_candidate(
     // not all differ, or the atom would have resolved on its own. One: the ring
     // neighbours must repeat a rank. None: three or four ring neighbours with
     // exactly one repeated rank among them.
-    const HeavyNeighborSplit neighbors = split_heavy_neighbors(atom);
+    const SubstituentSplit neighbors = split_substituent_neighbors(atom);
     std::set<unsigned int> ring_ranks;
     for (const OEChem::OEAtomBase* neighbor : neighbors.ring) {
         ring_ranks.insert(context.ranks[neighbor->GetIdx()]);
@@ -501,18 +537,14 @@ bool is_potential_stereocenter(const OEChem::OEAtomBase& atom) {
         return false;
     }
 
-    // GetHvyDegree() and GetTotalHCount() are the two counts mmpdb's rule reads,
-    // and both are stable across OESuppressHydrogens. Deriving them from
-    // GetDegree() would not be: OEChem counts implicit hydrogens in the degree,
-    // so a suppressed CH stereocentre would read as four-coordinate.
-    const unsigned int heavy_degree = atom.GetHvyDegree();
-    if (heavy_degree == 4) {
+    const NeighborCounts counts = count_neighbors(atom);
+    if (counts.substituents == 4) {
         return true;
     }
-    if (heavy_degree != 3) {
+    if (counts.substituents != 3) {
         return false;
     }
-    if (atom.GetTotalHCount() == 1) {
+    if (counts.hydrogens == 1) {
         return true;
     }
 

@@ -218,10 +218,27 @@ def _project(smiles):
 
 
 def _heavy_atoms(projected):
-    """Return the RDKit heavy-atom count of an already projected SMILES."""
+    """Return the heavy-atom count mmpdb would store for a projected SMILES.
+
+    mmpdb counts atoms textually (``fragment_algorithm.get_num_heavies_from_smiles``
+    skips only a literal ``[H]`` and any token holding a ``*``), so an
+    isotope-labelled hydrogen counts as a heavy atom there while RDKit's
+    ``GetNumHeavyAtoms`` excludes it. Projection rule 4 checks the recomputed
+    counts against the ones mmpdb stored, so the recomputation has to use
+    mmpdb's rule or every deuterated oracle row would read as a projection
+    failure. Labelled hydrogens are the only difference between the two rules,
+    and the same correction is applied to both sides of the comparison.
+
+    :param projected: A projected fragment SMILES.
+    :returns: The count of atoms mmpdb treats as heavy.
+    :raises AssertionError: When the projected SMILES does not parse.
+    """
     mol = Chem.MolFromSmiles(projected)
     assert mol is not None, projected
-    return mol.GetNumHeavyAtoms()
+    labelled_hydrogens = sum(
+        1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 1 and atom.GetIsotope()
+    )
+    return mol.GetNumHeavyAtoms() + labelled_hydrogens
 
 
 def _is_hydrogen_fragment(projected):

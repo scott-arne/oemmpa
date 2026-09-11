@@ -680,6 +680,30 @@ TEST(FragmentSmiles, IsotopesSurvive) {
     EXPECT_NE(render("[*:1][13CH3]").find("13C"), std::string::npos);
 }
 
+// An isotope-labelled hydrogen is a substituent, not a hydrogen. RDKit's
+// RemoveHs -- which every mmpdb parse runs -- deletes an unlabelled explicit
+// hydrogen and keeps a labelled one as an atom of the graph, so upstream reads
+// a deuterated methine as three substituents plus one hydrogen and ranks the
+// deuterium apart from that hydrogen. A centre whose only distinguishing arm is
+// the label is therefore real. Two labels of the same mass tie with each other
+// and leave nothing to tell the arms apart; deuterium against tritium does not.
+// RDKit 2026.03.6 keeps one tag on each pair below and tells its configurations
+// apart, except for the geminal dideuterio pair, which it renders as one
+// tag-free molecule.
+TEST(FragmentSmiles, IsotopicHydrogenDefinesAStereocentre) {
+    expect_tag_kept_iff_informative("[C@H]([2H])(C)Oc1ccccc1", "[C@@H]([2H])(C)Oc1ccccc1", 0);
+    expect_tag_kept_iff_informative("[C@H]([2H])([2H])C", "[C@@H]([2H])([2H])C", 0);
+    expect_tag_kept_iff_informative("[C@H]([2H])([3H])C", "[C@@H]([2H])([3H])C", 0);
+    expect_tag_kept_iff_informative("[C@H]([2H])(C)CCO", "[C@@H]([2H])(C)CCO", 0);
+
+    // The same verdicts without OESuppressHydrogens. A caller that has not
+    // dropped the hydrogen a bracketed tag materializes hands the rule an
+    // explicit isotope-0 neighbour, which must still count as a hydrogen.
+    EXPECT_EQ(atom_stereo_count(render("[C@H]([2H])(C)Oc1ccccc1")), 1u);
+    EXPECT_NE(render("[C@H]([2H])(C)Oc1ccccc1"), render("[C@@H]([2H])(C)Oc1ccccc1"));
+    EXPECT_EQ(atom_stereo_count(render("[C@H]([2H])([2H])C")), 0u);
+}
+
 // Explicit hydrogens must be materialized as atoms, not merely flagged -- and
 // materializing them must not mutate the caller's molecule.
 TEST(FragmentSmiles, ExplicitHydrogensAreOptInAndDoNotMutateCaller) {
