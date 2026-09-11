@@ -1995,7 +1995,7 @@ TEST(DuckDBStoreTest, EnvironmentSmirksLivesInDedicatedTableNotRuleEnvironment) 
 
 TEST(DuckDBStoreTest, DroppedDuplicatePairDoesNotSeedInvalidRadiusEnvironment) {
     // A duplicate pair (same compound1/compound2/rule/constant identity) must be
-    // dropped by the physical-pair dedup and contribute NOTHING to the v3
+    // dropped by the physical-pair dedup and contribute NOTHING to the
     // environment derivation. Here the KEPT pair is valid only at [2, 4]; the
     // same-identity duplicate carries a WIDER [0, 4] range. If the derivation
     // ran for the dropped pair (the pre-fix ordering, where it ran before the
@@ -2036,10 +2036,10 @@ TEST(DuckDBStoreTest, DroppedDuplicatePairDoesNotSeedInvalidRadiusEnvironment) {
     std::filesystem::remove(path);
 }
 
-TEST(DuckDBStoreTest, IdempotentReloadDoesNotSeedExtraV3State) {
+TEST(DuckDBStoreTest, IdempotentReloadDoesNotSeedExtraEnvironmentState) {
     // Re-appending the exact same WizePairZ pairs into an existing store is a
     // pure reload: every pair is dropped by the identity dedup. That dropped
-    // path must leave ALL v3 environment state untouched -- no orphan
+    // path must leave ALL environment state untouched -- no orphan
     // rule_environment rows, stable num_pairs, stable representative SMIRKS, and
     // no duplicate physical pairs.
     MatchedPair pair_a = MakeRangedPair(1, 2, 0, 2);

@@ -11,6 +11,19 @@ from pathlib import Path
 
 import duckdb
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# The single input the golden fixtures and the equivalence test are both built
+# from, published here so the generator and the test cannot drift onto
+# different molecules. It is the public SureChEMBL extract; the proprietary
+# tests/data/dhu_glu_ymin.smi is never used for a committed fixture.
+GOLDEN_FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
+
+# The golden is dumped with the synthetic properties attached. Both callers
+# must ask for them or compound_property and rule_environment_statistics would
+# silently differ while every other table still matched.
+GOLDEN_WITH_PROPERTIES = True
+
 TABLES = [
     "dataset",
     "compound",
@@ -82,7 +95,7 @@ _QUERIES = {
         "join rule_environment re on re.rule_id = p.rule_id "
         "and re.environment_fingerprint_id = ce.environment_fingerprint_id "
         "and re.radius = ce.radius "
-        # Valid-range membership predicate (schema v3): a pair contributes to an
+        # Valid-range membership predicate: a pair contributes to an
         # environment only at radii within its stored [min, max] bounds; NULL
         # bounds (non-WizePairZ pairs) keep the full per-radius fan-out.
         "and (p.min_valid_radius is null or "

@@ -28,9 +28,7 @@ pytestmark = pytest.mark.skipif(
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _duckdb_dump as dump  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
-GOLDEN_DIR = REPO_ROOT / "tests" / "data" / "duckdb_golden"
+GOLDEN_DIR = dump.REPO_ROOT / "tests" / "data" / "duckdb_golden"
 
 
 def _load_golden(table: str) -> list[tuple]:
@@ -51,7 +49,11 @@ def test_bulk_save_matches_golden(tmp_path):
     import duckdb
 
     db = tmp_path / "actual.duckdb"
-    dump.build_store_from_fixture(str(FIXTURE), str(db), with_properties=True)
+    dump.build_store_from_fixture(
+        str(dump.GOLDEN_FIXTURE),
+        str(db),
+        with_properties=dump.GOLDEN_WITH_PROPERTIES,
+    )
     con = duckdb.connect(str(db), read_only=True)
     try:
         for table in dump.TABLES:

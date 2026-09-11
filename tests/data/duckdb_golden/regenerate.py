@@ -3,9 +3,10 @@
 The golden files are the oracle for
 ``tests/python/test_duckdb_bulk_equivalence.py::test_bulk_save_matches_golden``.
 This script is deliberately a thin wrapper over the same three
-``tests/python/_duckdb_dump`` helpers that the test uses -- built with the same
-public SureChEMBL fixture and the same ``with_properties=True`` argument -- so
-the generator and the test cannot drift apart. It never touches the proprietary
+``tests/python/_duckdb_dump`` helpers that the test uses, and it takes the
+fixture path and the ``with_properties`` argument from that module's
+``GOLDEN_FIXTURE`` and ``GOLDEN_WITH_PROPERTIES`` constants, so the generator
+and the test cannot drift apart. It never touches the proprietary
 ``tests/data/dhu_glu_ymin.smi``.
 
 The output is byte-reproducible without pinning a thread count: every dump
@@ -27,7 +28,6 @@ from pathlib import Path
 
 GOLDEN_DIR = Path(__file__).resolve().parent
 REPO_ROOT = GOLDEN_DIR.parents[2]
-FIXTURE = REPO_ROOT / "tests" / "data" / "surechembl_mmp_fixture.smi"
 
 # The compiled ``oemmpa`` package and the shared dump helpers live outside this
 # directory, and this script is not collected by pytest, so neither
@@ -51,8 +51,12 @@ def regenerate(out_dir: Path | None = None) -> None:
     target = GOLDEN_DIR if out_dir is None else Path(out_dir)
     with tempfile.TemporaryDirectory() as scratch:
         database = Path(scratch) / "golden.duckdb"
+        # The fixture and the with_properties argument come from
+        # _duckdb_dump so the generator cannot drift from the test.
         dump.build_store_from_fixture(
-            str(FIXTURE), str(database), with_properties=True
+            str(dump.GOLDEN_FIXTURE),
+            str(database),
+            with_properties=dump.GOLDEN_WITH_PROPERTIES,
         )
         connection = duckdb.connect(str(database), read_only=True)
         try:
