@@ -1130,8 +1130,11 @@ std::vector<std::vector<unsigned int>> ExpandTiedOrders(
 ) {
     // Counted before any permutation is built, both because building them is the
     // cost the cap exists to refuse and because the error has to name the whole
-    // tie, not the group that happened to cross the line. Dividing rather than
-    // multiplying keeps the check itself from overflowing.
+    // tie, not the group that happened to cross the line. Every comparison
+    // divides the cap instead of multiplying the running product, so no count
+    // above the cap is ever computed: a size_t product of a wide tie wraps, and
+    // 66! wraps to exactly zero, which would read as a tie small enough to
+    // enumerate.
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
     std::size_t total = 1;
     std::size_t tied_sites = 0;
@@ -1148,8 +1151,12 @@ std::vector<std::vector<unsigned int>> ExpandTiedOrders(
         if (size > 1) {
             tied_sites += size;
             std::size_t factorial = 1;
-            for (std::size_t n = 2; n <= size; ++n) {
-                factorial *= n;
+            for (std::size_t n = 2; n <= size && !over_cap; ++n) {
+                if (factorial > MAX_TIE_BREAK_CANDIDATES / n) {
+                    over_cap = true;
+                } else {
+                    factorial *= n;
+                }
             }
             if (over_cap || factorial > MAX_TIE_BREAK_CANDIDATES / total) {
                 over_cap = true;

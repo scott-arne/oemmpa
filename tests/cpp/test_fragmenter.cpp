@@ -1545,5 +1545,46 @@ TEST(FragmenterTest, TieBreakBeyondTheCandidateBoundThrows) {
     EXPECT_NO_THROW(within_bound.Fragment(1, mol));
 }
 
+TEST(FragmenterTest, TieBreakBoundHoldsWhenTheCandidateCountOverflows) {
+    // 66 is the smallest tied group whose factorial is a multiple of 2^64, so a
+    // size_t product of it is exactly zero. A bound computed by multiplying
+    // first reads that as "no candidates" and lets the enumeration run.
+    const unsigned int RING_SIZE = 66;
+    std::string smiles = "C1(C)";
+    for (unsigned int i = 1; i < RING_SIZE; ++i) {
+        smiles += "C(C)";
+    }
+    smiles += "1";
+
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+
+    std::vector<unsigned int> methyl_bonds;
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        if (bond->GetBgn()->GetHvyDegree() == 1 || bond->GetEnd()->GetHvyDegree() == 1) {
+            methyl_bonds.push_back(bond->GetIdx());
+        }
+    }
+    ASSERT_EQ(methyl_bonds.size(), RING_SIZE);
+
+    // Cutting every methyl off at once, and only that, leaves one combination to
+    // enumerate: the throw has to come from the tie, not from the search.
+    BondIndexFragmentationStrategy strategy(methyl_bonds);
+    Fragmenter fragmenter(strategy);
+    fragmenter.SetMaxCutBonds(0);
+    fragmenter.SetMaxCuts(RING_SIZE);
+    fragmenter.SetMinCuts(RING_SIZE);
+
+    try {
+        fragmenter.Fragment(1, mol);
+        FAIL() << "expected FragmentationError for a " << RING_SIZE << "-way tie";
+    } catch (const FragmentationError& error) {
+        // The message names the whole tie, so it also witnesses that counting
+        // stopped early rather than wrapping to something under the bound.
+        const std::string message = error.what();
+        EXPECT_NE(message.find("66 symmetry-equivalent"), std::string::npos) << message;
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA
