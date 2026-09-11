@@ -1687,15 +1687,15 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
     std::filesystem::remove(path);
 }
 
-TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionThree) {
+TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionFour) {
     const std::string path = (std::filesystem::temp_directory_path() /
-        "oemmpa_fresh_v3.duckdb").string();
+        "oemmpa_fresh_v4.duckdb").string();
     std::filesystem::remove(path);
     {
         DuckDBStore store(path);
         store.InitializeSchema();
     }
-    // A fresh store must be stamped with the current schema version (3).
+    // A fresh store must be stamped with the current schema version (4).
     {
         duckdb::DuckDB database(path);
         duckdb::Connection connection(database);
@@ -1704,7 +1704,7 @@ TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionThree) {
         ASSERT_FALSE(result->HasError());
         const std::uint64_t version =
             result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
-        EXPECT_EQ(version, 3u);
+        EXPECT_EQ(version, 4u);
     }
     std::filesystem::remove(path);
 }
@@ -1786,7 +1786,7 @@ std::map<int, std::string> ReadRepresentativeMap(const std::filesystem::path& pa
 
 }  // namespace
 
-TEST(DuckDBStoreTest, StampsSchemaVersion3) {
+TEST(DuckDBStoreTest, StampsSchemaVersion4) {
     // No public schema-version getter; a fresh store is stamped at
     // InitializeSchema time, read back through a file-backed raw connection.
     const std::filesystem::path path = TemporaryDatabasePath();
@@ -1798,7 +1798,7 @@ TEST(DuckDBStoreTest, StampsSchemaVersion3) {
     duckdb::DuckDB database(path.string());
     duckdb::Connection connection(database);
     EXPECT_EQ(ScalarUBigint(
-        connection, "select oemmpa_schema_version from dataset where id = 1"), 3u);
+        connection, "select oemmpa_schema_version from dataset where id = 1"), 4u);
     std::filesystem::remove(path);
 }
 
@@ -2394,7 +2394,7 @@ TEST(DuckDBStoreTest, ReadOnlyOpenEnforcesSchemaVersionGate) {
         "oemmpa_readonly_version.duckdb").string();
     std::filesystem::remove(path);
 
-    // Positive: read-only open of a valid v3 store succeeds.
+    // Positive: read-only open of a valid current-version store succeeds.
     {
         DuckDBStore writer(path);
         writer.InitializeSchema();

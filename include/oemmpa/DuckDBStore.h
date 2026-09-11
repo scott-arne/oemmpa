@@ -79,8 +79,12 @@ public:
     // representative descriptive environment SMIRKS is stored per
     // rule_environment in the dedicated environment_smirks table, and a
     // single analysis method is stamped per store -- a clean break with no
-    // migration from v2.
-    static constexpr std::uint32_t kOemmpaSchemaVersion = 3;
+    // migration from v2. Bumped to 4 for the isomeric-fragment-SMILES break: a
+    // version-3 database's rule and pair SMILES were rendered without stereo,
+    // so its fragment strings cannot be reconciled with a version-4 store by
+    // migration -- the stereo information was never written and is not
+    // recoverable from the stored text. Rebuild affected databases.
+    static constexpr std::uint32_t kOemmpaSchemaVersion = 4;
 
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();

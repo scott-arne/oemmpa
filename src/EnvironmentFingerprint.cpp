@@ -621,6 +621,15 @@ std::vector<EnvironmentFingerprint> ComputeConstantEnvironmentFingerprints(
         throw EnvironmentFingerprintError("invalid constant SMILES: " + constant_smiles);
     }
 
+    // OEChem materializes the hydrogen that a chirality-tagged bracket atom
+    // names, so [*:1][C@H](C)O parses to five atoms while [*:1]C(C)O parses to
+    // four. mmpdb derives its environment from RDKit's RemoveHs graph, which
+    // has no such atom, so leaving it in place would give a chiral constant a
+    // fingerprint its achiral analogue can never match. OESuppressHydrogens at
+    // its defaults removes exactly the implicit-equivalent hydrogens and keeps
+    // the isotope-labelled ones, which is the set RDKit keeps as well.
+    OEChem::OESuppressHydrogens(mol);
+
     const AtomByIndex atoms = index_atoms(mol);
     const AttachmentByLabel attachments = collect_attachment_atoms(mol);
 

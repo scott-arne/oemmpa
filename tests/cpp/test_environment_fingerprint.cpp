@@ -8,6 +8,7 @@
 #include "oedesalt/Desalter.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <fstream>
 #include <string>
 #include <tuple>
@@ -161,6 +162,57 @@ TEST(EnvironmentFingerprintTest, IsotopicHydrogenIsNotCountedAsHydrogen) {
         ComputeConstantEnvironmentFingerprints("[*:1]CCC([2H])C", 0, 1);
     ASSERT_EQ(remote.size(), 2);
     EXPECT_EQ(remote[1].GetSmarts(), "A{0:[#0;X1;H0;+0;!R:1],1:[C;X4;H2;+0;!R]};B{0-1}");
+}
+
+// OEChem's OESmilesToMol materializes the hydrogen a chirality-tagged bracket
+// atom names: [*:1][C@H](C)O parses to five atoms, one of atomic number 1.
+// mmpdb computes its environment on RDKit's RemoveHs graph, which has no such
+// atom, so a chiral constant and its achiral analogue have to produce
+// byte-identical keys. mmpdb 3.1.4 oracle (fragment + index over C[C@H](O)CC,
+// C[C@H](O)CCC, CC(O)CC, CC(O)CCC) stores a single fingerprint for both
+// [*:1][C@H](C)O and [*:1]C(C)O at every radius -- at radius 2 and above
+// [#0;X1;H0;+0;!R:1]-[C;X4;H1;+0;!R](-[C;X4;H3;+0;!R])-[O;X2;H1;+0;!R] -- and
+// no fingerprint anywhere in that index carries an H node.
+TEST(EnvironmentFingerprintTest, MaterializedHydrogensAreNotEnvironmentNodes) {
+    const auto expect_stereo_agnostic = [](
+        const std::string& chiral_smiles,
+        const std::string& flat_smiles
+    ) {
+        const std::vector<EnvironmentFingerprint> chiral =
+            ComputeConstantEnvironmentFingerprints(chiral_smiles, 0, 2);
+        const std::vector<EnvironmentFingerprint> flat =
+            ComputeConstantEnvironmentFingerprints(flat_smiles, 0, 2);
+        ASSERT_EQ(chiral.size(), 3U) << chiral_smiles;
+        ASSERT_EQ(flat.size(), 3U) << flat_smiles;
+
+        for (std::size_t i = 0; i < chiral.size(); ++i) {
+            EXPECT_EQ(chiral[i].GetSmarts(), flat[i].GetSmarts())
+                << chiral_smiles << " vs " << flat_smiles << " at radius " << i;
+            EXPECT_EQ(chiral[i].GetPseudoSmiles(), flat[i].GetPseudoSmiles())
+                << chiral_smiles << " vs " << flat_smiles << " at radius " << i;
+            EXPECT_EQ(chiral[i].GetParentSmarts(), flat[i].GetParentSmarts())
+                << chiral_smiles << " vs " << flat_smiles << " at radius " << i;
+
+            // A materialized hydrogen surfaces as an environment node of its
+            // own, which is how it would escape the equality checks above if
+            // both spellings ever grew one.
+            EXPECT_EQ(chiral[i].GetSmarts().find("[H;"), std::string::npos)
+                << chiral[i].GetSmarts();
+            EXPECT_EQ(flat[i].GetSmarts().find("[H;"), std::string::npos)
+                << flat[i].GetSmarts();
+        }
+    };
+
+    expect_stereo_agnostic("[*:1][C@H](C)O", "[*:1]C(C)O");
+    expect_stereo_agnostic("[*:1][C@@H](C)CC", "[*:1]C(C)CC");
+
+    // Control: suppression must not reach the isotope-labelled hydrogens that
+    // RDKit's RemoveHs keeps too, or Task 26's deuterium node would vanish.
+    const std::vector<EnvironmentFingerprint> deuterated =
+        ComputeConstantEnvironmentFingerprints("[*:1]C([2H])(C)C", 0, 2);
+    ASSERT_EQ(deuterated.size(), 3U);
+    EXPECT_NE(deuterated[2].GetSmarts().find("[H;X1;H0;+0;!R]"), std::string::npos)
+        << deuterated[2].GetSmarts();
 }
 
 TEST(EnvironmentFingerprintTest, MultiCutQueryEnvironmentKeysAreStable) {
