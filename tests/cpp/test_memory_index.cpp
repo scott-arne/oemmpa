@@ -629,5 +629,62 @@ TEST(MemoryIndexTest, DifferingOptionsAreNotServedFromCache) {
     EXPECT_EQ(index.GetPairs(QueryOptions()).size(), 2u);       // back to symmetric
 }
 
+namespace {
+
+/// AIBN, whose two cyanoisopropyl arms are automorphic, and one respelling of
+/// it. Cutting both terminal methyls gives the constant `[*:1]C.[*:2]C` and a
+/// variable carrying two stereocentres the cut created.
+const char* const AIBN_SMILES = "CC(C)(C#N)/N=N/C(C)(C)C#N";
+const char* const AIBN_RESPELLED_SMILES = "CC(C)(/N=N/C(C#N)(C)C)C#N";
+/// AIBN's recombination product, which shares that two-methyl constant.
+const char* const AIBN_DIMER_SMILES = "CC(C)(C#N)C(C)(C)C#N";
+
+std::vector<MatchedPair> PairsAgainstDimer(const std::string& aibn_spelling) {
+    MoleculeRecord aibn = MakeMolecule(1, aibn_spelling, "aibn");
+    MoleculeRecord dimer = MakeMolecule(2, AIBN_DIMER_SMILES, "dimer");
+
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(2);
+
+    MemoryIndex index;
+    index.AddMolecule(aibn);
+    index.AddMolecule(dimer);
+    for (const MoleculeRecord* molecule : {&aibn, &dimer}) {
+        for (const Fragmentation& fragmentation :
+             fragmenter.Fragment(molecule->GetInternalId(), molecule->GetMol())) {
+            index.AddFragmentation(fragmentation);
+        }
+    }
+    return index.GetPairs(QueryOptions());
+}
+
+std::vector<std::string> SortedTransformSmiles(const std::vector<MatchedPair>& pairs) {
+    std::vector<std::string> transforms;
+    transforms.reserve(pairs.size());
+    for (const MatchedPair& pair : pairs) {
+        transforms.push_back(pair.GetTransformSmiles());
+    }
+    std::sort(transforms.begin(), transforms.end());
+    return transforms;
+}
+
+}  // namespace
+
+// What an unstable attachment label costs at the index: buckets are keyed on
+// the exact constant SMILES and pairs on the exact variable, so a record the
+// fragmenter labelled from the caller's atom numbering lands in a bucket its
+// own respelling does not, and the transform between them is either missing or
+// spelled differently. The count alone is not enough to see it -- both
+// spellings emit the same number of records -- so the transforms are compared.
+TEST(MemoryIndexTest, RespelledMoleculeYieldsTheSameTransformsAgainstAPartner) {
+    const std::vector<MatchedPair> as_written = PairsAgainstDimer(AIBN_SMILES);
+    ASSERT_FALSE(as_written.empty())
+        << "the two molecules share no pair at all, so the test proves nothing";
+
+    const std::vector<MatchedPair> respelled = PairsAgainstDimer(AIBN_RESPELLED_SMILES);
+    EXPECT_EQ(respelled.size(), as_written.size());
+    EXPECT_EQ(SortedTransformSmiles(respelled), SortedTransformSmiles(as_written));
+}
+
 }  // namespace test
 }  // namespace OEMMPA

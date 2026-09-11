@@ -898,13 +898,15 @@ const unsigned int CONSTANT_ROLE = 1;
 const unsigned int VARIABLE_ROLE = 2;
 
 /// Ties left over after the structural ranking are settled by rendering every
-/// assignment still open, so their number has to stay small. Three cuts is
-/// mmpdb's ceiling and this fragmenter's default, and six covers every tie a
-/// three-cut fragmentation can produce; twenty-four leaves room for four.
-/// `SetMaxCuts` has no upper bound, though, and a wholly symmetric molecule cut
-/// more often than that would grow factorially, so the search declines rather
-/// than paying for it.
-const std::size_t MAX_TIE_BREAK_CANDIDATES = 24;
+/// assignment still open. Only tied sites are permuted, so the count is the
+/// product of the tied groups' factorials rather than the cut count's, and 720
+/// admits six mutually equivalent attachments -- every symmetric fragmentation
+/// a `max_cuts` of six can produce. `SetMaxCuts` has no upper bound, though, so
+/// a wholly symmetric molecule cut more often than that would grow factorially;
+/// that throws. Falling back to the structural order instead would be worse than
+/// slow: its remaining key is the input-derived label, so the labels would
+/// silently become a function of the caller's atom numbering again.
+const std::size_t MAX_TIE_BREAK_CANDIDATES = 720;
 
 /// \brief Rank every labelled attachment of one part by its symmetry orbit.
 ///
@@ -1050,34 +1052,30 @@ struct RenderedFragmentPair {
     bool operator<(const RenderedFragmentPair& other) const {
         return std::tie(constant, variable) < std::tie(other.constant, other.variable);
     }
+
+    bool operator==(const RenderedFragmentPair& other) const {
+        return std::tie(constant, variable) == std::tie(other.constant, other.variable);
+    }
 };
 
-/// \brief Render what a candidate labelling would put in the record.
+/// \brief Split an already-labelled cut molecule into the pair a record stores.
 ///
-/// The comparison that picks between candidates is only as trustworthy as its
-/// agreement with what actually gets stored, so this walks the caller's own
-/// path -- relabel, reorder, split, pick the all-label component as the
-/// variable and join the rest as the constant -- rather than approximating it.
+/// The multi-cut split: the all-label connected component is the variable and
+/// the rest joins into the constant.
 ///
-/// \param cut_mol Cut molecule. Not modified; the candidate is applied to a copy.
-/// \param assignment Candidate labelling, as taken by ApplyAttachmentRelabelling.
+/// \param prepared Cut molecule, already relabelled and reordered.
 /// \param cut_count Number of cuts, and so the number of labels.
 /// \param rendered Receives the pair on success.
 /// \returns false when the split has no single all-label component, which is
 ///          the same shape the caller declines to emit a record for.
-bool RenderCandidatePair(
-    const OEChem::OEMolBase& cut_mol,
-    const std::map<unsigned int, unsigned int>& assignment,
+bool RenderMultiCutPair(
+    const OEChem::OEMolBase& prepared,
     unsigned int cut_count,
     RenderedFragmentPair& rendered
 ) {
-    OEChem::OEGraphMol scratch(cut_mol);
-    ApplyAttachmentRelabelling(scratch, assignment);
-    OrderAtomsForLabelStableRendering(scratch);
-
     // Hydrogen-capped constants are a single-cut concept, and nothing here is
     // single-cut, so the extra rendering they cost is skipped.
-    const std::vector<ComponentRecord> components = SplitComponents(scratch, false);
+    const std::vector<ComponentRecord> components = SplitComponents(prepared, false);
     const std::size_t variable_index = SelectMultiCutVariable(components, cut_count);
     if (variable_index >= components.size()) {
         return false;
@@ -1089,57 +1087,104 @@ bool RenderCandidatePair(
     return true;
 }
 
+/// \brief Render what a candidate labelling would put in the record.
+///
+/// The comparison that picks between candidates is only as trustworthy as its
+/// agreement with what actually gets stored, so this walks the caller's own
+/// path -- relabel, reorder, split -- rather than approximating it.
+///
+/// \param cut_mol Cut molecule. Not modified; the candidate is applied to a copy.
+/// \param assignment Candidate labelling, as taken by ApplyAttachmentRelabelling.
+/// \param cut_count Number of cuts, and so the number of labels.
+/// \param rendered Receives the pair on success.
+/// \returns false when the split has no single all-label component.
+bool RenderCandidatePair(
+    const OEChem::OEMolBase& cut_mol,
+    const std::map<unsigned int, unsigned int>& assignment,
+    unsigned int cut_count,
+    RenderedFragmentPair& rendered
+) {
+    OEChem::OEGraphMol scratch(cut_mol);
+    ApplyAttachmentRelabelling(scratch, assignment);
+    OrderAtomsForLabelStableRendering(scratch);
+    return RenderMultiCutPair(scratch, cut_count, rendered);
+}
+
 /// Sort key for one attachment: its constant-side orbit rank, then its
 /// variable-side orbit rank, which is only filled in when the constant ties.
 using LabelOrderKey = std::pair<unsigned int, unsigned int>;
 
 /// \brief Enumerate every labelling the structural ranking leaves open.
 ///
+/// Only sites the ranking could not separate move, so a fragmentation whose
+/// sites it did separate expands to a single candidate and costs nothing.
+///
 /// \param ordered Labels with their sort keys, already sorted.
-/// \returns Candidate label orders, the structural order first; empty when the
-///          tied sites are too numerous to enumerate under
-///          MAX_TIE_BREAK_CANDIDATES.
+/// \param cut_count Number of cuts, for the error message only.
+/// \returns Candidate label orders, the structural order first.
+/// \throws FragmentationError when the tied groups admit more than
+///         MAX_TIE_BREAK_CANDIDATES labellings between them.
 std::vector<std::vector<unsigned int>> ExpandTiedOrders(
-    const std::vector<std::pair<LabelOrderKey, unsigned int>>& ordered
+    const std::vector<std::pair<LabelOrderKey, unsigned int>>& ordered,
+    unsigned int cut_count
 ) {
-    // One entry per run of equal keys, holding every permutation of that run's
-    // labels. A run of one contributes a single permutation, so a fragmentation
-    // whose sites the ranking separated expands to just its structural order.
-    std::vector<std::vector<std::vector<unsigned int>>> runs;
+    // Counted before any permutation is built, both because building them is the
+    // cost the cap exists to refuse and because the error has to name the whole
+    // tie, not the group that happened to cross the line. Dividing rather than
+    // multiplying keeps the check itself from overflowing.
+    std::vector<std::pair<std::size_t, std::size_t>> ranges;
     std::size_t total = 1;
+    std::size_t tied_sites = 0;
+    bool over_cap = false;
     std::size_t begin = 0;
     while (begin < ordered.size()) {
         std::size_t end = begin + 1;
         while (end < ordered.size() && ordered[end].first == ordered[begin].first) {
             ++end;
         }
+        ranges.emplace_back(begin, end);
 
+        const std::size_t size = end - begin;
+        if (size > 1) {
+            tied_sites += size;
+            std::size_t factorial = 1;
+            for (std::size_t n = 2; n <= size; ++n) {
+                factorial *= n;
+            }
+            if (over_cap || factorial > MAX_TIE_BREAK_CANDIDATES / total) {
+                over_cap = true;
+            } else {
+                total *= factorial;
+            }
+        }
+        begin = end;
+    }
+
+    if (over_cap) {
+        throw FragmentationError(
+            "attachment-label tie-break exceeded max candidate labellings (" +
+            std::to_string(MAX_TIE_BREAK_CANDIDATES) + ") for a " +
+            std::to_string(cut_count) + "-cut fragmentation with " +
+            std::to_string(tied_sites) + " symmetry-equivalent attachment sites");
+    }
+
+    // One entry per run of equal keys, holding every permutation of that run's
+    // labels.
+    std::vector<std::vector<std::vector<unsigned int>>> runs;
+    runs.reserve(ranges.size());
+    for (const auto& range : ranges) {
         std::vector<unsigned int> labels;
-        labels.reserve(end - begin);
-        for (std::size_t i = begin; i < end; ++i) {
+        labels.reserve(range.second - range.first);
+        for (std::size_t i = range.first; i < range.second; ++i) {
             labels.push_back(ordered[i].second);
         }
         std::sort(labels.begin(), labels.end());
-
-        // Counted before the permutations are built, because building them is
-        // the cost the cap exists to refuse. Dividing rather than multiplying
-        // keeps the check itself from overflowing.
-        std::size_t factorial = 1;
-        for (std::size_t n = 2; n <= labels.size(); ++n) {
-            factorial *= n;
-        }
-        if (factorial > MAX_TIE_BREAK_CANDIDATES / total) {
-            return {};
-        }
-        total *= factorial;
 
         std::vector<std::vector<unsigned int>> permutations;
         do {
             permutations.push_back(labels);
         } while (std::next_permutation(labels.begin(), labels.end()));
         runs.push_back(std::move(permutations));
-
-        begin = end;
     }
 
     std::vector<std::vector<unsigned int>> candidates;
@@ -1198,7 +1243,13 @@ std::map<unsigned int, unsigned int> AttachmentAssignmentFor(
 ///
 /// \param cut_mol Cut molecule, whose dummies are relabelled in place.
 /// \param cut_count Number of cuts, and so the number of labels.
-void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int cut_count) {
+/// \returns true when two or more labellings rendered the same pair, so which of
+///          them was applied is arbitrary. Callers that go on to change the
+///          molecule -- stereo up-enumeration does -- have to relabel again,
+///          because the change can tell those labellings apart.
+/// \throws FragmentationError when the tie is too wide to enumerate; see
+///         MAX_TIE_BREAK_CANDIDATES.
+bool RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int cut_count) {
     std::vector<unsigned int> parts(cut_mol.GetMaxAtomIdx(), 0);
     const unsigned int part_count = OEChem::OEDetermineComponents(cut_mol, parts.data());
 
@@ -1227,12 +1278,12 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
             // not a property of the fragmentation. That needs a pair of ring
             // cuts, which the multi-cut dedup key rejects downstream anyway;
             // returning here keeps this function from inventing an answer.
-            return;
+            return false;
         }
         variable_part = part;
     }
     if (variable_part == 0) {
-        return;
+        return false;
     }
 
     std::vector<unsigned int> roles(parts.size(), 0);
@@ -1247,7 +1298,7 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
     OEChem::OEGraphMol constant_side;
     role_pred.SelectPart(CONSTANT_ROLE);
     if (!OEChem::OESubsetMol(constant_side, cut_mol, role_pred)) {
-        return;
+        return false;
     }
     const std::map<unsigned int, unsigned int> constant_ranks =
         RankAttachmentSites(constant_side);
@@ -1257,7 +1308,7 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
     for (unsigned int label = 1; label <= cut_count; ++label) {
         const auto constant_rank = constant_ranks.find(label);
         if (constant_rank == constant_ranks.end()) {
-            return;
+            return false;
         }
         ordered.emplace_back(LabelOrderKey(constant_rank->second, 0), label);
     }
@@ -1279,34 +1330,24 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
         OEChem::OEGraphMol variable_side;
         role_pred.SelectPart(VARIABLE_ROLE);
         if (!OEChem::OESubsetMol(variable_side, cut_mol, role_pred)) {
-            return;
+            return false;
         }
         const std::map<unsigned int, unsigned int> variable_ranks =
             RankAttachmentSites(variable_side);
         for (auto& entry : ordered) {
             const auto variable_rank = variable_ranks.find(entry.second);
             if (variable_rank == variable_ranks.end()) {
-                return;
+                return false;
             }
             entry.first.second = variable_rank->second;
         }
         std::sort(ordered.begin(), ordered.end());
     }
 
-    std::vector<std::vector<unsigned int>> candidates = ExpandTiedOrders(ordered);
-    if (candidates.empty()) {
-        // More tied sites than the cap will enumerate. The structural order is
-        // then the best available answer: it can still depend on the input's
-        // numbering, but only for a cut count far past the three mmpdb indexes.
-        std::vector<unsigned int> structural;
-        structural.reserve(ordered.size());
-        for (const auto& entry : ordered) {
-            structural.push_back(entry.second);
-        }
-        candidates.push_back(std::move(structural));
-    }
+    const std::vector<std::vector<unsigned int>> candidates = ExpandTiedOrders(ordered, cut_count);
 
     std::size_t best = 0;
+    bool best_is_arbitrary = false;
     if (candidates.size() > 1) {
         RenderedFragmentPair best_rendered;
         bool have_best = false;
@@ -1321,11 +1362,39 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
                 best_rendered = rendered;
                 best = i;
                 have_best = true;
+                best_is_arbitrary = false;
+            } else if (rendered == best_rendered) {
+                // Not a tie the fragments can settle: these labellings differ by
+                // an automorphism of the cut molecule, so the winner is whichever
+                // this loop reached first, which is the input's order again.
+                best_is_arbitrary = true;
             }
         }
     }
 
     ApplyAttachmentRelabelling(cut_mol, AttachmentAssignmentFor(candidates[best]));
+    return best_is_arbitrary;
+}
+
+/// \brief Relabel a multi-cut molecule from scratch and render its pair.
+///
+/// For callers holding a molecule whose labels came from some earlier state of
+/// it. The labels the record ends up with are then a property of the molecule
+/// rendered, not of the state they were derived from.
+///
+/// \param cut_mol Cut molecule. Not modified; the relabelling lands on a copy.
+/// \param cut_count Number of cuts, and so the number of labels.
+/// \param rendered Receives the pair on success.
+/// \returns false when the split has no single all-label component.
+bool RenderRelabelledMultiCutPair(
+    const OEChem::OEMolBase& cut_mol,
+    unsigned int cut_count,
+    RenderedFragmentPair& rendered
+) {
+    OEChem::OEGraphMol scratch(cut_mol);
+    RelabelAttachmentsByCanonicalOrder(scratch, cut_count);
+    OrderAtomsForLabelStableRendering(scratch);
+    return RenderMultiCutPair(scratch, cut_count, rendered);
 }
 
 /// \brief Emit one role assignment's baseline record and its up-enumerations.
@@ -1342,6 +1411,11 @@ void RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int
 /// already carries. Only one side varies per record; the other keeps its
 /// baseline rendering, which is what distinguishes per-side enumeration from a
 /// joint product over both sides.
+///
+/// \param labels_are_arbitrary Whether the baseline's attachment labels were
+///        placed by an unbreakable tie, as reported by
+///        RelabelAttachmentsByCanonicalOrder. Enumerated variants then relabel
+///        themselves rather than inheriting.
 void AddFragmentationsForRoleAssignment(
     unsigned int molecule_id,
     OEChem::OEMolBase& cut_mol,
@@ -1351,6 +1425,7 @@ void AddFragmentationsForRoleAssignment(
     const std::vector<ComponentRecord>& baseline,
     std::size_t selected_index,
     unsigned int cut_count,
+    bool labels_are_arbitrary,
     unsigned int max_up_enumerations,
     std::uint64_t& emitted,
     RetainedFragmentations& seen,
@@ -1460,22 +1535,52 @@ void AddFragmentationsForRoleAssignment(
         }
     };
 
+    // A baseline that could not tell its attachment sites apart has nothing to
+    // lend an enumerated variant: the tags applied below are relative to each
+    // centre's neighbour order, so they land differently on two spellings of one
+    // molecule, and the labels the baseline placed by input order would ride
+    // along. Relabelling the variant against itself is a property of the variant.
+    // Both halves are re-rendered because that relabelling can move a label onto
+    // the side this loop did not touch, and a record's two halves have to agree.
+    const auto emit_relabelled_variant = [&](Fragmentation::EnumerationLabel label) {
+        if (!labels_are_arbitrary) {
+            return false;
+        }
+        RenderedFragmentPair relabelled;
+        if (!RenderRelabelledMultiCutPair(cut_mol, cut_count, relabelled)) {
+            return false;
+        }
+        AddFragmentationRecord(
+            molecule_id,
+            relabelled.constant,
+            relabelled.variable,
+            cut_count,
+            std::string(),
+            label,
+            seen,
+            fragmentations
+        );
+        return true;
+    };
+
     std::vector<unsigned int> constant_digits(constant_centers.size(), 0u);
     while (AdvanceStereoOdometer(constant_digits)) {
         charge_budget();
         ApplyStereoAssignment(cut_mol, constant_centers, constant_digits);
-        const std::vector<ComponentRecord> enumerated =
-            SplitComponents(cut_mol, cut_count == 1);
-        AddFragmentationRecord(
-            molecule_id,
-            render_constant(enumerated),
-            baseline_variable_smiles,
-            cut_count,
-            render_hydrogen_constant(enumerated),
-            Fragmentation::EnumerationLabel::ConstantUp,
-            seen,
-            fragmentations
-        );
+        if (!emit_relabelled_variant(Fragmentation::EnumerationLabel::ConstantUp)) {
+            const std::vector<ComponentRecord> enumerated =
+                SplitComponents(cut_mol, cut_count == 1);
+            AddFragmentationRecord(
+                molecule_id,
+                render_constant(enumerated),
+                baseline_variable_smiles,
+                cut_count,
+                render_hydrogen_constant(enumerated),
+                Fragmentation::EnumerationLabel::ConstantUp,
+                seen,
+                fragmentations
+            );
+        }
         restore(constant_centers, baseline_constant_tags);
     }
 
@@ -1483,18 +1588,20 @@ void AddFragmentationsForRoleAssignment(
     while (AdvanceStereoOdometer(variable_digits)) {
         charge_budget();
         ApplyStereoAssignment(cut_mol, variable_centers, variable_digits);
-        const std::vector<ComponentRecord> enumerated =
-            SplitComponents(cut_mol, cut_count == 1);
-        AddFragmentationRecord(
-            molecule_id,
-            baseline_constant_smiles,
-            render_variable(enumerated),
-            cut_count,
-            baseline_hydrogen_smiles,
-            Fragmentation::EnumerationLabel::VariableUp,
-            seen,
-            fragmentations
-        );
+        if (!emit_relabelled_variant(Fragmentation::EnumerationLabel::VariableUp)) {
+            const std::vector<ComponentRecord> enumerated =
+                SplitComponents(cut_mol, cut_count == 1);
+            AddFragmentationRecord(
+                molecule_id,
+                baseline_constant_smiles,
+                render_variable(enumerated),
+                cut_count,
+                baseline_hydrogen_smiles,
+                Fragmentation::EnumerationLabel::VariableUp,
+                seen,
+                fragmentations
+            );
+        }
         restore(variable_centers, baseline_variable_tags);
     }
 }
@@ -1516,12 +1623,13 @@ void AddFragmentationForCombination(
     }
 
     const unsigned int cut_count = static_cast<unsigned int>(combination.size());
+    bool labels_are_arbitrary = false;
     if (cut_count > 1) {
-        // Before anything renders, and once for every role assignment and every
-        // enumerated variant below, all of which reuse these labels. A
-        // fragmentation with no single all-label component keeps the labels the
-        // cut gave it, and the split below then declines to emit a record for it.
-        RelabelAttachmentsByCanonicalOrder(cut_mol, cut_count);
+        // Before anything renders, and once for every role assignment below,
+        // which reuse these labels. A fragmentation with no single all-label
+        // component keeps the labels the cut gave it, and the split below then
+        // declines to emit a record for it.
+        labels_are_arbitrary = RelabelAttachmentsByCanonicalOrder(cut_mol, cut_count);
         OrderAtomsForLabelStableRendering(cut_mol);
     }
 
@@ -1567,6 +1675,7 @@ void AddFragmentationForCombination(
             baseline,
             selected_index,
             cut_count,
+            labels_are_arbitrary,
             max_up_enumerations,
             emitted,
             seen,

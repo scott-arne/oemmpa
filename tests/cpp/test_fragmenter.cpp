@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <random>
 #include <set>
 #include <string>
 #include <tuple>
@@ -1280,12 +1281,15 @@ std::string EnumerationLabelName(Fragmentation::EnumerationLabel label) {
 /// are free to emit in a different order, but not to emit different records.
 std::set<LabelledFragmentationRecord> RecordsForSpelling(
     const std::string& smiles,
-    unsigned int max_cuts
+    unsigned int max_cuts,
+    unsigned int min_cuts = 1
 ) {
     OEChem::OEGraphMol mol = MolFromSmiles(smiles);
     OEChem::OESuppressHydrogens(mol);
     Fragmenter fragmenter;
+    // Ordered: SetMinCuts validates against the max_cuts currently in force.
     fragmenter.SetMaxCuts(max_cuts);
+    fragmenter.SetMinCuts(min_cuts);
 
     std::set<LabelledFragmentationRecord> records;
     for (const Fragmentation& fragmentation : fragmenter.Fragment(1, mol)) {
@@ -1410,6 +1414,135 @@ TEST(FragmenterTest, SymmetricAttachmentSitesRenderIdentically) {
         ExpectedFragmentSmiles("[*:1]CC[*:2]"),
         ExpectedFragmentSmiles("[*:2]CC[*:1]"))
         << "the variable side has no free tie to give away";
+}
+
+namespace {
+
+/// How many of a spelling's records are up-enumerated variants rather than the
+/// configuration the input carried.
+std::size_t CountEnumeratedRecords(const std::set<LabelledFragmentationRecord>& records) {
+    return static_cast<std::size_t>(std::count_if(
+        records.begin(),
+        records.end(),
+        [](const LabelledFragmentationRecord& record) {
+            return std::get<3>(record) != "None";
+        }
+    ));
+}
+
+}  // namespace
+
+// An up-enumerated record labels its fragments too, and inheriting the
+// baseline's labels is not enough when the baseline could not tell its
+// attachment sites apart. AIBN's two cyanoisopropyl arms are automorphic, so
+// nothing about the two-methyl cut orders them; the enumeration then writes
+// tetrahedral tags that are relative to each centre's neighbour order, which
+// the input's numbering fixes, and the inherited labels rode along with it.
+// Two spellings emitted two labellings of one stereoisomer.
+TEST(FragmenterTest, EnumeratedMultiCutLabelsAreIndependentOfInputAtomOrder) {
+    const std::vector<std::pair<std::string, std::string>> spellings = {
+        {"CC(C)(C#N)/N=N/C(C)(C)C#N", "CC(C)(/N=N/C(C#N)(C)C)C#N"},
+        // The same automorphism without the E/Z bond, which the enumeration
+        // does not need: the defect is in the tetrahedral tags alone.
+        {"CC(C)(C#N)N=NC(C)(C)C#N", "C(C)(N=NC(C)(C#N)C)(C)C#N"},
+    };
+
+    for (const auto& spelling : spellings) {
+        ExpectSameMolecule(spelling.first, spelling.second);
+        for (const unsigned int max_cuts : {2u, 3u}) {
+            const std::set<LabelledFragmentationRecord> as_written =
+                RecordsForSpelling(spelling.first, max_cuts);
+            // Without enumerated records the comparison would pass on the
+            // baseline agreement alone, which round one already established.
+            ASSERT_GT(CountEnumeratedRecords(as_written), 0u)
+                << spelling.first << " at max_cuts=" << max_cuts;
+            EXPECT_EQ(as_written, RecordsForSpelling(spelling.second, max_cuts))
+                << spelling.first << " vs " << spelling.second
+                << " at max_cuts=" << max_cuts;
+        }
+    }
+}
+
+namespace {
+
+/// Write `smiles` from a shuffled atom order: same molecule, different
+/// numbering handed to the fragmenter. Deterministic, so a failure reproduces.
+std::string RespelledSmiles(const std::string& smiles, unsigned int seed) {
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+
+    std::vector<OEChem::OEAtomBase*> atoms;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        atoms.push_back(atom);
+    }
+    std::mt19937 generator(seed);
+    std::shuffle(atoms.begin(), atoms.end(), generator);
+    mol.OrderAtoms(atoms);
+
+    // Everything but Canonical: canonicalizing here would undo the shuffle and
+    // hand every seed the same string.
+    std::string respelled;
+    OEChem::OECreateSmiString(
+        respelled,
+        mol,
+        OEChem::OESMILESFlag::ISOMERIC & ~OEChem::OESMILESFlag::Canonical);
+    return respelled;
+}
+
+}  // namespace
+
+// Every attachment site of these rings is symmetry-equivalent to every other,
+// so the structural ranking separates none of them and the whole labelling
+// falls to the rendering tie-break. The ring stereochemistry is what makes the
+// placement observable: on the all-carbon analogues every labelling renders the
+// same string, and a test on those would pass without the tie-break existing.
+TEST(FragmenterTest, FullySymmetricMultiCutLabelsAreStableAcrossSpellings) {
+    const std::vector<std::pair<std::string, unsigned int>> molecules = {
+        // Five tied sites: 120 candidate labellings.
+        {"Cl[C@H]1[C@@H](Cl)[C@@H](Cl)[C@@H](Cl)[C@@H]1Cl", 5u},
+        // Six: 720, which is the bound exactly.
+        {"C[C@H]1[C@@H](C)[C@H](C)[C@@H](C)[C@H](C)[C@@H]1C", 6u},
+        {"C[C@H]1[C@@H](C)[C@@H](C)[C@@H](C)[C@@H](C)[C@@H]1C", 6u},
+    };
+
+    for (const auto& molecule : molecules) {
+        const std::set<LabelledFragmentationRecord> as_written =
+            RecordsForSpelling(molecule.first, molecule.second, molecule.second);
+        ASSERT_FALSE(as_written.empty())
+            << molecule.first << " has no " << molecule.second << "-cut record at all";
+
+        for (unsigned int seed = 1; seed <= 4; ++seed) {
+            const std::string respelled = RespelledSmiles(molecule.first, seed);
+            ExpectSameMolecule(molecule.first, respelled);
+            EXPECT_EQ(
+                as_written,
+                RecordsForSpelling(respelled, molecule.second, molecule.second))
+                << molecule.first << " vs " << respelled;
+        }
+    }
+}
+
+// Past the bound the labelling cannot be settled by rendering, and the order
+// left over is the input's own. Emitting it would put the defect back silently
+// on exactly the molecules most likely to hit it, so the fragmentation throws
+// instead -- the same choice max_up_enumerations makes.
+TEST(FragmenterTest, TieBreakBeyondTheCandidateBoundThrows) {
+    // Seven mutually equivalent methyls: 5040 candidate labellings.
+    OEChem::OEGraphMol mol =
+        MolFromSmiles("C[C@H]1[C@@H](C)[C@H](C)[C@@H](C)[C@H](C)[C@@H](C)[C@@H]1C");
+    OEChem::OESuppressHydrogens(mol);
+
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(7);
+    fragmenter.SetMinCuts(7);
+    EXPECT_THROW(fragmenter.Fragment(1, mol), FragmentationError);
+
+    // Six of the same sites stay inside the bound, so the throw is the bound
+    // and not the molecule.
+    Fragmenter within_bound;
+    within_bound.SetMaxCuts(6);
+    within_bound.SetMinCuts(6);
+    EXPECT_NO_THROW(within_bound.Fragment(1, mol));
 }
 
 }  // namespace test
