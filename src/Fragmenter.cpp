@@ -883,6 +883,254 @@ bool ApplyCutCombination(
     return true;
 }
 
+/// Role of an atom in the constant/variable partition of a cut molecule, as an
+/// OEPartPred part number.
+const unsigned int CONSTANT_ROLE = 1;
+const unsigned int VARIABLE_ROLE = 2;
+
+/// \brief Where one attachment sits in its part's canonical atom order.
+struct AttachmentSiteRank {
+    /// The smallest canonical position in the attachment atom's symmetry orbit.
+    /// The raw position separates any two atoms, but only up to automorphism:
+    /// OEChem settles an orbit in the order the atoms were handed to it, so two
+    /// spellings of one molecule disagree about which equivalent site comes
+    /// first while agreeing on the set of positions the orbit occupies.
+    /// Collapsing the orbit to its smallest position is therefore the part's
+    /// own, spelling-independent opinion about the site.
+    unsigned int orbit = 0;
+    /// The dummy's own canonical position, which is the order the SMILES writer
+    /// reaches the labels in.
+    unsigned int dummy = 0;
+};
+
+/// \brief Rank every labelled attachment of one part in its canonical atom order.
+///
+/// \param part One side of a cut molecule. Not modified; the ranking runs on a
+///        copy whose map indices are zeroed, because the labels are what the
+///        ranking decides and OEPerceiveSymmetry would otherwise let two labels
+///        make two equivalent sites look different.
+/// \returns One entry per attachment label found on `part`.
+std::map<unsigned int, AttachmentSiteRank> RankAttachmentSites(const OEChem::OEMolBase& part) {
+    OEChem::OEGraphMol scratch(part);
+
+    // Atom indices survive both the perception and the canonical reordering
+    // below, so they are what carries each label through a ranking that must
+    // not see the labels themselves.
+    std::map<unsigned int, unsigned int> dummy_by_label;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        const unsigned int label = atom->GetMapIdx();
+        if (label == 0) {
+            continue;
+        }
+        dummy_by_label[label] = atom->GetIdx();
+        atom->SetMapIdx(0);
+    }
+
+    OEChem::OEPerceiveSymmetry(scratch, true, true);
+    std::map<unsigned int, unsigned int> symmetry_classes;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        symmetry_classes[atom->GetIdx()] = atom->GetSymmetryClass();
+    }
+
+    // OECanonicalOrderAtoms rewrites the traversal order and leaves the indices
+    // alone, so an atom's position is where it now falls in the walk. Walking in
+    // that order also makes the first sighting of a symmetry class its smallest
+    // position, which is what emplace keeps.
+    OEChem::OECanonicalOrderAtoms(scratch);
+    std::map<unsigned int, unsigned int> positions;
+    std::map<unsigned int, unsigned int> orbit_positions;
+    unsigned int position = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        positions[atom->GetIdx()] = position;
+        orbit_positions.emplace(symmetry_classes[atom->GetIdx()], position);
+        ++position;
+    }
+
+    std::map<unsigned int, AttachmentSiteRank> ranks;
+    for (const auto& entry : dummy_by_label) {
+        OEChem::OEAtomBase* dummy = GetAtomByIndex(scratch, entry.second);
+        if (dummy == nullptr) {
+            continue;
+        }
+        OESystem::OEIter<OEChem::OEAtomBase> site = dummy->GetAtoms();
+        if (!site) {
+            continue;
+        }
+        ranks[entry.first] = {
+            orbit_positions[symmetry_classes[site->GetIdx()]],
+            positions[entry.second]
+        };
+    }
+    return ranks;
+}
+
+/// \brief Give a multi-cut fragmentation labels that describe only its fragments.
+///
+/// Cut order decided which attachment got `[*:1]` before this, and cut order is
+/// fixed by the parent's atom numbering. Two spellings of one molecule therefore
+/// labelled the same fragmentation differently, and the index, which buckets by
+/// exact constant SMILES, lost every pair between them. mmpdb is immune because
+/// it relabels each multi-cut fragmentation from the constant's canonical atom
+/// order (`mmpdblib/index_algorithm.py:441-476`); this is that rule in OEChem
+/// terms.
+///
+/// Attachments are ordered by the canonical rank of the constant atom each is
+/// bonded to, and the same permutation reaches the variable because both dummies
+/// of a cut share a label. Symmetry-equivalent constant sites tie there, the
+/// constant having no way to tell them apart, and the variable's own ranks break
+/// the tie. Should the variable tie as well, the two labels are interchangeable
+/// in both parts and any order will do, so the last key is only there to make
+/// the sort total.
+///
+/// \param cut_mol Cut molecule, whose dummies are relabelled in place.
+/// \param cut_count Number of cuts, and so the number of labels.
+/// \returns false, with the labels untouched, when the fragmentation has no one
+///          component carrying every label to serve as the variable.
+bool RelabelAttachmentsByCanonicalOrder(OEChem::OEMolBase& cut_mol, unsigned int cut_count) {
+    std::vector<unsigned int> parts(cut_mol.GetMaxAtomIdx(), 0);
+    const unsigned int part_count = OEChem::OEDetermineComponents(cut_mol, parts.data());
+
+    std::vector<std::set<unsigned int>> labels_by_part(part_count + 1);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
+        const unsigned int label = atom->GetMapIdx();
+        const unsigned int atom_idx = atom->GetIdx();
+        if (label == 0 || atom_idx >= parts.size()) {
+            continue;
+        }
+        const unsigned int part = parts[atom_idx];
+        if (part >= 1 && part <= part_count) {
+            labels_by_part[part].insert(label);
+        }
+    }
+
+    // The variable is the component carrying every label and the constant is
+    // everything else, the same split the caller makes. Relabelling only permutes
+    // 1..cut_count, so the split is the same before and after.
+    unsigned int variable_part = 0;
+    for (unsigned int part = 1; part <= part_count; ++part) {
+        if (labels_by_part[part].size() != cut_count) {
+            continue;
+        }
+        if (variable_part != 0) {
+            // Two components carry every label, so which one is the variable is
+            // not a property of the fragmentation. That needs a pair of ring
+            // cuts, which the multi-cut dedup key rejects downstream anyway;
+            // returning here keeps this function from inventing an answer.
+            return false;
+        }
+        variable_part = part;
+    }
+    if (variable_part == 0) {
+        return false;
+    }
+
+    std::vector<unsigned int> roles(parts.size(), 0);
+    for (std::size_t atom_idx = 0; atom_idx < parts.size(); ++atom_idx) {
+        if (parts[atom_idx] == 0) {
+            continue;
+        }
+        roles[atom_idx] = parts[atom_idx] == variable_part ? VARIABLE_ROLE : CONSTANT_ROLE;
+    }
+
+    OEChem::OEPartPred role_pred(roles.data(), static_cast<unsigned int>(roles.size()));
+    OEChem::OEGraphMol constant_side;
+    role_pred.SelectPart(CONSTANT_ROLE);
+    if (!OEChem::OESubsetMol(constant_side, cut_mol, role_pred)) {
+        return false;
+    }
+    OEChem::OEGraphMol variable_side;
+    role_pred.SelectPart(VARIABLE_ROLE);
+    if (!OEChem::OESubsetMol(variable_side, cut_mol, role_pred)) {
+        return false;
+    }
+
+    const std::map<unsigned int, AttachmentSiteRank> constant_ranks =
+        RankAttachmentSites(constant_side);
+    const std::map<unsigned int, AttachmentSiteRank> variable_ranks =
+        RankAttachmentSites(variable_side);
+
+    using LabelOrderKey = std::tuple<unsigned int, unsigned int, unsigned int, unsigned int>;
+    std::vector<LabelOrderKey> ordered;
+    ordered.reserve(cut_count);
+    for (unsigned int label = 1; label <= cut_count; ++label) {
+        const auto constant_rank = constant_ranks.find(label);
+        const auto variable_rank = variable_ranks.find(label);
+        if (constant_rank == constant_ranks.end() || variable_rank == variable_ranks.end()) {
+            return false;
+        }
+        ordered.emplace_back(
+            constant_rank->second.orbit,
+            variable_rank->second.orbit,
+            variable_rank->second.dummy,
+            label
+        );
+    }
+    std::sort(ordered.begin(), ordered.end());
+
+    std::map<unsigned int, unsigned int> relabelled;
+    for (std::size_t i = 0; i < ordered.size(); ++i) {
+        relabelled[std::get<3>(ordered[i])] = static_cast<unsigned int>(i + 1);
+    }
+
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
+        const auto entry = relabelled.find(atom->GetMapIdx());
+        if (entry != relabelled.end()) {
+            atom->SetMapIdx(entry->second);
+        }
+    }
+    return true;
+}
+
+/// \brief Put a relabelled cut molecule in an atom order the renderer can trust.
+///
+/// Deciding which dummy carries which label is only half of making a multi-cut
+/// fragmentation a function of its structure. OEChem's canonical ranking ignores
+/// map indices, so when two dummies are automorphic the SMILES writer settles
+/// which one it reaches first in input order, and one spelling emits
+/// `[*:1]CC[*:2]` where another emits `[*:2]CC[*:1]` for the very same labelled
+/// fragment. Encoding each label as an isotope on a scratch copy lets the
+/// canonical order see the labels, and replaying that order onto the real
+/// molecule leaves the writer only automorphisms of the labelled graph to break,
+/// which by definition render the same either way.
+///
+/// \param cut_mol Cut molecule, reordered in place. Atom indices are unchanged,
+///        so the caller's index bookkeeping survives.
+void OrderAtomsForLabelStableRendering(OEChem::OEMolBase& cut_mol) {
+    std::vector<OEChem::OEAtomBase*> atoms;
+    atoms.reserve(cut_mol.NumAtoms());
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
+        atoms.push_back(&*atom);
+    }
+
+    // A copy walks its source in traversal order, so the copy's nth atom is the
+    // nth entry above whatever index either molecule gives it.
+    OEChem::OEGraphMol scratch(cut_mol);
+    std::map<unsigned int, std::size_t> positions;
+    std::size_t position = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        positions[atom->GetIdx()] = position;
+        ++position;
+        if (atom->GetMapIdx() != 0) {
+            atom->SetIsotope(atom->GetMapIdx());
+        }
+    }
+    OEChem::OECanonicalOrderAtoms(scratch);
+
+    std::vector<OEChem::OEAtomBase*> ordered;
+    ordered.reserve(atoms.size());
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        const auto entry = positions.find(atom->GetIdx());
+        if (entry == positions.end() || entry->second >= atoms.size()) {
+            return;
+        }
+        ordered.push_back(atoms[entry->second]);
+    }
+    if (ordered.size() != atoms.size()) {
+        return;
+    }
+    cut_mol.OrderAtoms(ordered);
+}
+
 /// \brief Emit one role assignment's baseline record and its up-enumerations.
 ///
 /// `selected_index` names whichever component the cut count anchored the roles
@@ -1071,6 +1319,13 @@ void AddFragmentationForCombination(
     }
 
     const unsigned int cut_count = static_cast<unsigned int>(combination.size());
+    if (cut_count > 1) {
+        // Before anything renders, and once for every role assignment and every
+        // enumerated variant below, all of which reuse these labels.
+        RelabelAttachmentsByCanonicalOrder(cut_mol, cut_count);
+        OrderAtomsForLabelStableRendering(cut_mol);
+    }
+
     const std::vector<ComponentRecord> baseline = SplitComponents(cut_mol, cut_count == 1);
     if (baseline.size() < 2) {
         return;

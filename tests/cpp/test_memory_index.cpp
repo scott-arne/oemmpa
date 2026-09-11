@@ -251,6 +251,54 @@ TEST(MemoryIndexTest, DotSeparatedMultiCutVariablesCanPair) {
     EXPECT_EQ(pairs[0].GetHeavyAtomDelta(), 1);
 }
 
+namespace {
+
+/// The reference half of the multi-cut spelling test. Both partners below cut
+/// at the chloride and the hydroxyl, so they share this molecule's two-cut
+/// constants.
+const char* const MULTI_CUT_REFERENCE_SMILES = "CCC(Cl)CCO";
+
+std::vector<Fragmentation> TwoCutFragmentations(
+    unsigned int molecule_id,
+    const std::string& smiles
+) {
+    OEChem::OEGraphMol mol;
+    EXPECT_TRUE(OEChem::OESmilesToMol(mol, smiles));
+    OEChem::OESuppressHydrogens(mol);
+    Fragmenter fragmenter;
+    fragmenter.SetMinCuts(2);
+    fragmenter.SetMaxCuts(2);
+    return fragmenter.Fragment(molecule_id, mol);
+}
+
+std::size_t MultiCutPairCount(const std::string& partner_smiles) {
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, MULTI_CUT_REFERENCE_SMILES, "reference"));
+    index.AddMolecule(MakeMolecule(2, partner_smiles, "partner"));
+
+    for (const Fragmentation& fragmentation :
+         TwoCutFragmentations(1, MULTI_CUT_REFERENCE_SMILES)) {
+        index.AddFragmentation(fragmentation);
+    }
+    for (const Fragmentation& fragmentation : TwoCutFragmentations(2, partner_smiles)) {
+        index.AddFragmentation(fragmentation);
+    }
+
+    return index.GetPairs(QueryOptions()).size();
+}
+
+}  // namespace
+
+// The defect one layer up from the labels. The index buckets by exact constant
+// SMILES, so when the partner's spelling changes which attachment carries
+// `[*:1]` its multi-cut constants stop matching the reference's and the pairs
+// between them are silently absent -- nothing throws and nothing is logged.
+TEST(MemoryIndexTest, MultiCutPairsSurviveInputAtomOrder) {
+    const std::size_t baseline = MultiCutPairCount("CCCC(Cl)CCO");
+    ASSERT_GT(baseline, 0u) << "the two molecules share no multi-cut pair at all";
+    EXPECT_EQ(MultiCutPairCount("OCCC(Cl)CCC"), baseline);
+}
+
 TEST(MemoryIndexTest, TransformGroupingKeepsPairSupportUnderInvariantEnforcement) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "CC", "ethane-a"));

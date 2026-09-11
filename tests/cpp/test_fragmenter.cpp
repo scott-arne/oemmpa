@@ -510,7 +510,7 @@ TEST(FragmenterTest, RDKitTest2StringOutputChemistryIsRepresented) {
     const std::set<RDKitLikeRecord> expected = {
         {"", "[*:1]OC.[*:1]c1ccccc1"},
         {"", "[*:1]C.[*:1]Oc1ccccc1"},
-        {"[*:1]O[*:2]", "[*:1]c1ccccc1.[*:2]C"},
+        {"[*:1]O[*:2]", "[*:1]C.[*:2]c1ccccc1"},
     };
     EXPECT_EQ(records, expected);
 }
@@ -1203,14 +1203,16 @@ TEST(FragmenterTest, SmartsLabelsIgnoreTraversalOrderOnTheNormalizedParent) {
     // Which label went where, named outright, because agreement alone is also
     // satisfied by both spellings swapping the labels together. The variable
     // side of the chloride/hydroxyl double cut carries both attachments, so one
-    // string settles the whole assignment.
-    const std::string as_numbered = ExpectedFragmentSmiles("[*:2]CC[C@@H]([*:1])C");
-    const std::string swapped = ExpectedFragmentSmiles("[*:1]CC[C@@H]([*:2])C");
-    ASSERT_NE(as_numbered, swapped);
+    // string settles the whole assignment. `[*:1]` is the hydroxyl's because the
+    // constant `[*:1]O.[*:2]Cl` ranks its oxygen first, which is a fact about
+    // the constant rather than about where the cuts fell in the input.
+    const std::string by_constant_rank = ExpectedFragmentSmiles("[*:1]CC[C@@H]([*:2])C");
+    const std::string swapped = ExpectedFragmentSmiles("[*:2]CC[C@@H]([*:1])C");
+    ASSERT_NE(by_constant_rank, swapped);
     for (const bool canonical : {false, true}) {
         const std::vector<Fragmentation> records =
             TwoCutFragmentations(1, "C[C@H](Cl)CCO", canonical);
-        EXPECT_NE(RecordWithVariable(records, as_numbered), nullptr)
+        EXPECT_NE(RecordWithVariable(records, by_constant_rank), nullptr)
             << "canonical order: " << canonical;
         EXPECT_EQ(RecordWithVariable(records, swapped), nullptr)
             << "canonical order: " << canonical;
@@ -1251,6 +1253,103 @@ TEST(FragmenterTest, TraversalOrderDoesNotLoseMatchedPairs) {
     const std::size_t baseline = PairCountWithReorderedPartner(false);
     ASSERT_GT(baseline, 0u) << "the two molecules share no pair at all, so the test proves nothing";
     EXPECT_EQ(PairCountWithReorderedPartner(true), baseline);
+}
+
+namespace {
+
+/// The default fragmenter's records for one spelling, as a set: two spellings
+/// are free to emit in a different order, but not to emit different records.
+std::set<FragmentationRecord> RecordsForSpelling(
+    const std::string& smiles,
+    unsigned int max_cuts
+) {
+    OEChem::OEGraphMol mol = MolFromSmiles(smiles);
+    OEChem::OESuppressHydrogens(mol);
+    Fragmenter fragmenter;
+    fragmenter.SetMaxCuts(max_cuts);
+    return NormalizeFragmentations(fragmenter.Fragment(1, mol));
+}
+
+/// Asserted rather than assumed: a typo in either spelling would quietly turn
+/// the comparison below into a comparison of two different molecules, which
+/// proves nothing.
+void ExpectSameMolecule(const std::string& lhs, const std::string& rhs) {
+    OEChem::OEGraphMol left = MolFromSmiles(lhs);
+    OEChem::OEGraphMol right = MolFromSmiles(rhs);
+    OEChem::OESuppressHydrogens(left);
+    OEChem::OESuppressHydrogens(right);
+    EXPECT_EQ(OEChem::OEMolToSmiles(left), OEChem::OEMolToSmiles(right))
+        << lhs << " and " << rhs << " are not the same molecule";
+}
+
+}  // namespace
+
+// Attachment labels have to describe the fragments and nothing else. Handing
+// them out in cut order made them a function of the parent's atom numbering
+// instead, so two spellings of one molecule labelled the same fragmentation
+// differently and the index -- which buckets by exact constant SMILES -- lost
+// every pair between them.
+TEST(FragmenterTest, MultiCutLabelsAreIndependentOfInputAtomOrder) {
+    const std::vector<std::pair<std::string, std::string>> spellings = {
+        {"CCC(Cl)CCO", "OCCC(Cl)CC"},
+        {"C[C@H](Cl)CCO", "OCC[C@@H](Cl)C"},
+        // The chlorides are symmetry-equivalent in the constant `[*:1]Cl.[*:2]Cl`,
+        // so the constant cannot order them and the variable, whose two sites
+        // differ, has to. Leaving that tie to the parent's numbering would
+        // reintroduce the defect for every symmetric pair of substituents.
+        {"ClCCC(C)Cl", "ClC(C)CCCl"},
+        // Neither side can order the sites. The assignment is then genuinely
+        // free, but it still has to come out the same way for both spellings.
+        {"ClCCCl", "C(Cl)CCl"},
+    };
+
+    for (const auto& spelling : spellings) {
+        ExpectSameMolecule(spelling.first, spelling.second);
+        // Three cuttable bonds are reachable in every pair above, so max_cuts=3
+        // exercises the three-label permutation and not just the two-label swap.
+        for (const unsigned int max_cuts : {2u, 3u}) {
+            const std::set<FragmentationRecord> as_written =
+                RecordsForSpelling(spelling.first, max_cuts);
+            ASSERT_FALSE(as_written.empty()) << spelling.first;
+            EXPECT_EQ(as_written, RecordsForSpelling(spelling.second, max_cuts))
+                << spelling.first << " vs " << spelling.second
+                << " at max_cuts=" << max_cuts;
+        }
+    }
+}
+
+// Why an orbit's internal order is safe to settle arbitrarily on the constant
+// side and is not on the variable side. A multi-cut constant is rendered one
+// component at a time and joined in sorted order, so swapping the labels of two
+// symmetry-equivalent components cannot change the string. The connected part is
+// rendered in one go and the renderer emits labels verbatim, so the same swap
+// there is a different string -- which is why the tie is settled by the
+// variable's own canonical order rather than by whichever site the parent
+// happened to number first.
+TEST(FragmenterTest, SymmetricAttachmentSitesRenderIdentically) {
+    const std::string symmetric_constant = JoinSortedSmiles({
+        ExpectedFragmentSmiles("[*:1]Cl"),
+        ExpectedFragmentSmiles("[*:2]Cl")
+    });
+    const std::string swapped_constant = JoinSortedSmiles({
+        ExpectedFragmentSmiles("[*:2]Cl"),
+        ExpectedFragmentSmiles("[*:1]Cl")
+    });
+    EXPECT_EQ(symmetric_constant, swapped_constant);
+
+    const std::set<FragmentationRecord> records = RecordsForSpelling("ClCCCl", 2);
+    EXPECT_EQ(
+        records.count({
+            symmetric_constant,
+            ExpectedFragmentSmiles("[*:1]CC[*:2]"),
+            2
+        }),
+        1);
+
+    EXPECT_NE(
+        ExpectedFragmentSmiles("[*:1]CC[*:2]"),
+        ExpectedFragmentSmiles("[*:2]CC[*:1]"))
+        << "the variable side has no free tie to give away";
 }
 
 }  // namespace test

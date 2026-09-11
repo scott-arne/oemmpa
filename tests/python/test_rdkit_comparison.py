@@ -308,7 +308,7 @@ def test_rdkit_test2_string_output_fragment_records_are_represented():
     assert records == {
         ("", "[*:1]OC.[*:1]c1ccccc1"),
         ("", "[*:1]C.[*:1]Oc1ccccc1"),
-        ("[*:1]O[*:2]", "[*:1]c1ccccc1.[*:2]C"),
+        ("[*:1]O[*:2]", "[*:1]C.[*:2]c1ccccc1"),
     }
 
 

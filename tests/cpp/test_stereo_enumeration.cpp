@@ -80,10 +80,13 @@ const char* const CREATED_CENTER_SMILES = "OCC(CO)N";
 const char* const TWO_SIDED_SMILES = "OC(CC(CO)CO)CC(CO)CO";
 
 /// The baseline (label None) rendering of the kc=1, kv=1 fragmentation of
-/// TWO_SIDED_SMILES. Both strings are unique within that molecule's 33-record
-/// base set, so either one alone identifies the fragmentation.
-const char* const TWO_SIDED_BASE_VARIABLE = "[*:1]CC([*:2])CO";
-const char* const TWO_SIDED_BASE_CONSTANT = "[*:1]C(CC(CO)CO)O.[*:2]CO";
+/// TWO_SIDED_SMILES. The constant is unique within that molecule's 33-record
+/// base set and so identifies the fragmentation; the variable is not. A second
+/// fragmentation cuts a different pair of bonds out of the same repeated
+/// substructure and yields the same variable fragment, which canonical
+/// attachment labels render the same way.
+const char* const TWO_SIDED_BASE_VARIABLE = "[*:2]CC([*:1])CO";
+const char* const TWO_SIDED_BASE_CONSTANT = "[*:1]CO.[*:2]C(CC(CO)CO)O";
 
 /// A whole record reduced to the three fields enumeration can move.
 using LabelledRecord =
@@ -231,7 +234,7 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
     // the baseline strings here and canonicalized by the product's own
     // renderer, so the expectation is derived rather than copied. The constant
     // is built from the whole two-component baseline, so an implementation that
-    // emitted only the stereogenic component and dropped `.[*:2]CO` matches
+    // emitted only the stereogenic component and dropped `[*:1]CO.` matches
     // nothing in this set.
     const std::multiset<LabelledRecord> expected = {
         {
@@ -240,12 +243,12 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
             OEMMPA::Fragmentation::EnumerationLabel::None
         },
         {
-            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:1]C(", "[*:1][C@H](")),
+            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:2]C(", "[*:2][C@H](")),
             render_expected(TWO_SIDED_BASE_VARIABLE),
             OEMMPA::Fragmentation::EnumerationLabel::ConstantUp
         },
         {
-            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:1]C(", "[*:1][C@@H](")),
+            render_expected(replace_once(TWO_SIDED_BASE_CONSTANT, "[*:2]C(", "[*:2][C@@H](")),
             render_expected(TWO_SIDED_BASE_VARIABLE),
             OEMMPA::Fragmentation::EnumerationLabel::ConstantUp
         },
@@ -260,6 +263,14 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
             OEMMPA::Fragmentation::EnumerationLabel::VariableUp
         }
     };
+
+    // ConstantUp moves the constant, so the group has to be recognized by what
+    // enumeration leaves alone: the baseline variable, plus the constant
+    // component with no potential stereocentre. The sibling fragmentation that
+    // shares the baseline variable writes a different component there.
+    const std::string base_constant_rendered = render_expected(TWO_SIDED_BASE_CONSTANT);
+    const std::string fixed_constant_component =
+        base_constant_rendered.substr(0, base_constant_rendered.find('.') + 1);
 
     unsigned int baseline = 0;
     unsigned int constant_up = 0;
@@ -276,7 +287,8 @@ TEST(UpEnumeration, BothSidesEnumerateIndependently) {
                 baseline += in_group ? 1u : 0u;
                 break;
             case OEMMPA::Fragmentation::EnumerationLabel::ConstantUp:
-                in_group = base_variable;
+                in_group = base_variable &&
+                    fragmentation.GetConstantSmiles().rfind(fixed_constant_component, 0) == 0;
                 constant_up += in_group ? 1u : 0u;
                 break;
             case OEMMPA::Fragmentation::EnumerationLabel::VariableUp:

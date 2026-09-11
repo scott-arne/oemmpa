@@ -8,21 +8,21 @@ def test_mmpdb_phase10c_reference_snapshot_counts_are_stable():
 
     assert report.mmpdb_rule_environment_count == 321
     assert report.mmpdb_pair_row_count == 342
-    assert report.oemmpa_rule_environment_count == 315
+    # Equal since canonical multi-cut attachment labels: the six rule
+    # environments OEMMPA used to miss were ones whose constant it spelled two
+    # ways, so mmpdb's single bucket had no counterpart to match.
+    assert report.oemmpa_rule_environment_count == 321
 
 
 def test_mmpdb_phase10c_surplus_rows_have_chemistry_categories():
     report = build_phase10c_surplus_report()
 
     assert report.matched_mmpdb_category_counts == {
-        "canonical-smiles-environment-encoding": 156,
-        "same-support-and-constant-fragmentation-policy": 29,
-        "same-support-openeye-fragmentation-policy": 6,
+        "canonical-smiles-environment-encoding": 185,
+        "same-support-openeye-fragmentation-policy": 12,
         "same-transform-environment-encoding": 124,
     }
-    assert report.missing_mmpdb_category_counts == {
-        "mmpdb-canonical-aromatic-encoding-collapsed": 6,
-    }
+    assert report.missing_mmpdb_category_counts == {}
     assert report.surplus_oemmpa_category_counts == {}
     assert report.unclassified_mmpdb_rows == []
     assert report.unclassified_oemmpa_rows == []
@@ -38,8 +38,8 @@ def test_mmpdb_phase10c_hydrogen_transforms_are_matched_when_supported():
 def test_mmpdb_phase10c_surplus_classification_explains_net_count_delta():
     report = build_phase10c_surplus_report()
 
-    assert report.matched_mmpdb_row_count == 315
-    assert report.missing_mmpdb_row_count == 6
+    assert report.matched_mmpdb_row_count == 321
+    assert report.missing_mmpdb_row_count == 0
     assert report.unclassified_mmpdb_rows == []
     assert report.surplus_oemmpa_row_count == 0
     assert (
