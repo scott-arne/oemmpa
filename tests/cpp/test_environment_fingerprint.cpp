@@ -122,6 +122,47 @@ TEST(EnvironmentFingerprintTest, EquivalentConstantsUseCanonicalLocalOrdering) {
     }
 }
 
+// mmpdb writes the H invariant from RDKit's GetTotalNumHs(), which excludes an
+// isotope-labelled hydrogen: RemoveHs keeps that hydrogen as an atom of the
+// graph, so it is a neighbour, not part of the atom's hydrogen count. OEChem's
+// GetTotalHCount() counts it, which made a deuterated attachment carbon read
+// H1 and collapse onto the protio constant's radius-1 environment. mmpdb 3.1.4
+// keeps them apart: [C;X4;H0;+0;!R] against [C;X4;H1;+0;!R] (oracle in the
+// Task 26 plan text, four-molecule d/h-propanol file).
+TEST(EnvironmentFingerprintTest, IsotopicHydrogenIsNotCountedAsHydrogen) {
+    const std::vector<EnvironmentFingerprint> deuterated =
+        ComputeConstantEnvironmentFingerprints("[*:1]C([2H])(C)C", 0, 2);
+    const std::vector<EnvironmentFingerprint> protio =
+        ComputeConstantEnvironmentFingerprints("[*:1]C(C)C", 0, 2);
+    ASSERT_EQ(deuterated.size(), 3);
+    ASSERT_EQ(protio.size(), 3);
+
+    EXPECT_EQ(deuterated[0].GetSmarts(), protio[0].GetSmarts());
+    EXPECT_EQ(
+        deuterated[1].GetSmarts(),
+        "A{0:[#0;X1;H0;+0;!R:1],1:[C;X4;H0;+0;!R]};B{0-1}");
+    EXPECT_EQ(
+        protio[1].GetSmarts(),
+        "A{0:[#0;X1;H0;+0;!R:1],1:[C;X4;H1;+0;!R]};B{0-1}");
+    EXPECT_NE(deuterated[1].GetSmarts(), protio[1].GetSmarts());
+
+    // At radius 2 the deuterium is an atom of the environment in its own right,
+    // as it is in mmpdb, and the attachment carbon still reads H0.
+    EXPECT_NE(deuterated[2].GetSmarts().find("1:[C;X4;H0;+0;!R]"), std::string::npos)
+        << deuterated[2].GetSmarts();
+    EXPECT_NE(deuterated[2].GetSmarts().find("[H;X1;H0;+0;!R]"), std::string::npos)
+        << deuterated[2].GetSmarts();
+    EXPECT_EQ(deuterated[2].GetSmarts().find("H1"), std::string::npos)
+        << deuterated[2].GetSmarts();
+
+    // A labelled hydrogen further from the attachment must not disturb the
+    // attachment carbon's own count.
+    const std::vector<EnvironmentFingerprint> remote =
+        ComputeConstantEnvironmentFingerprints("[*:1]CCC([2H])C", 0, 1);
+    ASSERT_EQ(remote.size(), 2);
+    EXPECT_EQ(remote[1].GetSmarts(), "A{0:[#0;X1;H0;+0;!R:1],1:[C;X4;H2;+0;!R]};B{0-1}");
+}
+
 TEST(EnvironmentFingerprintTest, MultiCutQueryEnvironmentKeysAreStable) {
     const std::vector<QueryEnvironmentKey> first =
         MultiCutQueryEnvironmentKeys("Nc1ccccc1O");

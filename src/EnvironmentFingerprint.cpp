@@ -59,11 +59,28 @@ std::string atom_element_token(const OEChem::OEAtomBase& atom) {
     return symbol;
 }
 
+/// The hydrogen count mmpdb writes into the H invariant. mmpdb reads RDKit's
+/// GetTotalNumHs(), which excludes an isotope-labelled hydrogen: RemoveHs
+/// keeps that hydrogen as an atom of the graph, so it is a neighbour there,
+/// not part of the count. OEChem's GetTotalHCount() includes it, so the
+/// labelled ones are taken back out. The X invariant needs no such
+/// correction: OEChem's GetDegree() already counts the labelled hydrogen as a
+/// connection, as RDKit's GetTotalDegree() does.
+unsigned int deletable_hydrogen_count(const OEChem::OEAtomBase& atom) {
+    unsigned int labelled_hydrogens = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> neighbor = atom.GetAtoms(); neighbor; ++neighbor) {
+        if (neighbor->GetAtomicNum() == 1 && neighbor->GetIsotope() != 0) {
+            ++labelled_hydrogens;
+        }
+    }
+    return atom.GetTotalHCount() - labelled_hydrogens;
+}
+
 std::string atom_smarts_token(const OEChem::OEAtomBase& atom) {
     std::ostringstream token;
     token << "[" << atom_element_token(atom)
           << ";X" << atom.GetDegree()
-          << ";H" << atom.GetTotalHCount()
+          << ";H" << deletable_hydrogen_count(atom)
           << ";" << charge_token(atom.GetFormalCharge())
           << ";" << (atom.IsInRing() ? "R" : "!R");
 
