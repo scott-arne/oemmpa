@@ -55,6 +55,38 @@ std::size_t atom_stereo_count(const std::string& smiles) {
     return count;
 }
 
+/// OEChem's canonical isomeric SMILES, used below as the molecule-identity
+/// relation: two writings that differ in exactly one tag denote the same
+/// molecule precisely when this string is the same for both, which is precisely
+/// when that tag carries no information and has to be cleared.
+std::string canonical_isomeric(const std::string& smiles) {
+    const OEChem::OEGraphMol mol = parse(smiles);
+    std::string canonical;
+    OEChem::OECreateIsoSmiString(canonical, mol);
+    return canonical;
+}
+
+/// Assert that the one tag distinguishing `left_smiles` from `right_smiles`
+/// survives rendering exactly when it distinguishes two molecules.
+///
+/// `other_tags` is how many tetrahedral tags the render carries besides the one
+/// under test, so the total pins whether it was kept without pinning a
+/// canonical output string that OEChem is free to re-spell.
+void expect_tag_kept_iff_informative(
+    const std::string& left_smiles,
+    const std::string& right_smiles,
+    std::size_t other_tags
+) {
+    const bool informative = canonical_isomeric(left_smiles) != canonical_isomeric(right_smiles);
+    const std::string left = render_suppressed(left_smiles);
+    const std::string right = render_suppressed(right_smiles);
+    const std::size_t expected = other_tags + (informative ? 1u : 0u);
+    EXPECT_EQ(atom_stereo_count(left), expected) << left_smiles << " -> " << left;
+    EXPECT_EQ(atom_stereo_count(right), expected) << right_smiles << " -> " << right;
+    EXPECT_EQ(left != right, informative)
+        << left_smiles << " -> " << left << " / " << right_smiles << " -> " << right;
+}
+
 bool has_bond_direction(const std::string& smiles) {
     return smiles.find('/') != std::string::npos || smiles.find('\\') != std::string::npos;
 }
@@ -376,6 +408,75 @@ TEST(FragmentSmiles, NitrogenTagKeptOnlyInThreeRingsOrBridgeheads) {
     EXPECT_EQ(
         render_suppressed("C1CC[N@]2CCC[C@H]2C1"), render_suppressed("C1CCN2CCC[C@H]2C1"));
     EXPECT_EQ(render_suppressed("[*:1][N@](C)CCO"), render_suppressed("[*:1]N(C)CCO"));
+}
+
+// Two lone-pair nitrogens in one three-membered ring decide between them
+// whether the third ring atom is a stereocentre at all. With the nitrogen
+// pyramids matching, a C2 axis runs through the ring carbon, its two ring
+// branches are homotopic and its tag says nothing; with them opposed the two
+// branches are mirror images, the carbon is pseudo-asymmetric and its tag has
+// to survive. The rows below are the full eight-writing sign table, paired so
+// that the two members of a pair differ only in the carbon tag.
+//
+// The verdict per row is not asserted as a literal but derived from the only
+// oracle that needs no second toolkit: flipping the carbon tag changes the
+// molecule exactly when the tag means something. RDKit 2026.03.6 reaches the
+// opposite verdict on all four rows, because its SMILES parser reads these
+// inputs as different molecules rather than because it applies a different
+// cleanup rule; the deviation is recorded in tests/parity/upstream_audit.tsv.
+TEST(FragmentSmiles, MutuallyDependentLonePairNitrogensDecideTheRingCarbonTag) {
+    const std::vector<std::pair<std::string, std::string>> carbon_epimers = {
+        {"[C@H]1(C)[N@](C)[N@]1C", "[C@@H]1(C)[N@](C)[N@]1C"},
+        {"[C@H]1(C)[N@](C)[N@@]1C", "[C@@H]1(C)[N@](C)[N@@]1C"},
+        {"[C@H]1(C)[N@@](C)[N@]1C", "[C@@H]1(C)[N@@](C)[N@]1C"},
+        {"[C@H]1(C)[N@@](C)[N@@]1C", "[C@@H]1(C)[N@@](C)[N@@]1C"},
+    };
+    for (const std::pair<std::string, std::string>& row : carbon_epimers) {
+        // Both nitrogens keep their tags on every row, so the two they leave
+        // behind are the tags the carbon's own is counted against.
+        expect_tag_kept_iff_informative(row.first, row.second, 2u);
+    }
+
+    // Half the table has to fall on each side, or the assertion above would
+    // hold for a renderer that always kept the tag or always dropped it.
+    std::size_t kept = 0;
+    for (const std::pair<std::string, std::string>& row : carbon_epimers) {
+        kept += atom_stereo_count(render_suppressed(row.first)) == 3u ? 1u : 0u;
+    }
+    EXPECT_EQ(kept, 2u);
+}
+
+// The same lone-pair nitrogen, now as the dependent centre instead of the
+// partner. In 1,2-dimethylaziridine the nitrogen's two ring branches are a
+// CH(CH3) and a CH2, so both centres stand on their own and every writing is
+// its own molecule. Add a methyl to the second ring carbon and the branches
+// become constitutionally identical: the nitrogen then survives only where the
+// two carbons are opposed and is meaningless where they match. Both families
+// are checked against the same collapse criterion as the diaziridine above, and
+// RDKit 2026.03.6 agrees with every verdict here -- the toolkits part company
+// only once two lone-pair centres depend on each other.
+TEST(FragmentSmiles, LonePairRingNitrogenTagFollowsEpimerCollapse) {
+    const std::vector<std::pair<std::string, std::string>> unsymmetric_ring = {
+        {"C[C@H]1C[N@]1C", "C[C@H]1C[N@@]1C"},
+        {"C[C@@H]1C[N@]1C", "C[C@@H]1C[N@@]1C"},
+    };
+    for (const std::pair<std::string, std::string>& row : unsymmetric_ring) {
+        expect_tag_kept_iff_informative(row.first, row.second, 1u);
+        EXPECT_EQ(atom_stereo_count(render_suppressed(row.first)), 2u) << row.first;
+    }
+
+    const std::vector<std::pair<std::string, std::string>> symmetric_ring = {
+        {"C[C@H]1[C@@H](C)[N@]1C", "C[C@H]1[C@@H](C)[N@@]1C"},
+        {"C[C@H]1[C@H](C)[N@]1C", "C[C@H]1[C@H](C)[N@@]1C"},
+        {"C[C@@H]1[C@@H](C)[N@]1C", "C[C@@H]1[C@@H](C)[N@@]1C"},
+        {"C[C@@H]1[C@H](C)[N@]1C", "C[C@@H]1[C@H](C)[N@@]1C"},
+    };
+    std::size_t kept = 0;
+    for (const std::pair<std::string, std::string>& row : symmetric_ring) {
+        expect_tag_kept_iff_informative(row.first, row.second, 2u);
+        kept += atom_stereo_count(render_suppressed(row.first)) == 3u ? 1u : 0u;
+    }
+    EXPECT_EQ(kept, 2u);
 }
 
 // Trivalent phosphorus and arsenic pyramids are configurationally stable, and

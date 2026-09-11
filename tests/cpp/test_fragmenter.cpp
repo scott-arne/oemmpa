@@ -970,6 +970,28 @@ TEST(FragmenterTest, StereoOnlyEpimersDoNotCollapseOntoOneRecordSet) {
     EXPECT_NE(azacage_left, azacage_right);
 }
 
+// The diaziridine's mutually dependent nitrogen pair, carried through
+// production fragmentation. With the two nitrogen pyramids opposed the ring
+// carbon is pseudo-asymmetric, so its epimers are two molecules and must reach
+// different record sets; with the pyramids matching the ring has a C2 axis
+// through that carbon, the two writings are one molecule, and the record sets
+// have to be identical. Only checking the first half would be satisfied by a
+// renderer that never dropped the tag, which would split one molecule into two
+// matched pairs as surely as dropping it merges two into one.
+TEST(FragmenterTest, DiaziridineCarbonTagTracksItsNitrogenPair) {
+    const std::set<std::string> opposed_left =
+        AllFragmentComponents(SingleCutFragmentations("[C@H]1(CCO)[N@](C)[N@@]1C"));
+    const std::set<std::string> opposed_right =
+        AllFragmentComponents(SingleCutFragmentations("[C@@H]1(CCO)[N@](C)[N@@]1C"));
+    EXPECT_TRUE(opposed_left.count(ExpectedFragmentSmiles("[C@H]1(CC[*:1])[N@](C)[N@@]1C")))
+        << ExpectedFragmentSmiles("[C@H]1(CC[*:1])[N@](C)[N@@]1C");
+    EXPECT_NE(opposed_left, opposed_right);
+
+    EXPECT_EQ(
+        AllFragmentComponents(SingleCutFragmentations("[C@H]1(CCO)[N@](C)[N@]1C")),
+        AllFragmentComponents(SingleCutFragmentations("[C@@H]1(CCO)[N@](C)[N@]1C")));
+}
+
 // Capping the attachment with hydrogen can destroy the stereochemistry the
 // constant was carrying: the ring pair loses the partner that gave it meaning,
 // and the exocyclic alkene loses the substituent that defined its geometry. The
