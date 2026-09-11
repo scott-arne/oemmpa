@@ -79,7 +79,7 @@ from pathlib import Path
 
 import pytest
 from mmpdb_surplus_classifier import _canonical_smiles
-from oemmpa.oemmpa import Fragmentation, Fragmenter
+from oemmpa.oemmpa import Fragmentation, Fragmenter, MoleculeRecord
 from openeye import oechem
 from rdkit import Chem, RDLogger
 
@@ -217,6 +217,25 @@ def _project(smiles):
     return _canonical_smiles(mapped)
 
 
+def _labelled_hydrogens(smiles):
+    """Return how many isotope-labelled hydrogens a SMILES carries.
+
+    ``[2H]`` and ``[3H]`` are the whole of the difference between mmpdb's
+    textual heavy-atom rule and a structural count, so the correction is
+    factored out here and shared by the recomputation below and by the test
+    that pins the divergence.
+
+    :param smiles: Any SMILES RDKit can parse.
+    :returns: The count of hydrogens carrying a non-zero isotope.
+    :raises AssertionError: When the SMILES does not parse.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None, smiles
+    return sum(
+        1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 1 and atom.GetIsotope()
+    )
+
+
 def _heavy_atoms(projected):
     """Return the heavy-atom count mmpdb would store for a projected SMILES.
 
@@ -227,7 +246,10 @@ def _heavy_atoms(projected):
     counts against the ones mmpdb stored, so the recomputation has to use
     mmpdb's rule or every deuterated oracle row would read as a projection
     failure. Labelled hydrogens are the only difference between the two rules,
-    and the same correction is applied to both sides of the comparison.
+    and the same correction is applied to both sides of the comparison, which
+    is why the record sets line up even though OEMMPA itself counts
+    structurally -- see
+    :func:`test_heavy_counts_diverge_from_mmpdb_by_the_labelled_hydrogens`.
 
     :param projected: A projected fragment SMILES.
     :returns: The count of atoms mmpdb treats as heavy.
@@ -235,10 +257,26 @@ def _heavy_atoms(projected):
     """
     mol = Chem.MolFromSmiles(projected)
     assert mol is not None, projected
-    labelled_hydrogens = sum(
-        1 for atom in mol.GetAtoms() if atom.GetAtomicNum() == 1 and atom.GetIsotope()
-    )
-    return mol.GetNumHeavyAtoms() + labelled_hydrogens
+    return mol.GetNumHeavyAtoms() + _labelled_hydrogens(projected)
+
+
+def _oemmpa_heavy_atoms(fragment_smiles):
+    """Return OEMMPA's own heavy-atom count for a fragment SMILES.
+
+    ``MoleculeRecord.FromSmiles`` counts the parsed graph with ``OEIsHeavy()``,
+    the same predicate ``validate_and_measure_fragmentation`` uses to fill a
+    ``Fragmentation``'s variable metrics and ``DuckDBStore`` uses to write
+    ``variable_num_heavies``.  Reading the count through a record rather than
+    through ``Fragmentation.GetVariableHeavyAtomCount()`` is forced rather than
+    chosen: ``Fragmenter.Fragment`` leaves the metrics unset (they are filled at
+    index insertion), neither ``MemoryIndex`` nor ``FragmentationMethod`` hands
+    a stored fragmentation back, and ``Fragmentation`` exposes no constant-side
+    count at all.
+
+    :param fragment_smiles: A fragment SMILES as OEMMPA spells it.
+    :returns: OEMMPA's heavy-atom count for that fragment.
+    """
+    return MoleculeRecord.FromSmiles(0, fragment_smiles).GetHeavyAtomCount()
 
 
 def _is_hydrogen_fragment(projected):
@@ -333,13 +371,20 @@ def _load_oracle():
     return oracle
 
 
-def _oemmpa_rows(smiles):
-    """Return the projected single-cut record set OEMMPA produces for ``smiles``."""
+def _oemmpa_fragments(smiles):
+    """Return OEMMPA's single-cut fragmentations for ``smiles``.
+
+    :param smiles: A parent SMILES.
+    :returns: A list of ``(record, variable_smiles, constant_smiles)`` in
+        emission order.  The raw fragment SMILES ride along so a caller can
+        measure them with OEMMPA's own tooling; :func:`_oemmpa_rows` keeps only
+        the projected records.
+    """
     mol = oechem.OEGraphMol()
     assert oechem.OESmilesToMol(mol, smiles), smiles
     fragmenter = Fragmenter()
     fragmenter.SetMaxCuts(1)
-    records = []
+    fragments = []
     for fragmentation in fragmenter.Fragment(1, mol):
         assert fragmentation.GetCutCount() == 1, smiles
         label = (
@@ -347,13 +392,15 @@ def _oemmpa_rows(smiles):
             if fragmentation.GetEnumerationLabel() == ENUMERATION_LABEL_NONE
             else ENUMERATED
         )
-        records.append(
-            _record(
-                fragmentation.GetVariableSmiles(),
-                fragmentation.GetConstantSmiles(),
-                label,
-            )
-        )
+        variable = fragmentation.GetVariableSmiles()
+        constant = fragmentation.GetConstantSmiles()
+        fragments.append((_record(variable, constant, label), variable, constant))
+    return fragments
+
+
+def _oemmpa_rows(smiles):
+    """Return the projected single-cut record set OEMMPA produces for ``smiles``."""
+    records = [record for record, _, _ in _oemmpa_fragments(smiles)]
     _assert_no_duplicate_records(records, f"the fragmenter for {smiles}")
     return set(records)
 
@@ -771,6 +818,67 @@ def test_oracle_contains_no_hydrogen_cut_rows():
         # The structural test must actually recognise upstream's spelling.
         assert _is_hydrogen_fragment(_project(MMPDB_HYDROGEN_CUT_SMILES))
         assert _hydrogen_oracle_rows(rows) == []
+
+
+def test_heavy_counts_diverge_from_mmpdb_by_the_labelled_hydrogens():
+    """OEMMPA reads a ``[2H]`` as a hydrogen where mmpdb reads it as heavy.
+
+    ``get_num_heavies_from_smiles`` walks the SMILES text and skips only a bare
+    ``[H]`` and any token holding a ``*``, so ``[2H]`` and ``[3H]`` land in the
+    count mmpdb stores; OEMMPA counts the parsed graph with ``OEIsHeavy()`` and
+    they do not.  The divergence is deliberate -- mmpdb reference defect 6,
+    recorded in ``tests/parity/upstream_audit.tsv`` -- and the record
+    comparison cannot see it, because :func:`_heavy_atoms` recomputes both
+    sides with mmpdb's rule so that record identity survives projection.  This
+    test therefore reads the two counts directly and pins the offset between
+    them, so the divergence stays exactly one labelled hydrogen wide instead of
+    drifting unobserved.
+    """
+    with _rdkit_warnings_silenced():
+        rows_by_title = {}
+        for row in _read_oracle_rows():
+            record = _record(
+                row["variable_smiles"],
+                row["constant_smiles"],
+                MMPDB_LABELS[row["enumeration_label"]],
+            )
+            rows_by_title.setdefault(row["molecule_id"], {})[record] = row
+
+        allowed = {_allowlist_key(row) for row in _load_allowlist()}
+        labelled_titles = set()
+        for title, smiles in _read_cases():
+            rows = rows_by_title.get(title, {})
+            for record, variable, constant in _oemmpa_fragments(smiles):
+                row = rows.get(record)
+                if row is None:
+                    # A record mmpdb never produced carries no stored count to
+                    # compare against.  Skipping it is safe only because it is
+                    # already an allowlisted difference; anything else fails.
+                    assert (title, OEMMPA_SURPLUS, record[0], record[1]) in allowed, (
+                        f"{title}: {variable} / {constant} matches no oracle row"
+                    )
+                    continue
+                variable_labels = _labelled_hydrogens(record[0])
+                constant_labels = _labelled_hydrogens(record[1])
+                assert _oemmpa_heavy_atoms(variable) == (
+                    int(row["variable_num_heavies"]) - variable_labels
+                ), row
+                assert _oemmpa_heavy_atoms(constant) == (
+                    int(row["constant_num_heavies"]) - constant_labels
+                ), row
+                if variable_labels or constant_labels:
+                    labelled_titles.add(title)
+
+        # Every offset is zero on a fixture with no labelled hydrogen, so the
+        # comparison above says nothing unless the deuterated structures are
+        # actually reached.  The expected set is derived from the fixture
+        # rather than named, so a labelled structure whose records never meet
+        # an oracle row fails here instead of quietly dropping out.
+        expected_titles = {
+            title for title, smiles in _read_cases() if _labelled_hydrogens(smiles)
+        }
+        assert len(expected_titles) >= 3
+        assert labelled_titles == expected_titles
 
 
 def test_no_baseline_record_differs(differences):
