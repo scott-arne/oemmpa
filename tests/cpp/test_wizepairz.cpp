@@ -602,3 +602,48 @@ TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
     EXPECT_TRUE(saw_forward) << "Forward pair (chlorobenzamide->ethylbenzamide) not found";
     EXPECT_TRUE(saw_reverse) << "Reverse pair (ethylbenzamide->chlorobenzamide) not found";
 }
+
+// Pins the denominator GetPairs hands the ratio bounds for the target side: it
+// must be the target molecule's heavy-atom count, not the source's.
+//
+// Same two molecules as the test above (chlorobenzamide 10 heavy atoms,
+// ethylbenzamide 11) with variables [*:1]Cl (1) and [*:1]CC (2). Forward, the
+// target side scores 2/11 = 0.1818 correctly but 2/10 = 0.2 against the source
+// molecule, so a maximum of 0.19 keeps the forward pair only with the right
+// denominator. Every other side stays under the bound either way: forward source
+// 1/10 = 0.1, reverse source 2/11 = 0.1818, reverse target 1/10 = 0.1.
+TEST(WizePairZTest, VariableRatioUsesEachSidesOwnMoleculeAsDenominator) {
+    const MoleculeRecord chlorobenzamide =
+        MoleculeRecord::FromSmiles(1, "Clc1ccc(cc1)C(=O)N", "chlorobenzamide");
+    const MoleculeRecord ethylbenzamide =
+        MoleculeRecord::FromSmiles(2, "CCc1ccc(cc1)C(=O)N", "ethylbenzamide");
+    ASSERT_EQ(chlorobenzamide.GetHeavyAtomCount(), 10u);
+    ASSERT_EQ(ethylbenzamide.GetHeavyAtomCount(), 11u);
+
+    WizePairZMethod method;
+    method.AddMolecule(chlorobenzamide);
+    method.AddMolecule(ethylbenzamide);
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    options.SetMaxVariableRatio(0.19);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "chlorobenzamide" && pair.GetTargetExternalId() == "ethylbenzamide") {
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 2u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "ethylbenzamide" && pair.GetTargetExternalId() == "chlorobenzamide") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 2u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward)
+        << "Forward pair dropped at max_variable_ratio 0.19: the target side's 2 heavy "
+           "atoms were scored against the wrong molecule";
+    EXPECT_TRUE(saw_reverse)
+        << "Reverse pair (ethylbenzamide->chlorobenzamide) not found";
+}

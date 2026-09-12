@@ -33,12 +33,12 @@ METHODS = [CONTROL, *MCS_METHODS]
 METHODS_WITH_HYDROGEN_PAIRS = ["fragmentation", "wizepairz"]
 METHODS_WITHOUT_HYDROGEN_PAIRS = ["dmcss", "oemedchem"]
 
-# DMCSS is absent from the DuckDB half because none of its pair sets can be
-# persisted at all on this fixture: it emits pairs of up to 7 cuts, and the
-# store's environment fingerprint rejects a constant with more than three
-# attachment labels. That limitation predates the variable-size bounds and is
-# pinned by test_dmcss_pair_sets_cannot_be_persisted_yet rather than skipped, so
-# the day it lifts, that test fails and says to put DMCSS back in this list.
+# DMCSS is absent from the DuckDB half because saving its unbounded pair set on
+# this fixture raises: it emits pairs of up to 7 cuts, and the store's
+# environment fingerprint rejects a constant with more than three attachment
+# labels. That limitation predates the variable-size bounds and is pinned by
+# test_dmcss_pair_sets_cannot_be_persisted_yet rather than skipped, so the day it
+# lifts, that test fails and says to put DMCSS back in this list.
 STORE_METHODS = [CONTROL, "wizepairz", "oemedchem"]
 
 # Each value must delete at least one pair from every method without deleting
@@ -233,8 +233,10 @@ def test_dmcss_pair_sets_cannot_be_persisted_yet(tmp_path):
     DMCSS cuts up to seven bonds, and a constant with more than three
     attachment labels has no MMPDB-shaped environment fingerprint
     (src/EnvironmentFingerprint.cpp), so the save fails before any bound is
-    involved. Asserting the failure keeps the gap visible: when DMCSS becomes
-    persistable this test fails and STORE_METHODS should regain "dmcss".
+    involved. This pins exactly that much -- the unbounded save raises, which is
+    why DMCSS cannot join STORE_METHODS -- and not the stronger claim that every
+    bounded subset of its pairs is unsaveable. When DMCSS becomes persistable
+    this test fails and STORE_METHODS should regain "dmcss".
     """
     from oemmpa import DuckDBStore
 
@@ -254,6 +256,9 @@ def test_store_matches_memory_under_each_bound(method, bound, tmp_path):
     persisted = _store_pair_keys(
         analyzer, {name: value}, tmp_path / f"{method}-{name}.duckdb"
     )
+    # Two empty pair sets compare equal, so the cell would prove nothing if the
+    # bound happened to delete everything.
+    assert in_memory, f"{method}/{name}: the bounded in-memory pair set is empty"
     assert persisted == in_memory, (
         f"{method}/{name}: the store and the in-memory query disagree"
     )

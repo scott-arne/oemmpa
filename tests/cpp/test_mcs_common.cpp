@@ -24,7 +24,9 @@ OEChem::OEGraphMol mol_from_smiles(const std::string& smiles) {
 ///
 /// The heavy-atom delta is derived from the two counts so the delta filters see
 /// a self-consistent pair, and the per-side counts are recorded the way
-/// mcs::make_matched_pair records them.
+/// mcs::make_matched_pair records them. The molecule heavy counts the ratio
+/// bounds divide by are supplied by each caller as filter arguments and are
+/// deliberately unrelated to the two placeholder molecule SMILES here.
 OEMMPA::MatchedPair pair_with_variables(
     const std::string& source_variable,
     const std::string& target_variable,
@@ -161,4 +163,26 @@ TEST(MCSCommonTest, HydrogenPseudoFragmentIsExemptButItsHeavySideIsNot) {
     OEMMPA::QueryOptions min_ratio;
     min_ratio.SetMinVariableRatio(0.05);
     EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 11u, min_ratio));
+}
+
+TEST(MCSCommonTest, HydrogenPseudoFragmentIsExemptOnTheTargetSideToo) {
+    // The mirror image of the case above: a reverse pair records the hydrogen
+    // pseudo-fragment on the target side, so the exemption has to be tested per
+    // side rather than only where the forward orientation happens to put it.
+    const OEMMPA::MatchedPair pair =
+        pair_with_variables("[*:1]C", OEMMPA::kHydrogenVariableSmiles, 1u, 0u);
+
+    OEMMPA::QueryOptions min_one;
+    min_one.SetMinVariableHeavies(1);
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 11u, 10u, min_one));
+
+    // Exempting the target side must not turn into a whole-pair bypass: the heavy
+    // source side is still gated.
+    OEMMPA::QueryOptions min_two;
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_FALSE(OEMMPA::mcs::passes_atom_delta_filters(pair, 11u, 10u, min_two));
+
+    OEMMPA::QueryOptions min_ratio;
+    min_ratio.SetMinVariableRatio(0.05);
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 11u, 10u, min_ratio));
 }

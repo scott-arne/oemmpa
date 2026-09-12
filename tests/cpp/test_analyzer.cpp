@@ -376,6 +376,47 @@ TEST(DMCSSVariableCounts, ReversePairCarriesSwappedCounts) {
     EXPECT_TRUE(saw_reverse) << "Reverse pair (ethyl->chloro) not found";
 }
 
+// Pins the denominator DMCSS hands the ratio bounds for the target side.
+//
+// Same molecules as the test above (chlorobenzene 7 heavy atoms, ethylbenzene 8)
+// with variables [*:1]Cl (1) and [*:1]CC (2). Forward, the target side scores
+// 2/8 = 0.25 correctly but 2/7 = 0.2857 against the source molecule, so a maximum
+// of 0.26 keeps the forward pair only with the right denominator. The other sides
+// stay under the bound either way: forward source 1/7 = 0.1429, reverse source
+// 2/8 = 0.25, reverse target 1/7 = 0.1429.
+TEST(DMCSSVariableCounts, VariableRatioUsesEachSidesOwnMoleculeAsDenominator) {
+    const MoleculeRecord chloro = MoleculeRecord::FromSmiles(1, "Clc1ccccc1", "chloro");
+    const MoleculeRecord ethyl = MoleculeRecord::FromSmiles(2, "CCc1ccccc1", "ethyl");
+    ASSERT_EQ(chloro.GetHeavyAtomCount(), 7u);
+    ASSERT_EQ(ethyl.GetHeavyAtomCount(), 8u);
+
+    DMCSSMethod method;
+    method.AddMolecule(chloro);
+    method.AddMolecule(ethyl);
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    options.SetMaxVariableRatio(0.26);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "chloro" && pair.GetTargetExternalId() == "ethyl" &&
+            pair.GetTargetVariableHeavyAtoms() == 2u) {
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "ethyl" && pair.GetTargetExternalId() == "chloro" &&
+                   pair.GetSourceVariableHeavyAtoms() == 2u) {
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward)
+        << "Forward pair dropped at max_variable_ratio 0.26: the target side's 2 heavy "
+           "atoms were scored against the wrong molecule";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (ethyl->chloro) not found";
+}
+
 TEST(OEMedChemVariableCounts, ReversePairCarriesSwappedCounts) {
     OEMedChemMethod method;
     method.AddMolecule(MoleculeRecord::FromSmiles(1, "CCC", "propane"));
@@ -402,6 +443,47 @@ TEST(OEMedChemVariableCounts, ReversePairCarriesSwappedCounts) {
         }
     }
     EXPECT_TRUE(saw_forward) << "Forward pair (propane->butane) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (butane->propane) not found";
+}
+
+// Pins the denominator OEMedChem hands the ratio bounds for the target side.
+//
+// Same molecules as the test above (propane 3 heavy atoms, butane 4) with
+// variables [*:1]C (1) and [*:1]CC (2). Forward, the target side scores
+// 2/4 = 0.5 correctly but 2/3 = 0.6667 against the source molecule, so a maximum
+// of 0.55 keeps the forward pair only with the right denominator. The other sides
+// stay under the bound either way: forward source 1/3 = 0.3333, reverse source
+// 2/4 = 0.5, reverse target 1/3 = 0.3333.
+TEST(OEMedChemVariableCounts, VariableRatioUsesEachSidesOwnMoleculeAsDenominator) {
+    const MoleculeRecord propane = MoleculeRecord::FromSmiles(1, "CCC", "propane");
+    const MoleculeRecord butane = MoleculeRecord::FromSmiles(2, "CCCC", "butane");
+    ASSERT_EQ(propane.GetHeavyAtomCount(), 3u);
+    ASSERT_EQ(butane.GetHeavyAtomCount(), 4u);
+
+    OEMedChemMethod method;
+    method.AddMolecule(propane);
+    method.AddMolecule(butane);
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    options.SetMaxVariableRatio(0.55);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "propane" && pair.GetTargetExternalId() == "butane" &&
+            pair.GetTargetVariableHeavyAtoms() == 2u) {
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "butane" && pair.GetTargetExternalId() == "propane" &&
+                   pair.GetSourceVariableHeavyAtoms() == 2u) {
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward)
+        << "Forward pair dropped at max_variable_ratio 0.55: the target side's 2 heavy "
+           "atoms were scored against the wrong molecule";
     EXPECT_TRUE(saw_reverse) << "Reverse pair (butane->propane) not found";
 }
 
