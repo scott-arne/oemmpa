@@ -229,9 +229,10 @@ def _group_sizes(analyzer):
 def test_mcs_methods_emit_single_candidate_groups():
     """WizePairZ, DMCSS and OEMedChem emit at most one candidate per group.
 
-    Measured at commit d41bb04, symmetric=False, as pairs / groups /
-    multi-candidate groups / largest group: fragmentation 1218 / 1041 / 97 / 14,
-    wizepairz 13 / 13 / 0 / 1, dmcss 114 / 114 / 0 / 1, oemedchem 32 / 32 / 0 / 1.
+    Asserted tuples measured at commit d41bb04, symmetric=False, as pairs /
+    groups / multi-candidate groups / largest group: fragmentation 1218 / 1041 /
+    97 / 14, wizepairz 13 / 13 / 0 / 1, dmcss 114 / 114 / 0 / 1, oemedchem 32 /
+    32 / 0 / 1.
 
     WizePairZ and DMCSS run one MCS search per molecule pair and emit two
     orientations (forward and reverse) of that single match; each orientation
@@ -242,12 +243,22 @@ def test_mcs_methods_emit_single_candidate_groups():
     Fragmentation can produce multiple candidates per (constant, molecule_pair)
     when different attachment-label assignments yield the same constant SMILES
     but differ in variable SMILES, cut count or deltas.
+
+    The candidate group key includes the constant SMILES and each MCS method
+    emits exactly one record per molecule pair, orientation and constant, so no
+    MCS group can hold two candidates; the three select_scored_pairs calls
+    cannot be observed end to end and scoring is a proven no-op for MCS methods.
     """
     frag_sizes = _group_sizes(_analyzed("fragmentation"))
+    frag_multi = sum(1 for s in frag_sizes if s > 1)
+    assert (len(_analyzed("fragmentation").pairs(_options({}))), len(frag_sizes), frag_multi, max(frag_sizes)) == (1218, 1041, 97, 14)
     assert max(frag_sizes) > 1, "fragmentation should have multi-candidate groups"
 
-    for method in ["wizepairz", "dmcss", "oemedchem"]:
-        sizes = _group_sizes(_analyzed(method))
+    for method, expected in [("wizepairz", (13, 13, 0, 1)), ("dmcss", (114, 114, 0, 1)), ("oemedchem", (32, 32, 0, 1))]:
+        analyzer = _analyzed(method)
+        sizes = _group_sizes(analyzer)
+        multi = sum(1 for s in sizes if s > 1)
+        assert (len(analyzer.pairs(_options({}))), len(sizes), multi, max(sizes)) == expected
         assert max(sizes) == 1, f"{method} should have only single-candidate groups"
 
 

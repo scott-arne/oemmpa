@@ -891,12 +891,16 @@ All four methods (`fragmentation`, `dmcss`, `oemedchem`, `wizepairz`) honor the
 variable-fragment size filters (`SetMaxVariableHeavies`, `SetMinVariableHeavies`,
 `SetMaxVariableRatio`, `SetMinVariableRatio`), the heavy-atom change filters
 (`SetMaxHeavyAtomChange`, `SetMaxRelativeHeavyAtomChange`), the symmetry option
-(`SetSymmetric`), and the five scoring modes (`ScoringMode.KeepAll`,
-`MinimalHeavyAtomChange`, `MinimalHeavyBondChange`, `FewerCutsThenHeavyAtomChange`,
-`FewerCutsThenHeavyBondChange`). The variable-fragment size filters treat the
-`[*:1][H]` pseudo-fragment as exempt on a per-side basis: a pair whose variable
-fragment is `[*:1][H]` on one side passes the size filters for that side, while
-the other side is still gated.
+(`SetSymmetric`), and the five scoring modes (`oemmpa.ScoringMode_KeepAll`,
+`ScoringMode_MinimalHeavyAtomChange`, `ScoringMode_MinimalHeavyBondChange`,
+`ScoringMode_FewerCutsThenHeavyAtomChange`, `ScoringMode_FewerCutsThenHeavyBondChange`).
+A scoring mode only changes a result where a method can emit more than one
+candidate for one (constant SMILES, source molecule id, target molecule id) group;
+today only the fragmentation method does, so for `wizepairz`, `dmcss` and
+`oemedchem` every scoring mode returns the same pairs as `ScoringMode_KeepAll`. The
+variable-fragment size filters treat the `[*:1][H]` pseudo-fragment as exempt on a
+per-side basis: a pair whose variable fragment is `[*:1][H]` on one side passes the
+size filters for that side, while the other side is still gated.
 
 `load_properties_from_csv()` expects one row per molecule ID and one column per
 numeric property. Values of `*` or blank strings are treated as missing. Rows
