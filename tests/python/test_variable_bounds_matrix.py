@@ -249,9 +249,10 @@ def test_mcs_methods_emit_single_candidate_groups():
     MCS group can hold two candidates; the three select_scored_pairs calls
     cannot be observed end to end and scoring is a proven no-op for MCS methods.
     """
-    frag_sizes = _group_sizes(_analyzed("fragmentation"))
+    frag_analyzer = _analyzed("fragmentation")
+    frag_sizes = _group_sizes(frag_analyzer)
     frag_multi = sum(1 for s in frag_sizes if s > 1)
-    assert (len(_analyzed("fragmentation").pairs(_options({}))), len(frag_sizes), frag_multi, max(frag_sizes)) == (1218, 1041, 97, 14)
+    assert (len(frag_analyzer.pairs(_options({}))), len(frag_sizes), frag_multi, max(frag_sizes)) == (1218, 1041, 97, 14)
     assert max(frag_sizes) > 1, "fragmentation should have multi-candidate groups"
 
     for method, expected in [("wizepairz", (13, 13, 0, 1)), ("dmcss", (114, 114, 0, 1)), ("oemedchem", (32, 32, 0, 1))]:
