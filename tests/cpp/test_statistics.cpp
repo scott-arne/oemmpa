@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <cmath>
-
 #include "oemmpa/Statistics.h"
 
 TEST(Statistics, IncompleteBetaMatchesKnownValues) {
