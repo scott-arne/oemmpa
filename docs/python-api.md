@@ -891,17 +891,21 @@ All four methods (`fragmentation`, `dmcss`, `oemedchem`, `wizepairz`) honor the
 variable-fragment size filters (`SetMaxVariableHeavies`, `SetMinVariableHeavies`,
 `SetMaxVariableRatio`, `SetMinVariableRatio`), the heavy-atom change filters
 (`SetMaxHeavyAtomChange`, `SetMaxRelativeHeavyAtomChange`), the symmetry option
-(`SetSymmetric`), and the five scoring modes (`oemmpa.ScoringMode_KeepAll`,
-`oemmpa.ScoringMode_MinimalHeavyAtomChange`, `oemmpa.ScoringMode_MinimalHeavyBondChange`,
-`oemmpa.ScoringMode_FewerCutsThenHeavyAtomChange`,
-`oemmpa.ScoringMode_FewerCutsThenHeavyBondChange`).
+(`SetSymmetric`), and the five scoring modes (`_oemmpa.ScoringMode_KeepAll`,
+`_oemmpa.ScoringMode_MinimalHeavyAtomChange`,
+`_oemmpa.ScoringMode_MinimalHeavyBondChange`,
+`_oemmpa.ScoringMode_FewerCutsThenHeavyAtomChange`,
+`_oemmpa.ScoringMode_FewerCutsThenHeavyBondChange`). The scoring-mode constants
+live on the binding module described under "Advanced C++ Binding Access", not at
+package scope, so import them with `from oemmpa import _oemmpa`.
 A scoring mode only changes a result where a method can emit more than one
 candidate for one (constant SMILES, source molecule id, target molecule id) group;
 today only the fragmentation method does, so for `wizepairz`, `dmcss` and
-`oemedchem` every scoring mode returns the same pairs as `oemmpa.ScoringMode_KeepAll`. The
-variable-fragment size filters treat the `[*:1][H]` pseudo-fragment as exempt on a
-per-side basis: a pair whose variable fragment is `[*:1][H]` on one side passes the
-size filters for that side, while the other side is still gated.
+`oemedchem` every scoring mode returns the same pairs as
+`_oemmpa.ScoringMode_KeepAll`. The variable-fragment size filters treat the
+`[*:1][H]` pseudo-fragment as exempt on a per-side basis: a pair whose variable
+fragment is `[*:1][H]` on one side passes the size filters for that side, while
+the other side is still gated.
 
 `load_properties_from_csv()` expects one row per molecule ID and one column per
 numeric property. Values of `*` or blank strings are treated as missing. Rows
