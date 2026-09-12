@@ -4,10 +4,13 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "oemmpa"
-version = "3.1.2"
+version = "4.0.0"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
 license = "MIT"
-license-files = ["LICENSE"]
+# RDKit's notice ships alongside the MIT license because src/RingPerception.cpp
+# is derived from RDKit, and BSD condition 2 requires binary distributions to
+# reproduce the notice; a wheel contains no .cpp to carry it.
+license-files = ["LICENSE", "LICENSES/RDKit-BSD-3-Clause.txt"]
 # The floor is set by openeye-toolkits, not by anything in this package: 2026.1
 # is the first release with py314 wheels and the first to drop py310, and the
 # extension links its OpenEye shared libraries by versioned soname, so the

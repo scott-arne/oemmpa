@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
@@ -91,6 +92,82 @@ def test_wheel_build_enables_duckdb_storage():
     assert "Bundle duckdb.dll into wheel" in workflow
     # Every job's smoke test must fail closed when DuckDB is missing.
     assert "wheel built without DuckDB storage" in workflow
+
+
+def test_rdkit_license_ships_with_binary_distributions():
+    """RDKit's BSD notice has to reach the wheel, not only the source tree.
+
+    ``src/RingPerception.cpp`` carries the notice in its header comment, which
+    covers source redistribution (BSD condition 1). Condition 2 covers binary
+    forms, and a wheel ships no ``.cpp``: the notice gets there only as a file
+    named in ``license-files``, which the build backend copies into the
+    dist-info ``licenses/`` directory.
+    """
+    license_file = REPO_ROOT / "LICENSES" / "RDKit-BSD-3-Clause.txt"
+
+    assert license_file.is_file(), f"missing {license_file}"
+
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    assert "LICENSES/RDKit-BSD-3-Clause.txt" in pyproject["project"]["license-files"]
+
+    notice = license_file.read_text()
+    assert "Copyright (C) 2003-2021 Greg Landrum and other RDKit contributors" in notice
+    assert (
+        "Copyright (c) 2006-2015, Rational Discovery LLC, Greg Landrum, "
+        "and Julie Penzotti and others" in notice
+    )
+
+    # The shipped file must stay byte-for-byte the text carried in the source
+    # header, or the two drift apart silently. Both blocks are bounded by their
+    # first and last lines, stripped of the comment markers, and required to
+    # appear in the license file in order.
+    source_lines = _comment_body_lines(REPO_ROOT / "src" / "RingPerception.cpp")
+    notice_block = _bounded_block(
+        source_lines,
+        "Copyright (C) 2003-2021 Greg Landrum and other RDKit contributors",
+        "of the RDKit source tree.",
+    )
+    license_block = _bounded_block(
+        source_lines,
+        "BSD 3-Clause License",
+        "OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.",
+    )
+    shipped = [line.strip() for line in notice.splitlines() if line.strip()]
+    for block in (notice_block, license_block):
+        assert len(block) > 1, "source header block not found"
+        assert _is_contiguous_run(block, shipped), block[0]
+
+
+def _comment_body_lines(path):
+    """Header-comment text of a C++ source with its ``//`` markers removed.
+
+    The RDKit notice is quoted inside the OEMMPA comment as ``//   //  text``,
+    so the marker is stripped twice; every line is then whitespace-trimmed.
+    """
+    lines = []
+    for raw in path.read_text().splitlines():
+        stripped = raw.strip()
+        if not stripped.startswith("//"):
+            continue
+        body = stripped[2:].strip()
+        if body.startswith("//"):
+            body = body[2:].strip()
+        if body:
+            lines.append(body)
+    return lines
+
+
+def _bounded_block(lines, first, last):
+    """The slice of ``lines`` from the line equal to ``first`` through ``last``."""
+    start = lines.index(first)
+    end = lines.index(last, start)
+    return lines[start : end + 1]
+
+
+def _is_contiguous_run(block, haystack):
+    """Whether ``block`` occurs as a contiguous run inside ``haystack``."""
+    width = len(block)
+    return any(haystack[i : i + width] == block for i in range(len(haystack) - width + 1))
 
 
 def test_swig_openeye_grid_dependency_is_explicitly_linked():

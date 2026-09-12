@@ -433,4 +433,6 @@ MIT
 `src/RingPerception.cpp` contains ring-perception code derived from RDKit's
 `Code/GraphMol/FindRings.cpp` and is redistributed under RDKit's BSD 3-Clause
 license; the copyright notice and the full license text are retained in that
-file's header comment.
+file's header comment. The same notice and license text are carried as a plain
+file at `LICENSES/RDKit-BSD-3-Clause.txt`, which `license-files` ships in the
+wheel so binary distributions reproduce them.
