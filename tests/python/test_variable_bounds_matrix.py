@@ -33,14 +33,6 @@ METHODS = [CONTROL, *MCS_METHODS]
 METHODS_WITH_HYDROGEN_PAIRS = ["fragmentation", "wizepairz"]
 METHODS_WITHOUT_HYDROGEN_PAIRS = ["dmcss", "oemedchem"]
 
-# DMCSS is absent from the DuckDB half because saving its unbounded pair set on
-# this fixture raises: it emits pairs of up to 7 cuts, and the store's
-# environment fingerprint rejects a constant with more than three attachment
-# labels. That limitation predates the variable-size bounds and is pinned by
-# test_dmcss_pair_sets_cannot_be_persisted_yet rather than skipped, so the day it
-# lifts, that test fails and says to put DMCSS back in this list.
-STORE_METHODS = [CONTROL, "wizepairz", "oemedchem"]
-
 # Each value must delete at least one pair from every method without deleting
 # them all, otherwise the cell proves nothing. The two maxima are tighter than
 # the natural round numbers because WizePairZ's variable fragments on this
@@ -53,22 +45,54 @@ BOUNDS = [
     ("max_variable_ratio", 0.14),
 ]
 
+# DMCSS cuts up to 7 bonds on this fixture and the store's environment
+# fingerprint rejects a constant with more than three attachment labels
+# (src/EnvironmentFingerprint.cpp), so its *unbounded* pair set cannot be saved
+# at all -- a limitation that predates the variable-size bounds and is pinned by
+# test_dmcss_pair_sets_cannot_be_persisted_yet. Its *bounded* sets are a separate
+# question, and both maxima answer it on the full fixture: measured at 6879ff4
+# they leave 2 pairs (max 3 cuts) and 1 pair (2 cuts) respectively, well inside
+# what the store can represent. The two minima keep the many-cut pairs, so all
+# four bounds are run again below on a fixture DMCSS never over-cuts.
+DMCSS_FULL_FIXTURE_BOUNDS = [bound for bound in BOUNDS if bound[0].startswith("max_")]
+STORE_CELLS = [
+    *itertools.product([CONTROL, "wizepairz", "oemedchem"], BOUNDS),
+    *itertools.product(["dmcss"], DMCSS_FULL_FIXTURE_BOUNDS),
+]
+
+# The nine fixture molecules DMCSS needs more than three cuts to relate to the
+# rest. Chosen by a greedy scan at 6879ff4 -- add fixture molecules in file
+# order, keep each one only while every DMCSS pair still has at most three cuts
+# -- and the result is maximal: re-adding any single one of the nine on its own
+# pushes DMCSS back to 4-7 cuts. The 31 that remain are the public SureChEMBL
+# fixture, never the proprietary dataset. Measured on them: 63 pairs unbounded
+# (33 one-cut, 21 two-cut, 9 three-cut), the unbounded save succeeds, and the
+# four bounds leave 61 / 2 / 62 / 1 pairs in BOUNDS order, so each one bites and
+# none empties the set.
+DMCSS_OVER_CUTTING_IDS = frozenset(
+    {"S61", "S63", "S106", "S117", "S120", "S121", "S122", "S128", "S133"}
+)
+
 duckdb_matrix = pytest.mark.skipif(
     importlib.util.find_spec("duckdb") is None or not oemmpa.duckdb_available(),
     reason="the DuckDB half needs the duckdb module and a DuckDB-enabled build",
 )
 
 
-def _analyzed(method):
+def _analyzed(method, exclude_ids=frozenset()):
     """Build and analyze the fixture under one method.
 
     :param method: Analyzer method name.
+    :param exclude_ids: Fixture molecule ids to leave out, for the DMCSS store
+        cells that need an input with no over-cut pairs in it.
     :returns: The analyzed :class:`oemmpa.Analyzer` facade.
     """
     analyzer = oemmpa.Analyzer(method=method)
     with FIXTURE.open(encoding="utf-8") as handle:
         for line in handle:
             smiles, molecule_id = line.split()
+            if molecule_id in exclude_ids:
+                continue
             analyzer.add_molecule(smiles, id=molecule_id)
     analyzer.analyze()
     return analyzer
@@ -147,6 +171,25 @@ def _store_pair_keys(analyzer, query, db_path):
     finally:
         con.close()
     return Counter(tuple(row) for row in rows)
+
+
+def _assert_store_matches_memory(analyzer, bound, db_path, label):
+    """One store cell: the persisted pair set is the bounded in-memory one.
+
+    :param analyzer: Analyzed facade from :func:`_analyzed`.
+    :param bound: ``(name, value)`` pair from :data:`BOUNDS`.
+    :param db_path: Path of the DuckDB database to create.
+    :param label: Method/bound description used in failure messages.
+    """
+    name, value = bound
+    in_memory = _pair_keys(analyzer, {name: value})
+    persisted = _store_pair_keys(analyzer, {name: value}, db_path)
+    # Two empty pair sets compare equal, so the cell would prove nothing if the
+    # bound happened to delete everything.
+    assert in_memory, f"{label}: the bounded in-memory pair set is empty"
+    assert persisted == in_memory, (
+        f"{label}: the store and the in-memory query disagree"
+    )
 
 
 def _assert_narrows(bounded, unbounded, label):
@@ -228,15 +271,16 @@ def test_hydrogen_exemption_matches_the_reference(method):
 
 @duckdb_matrix
 def test_dmcss_pair_sets_cannot_be_persisted_yet(tmp_path):
-    """Pin the pre-existing reason DMCSS is missing from the store half.
+    """Pin the pre-existing limit that shapes the DMCSS half of the store grid.
 
     DMCSS cuts up to seven bonds, and a constant with more than three
     attachment labels has no MMPDB-shaped environment fingerprint
-    (src/EnvironmentFingerprint.cpp), so the save fails before any bound is
-    involved. This pins exactly that much -- the unbounded save raises, which is
-    why DMCSS cannot join STORE_METHODS -- and not the stronger claim that every
-    bounded subset of its pairs is unsaveable. When DMCSS becomes persistable
-    this test fails and STORE_METHODS should regain "dmcss".
+    (src/EnvironmentFingerprint.cpp), so the unbounded save fails before any
+    bound is involved. That is exactly what this pins -- not the stronger claim
+    that the bounded sets are unsaveable, which STORE_CELLS and
+    test_store_matches_memory_for_dmcss_without_over_cutting_molecules disprove.
+    When DMCSS becomes persistable this test fails, and DMCSS should then take
+    all four bounds on the full fixture like every other method.
     """
     from oemmpa import DuckDBStore
 
@@ -247,18 +291,58 @@ def test_dmcss_pair_sets_cannot_be_persisted_yet(tmp_path):
 
 
 @duckdb_matrix
-@pytest.mark.parametrize("method,bound", list(itertools.product(STORE_METHODS, BOUNDS)))
+def test_dropping_the_over_cutting_molecules_makes_dmcss_persistable(tmp_path):
+    """The premise DMCSS_OVER_CUTTING_IDS rests on, asserted rather than assumed.
+
+    Without those nine molecules DMCSS never cuts more than three bonds, so its
+    whole unbounded pair set persists and round-trips. If a fixture change made
+    the exclusion list insufficient, the bounded cells below would still pass
+    whenever the bound happened to delete the offending pair; this fails
+    immediately and names the list.
+    """
+    analyzer = _analyzed("dmcss", exclude_ids=DMCSS_OVER_CUTTING_IDS)
+    in_memory = _pair_keys(analyzer, {})
+    persisted = _store_pair_keys(analyzer, {}, tmp_path / "dmcss-unbounded.duckdb")
+    assert persisted == in_memory, (
+        "the unbounded DMCSS pair set no longer round-trips; DMCSS_OVER_CUTTING_IDS "
+        "needs re-measuring"
+    )
+
+
+@duckdb_matrix
+@pytest.mark.parametrize("method,bound", STORE_CELLS)
 def test_store_matches_memory_under_each_bound(method, bound, tmp_path):
     """The persisted pair set is exactly the bounded in-memory pair set."""
-    name, value = bound
-    analyzer = _analyzed(method)
-    in_memory = _pair_keys(analyzer, {name: value})
-    persisted = _store_pair_keys(
-        analyzer, {name: value}, tmp_path / f"{method}-{name}.duckdb"
+    _assert_store_matches_memory(
+        _analyzed(method),
+        bound,
+        tmp_path / f"{method}-{bound[0]}.duckdb",
+        f"{method}/{bound[0]}",
     )
-    # Two empty pair sets compare equal, so the cell would prove nothing if the
-    # bound happened to delete everything.
-    assert in_memory, f"{method}/{name}: the bounded in-memory pair set is empty"
-    assert persisted == in_memory, (
-        f"{method}/{name}: the store and the in-memory query disagree"
+
+
+@duckdb_matrix
+@pytest.mark.parametrize("bound", BOUNDS)
+def test_store_matches_memory_for_dmcss_without_over_cutting_molecules(bound, tmp_path):
+    """The DMCSS store cells the fixture's many-cut pairs would otherwise block.
+
+    The two minimum bounds keep DMCSS's over-cut pairs, which the store cannot
+    represent at all, so they are measured here on the fixture minus
+    DMCSS_OVER_CUTTING_IDS. All four bounds run on that input, which also gives
+    the two maximum bounds a second, independent input.
+    """
+    analyzer = _analyzed("dmcss", exclude_ids=DMCSS_OVER_CUTTING_IDS)
+    name, value = bound
+    # The cell is only worth anything if the bound still bites on the smaller
+    # input; the full-fixture matrix cannot speak for this one.
+    _assert_narrows(
+        _pair_keys(analyzer, {name: value}),
+        _pair_keys(analyzer, {}),
+        f"dmcss-without-over-cutting/{name}",
+    )
+    _assert_store_matches_memory(
+        analyzer,
+        bound,
+        tmp_path / f"dmcss-subset-{name}.duckdb",
+        f"dmcss-without-over-cutting/{name}",
     )
