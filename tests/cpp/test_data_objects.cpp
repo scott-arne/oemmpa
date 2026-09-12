@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/MatchedPair.h"
@@ -80,6 +83,31 @@ TEST(DataObjectTest, MatchedPairMissingPropertyThrows) {
     EXPECT_THROW(pair.GetPropertyDelta("pIC50"), MissingPropertyError);
 }
 
+namespace {
+
+/// \brief Build a MatchedPair whose transform SMILES is exactly the one given.
+///
+/// MatchedPair derives its transform SMILES by joining the two variable
+/// fragments with ">>", so the caller's string is split back into those halves
+/// here rather than forcing every test to keep the halves and the whole in
+/// sync.
+///
+/// \param transform_smiles Transform SMILES of the form "<source>>><target>".
+/// \returns A pair carrying that transform SMILES.
+MatchedPair MakeTestPairWithTransform(const std::string& transform_smiles) {
+    const std::string::size_type separator = transform_smiles.find(">>");
+    return MatchedPair(
+        1, 2, "a", "b",
+        "CC", "CO",
+        "C[*:1]",
+        transform_smiles.substr(0, separator),
+        transform_smiles.substr(separator + 2),
+        1, 0, 0
+    );
+}
+
+}  // namespace
+
 TEST(DataObjectTest, TransformGroupsSupportingPairs) {
     MatchedPair pair(
         1, 2, "a", "b",
@@ -123,6 +151,82 @@ TEST(DataObjectTest, TransformRejectsMismatchedPairTransform) {
 
     EXPECT_THROW(transform.AddPair(mismatched_pair), AnalysisStateError);
     EXPECT_EQ(transform.GetEvidenceCount(), 1);
+}
+
+TEST(BuildTransforms, MovesPairsRatherThanCopyingThem) {
+    // Longer than the small-string optimization buffer, so the string owns a
+    // heap allocation whose address survives a move and not a copy.
+    const std::string long_transform_smiles =
+        "[*:1]c1ccc(cc1)C(=O)NCCCC>>[*:1]c1ccc(cc1)C(=O)NCCCCC";
+    ASSERT_GT(long_transform_smiles.size(), 22u);
+
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(MakeTestPairWithTransform(long_transform_smiles));
+    const char* original_buffer = pairs[0].GetTransformSmiles().data();
+
+    const std::vector<OEMMPA::Transform> transforms =
+        OEMMPA::build_transforms(std::move(pairs));
+
+    ASSERT_EQ(transforms.size(), 1u);
+    ASSERT_EQ(transforms[0].GetPairs().size(), 1u);
+    EXPECT_EQ(transforms[0].GetPairs()[0].GetTransformSmiles().data(), original_buffer)
+        << "a copy was made at one of the three copy sites";
+}
+
+TEST(BuildTransforms, GroupsPairsByTransformSmiles) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]O"));
+
+    const std::vector<OEMMPA::Transform> transforms =
+        OEMMPA::build_transforms(std::move(pairs));
+    ASSERT_EQ(transforms.size(), 2u);
+    // Sorted by transform SMILES, as the previous std::map ordering guaranteed.
+    EXPECT_EQ(transforms[0].GetTransformSmiles(), "[*:1]C>>[*:1]N");
+    EXPECT_EQ(transforms[0].GetPairs().size(), 2u);
+    EXPECT_EQ(transforms[1].GetTransformSmiles(), "[*:1]C>>[*:1]O");
+}
+
+TEST(TransformAddPair, ConstReferenceOverloadIsRetainedAndLeavesTheSourceIntact) {
+    // Guards the five existing lvalue call sites and the SWIG binding: the
+    // rvalue overload is additive, so passing an lvalue must still copy and
+    // leave the caller's pair usable.
+    const std::string long_transform_smiles =
+        "[*:1]c1ccc(cc1)C(=O)NCCCC>>[*:1]c1ccc(cc1)C(=O)NCCCCC";
+    OEMMPA::MatchedPair pair = MakeTestPairWithTransform(long_transform_smiles);
+
+    OEMMPA::Transform transform(long_transform_smiles);
+    transform.AddPair(pair);
+
+    ASSERT_EQ(transform.GetPairs().size(), 1u);
+    EXPECT_EQ(pair.GetTransformSmiles(), long_transform_smiles)
+        << "the const-reference overload must not move out of its argument";
+    EXPECT_NE(transform.GetPairs()[0].GetTransformSmiles().data(),
+              pair.GetTransformSmiles().data())
+        << "the stored pair should be an independent copy";
+}
+
+TEST(TransformAddPair, RvalueOverloadMovesTheHeapBuffer) {
+    const std::string long_transform_smiles =
+        "[*:1]c1ccc(cc1)C(=O)NCCCC>>[*:1]c1ccc(cc1)C(=O)NCCCCC";
+    OEMMPA::MatchedPair pair = MakeTestPairWithTransform(long_transform_smiles);
+    const char* original_buffer = pair.GetTransformSmiles().data();
+
+    OEMMPA::Transform transform(long_transform_smiles);
+    transform.AddPair(std::move(pair));
+
+    ASSERT_EQ(transform.GetPairs().size(), 1u);
+    EXPECT_EQ(transform.GetPairs()[0].GetTransformSmiles().data(), original_buffer);
+}
+
+TEST(TransformAddPair, RvalueOverloadStillRejectsAMismatchedTransform) {
+    // Validation runs before the move, so the throwing path must not have
+    // consumed the argument.
+    OEMMPA::Transform transform("[*:1]C>>[*:1]N");
+    OEMMPA::MatchedPair pair = MakeTestPairWithTransform("[*:1]C>>[*:1]O");
+    EXPECT_THROW(transform.AddPair(std::move(pair)), OEMMPA::AnalysisStateError);
+    EXPECT_TRUE(transform.GetPairs().empty());
 }
 
 TEST(MatchedPairTest, CarriesOptionalEnvironmentSmirksAnnotation) {

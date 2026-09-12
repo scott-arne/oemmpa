@@ -15,7 +15,6 @@
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
-#include <map>
 #include <optional>
 #include <thread>
 
@@ -55,28 +54,6 @@ unsigned int resolve_analyze_threads(std::optional<unsigned int> explicit_thread
 namespace {
 
 const char* kFragmentationMethodName = "fragmentation";
-
-std::vector<Transform> build_transforms(const std::vector<MatchedPair>& pairs) {
-    std::map<std::string, Transform> transforms_by_smiles;
-
-    for (const MatchedPair& pair : pairs) {
-        auto iter = transforms_by_smiles.find(pair.GetTransformSmiles());
-        if (iter == transforms_by_smiles.end()) {
-            iter = transforms_by_smiles.emplace(
-                pair.GetTransformSmiles(),
-                Transform(pair.GetTransformSmiles())
-            ).first;
-        }
-        iter->second.AddPair(pair);
-    }
-
-    std::vector<Transform> transforms;
-    transforms.reserve(transforms_by_smiles.size());
-    for (const auto& entry : transforms_by_smiles) {
-        transforms.push_back(entry.second);
-    }
-    return transforms;
-}
 
 void validate_cut_bounds(unsigned int min_cuts, unsigned int max_cuts) {
     if (min_cuts == 0) {

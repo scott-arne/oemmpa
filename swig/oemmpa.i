@@ -396,6 +396,14 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::AnalysisMethod::SetFragmenter;
 %ignore OEMMPA::FragmentationMethod::GetFragmenter;
 %ignore OEMMPA::FragmentationMethod::SetFragmenter;
+// build_transforms is an implementation detail shared by the C++ query paths;
+// exporting it would add a public Python name this binding never intended.
+%ignore OEMMPA::build_transforms;
+// Python has no rvalue concept, so SWIG would wrap the rvalue overload as a
+// second AddPair indistinguishable from the const-reference one and dispatch
+// between them. Ignore it outright so Python keeps reaching the copying
+// overload.
+%ignore OEMMPA::Transform::AddPair(MatchedPair &&);
 
 %include "../include/oemmpa/Error.h"
 %include "../include/oemmpa/DatabaseSummary.h"

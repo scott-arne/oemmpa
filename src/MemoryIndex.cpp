@@ -938,27 +938,10 @@ std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) cons
 }
 
 std::vector<Transform> MemoryIndex::GetTransforms(const QueryOptions& options) const {
-    std::map<std::string, Transform> transforms_by_smiles;
-
-    for (const MatchedPair& pair : CachedPairs(options)) {
-        auto iter = transforms_by_smiles.find(pair.GetTransformSmiles());
-        if (iter == transforms_by_smiles.end()) {
-            iter = transforms_by_smiles.emplace(
-                pair.GetTransformSmiles(),
-                Transform(pair.GetTransformSmiles())
-            ).first;
-        }
-
-        iter->second.AddPair(pair);
-    }
-
-    std::vector<Transform> transforms;
-    transforms.reserve(transforms_by_smiles.size());
-    for (const auto& entry : transforms_by_smiles) {
-        transforms.push_back(entry.second);
-    }
-
-    return transforms;
+    // CachedPairs returns a reference into a cache that outlives this call, so
+    // one copy is unavoidable; build_transforms then moves out of it instead of
+    // copying three more times.
+    return build_transforms(std::vector<MatchedPair>(CachedPairs(options)));
 }
 
 }  // namespace OEMMPA
