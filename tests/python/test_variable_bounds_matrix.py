@@ -211,6 +211,46 @@ def _assert_narrows(bounded, unbounded, label):
     assert bounded != unbounded, f"{label} had no effect"
 
 
+def _group_sizes(analyzer):
+    """Compute per-group candidate counts for the KeepAll pair set.
+
+    :param analyzer: Analyzed facade from :func:`_analyzed`.
+    :returns: List of group sizes (one int per (constant, source_id, target_id)).
+    """
+    from collections import defaultdict
+    pairs = analyzer.pairs(_options({}))
+    groups = defaultdict(list)
+    for pair in pairs:
+        key = (pair.constant, pair.source_id, pair.target_id)
+        groups[key].append(pair)
+    return [len(group) for group in groups.values()]
+
+
+def test_mcs_methods_emit_single_candidate_groups():
+    """WizePairZ, DMCSS and OEMedChem emit at most one candidate per group.
+
+    Measured at commit 50b9d6a, symmetric=False: fragmentation 931 pairs / 888
+    groups / 41 multi-candidate / max 3, wizepairz 13/13/0/1, dmcss 114/114/0/1,
+    oemedchem 30/30/0/1.
+
+    WizePairZ and DMCSS run one MCS search per molecule pair and emit two
+    orientations (forward and reverse) of that single match; each orientation
+    goes into a different group keyed by (constant, source_id, target_id) vs.
+    (constant, target_id, source_id). OEMedChem emits one canonical MCS per
+    molecule pair per constant region.
+
+    Fragmentation can produce multiple candidates per (constant, molecule_pair)
+    when different attachment-label assignments yield the same constant SMILES
+    but differ in variable SMILES, cut count or deltas.
+    """
+    frag_sizes = _group_sizes(_analyzed("fragmentation"))
+    assert max(frag_sizes) > 1, "fragmentation should have multi-candidate groups"
+
+    for method in ["wizepairz", "dmcss", "oemedchem"]:
+        sizes = _group_sizes(_analyzed(method))
+        assert max(sizes) == 1, f"{method} should have only single-candidate groups"
+
+
 @pytest.mark.parametrize("method,bound", list(itertools.product(METHODS, BOUNDS)))
 def test_bound_is_honoured_in_memory(method, bound):
     """Each bound narrows each method's in-memory pair set."""
@@ -375,9 +415,13 @@ def test_oemedchem_scoring_is_invariant_on_this_fixture(mode):
     so scoring is a proven no-op.
     """
     analyzer = _analyzed("oemedchem")
-    assert _pair_keys(analyzer, {"scoring_mode": mode}) == _pair_keys(
-        analyzer, {"scoring_mode": "KeepAll"}
-    )
+    keep_all = _pair_keys(analyzer, {"scoring_mode": "KeepAll"})
+    assert keep_all, "oemedchem should produce at least one pair"
+    if mode == "KeepAll":
+        scored = keep_all
+    else:
+        scored = _pair_keys(analyzer, {"scoring_mode": mode})
+    assert scored == keep_all
 
 
 @pytest.mark.parametrize("method", ["dmcss", "wizepairz"])
@@ -388,9 +432,13 @@ def test_single_candidate_methods_are_scoring_invariant(method, mode):
     ignored option.
     """
     analyzer = _analyzed(method)
-    assert _pair_keys(analyzer, {"scoring_mode": mode}) == _pair_keys(
-        analyzer, {"scoring_mode": "KeepAll"}
-    )
+    keep_all = _pair_keys(analyzer, {"scoring_mode": "KeepAll"})
+    assert keep_all, f"{method} should produce at least one pair"
+    if mode == "KeepAll":
+        scored = keep_all
+    else:
+        scored = _pair_keys(analyzer, {"scoring_mode": mode})
+    assert scored == keep_all
 
 
 def test_grouping_does_not_merge_duplicate_structures():

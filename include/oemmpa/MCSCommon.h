@@ -148,6 +148,11 @@ using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
 /// Mirrors MemoryIndex's per-group PairScoring::Select so every backend applies
 /// the same scoring semantics. Groups never span constants, so per-group
 /// selection is equivalent to selecting after the whole corpus.
+///
+/// \param pairs Input pairs, assumed to be sorted by compare_pairs.
+/// \param options Query options carrying the scoring mode.
+/// \returns Selected pairs in CandidateKey order (std::map iteration order).
+///          When the scoring mode is KeepAll, returns the input vector unchanged.
 std::vector<MatchedPair> select_scored_pairs(
     const std::vector<MatchedPair>& pairs,
     const QueryOptions& options

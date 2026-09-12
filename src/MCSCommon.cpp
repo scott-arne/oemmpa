@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <string>
 #include <tuple>
 
@@ -111,6 +112,9 @@ std::vector<MatchedPair> select_scored_pairs(
     const std::vector<MatchedPair>& pairs,
     const QueryOptions& options
 ) {
+    if (options.GetScoringOptions().GetMode() == ScoringMode::KeepAll) {
+        return pairs;
+    }
     std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
     for (const MatchedPair& pair : pairs) {
         candidates_by_group[CandidateKey{

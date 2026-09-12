@@ -887,12 +887,16 @@ options.SetMaxHeavyAtomChange(25)
 store.save_analyzer(analyzer, query_options=options)
 ```
 
-The variable-fragment size filters (`SetMaxVariableHeavies`,
-`SetMinVariableHeavies`, and the `SetMaxVariableRatio` / `SetMinVariableRatio`
-equivalents) apply only to the `fragmentation` method. The MCS-based methods
-(`dmcss`, `oemedchem`, `wizepairz`) enumerate pairs from a maximum common
-substructure and honor only the heavy-atom change (`SetMaxHeavyAtomChange`,
-`SetMaxRelativeHeavyAtomChange`) and symmetry (`SetSymmetric`) options.
+All four methods (`fragmentation`, `dmcss`, `oemedchem`, `wizepairz`) honor the
+variable-fragment size filters (`SetMaxVariableHeavies`, `SetMinVariableHeavies`,
+`SetMaxVariableRatio`, `SetMinVariableRatio`), the heavy-atom change filters
+(`SetMaxHeavyAtomChange`, `SetMaxRelativeHeavyAtomChange`), the symmetry option
+(`SetSymmetric`), and the five scoring modes (`ScoringMode.KeepAll`,
+`MinimalHeavyAtomChange`, `MinimalHeavyBondChange`, `FewerCutsThenHeavyAtomChange`,
+`FewerCutsThenHeavyBondChange`). The variable-fragment size filters treat the
+`[*:1][H]` pseudo-fragment as exempt on a per-side basis: a pair whose variable
+fragment is `[*:1][H]` on one side passes the size filters for that side, while
+the other side is still gated.
 
 `load_properties_from_csv()` expects one row per molecule ID and one column per
 numeric property. Values of `*` or blank strings are treated as missing. Rows

@@ -44,6 +44,28 @@ OEMMPA::MatchedPair pair_with_variables(
     return pair;
 }
 
+/// \brief Build a MatchedPair with full control over all fields for scoring tests.
+OEMMPA::MatchedPair pair_for_scoring(
+    unsigned int source_mol_id,
+    unsigned int target_mol_id,
+    const std::string& constant_smiles,
+    const std::string& source_variable,
+    const std::string& target_variable,
+    unsigned int cut_count,
+    int heavy_atom_delta,
+    int heavy_bond_delta
+) {
+    return OEMMPA::MatchedPair(
+        source_mol_id, target_mol_id,
+        "src" + std::to_string(source_mol_id),
+        "tgt" + std::to_string(target_mol_id),
+        "CCO", "CCN",
+        constant_smiles,
+        source_variable, target_variable,
+        cut_count, heavy_atom_delta, heavy_bond_delta
+    );
+}
+
 }  // namespace
 
 TEST(MCSCommonTest, RendersHydrogenVariableWithLabel) {
@@ -187,37 +209,6 @@ TEST(MCSCommonTest, HydrogenPseudoFragmentIsExemptOnTheTargetSideToo) {
     EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 11u, 10u, min_ratio));
 }
 
-namespace {
-
-/// \brief Build a MatchedPair with full control over all fields for scoring tests.
-OEMMPA::MatchedPair pair_for_scoring(
-    unsigned int source_mol_id,
-    unsigned int target_mol_id,
-    const std::string& constant_smiles,
-    const std::string& source_variable,
-    const std::string& target_variable,
-    unsigned int cut_count,
-    int heavy_atom_delta,
-    int heavy_bond_delta
-) {
-    OEMMPA::MatchedPair pair(
-        source_mol_id, target_mol_id,
-        "src" + std::to_string(source_mol_id),
-        "tgt" + std::to_string(target_mol_id),
-        "CCO", "CCN",
-        constant_smiles,
-        source_variable, target_variable,
-        cut_count, heavy_atom_delta, heavy_bond_delta
-    );
-    const unsigned int source_heavies = 2;
-    const unsigned int target_heavies = source_heavies + static_cast<unsigned int>(
-        heavy_atom_delta >= 0 ? heavy_atom_delta : -heavy_atom_delta);
-    pair.SetVariableHeavyAtomCounts(source_heavies, target_heavies);
-    return pair;
-}
-
-}  // namespace
-
 TEST(MCSCommonTest, SelectScoredPairsKeepsAllCandidatesInKeepAllMode) {
     std::vector<OEMMPA::MatchedPair> pairs;
     pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
@@ -233,7 +224,15 @@ TEST(MCSCommonTest, SelectScoredPairsKeepsAllCandidatesInKeepAllMode) {
     const std::vector<OEMMPA::MatchedPair> selected =
         OEMMPA::mcs::select_scored_pairs(pairs, options);
 
-    EXPECT_EQ(selected.size(), 4u);
+    ASSERT_EQ(selected.size(), 4u);
+    EXPECT_EQ(selected[0].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[0].GetTargetVariableSmiles(), "[*:1]CCC");
+    EXPECT_EQ(selected[1].GetSourceVariableSmiles(), "[*:1]O");
+    EXPECT_EQ(selected[1].GetTargetVariableSmiles(), "[*:1]N");
+    EXPECT_EQ(selected[2].GetSourceVariableSmiles(), "[*:1]F");
+    EXPECT_EQ(selected[2].GetTargetVariableSmiles(), "[*:1]Cl");
+    EXPECT_EQ(selected[3].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[3].GetTargetVariableSmiles(), "[*:1]O");
 }
 
 TEST(MCSCommonTest, SelectScoredPairsMinimalHeavyAtomChangePicksSmallestDelta) {
