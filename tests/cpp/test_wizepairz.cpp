@@ -514,3 +514,30 @@ TEST(WizePairZPrefilter, RejectsOnlyWhatThePostMcsTestWouldReject) {
         }
     }
 }
+
+// A default-constructed MoleculeRecord holds no molecule, and GetMol() fails it
+// with InvalidMoleculeError. That fail-fast is part of the analysis contract, so
+// the prefilter must not convert it into a silent skip: the record's heavy-atom
+// count is 0, the bound test rejects every pairing of it with a real molecule
+// (floor(0.90 * 7) = 6 > 0), and an early return placed ahead of the accessors
+// would swallow the error.
+TEST(WizePairZPrefilter, InvalidRecordStillFailsSerialAnalysis) {
+    WizePairZMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(3, "Clc1ccccc1", "chlorobenzene"));
+    method.AddMolecule(MoleculeRecord());
+    EXPECT_THROW(method.Analyze(1), OEMMPA::InvalidMoleculeError);
+}
+
+// The same contract on the parallel path: mcs::run_all_pairs captures the first
+// worker exception and rethrows it with std::rethrow_exception, so the caller
+// sees the original type rather than a wrapper.
+TEST(WizePairZPrefilter, InvalidRecordStillFailsParallelAnalysis) {
+    WizePairZMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(3, "Clc1ccccc1", "chlorobenzene"));
+    method.AddMolecule(MoleculeRecord());
+    EXPECT_THROW(method.Analyze(4), OEMMPA::InvalidMoleculeError);
+}

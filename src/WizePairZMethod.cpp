@@ -324,11 +324,20 @@ void add_wizepairz_pair_if_valid(
     unsigned int max_environment_radius,
     std::vector<MatchedPair>& pairs
 ) {
+    // Fetched before the prefilter below, not after: GetMol() is a reference
+    // accessor whose only cost is the InvalidMoleculeError it raises for a
+    // record that carries no molecule, and that fail-fast is part of the
+    // analysis contract. Skipping a candidate before the accessor would turn a
+    // hard failure into a silent omission.
+    const OEChem::OEMolBase& source_mol = source_record.GetMol();
+    const OEChem::OEMolBase& target_mol = target_record.GetMol();
+
 #ifndef OEMMPA_DISABLE_WIZEPAIRZ_PREFILTER
     // The MCS cannot exceed min(source, target) heavy atoms, so a bound that
-    // already fails the identity threshold makes the MCS call below dead work:
-    // the post-MCS test would reject the candidate regardless of what the MCS
-    // found. Measured on the review corpus: 78.4% of MCS calls eliminated.
+    // already fails the identity threshold makes the find_mcs_match call below
+    // dead work: the post-MCS test would reject the candidate regardless of what
+    // the MCS found. On tests/data/surechembl_mmp_fixture.smi the bound rejects
+    // 611 of 780 candidates without changing the pair set.
     if (!mcs::wizepairz_bound_passes_threshold(
             source_record.GetHeavyAtomCount(),
             target_record.GetHeavyAtomCount(),
@@ -336,9 +345,6 @@ void add_wizepairz_pair_if_valid(
         return;
     }
 #endif
-
-    const OEChem::OEMolBase& source_mol = source_record.GetMol();
-    const OEChem::OEMolBase& target_mol = target_record.GetMol();
 
     AtomIndexSet source_all = mcs::all_atom_indices(source_mol);
     AtomIndexSet target_all = mcs::all_atom_indices(target_mol);
