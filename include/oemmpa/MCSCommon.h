@@ -162,6 +162,26 @@ bool wizepairz_bound_passes_threshold(
     double fraction
 );
 
+/// \brief Construct a MatchedPair with variable heavy-atom counts.
+///
+/// Shared helper for the three MCS methods. Populates the pair's variable
+/// heavy-atom counts so Task 13's bounds can be applied without re-parsing
+/// SMILES. The reverse call site swaps source/target for both the variable
+/// SMILES and the counts by the same textual pattern, preventing mismatched
+/// assignment.
+MatchedPair make_matched_pair(
+    const MoleculeRecord& source_record,
+    const MoleculeRecord& target_record,
+    const std::string& constant_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles,
+    unsigned int source_variable_heavy_atoms,
+    unsigned int target_variable_heavy_atoms,
+    unsigned int cut_count,
+    int heavy_atom_delta,
+    int heavy_bond_delta
+);
+
 /// \brief Parallel all-pairs MCS driver for wizepairz and dmcss.
 ///
 /// Partitions the upper-triangular (i < j) index space across `threads` workers,

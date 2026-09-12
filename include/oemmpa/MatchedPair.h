@@ -53,6 +53,17 @@ public:
     unsigned int GetMinValidRadius() const;
     unsigned int GetMaxValidRadius() const;
 
+    /// \brief Record the heavy-atom counts of the two variable fragments.
+    ///
+    /// Populated by the MCS methods so the shared variable-size bounds can be
+    /// applied without re-parsing the fragment SMILES.
+    void SetVariableHeavyAtomCounts(
+        unsigned int source_heavy_atoms,
+        unsigned int target_heavy_atoms
+    );
+    unsigned int GetSourceVariableHeavyAtoms() const;
+    unsigned int GetTargetVariableHeavyAtoms() const;
+
     void SetProperty(const std::string& property_name, double source_value, double target_value);
     double GetSourceProperty(const std::string& property_name) const;
     double GetTargetProperty(const std::string& property_name) const;
@@ -85,6 +96,8 @@ private:
     bool has_valid_radius_range_ = false;
     unsigned int min_valid_radius_ = 0;
     unsigned int max_valid_radius_ = 0;
+    unsigned int source_variable_heavy_atoms_ = 0;
+    unsigned int target_variable_heavy_atoms_ = 0;
 };
 
 }  // namespace OEMMPA

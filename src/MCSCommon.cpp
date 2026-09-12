@@ -773,5 +773,35 @@ bool wizepairz_bound_passes_threshold(
         std::min(source_heavy, target_heavy), source_heavy, target_heavy, fraction);
 }
 
+MatchedPair make_matched_pair(
+    const MoleculeRecord& source_record,
+    const MoleculeRecord& target_record,
+    const std::string& constant_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles,
+    unsigned int source_variable_heavy_atoms,
+    unsigned int target_variable_heavy_atoms,
+    unsigned int cut_count,
+    int heavy_atom_delta,
+    int heavy_bond_delta
+) {
+    MatchedPair pair(
+        source_record.GetInternalId(),
+        target_record.GetInternalId(),
+        source_record.GetExternalId(),
+        target_record.GetExternalId(),
+        source_record.GetCanonicalSmiles(),
+        target_record.GetCanonicalSmiles(),
+        constant_smiles,
+        source_variable_smiles,
+        target_variable_smiles,
+        cut_count,
+        heavy_atom_delta,
+        heavy_bond_delta
+    );
+    pair.SetVariableHeavyAtomCounts(source_variable_heavy_atoms, target_variable_heavy_atoms);
+    return pair;
+}
+
 }  // namespace mcs
 }  // namespace OEMMPA

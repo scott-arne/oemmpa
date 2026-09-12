@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/DMCSSMethod.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/OEMedChemMethod.h"
 #include "oemmpa/oemmpa.h"
 
 #include <oesystem.h>
@@ -342,6 +345,64 @@ TEST(AnalyzerTest, OEMedChemMethodUsesCommonResultModel) {
     EXPECT_EQ(pair.GetConstantSmiles(), "[*:1]c1ccccc1");
     EXPECT_EQ(pair.GetSourceVariableSmiles(), "[*:1]C");
     EXPECT_EQ(pair.GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(DMCSSVariableCounts, ReversePairCarriesSwappedCounts) {
+    DMCSSMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    ASSERT_FALSE(pairs.empty()) << "DMCSS produced no pairs for toluene/phenol";
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "toluene" && pair.GetTargetExternalId() == "phenol") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "phenol" && pair.GetTargetExternalId() == "toluene") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward) << "Forward pair (toluene->phenol) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (phenol->toluene) not found";
+}
+
+TEST(OEMedChemVariableCounts, ReversePairCarriesSwappedCounts) {
+    OEMedChemMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "CCC", "propane"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "CCCC", "butane"));
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    ASSERT_FALSE(pairs.empty()) << "OEMedChem produced no pairs for propane/butane";
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "propane" && pair.GetTargetExternalId() == "butane") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 2u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "butane" && pair.GetTargetExternalId() == "propane") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 2u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward) << "Forward pair (propane->butane) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (butane->propane) not found";
 }
 
 TEST(AnalyzerTest, UnknownMethodsRaiseUnsupportedMethodErrors) {

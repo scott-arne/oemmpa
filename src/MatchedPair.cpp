@@ -160,4 +160,20 @@ unsigned int MatchedPair::GetMaxValidRadius() const {
     return max_valid_radius_;
 }
 
+void MatchedPair::SetVariableHeavyAtomCounts(
+    unsigned int source_heavy_atoms,
+    unsigned int target_heavy_atoms
+) {
+    source_variable_heavy_atoms_ = source_heavy_atoms;
+    target_variable_heavy_atoms_ = target_heavy_atoms;
+}
+
+unsigned int MatchedPair::GetSourceVariableHeavyAtoms() const {
+    return source_variable_heavy_atoms_;
+}
+
+unsigned int MatchedPair::GetTargetVariableHeavyAtoms() const {
+    return target_variable_heavy_atoms_;
+}
+
 }  // namespace OEMMPA

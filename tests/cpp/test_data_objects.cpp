@@ -141,5 +141,29 @@ TEST(MatchedPairTest, CarriesOptionalEnvironmentSmirksAnnotation) {
     EXPECT_EQ(pair.GetMaxValidRadius(), 4u);
 }
 
+namespace {
+MatchedPair MakeTestPair() {
+    return MatchedPair(
+        1, 2, "test-a", "test-b",
+        "CC", "CO",
+        "C[*:1]", "C[*:1]", "O[*:1]",
+        1, 0, 0
+    );
+}
+}  // namespace
+
+TEST(MatchedPairVariableCounts, DefaultToZero) {
+    const OEMMPA::MatchedPair pair = MakeTestPair();
+    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 0u);
+    EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 0u);
+}
+
+TEST(MatchedPairVariableCounts, RoundTrip) {
+    OEMMPA::MatchedPair pair = MakeTestPair();
+    pair.SetVariableHeavyAtomCounts(3, 5);
+    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 3u);
+    EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 5u);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

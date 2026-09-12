@@ -205,24 +205,6 @@ std::vector<mcs::Boundary> truncation_boundaries(
     return boundaries;
 }
 
-MatchedPair make_pair(
-    const MoleculeRecord& source_record,
-    const MoleculeRecord& target_record,
-    const std::string& constant_smiles,
-    const std::string& source_variable_smiles,
-    const std::string& target_variable_smiles,
-    unsigned int cut_count,
-    int heavy_atom_delta,
-    int heavy_bond_delta
-) {
-    return MatchedPair(
-        source_record.GetInternalId(), target_record.GetInternalId(),
-        source_record.GetExternalId(), target_record.GetExternalId(),
-        source_record.GetCanonicalSmiles(), target_record.GetCanonicalSmiles(),
-        constant_smiles, source_variable_smiles, target_variable_smiles,
-        cut_count, heavy_atom_delta, heavy_bond_delta);
-}
-
 // The per-radius explicit-H SMIRKS hierarchy for one directed pair, plus the
 // contiguous [min, max] range of radii at which it stayed a single fragment.
 struct EnvironmentHierarchy {
@@ -468,12 +450,16 @@ void add_wizepairz_pair_if_valid(
         source_mol, target_mol, source_variable, target_variable,
         source_radii, target_radii, match, max_environment_radius);
 
-    MatchedPair forward_pair = make_pair(source_record, target_record, constant_smiles,
-        source_variable_smiles, target_variable_smiles, cut_count,
-        heavy_atom_delta, heavy_bond_delta);
-    MatchedPair reverse_pair = make_pair(target_record, source_record, constant_smiles,
-        target_variable_smiles, source_variable_smiles, cut_count,
-        -heavy_atom_delta, -heavy_bond_delta);
+    MatchedPair forward_pair = mcs::make_matched_pair(
+        source_record, target_record, constant_smiles,
+        source_variable_smiles, target_variable_smiles,
+        source_var_heavy, target_var_heavy,
+        cut_count, heavy_atom_delta, heavy_bond_delta);
+    MatchedPair reverse_pair = mcs::make_matched_pair(
+        target_record, source_record, constant_smiles,
+        target_variable_smiles, source_variable_smiles,
+        target_var_heavy, source_var_heavy,
+        cut_count, -heavy_atom_delta, -heavy_bond_delta);
     if (hierarchy.valid) {
         forward_pair.SetEnvironmentSmirks(hierarchy.forward);
         forward_pair.SetValidRadiusRange(hierarchy.min_valid_radius, hierarchy.max_valid_radius);

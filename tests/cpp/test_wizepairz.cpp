@@ -541,3 +541,32 @@ TEST(WizePairZPrefilter, InvalidRecordStillFailsParallelAnalysis) {
     method.AddMolecule(MoleculeRecord());
     EXPECT_THROW(method.Analyze(4), OEMMPA::InvalidMoleculeError);
 }
+
+TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
+    WizePairZMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "CCc1ccccc1", "ethylbenzene"));
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    ASSERT_FALSE(pairs.empty()) << "WizePairZ produced no pairs for toluene/ethylbenzene";
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "toluene" && pair.GetTargetExternalId() == "ethylbenzene") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 0u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "ethylbenzene" && pair.GetTargetExternalId() == "toluene") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 0u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward) << "Forward pair (toluene->ethylbenzene) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (ethylbenzene->toluene) not found";
+}

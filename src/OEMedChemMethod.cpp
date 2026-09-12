@@ -95,32 +95,6 @@ bool read_mapped_smiles(OEChem::OEGraphMol& mol, const std::string& smiles) {
     return !smiles.empty() && OEChem::OESmilesToMol(mol, smiles);
 }
 
-MatchedPair make_pair(
-    const MoleculeRecord& source_record,
-    const MoleculeRecord& target_record,
-    const std::string& constant_smiles,
-    const std::string& source_variable_smiles,
-    const std::string& target_variable_smiles,
-    unsigned int cut_count,
-    int heavy_atom_delta,
-    int heavy_bond_delta
-) {
-    return MatchedPair(
-        source_record.GetInternalId(),
-        target_record.GetInternalId(),
-        source_record.GetExternalId(),
-        target_record.GetExternalId(),
-        source_record.GetCanonicalSmiles(),
-        target_record.GetCanonicalSmiles(),
-        constant_smiles,
-        source_variable_smiles,
-        target_variable_smiles,
-        cut_count,
-        heavy_atom_delta,
-        heavy_bond_delta
-    );
-}
-
 const MoleculeRecord& find_record(
     const std::unordered_map<unsigned int, const MoleculeRecord*>& records_by_id,
     unsigned int internal_id
@@ -208,22 +182,26 @@ void add_native_pair(
         static_cast<int>(mcs::count_heavy_bonds(source_mol, source_variable_atoms));
     const unsigned int cut_count = static_cast<unsigned int>(source_boundaries.size());
 
-    pairs.push_back(make_pair(
+    pairs.push_back(mcs::make_matched_pair(
         source_record,
         target_record,
         constant_smiles,
         source_variable_smiles,
         target_variable_smiles,
+        source_variable_heavy_atoms,
+        target_variable_heavy_atoms,
         cut_count,
         heavy_atom_delta,
         heavy_bond_delta
     ));
-    pairs.push_back(make_pair(
+    pairs.push_back(mcs::make_matched_pair(
         target_record,
         source_record,
         constant_smiles,
         target_variable_smiles,
         source_variable_smiles,
+        target_variable_heavy_atoms,
+        source_variable_heavy_atoms,
         cut_count,
         -heavy_atom_delta,
         -heavy_bond_delta
