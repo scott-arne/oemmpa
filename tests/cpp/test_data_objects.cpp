@@ -174,18 +174,33 @@ TEST(BuildTransforms, MovesPairsRatherThanCopyingThem) {
 }
 
 TEST(BuildTransforms, GroupsPairsByTransformSmiles) {
+    // Inserted in an order that is neither sorted nor reverse-sorted, and with
+    // the duplicated transform split across non-adjacent positions: an
+    // unordered_map hands its entries back in bucket order, so only the explicit
+    // sort can produce the ordering the std::map this replaced guaranteed.
     std::vector<OEMMPA::MatchedPair> pairs;
-    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
-    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
     pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]O"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]Br"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]Cl"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]F"));
 
     const std::vector<OEMMPA::Transform> transforms =
         OEMMPA::build_transforms(std::move(pairs));
-    ASSERT_EQ(transforms.size(), 2u);
-    // Sorted by transform SMILES, as the previous std::map ordering guaranteed.
-    EXPECT_EQ(transforms[0].GetTransformSmiles(), "[*:1]C>>[*:1]N");
-    EXPECT_EQ(transforms[0].GetPairs().size(), 2u);
-    EXPECT_EQ(transforms[1].GetTransformSmiles(), "[*:1]C>>[*:1]O");
+
+    ASSERT_EQ(transforms.size(), 5u);
+    EXPECT_EQ(transforms[0].GetTransformSmiles(), "[*:1]C>>[*:1]Br");
+    EXPECT_EQ(transforms[1].GetTransformSmiles(), "[*:1]C>>[*:1]Cl");
+    EXPECT_EQ(transforms[2].GetTransformSmiles(), "[*:1]C>>[*:1]F");
+    EXPECT_EQ(transforms[3].GetTransformSmiles(), "[*:1]C>>[*:1]N");
+    EXPECT_EQ(transforms[4].GetTransformSmiles(), "[*:1]C>>[*:1]O");
+
+    EXPECT_EQ(transforms[0].GetPairs().size(), 1u);
+    EXPECT_EQ(transforms[1].GetPairs().size(), 1u);
+    EXPECT_EQ(transforms[2].GetPairs().size(), 1u);
+    EXPECT_EQ(transforms[3].GetPairs().size(), 2u);
+    EXPECT_EQ(transforms[4].GetPairs().size(), 1u);
 }
 
 TEST(TransformAddPair, ConstReferenceOverloadIsRetainedAndLeavesTheSourceIntact) {

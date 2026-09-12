@@ -3,6 +3,7 @@
 import importlib
 import importlib.machinery
 import importlib.util
+import inspect
 import os
 from pathlib import Path
 import subprocess
@@ -349,6 +350,26 @@ def test_returned_pair_vector_elements_expose_getters():
     assert len(transforms) > 0
     assert len(list(transforms)) == len(transforms)
     assert transforms[0].GetEvidenceCount() > 0
+
+
+def test_transform_addpair_exposes_only_the_copying_overload():
+    """Pin the Python surface of ``Transform::AddPair`` to the copying overload.
+
+    ``Transform::AddPair(MatchedPair&&)`` exists for the C++ grouping path only.
+    Python has no rvalue concept, so without the ``%ignore`` in ``swig/oemmpa.i``
+    SWIG wraps it as a second ``AddPair`` and emits an ``*args`` dispatcher whose
+    rvalue branch converts with ``SWIG_POINTER_RELEASE`` and takes ownership of
+    the caller's ``MatchedPair``. ``_rule_environment.py`` keeps using the pairs
+    it passes in, so that branch would free objects still referenced from Python.
+    Nothing else in the suite notices the difference, which is why the signature
+    is asserted directly. ``build_transforms`` is likewise an implementation
+    detail that must not become a public Python name.
+    """
+    _oemmpa = import_worktree_raw_bindings()
+
+    signature = inspect.signature(_oemmpa.Transform.AddPair)
+    assert list(signature.parameters) == ["self", "pair"]
+    assert not hasattr(_oemmpa, "build_transforms")
 
 
 def test_explicit_threads_matches_default():
