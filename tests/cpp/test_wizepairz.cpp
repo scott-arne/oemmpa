@@ -542,7 +542,7 @@ TEST(WizePairZPrefilter, InvalidRecordStillFailsParallelAnalysis) {
     EXPECT_THROW(method.Analyze(4), OEMMPA::InvalidMoleculeError);
 }
 
-TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
+TEST(WizePairZTest, ReversePairCarriesSwappedCountsThroughTheHydrogenFragment) {
     WizePairZMethod method;
     method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
     method.AddMolecule(MoleculeRecord::FromSmiles(2, "CCc1ccccc1", "ethylbenzene"));
@@ -571,4 +571,34 @@ TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
     }
     EXPECT_TRUE(saw_forward) << "Forward pair (toluene->ethylbenzene) not found";
     EXPECT_TRUE(saw_reverse) << "Reverse pair (ethylbenzene->toluene) not found";
+}
+
+TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
+    WizePairZMethod method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Clc1ccc(cc1)C(=O)N", "chlorobenzamide"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "CCc1ccc(cc1)C(=O)N", "ethylbenzamide"));
+    method.Analyze(1);
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::vector<MatchedPair> pairs = method.GetPairs(options);
+
+    ASSERT_FALSE(pairs.empty()) << "WizePairZ produced no pairs for chlorobenzamide/ethylbenzamide";
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        if (pair.GetSourceExternalId() == "chlorobenzamide" && pair.GetTargetExternalId() == "ethylbenzamide") {
+            // At default identity fraction 0.90, WizePairZ emits [*:1]Cl (1 heavy) vs [*:1]CC (2 heavy).
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 2u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "ethylbenzamide" && pair.GetTargetExternalId() == "chlorobenzamide") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 2u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward) << "Forward pair (chlorobenzamide->ethylbenzamide) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (ethylbenzamide->chlorobenzamide) not found";
 }
