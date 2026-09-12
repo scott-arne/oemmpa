@@ -40,3 +40,24 @@ target_link_libraries(oemmpa_tests
 
 include(GoogleTest)
 gtest_discover_tests(oemmpa_tests)
+
+add_executable(oemmpa_prefilter_dump prefilter_parity_dump.cpp)
+target_link_libraries(oemmpa_prefilter_dump PRIVATE oemmpa)
+
+add_executable(oemmpa_prefilter_dump_disabled prefilter_parity_dump.cpp)
+target_link_libraries(oemmpa_prefilter_dump_disabled PRIVATE oemmpa_no_prefilter)
+# The dump translation unit holds no prefilter code, so it does not need the
+# disabling macro -- only the same header configuration as the library it links.
+target_include_directories(oemmpa_prefilter_dump_disabled PRIVATE
+    $<TARGET_PROPERTY:oemmpa,INTERFACE_INCLUDE_DIRECTORIES>)
+target_compile_definitions(oemmpa_prefilter_dump_disabled PRIVATE
+    $<TARGET_PROPERTY:oemmpa,INTERFACE_COMPILE_DEFINITIONS>)
+
+add_test(NAME WizePairZPrefilterParity
+    COMMAND ${CMAKE_COMMAND}
+        -DENABLED_EXE=$<TARGET_FILE:oemmpa_prefilter_dump>
+        -DDISABLED_EXE=$<TARGET_FILE:oemmpa_prefilter_dump_disabled>
+        -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/../data/surechembl_mmp_fixture.smi
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/prefilter_parity.cmake
+)

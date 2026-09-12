@@ -136,6 +136,32 @@ std::string render_mapped_region_with_explicit_h(const OEChem::OEMolBase& mol, c
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs);
 bool passes_atom_delta_filters(int heavy_atom_delta, const QueryOptions& options, unsigned int source_heavy_atom_count);
 
+/// \brief The post-MCS identity test, unchanged in behaviour.
+///
+/// The cutoff is ``floor(fraction * max(source_heavy, target_heavy))`` and the
+/// test is ``mcs_size >= cutoff``.
+///
+/// \param mcs_size Heavy atoms in the MCS.
+/// \param source_heavy Heavy atoms in the source molecule.
+/// \param target_heavy Heavy atoms in the target molecule.
+/// \param fraction Identity fraction in (0, 1].
+bool wizepairz_mcs_passes_threshold(
+    unsigned int mcs_size,
+    unsigned int source_heavy,
+    unsigned int target_heavy,
+    double fraction
+);
+
+/// \brief The same test applied to min(source_heavy, target_heavy), the largest
+/// MCS the two molecules could possibly share.
+///
+/// False means no achievable MCS size can pass, so the MCS need not be run.
+bool wizepairz_bound_passes_threshold(
+    unsigned int source_heavy,
+    unsigned int target_heavy,
+    double fraction
+);
+
 /// \brief Parallel all-pairs MCS driver for wizepairz and dmcss.
 ///
 /// Partitions the upper-triangular (i < j) index space across `threads` workers,

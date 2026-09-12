@@ -6,6 +6,7 @@
 #include <oechem.h>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -745,6 +746,31 @@ bool passes_atom_delta_filters(
     }
 
     return true;
+}
+
+bool wizepairz_mcs_passes_threshold(
+    unsigned int mcs_size,
+    unsigned int source_heavy,
+    unsigned int target_heavy,
+    double fraction
+) {
+    const unsigned int larger = std::max(source_heavy, target_heavy);
+    const auto cutoff = static_cast<unsigned int>(
+        std::floor(fraction * static_cast<double>(larger)));
+    return mcs_size >= cutoff;
+}
+
+bool wizepairz_bound_passes_threshold(
+    unsigned int source_heavy,
+    unsigned int target_heavy,
+    double fraction
+) {
+    // Expressed as the post-MCS test applied to the largest achievable MCS
+    // rather than as an independent inequality: any re-derivation could round
+    // differently at a floor() boundary and start rejecting candidates the
+    // post-MCS test would have kept.
+    return wizepairz_mcs_passes_threshold(
+        std::min(source_heavy, target_heavy), source_heavy, target_heavy, fraction);
 }
 
 }  // namespace mcs

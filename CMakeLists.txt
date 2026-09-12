@@ -166,6 +166,26 @@ endif()
 # Tests
 if(OEMMPA_BUILD_TESTS)
     enable_testing()
+
+    # A second compilation of the library with the WizePairZ prefilter compiled
+    # out, so the parity test can compare two real builds. The configuration is
+    # copied from `oemmpa` by generator expression rather than restated: a
+    # restated copy would silently drift (a differing OEMMPA_HAS_* value would
+    # change the code path and make the comparison meaningless), and this target
+    # is deliberately not exported or installed.
+    add_library(oemmpa_no_prefilter STATIC ${OEMMPA_SOURCES})
+    set_target_properties(oemmpa_no_prefilter PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(oemmpa_no_prefilter PRIVATE
+        $<TARGET_PROPERTY:oemmpa,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_definitions(oemmpa_no_prefilter PRIVATE
+        $<TARGET_PROPERTY:oemmpa,INTERFACE_COMPILE_DEFINITIONS>
+        OEMMPA_DISABLE_WIZEPAIRZ_PREFILTER)
+    # TARGET_GENEX_EVAL is required because `oemmpa`'s link interface holds a
+    # `$<BUILD_INTERFACE:...>` item; a bare TARGET_PROPERTY read hands that item
+    # to the linker as a literal filename.
+    target_link_libraries(oemmpa_no_prefilter PRIVATE
+        $<TARGET_GENEX_EVAL:oemmpa,$<TARGET_PROPERTY:oemmpa,INTERFACE_LINK_LIBRARIES>>)
+
     add_subdirectory(tests)
 endif()
 

@@ -1,6 +1,7 @@
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentSmiles.h"
+#include "oemmpa/MCSCommon.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
@@ -474,6 +475,42 @@ TEST(RegionGeometry, WizePairZEnvironmentSmirksPreservesTetrahedralConfiguration
                 << test_case.name << " -> " << smirks;
             EXPECT_NE(normalize_smirks(smirks), render_reference(test_case.inverted))
                 << test_case.name << " -> " << smirks;
+        }
+    }
+}
+
+// The prefilter rejects a candidate whose heavy-atom upper bound on the MCS
+// already fails the identity threshold. Every candidate it rejects must be one
+// the post-MCS threshold test would have rejected anyway.
+TEST(WizePairZPrefilter, RejectsOnlyWhatThePostMcsTestWouldReject) {
+    // SetMcsIdentityFraction admits (0, 1]. Sweep that range on a fine grid,
+    // plus values whose floor() lands near an integer boundary -- that is where
+    // a rounding divergence between the two formulas would hide.
+    std::vector<double> fractions;
+    for (unsigned int twentieth = 1; twentieth <= 20; ++twentieth) {
+        fractions.push_back(static_cast<double>(twentieth) / 20.0);
+    }
+    for (double awkward : {0.9, 0.95, 1.0 / 3.0, 2.0 / 3.0, 0.999999, 1e-6}) {
+        fractions.push_back(awkward);
+    }
+
+    for (unsigned int source_heavy = 1; source_heavy <= 40; ++source_heavy) {
+        for (unsigned int target_heavy = 1; target_heavy <= 40; ++target_heavy) {
+            for (double fraction : fractions) {
+                if (OEMMPA::mcs::wizepairz_bound_passes_threshold(
+                        source_heavy, target_heavy, fraction)) {
+                    continue;  // the prefilter keeps it; nothing to prove
+                }
+                // The prefilter rejects, so every MCS size this pair could
+                // actually have produced must fail the post-MCS test too.
+                const unsigned int bound = std::min(source_heavy, target_heavy);
+                for (unsigned int mcs_size = 0; mcs_size <= bound; ++mcs_size) {
+                    EXPECT_FALSE(OEMMPA::mcs::wizepairz_mcs_passes_threshold(
+                        mcs_size, source_heavy, target_heavy, fraction))
+                        << "source=" << source_heavy << " target=" << target_heavy
+                        << " fraction=" << fraction << " mcs=" << mcs_size;
+                }
+            }
         }
     }
 }
