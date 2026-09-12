@@ -710,9 +710,26 @@ duckdb::Value skewness(const std::vector<double>& values, double avg) {
         // a multiply feeding an add, which the default -ffp-contract=on lets
         // the compiler fuse or not as inlining decisions happen to fall, so its
         // last bit is a codegen artifact: the same inputs yield -0.75 unfused
-        // and -0.7499999999999998 fused. Requesting the fused operation pins
-        // the single-rounding result the stored statistics were built from.
+        // and -0.7499999999999998 fused. This one accumulation is the site
+        // whose fusion actually flipped when the refresh was restructured to
+        // stream, so it is pinned to the single-rounding result the stored
+        // statistics were built from. The pin is narrow: it does not make this
+        // function, let alone the aggregate, contraction-independent.
         skew_top = std::fma(delta * delta, delta, skew_top);
+        // Still exposed, here and in the siblings: this accumulation has the
+        // same multiply-feeding-add shape and reaches skewness through
+        // skew_bot, so fusing it would move the result exactly as fusing
+        // skew_top did. So can quartiles()' four `0.25 * a + 0.75 * b`
+        // interpolations, which set q1 and q3, and the central-moment updates
+        // in kurtosis() and sample_standard_deviation(). All of these are
+        // byte-identity-relevant against tests/data/duckdb_golden.
+        //
+        // They are deliberately not pinned one by one: forcing fusion at a
+        // site the current build does not fuse would itself move the golden
+        // values and would need its own verification. The durable fix is to
+        // build this translation unit with -ffp-contract=off and regenerate
+        // the golden fixture once, which retires the whole class rather than
+        // chasing it a site at a time. Left as a follow-up.
         squared_delta_sum += delta * delta;
     }
 

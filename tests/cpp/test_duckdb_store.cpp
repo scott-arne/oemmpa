@@ -1028,8 +1028,11 @@ TEST(DuckDBStoreStatistics, EachGroupGetsItsOwnPairCount) {
         const std::vector<StatisticsRow> rows = ReadStatisticsRows(store);
         ASSERT_FALSE(rows.empty());
 
-        // The corpus is built so that no two (rule_environment, property) groups
-        // have the same pair count, so a merged or split group is visible.
+        // The corpus covers its two properties with different molecule subsets,
+        // so the (rule_environment, property) groups do not all hold the same
+        // number of pairs. Group sizes repeat, so this cannot pin any single
+        // group; what it pins is that more than one distinct size survives,
+        // which a consumer that merges every group into one destroys.
         std::set<std::uint32_t> counts;
         std::uint64_t total_count = 0;
         for (const StatisticsRow& row : rows) {
@@ -1048,6 +1051,31 @@ TEST(DuckDBStoreStatistics, EachGroupGetsItsOwnPairCount) {
     }
 
     std::filesystem::remove(database_path);
+}
+
+// The empty scan is its own path through the streaming consumer: no row ever
+// arrives, so no group is ever opened and the trailing flush is skipped. A
+// consumer that flushed unconditionally would hand aggregate_values() an empty
+// buffer, which throws, so the refresh would fail outright instead of leaving
+// the table empty.
+TEST(DuckDBStoreStatistics, RefreshOverPropertyFreePairsWritesNoRows) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.AddMolecule("CCCc1ccccc1", "propylbenzene");
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    // The scan yields nothing because no compound carries a property, not
+    // because there is nothing to scan: the rule environments are present.
+    ASSERT_GT(store.GetRowCount("rule_environment"), 0U);
+
+    store.RefreshRuleEnvironmentStatistics();
+
+    EXPECT_EQ(store.GetRowCount("rule_environment_statistics"), 0U);
+    EXPECT_TRUE(ReadStatisticsRows(store).empty());
+    EXPECT_EQ(store.GetSummary(true).GetNumRuleEnvironmentStatistics(), 0U);
 }
 
 TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {
