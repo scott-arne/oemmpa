@@ -523,7 +523,12 @@ std::vector<MatchedPair> WizePairZMethod::GetPairs(const QueryOptions& options) 
             throw AnalysisStateError("wizepairz pair references unloaded molecule id: " +
                 std::to_string(pair.GetSourceMoleculeId()));
         }
-        if (!mcs::passes_atom_delta_filters(pair.GetHeavyAtomDelta(), options, it->second)) {
+        const auto target_it = heavy_by_id.find(pair.GetTargetMoleculeId());
+        if (target_it == heavy_by_id.end()) {
+            throw AnalysisStateError("wizepairz pair references unloaded molecule id: " +
+                std::to_string(pair.GetTargetMoleculeId()));
+        }
+        if (!mcs::passes_atom_delta_filters(pair, it->second, target_it->second, options)) {
             continue;
         }
         out.push_back(pair);

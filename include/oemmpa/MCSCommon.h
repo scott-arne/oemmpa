@@ -134,7 +134,22 @@ std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<uns
 std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const RegionRenderOptions& render_options);
 std::string render_mapped_region_with_explicit_h(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const std::unordered_map<unsigned int, unsigned int>& atom_map_indices);
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs);
-bool passes_atom_delta_filters(int heavy_atom_delta, const QueryOptions& options, unsigned int source_heavy_atom_count);
+/// \brief Shared post-MCS query filter: heavy-atom delta plus the four
+/// variable-size bounds.
+///
+/// \param pair Candidate pair, carrying both the heavy-atom delta and the
+///     per-side variable heavy-atom counts recorded at construction.
+/// \param source_molecule_heavy_atoms Heavy atoms in the whole source molecule,
+///     the denominator of the source-side ratio bounds.
+/// \param target_molecule_heavy_atoms Heavy atoms in the whole target molecule,
+///     the denominator of the target-side ratio bounds.
+/// \param options Query options supplying the bounds.
+bool passes_atom_delta_filters(
+    const MatchedPair& pair,
+    unsigned int source_molecule_heavy_atoms,
+    unsigned int target_molecule_heavy_atoms,
+    const QueryOptions& options
+);
 
 /// \brief The post-MCS identity test, unchanged in behaviour.
 ///

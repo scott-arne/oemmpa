@@ -724,11 +724,12 @@ bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
 }
 
 bool passes_atom_delta_filters(
-    int heavy_atom_delta,
-    const QueryOptions& options,
-    unsigned int source_heavy_atom_count
+    const MatchedPair& pair,
+    unsigned int source_molecule_heavy_atoms,
+    unsigned int target_molecule_heavy_atoms,
+    const QueryOptions& options
 ) {
-    const long long abs_atom_delta = absolute_delta(heavy_atom_delta);
+    const long long abs_atom_delta = absolute_delta(pair.GetHeavyAtomDelta());
     if (
         options.GetMaxHeavyAtomChange() >= 0 &&
         abs_atom_delta > options.GetMaxHeavyAtomChange()
@@ -737,12 +738,39 @@ bool passes_atom_delta_filters(
     }
 
     if (options.GetMaxRelativeHeavyAtomChange() >= 0.0) {
-        const double relative_change = source_heavy_atom_count == 0
+        const double relative_change = source_molecule_heavy_atoms == 0
             ? (abs_atom_delta == 0 ? 0.0 : std::numeric_limits<double>::infinity())
-            : static_cast<double>(abs_atom_delta) / static_cast<double>(source_heavy_atom_count);
+            : static_cast<double>(abs_atom_delta) /
+                static_cast<double>(source_molecule_heavy_atoms);
         if (relative_change > options.GetMaxRelativeHeavyAtomChange()) {
             return false;
         }
+    }
+
+    // The four variable-size bounds live in QueryOptions::AllowsVariableFragment,
+    // which the fragment-and-index backend applies per fragmentation. The MCS
+    // methods have no fragmentation records, so they apply the same predicate to
+    // each side's variable fragment here; both sides must pass.
+    //
+    // The exemption is the exact [*:1][H] pseudo-fragment, matching
+    // add_candidate_if_allowed (src/MemoryIndex.cpp) and MMPDB, which appends
+    // its [*][H] matches outside the allow_fragment filter. It is NOT "a
+    // variable fragment with zero heavy atoms" -- that would exempt more than
+    // the reference does -- and it is per side, so the heavy side of a hydrogen
+    // pair is still gated.
+    if (
+        pair.GetSourceVariableSmiles() != kHydrogenVariableSmiles &&
+        !options.AllowsVariableFragment(
+            pair.GetSourceVariableHeavyAtoms(), source_molecule_heavy_atoms)
+    ) {
+        return false;
+    }
+    if (
+        pair.GetTargetVariableSmiles() != kHydrogenVariableSmiles &&
+        !options.AllowsVariableFragment(
+            pair.GetTargetVariableHeavyAtoms(), target_molecule_heavy_atoms)
+    ) {
+        return false;
     }
 
     return true;

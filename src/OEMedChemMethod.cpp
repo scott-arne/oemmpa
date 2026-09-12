@@ -344,10 +344,19 @@ std::vector<MatchedPair> OEMedChemMethod::GetPairs(const QueryOptions& options) 
                 std::to_string(pair.GetSourceMoleculeId())
             );
         }
+        const auto target_heavy_atoms =
+            heavy_atoms_by_molecule_id.find(pair.GetTargetMoleculeId());
+        if (target_heavy_atoms == heavy_atoms_by_molecule_id.end()) {
+            throw AnalysisStateError(
+                "OEMedChem pair references unloaded molecule id: " +
+                std::to_string(pair.GetTargetMoleculeId())
+            );
+        }
         if (!mcs::passes_atom_delta_filters(
-            pair.GetHeavyAtomDelta(),
-            options,
-            source_heavy_atoms->second
+            pair,
+            source_heavy_atoms->second,
+            target_heavy_atoms->second,
+            options
         )) {
             continue;
         }

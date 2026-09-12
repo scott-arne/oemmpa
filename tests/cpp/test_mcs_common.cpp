@@ -1,12 +1,15 @@
 #include "oemmpa/MCSCommon.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
+#include "oemmpa/QueryOptions.h"
 
 #include <gtest/gtest.h>
 #include <oechem.h>
 
 #include <set>
+#include <string>
 
 namespace {
 
@@ -15,6 +18,28 @@ OEChem::OEGraphMol mol_from_smiles(const std::string& smiles) {
     OEChem::OESmilesToMol(mol, smiles);
     OEChem::OEAssignAromaticFlags(mol);
     return mol;
+}
+
+/// \brief A pair whose only interesting content is its two variable fragments.
+///
+/// The heavy-atom delta is derived from the two counts so the delta filters see
+/// a self-consistent pair, and the per-side counts are recorded the way
+/// mcs::make_matched_pair records them.
+OEMMPA::MatchedPair pair_with_variables(
+    const std::string& source_variable,
+    const std::string& target_variable,
+    unsigned int source_variable_heavies,
+    unsigned int target_variable_heavies
+) {
+    OEMMPA::MatchedPair pair(
+        1u, 2u, "src", "tgt", "CCO", "CCN", "[*:1]CC",
+        source_variable, target_variable, 1u,
+        static_cast<int>(target_variable_heavies) -
+            static_cast<int>(source_variable_heavies),
+        0
+    );
+    pair.SetVariableHeavyAtomCounts(source_variable_heavies, target_variable_heavies);
+    return pair;
 }
 
 }  // namespace
@@ -81,4 +106,59 @@ TEST(MCSCommonTest, RunAllPairsPropagatesWorkerException) {
         OEMMPA::mcs::run_all_pairs(molecules, 2, worker_count_out, emit_throws),
         OEMMPA::AnalysisStateError
     );
+}
+
+TEST(MCSCommonTest, VariableSizeBoundsGateBothSidesIndependently) {
+    const OEMMPA::MatchedPair pair =
+        pair_with_variables("[*:1]C", "[*:1]CCC", 1u, 3u);
+
+    const OEMMPA::QueryOptions unbounded;
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 12u, unbounded));
+
+    // The source side (1 heavy atom) fails a minimum of 2; the target side alone
+    // would pass it.
+    OEMMPA::QueryOptions min_two;
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_FALSE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 12u, min_two));
+
+    // The target side (3 heavy atoms) fails a maximum of 2; the source side alone
+    // would pass it.
+    OEMMPA::QueryOptions max_two;
+    max_two.SetMaxVariableHeavies(2);
+    EXPECT_FALSE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 12u, max_two));
+}
+
+TEST(MCSCommonTest, VariableRatioBoundUsesEachSidesOwnMoleculeSize) {
+    // Same 5-heavy-atom target fragment, two target molecule sizes. Using the
+    // source molecule's count as the denominator for both sides would make this
+    // 5/10 = 0.5 and reject it; the target's own 20 heavy atoms make it 0.25.
+    const OEMMPA::MatchedPair pair =
+        pair_with_variables("[*:1]C", "[*:1]CCCCC", 1u, 5u);
+
+    OEMMPA::QueryOptions max_ratio;
+    max_ratio.SetMaxVariableRatio(0.3);
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 20u, max_ratio));
+    EXPECT_FALSE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 10u, max_ratio));
+}
+
+TEST(MCSCommonTest, HydrogenPseudoFragmentIsExemptButItsHeavySideIsNot) {
+    // The MMPDB-verified asymmetry for [*:1][H] >> [*:1]C: --min-variable-heavies
+    // 1 keeps the pair because the [H] side is never size-gated and the C side
+    // has one heavy atom, while 2 drops it because the C side is still gated.
+    const OEMMPA::MatchedPair pair =
+        pair_with_variables(OEMMPA::kHydrogenVariableSmiles, "[*:1]C", 0u, 1u);
+
+    OEMMPA::QueryOptions min_one;
+    min_one.SetMinVariableHeavies(1);
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 11u, min_one));
+
+    OEMMPA::QueryOptions min_two;
+    min_two.SetMinVariableHeavies(2);
+    EXPECT_FALSE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 11u, min_two));
+
+    // A ratio minimum would score the exempt side 0.0; it must not be applied to
+    // that side either.
+    OEMMPA::QueryOptions min_ratio;
+    min_ratio.SetMinVariableRatio(0.05);
+    EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 10u, 11u, min_ratio));
 }

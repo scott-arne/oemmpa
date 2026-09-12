@@ -376,8 +376,6 @@ MatchedPair make_pair(
 
 using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
 
-const std::string kHydrogenVariableSmiles = "[*:1][H]";
-
 FragInfo make_frag_info(const Fragmentation& fragmentation, const MemoryIndex& index) {
     FragInfo info;
     info.fragmentation = &fragmentation;

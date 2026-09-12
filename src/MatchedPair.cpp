@@ -14,6 +14,8 @@ std::string make_transform_smiles(
 
 }  // namespace
 
+const char* const kHydrogenVariableSmiles = "[*:1][H]";
+
 MatchedPair::MatchedPair(
     unsigned int source_molecule_id,
     unsigned int target_molecule_id,

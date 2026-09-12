@@ -996,10 +996,6 @@ bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
     );
 }
 
-// The synthesized hydrogen pseudo-fragment. MMPDB (and the in-memory query
-// path) exempt this fragment from variable-size bounds, so the store must too.
-const char* const kHydrogenVariableSmiles = "[*:1][H]";
-
 // Heavy-atom count of a variable SMILES, counted the same way as the in-memory
 // path (OEChem OEIsHeavy). Cached by SMILES so the common case of many pairs
 // sharing a variable fragment parses each distinct fragment once.

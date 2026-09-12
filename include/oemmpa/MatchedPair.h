@@ -7,6 +7,15 @@
 
 namespace OEMMPA {
 
+/// \brief The synthesized hydrogen pseudo-fragment, exempt from the
+/// variable-size bounds on the side that carries it.
+///
+/// Shared by every backend that has to recognize it (the in-memory index, the
+/// DuckDB store and the MCS filter) so the three cannot drift apart: the
+/// exemption is defined by this exact string, never by a fragment's heavy-atom
+/// count.
+extern const char* const kHydrogenVariableSmiles;
+
 /// \brief One rendered explicit-hydrogen SMIRKS for a pair at a given
 /// environment radius (WizePairZ). Empty for non-WizePairZ methods.
 struct PairEnvironmentSmirks {
