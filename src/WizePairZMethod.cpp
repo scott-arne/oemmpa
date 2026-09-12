@@ -42,16 +42,19 @@ AtomIndexSet collect_changed_core_atoms(
         source_to_target[entry.second] = entry.first;
     }
 
+    // One index per molecule, hoisted out of the loop: neither molecule is
+    // mutated here, so both tables stay valid for every lookup below.
+    const std::vector<const OEChem::OEAtomBase*> index_a = mcs::build_atom_index(mol_a);
+    const std::vector<const OEChem::OEAtomBase*> index_b = mcs::build_atom_index(mol_b);
+
     AtomIndexSet changed;
     for (const unsigned int source_idx : match.source_constant_atoms) {
         const auto mapped = source_to_target.find(source_idx);
         if (mapped == source_to_target.end()) {
             continue;
         }
-        const OEChem::OEAtomBase* atom_a =
-            mol_a.GetAtom(OEChem::OEHasAtomIdx(source_idx));
-        const OEChem::OEAtomBase* atom_b =
-            mol_b.GetAtom(OEChem::OEHasAtomIdx(mapped->second));
+        const OEChem::OEAtomBase* atom_a = mcs::atom_at(index_a, source_idx);
+        const OEChem::OEAtomBase* atom_b = mcs::atom_at(index_b, mapped->second);
         if (atom_a == nullptr || atom_b == nullptr) {
             continue;
         }
@@ -102,6 +105,9 @@ std::map<unsigned int, unsigned int> assign_recs_radii(
     }
 
     // Multi-source BFS seeded from the marked atoms (radius 0 and radius 1).
+    // The index is built once for the whole traversal; `mol` is const here, so
+    // nothing invalidates it between construction and the lookups below.
+    const std::vector<const OEChem::OEAtomBase*> index = mcs::build_atom_index(mol);
     std::map<unsigned int, unsigned int> distance;
     std::queue<unsigned int> frontier;
     for (const unsigned int idx : variable_atoms) {
@@ -117,7 +123,7 @@ std::map<unsigned int, unsigned int> assign_recs_radii(
     while (!frontier.empty()) {
         const unsigned int idx = frontier.front();
         frontier.pop();
-        const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(idx));
+        const OEChem::OEAtomBase* atom = mcs::atom_at(index, idx);
         if (atom == nullptr) {
             continue;
         }

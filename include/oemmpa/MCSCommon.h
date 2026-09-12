@@ -128,6 +128,32 @@ std::vector<Boundary> collect_target_boundaries(const OEChem::OEMolBase& mol, co
 bool find_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase& target_mol, const std::set<unsigned int>& source_candidates, const std::set<unsigned int>& target_candidates, McsMatch& record);
 McsMatch find_disconnected_mcs_match(const OEChem::OEMolBase& source_mol, const OEChem::OEMolBase& target_mol);
 std::string render_hydrogen_variable_smiles(unsigned int label);
+
+/// \brief Build an atom-index to atom-pointer lookup table.
+///
+/// OEMolBase::GetAtom(OEHasAtomIdx(i)) is a linear scan; inside a traversal
+/// that makes the traversal quadratic. The table is valid only while the
+/// molecule's atom set is unchanged -- rebuild it after any NewAtom/DeleteAtom.
+///
+/// \param mol Molecule to index.
+/// \returns A vector where position i holds the atom with index i, or null.
+std::vector<const OEChem::OEAtomBase*> build_atom_index(const OEChem::OEMolBase& mol);
+
+/// \brief Bounds-checked lookup into a build_atom_index() table.
+///
+/// Returns null for an index no atom carries, including one past the end,
+/// matching OEMolBase::GetAtom(OEHasAtomIdx(idx)). Call sites must use this
+/// rather than operator[]: the code being converted relies on that null, and
+/// an out-of-range operator[] is undefined behaviour, not a null.
+///
+/// \param index Table from build_atom_index().
+/// \param idx Atom index to look up.
+/// \returns The atom, or null.
+const OEChem::OEAtomBase* atom_at(
+    const std::vector<const OEChem::OEAtomBase*>& index,
+    unsigned int idx
+);
+
 /// \brief Check whether the given atom indices form a single connected component.
 /// Returns false if any index in `atoms` does not correspond to a real atom in `mol`.
 bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms);

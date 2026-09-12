@@ -83,6 +83,49 @@ TEST(MCSCommonTest, DetectsDisconnectedAtomSubset) {
     EXPECT_FALSE(OEMMPA::mcs::is_single_fragment(mol, {0u, 999999u}));  // valid + invalid
 }
 
+TEST(AtomIndex, MapsEveryAtomIndexToItsAtom) {
+    OEChem::OEGraphMol mol;
+    ASSERT_TRUE(OEChem::OESmilesToMol(mol, "c1ccccc1CCO"));
+    const std::vector<const OEChem::OEAtomBase*> index =
+        OEMMPA::mcs::build_atom_index(mol);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        ASSERT_LT(atom->GetIdx(), index.size());
+        EXPECT_EQ(index[atom->GetIdx()], &*atom);
+    }
+}
+
+TEST(AtomIndex, AgreesWithTheLinearScan) {
+    OEChem::OEGraphMol mol;
+    ASSERT_TRUE(OEChem::OESmilesToMol(mol, "c1ccccc1CCO"));
+    const std::vector<const OEChem::OEAtomBase*> index =
+        OEMMPA::mcs::build_atom_index(mol);
+    for (unsigned int i = 0; i < index.size(); ++i) {
+        EXPECT_EQ(index[i], mol.GetAtom(OEChem::OEHasAtomIdx(i)));
+    }
+}
+
+TEST(AtomIndex, AtomAtReturnsNullOutOfRangeRatherThanReadingPastTheEnd) {
+    OEChem::OEGraphMol mol;
+    ASSERT_TRUE(OEChem::OESmilesToMol(mol, "c1ccccc1CCO"));
+    const std::vector<const OEChem::OEAtomBase*> index =
+        OEMMPA::mcs::build_atom_index(mol);
+    // The converted call sites relied on GetAtom's null for a nonexistent
+    // index; atom_at must preserve exactly that, including past the end.
+    EXPECT_EQ(OEMMPA::mcs::atom_at(index, static_cast<unsigned int>(index.size())), nullptr);
+    EXPECT_EQ(OEMMPA::mcs::atom_at(index, 10000u), nullptr);
+    EXPECT_EQ(
+        OEMMPA::mcs::atom_at(index, 0u),
+        mol.GetAtom(OEChem::OEHasAtomIdx(0u)));
+}
+
+TEST(AtomIndex, AnEmptyMoleculeYieldsAnEmptyIndex) {
+    const OEChem::OEGraphMol mol;
+    const std::vector<const OEChem::OEAtomBase*> index =
+        OEMMPA::mcs::build_atom_index(mol);
+    EXPECT_TRUE(index.empty());
+    EXPECT_EQ(OEMMPA::mcs::atom_at(index, 0u), nullptr);
+}
+
 TEST(MCSCommonTest, MappedRegionKeepsRealAtomMapsAndExplicitHydrogens) {
     // Methane carbon (idx 0), no attachment boundaries, mapped to index 2.
     const OEChem::OEGraphMol mol = mol_from_smiles("C");

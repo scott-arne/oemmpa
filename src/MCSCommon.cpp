@@ -417,32 +417,67 @@ std::string render_hydrogen_variable_smiles(unsigned int label) {
     return "[*:" + std::to_string(label) + "][H]";
 }
 
+std::vector<const OEChem::OEAtomBase*> build_atom_index(const OEChem::OEMolBase& mol) {
+    // Sized from the largest live GetIdx() rather than NumAtoms(): after a
+    // DeleteAtom the two disagree and the indices stay sparse, so NumAtoms()
+    // would leave real atoms out of range.
+    unsigned int max_index = 0;
+    bool any = false;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        max_index = any ? std::max(max_index, atom->GetIdx()) : atom->GetIdx();
+        any = true;
+    }
+    std::vector<const OEChem::OEAtomBase*> index(any ? max_index + 1 : 0, nullptr);
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        index[atom->GetIdx()] = &*atom;
+    }
+    return index;
+}
+
+const OEChem::OEAtomBase* atom_at(
+    const std::vector<const OEChem::OEAtomBase*>& index,
+    unsigned int idx
+) {
+    return idx < index.size() ? index[idx] : nullptr;
+}
+
 bool is_single_fragment(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms) {
     if (atoms.empty()) {
         return false;
     }
+    // One index for the whole traversal: the per-index linear scan it replaces
+    // made both the validation loop and the BFS below quadratic in atom count.
+    const std::vector<const OEChem::OEAtomBase*> index = build_atom_index(mol);
     // Verify all indices correspond to real atoms.
     for (const unsigned int idx : atoms) {
-        if (mol.GetAtom(OEChem::OEHasAtomIdx(idx)) == nullptr) {
+        if (atom_at(index, idx) == nullptr) {
             return false;
         }
     }
-    // BFS over the induced subgraph; connected iff every atom is reached.
-    std::set<unsigned int> visited;
+    // BFS over the induced subgraph; connected iff every atom is reached. Every
+    // index reaching `visited` has passed the validation loop above, so it is a
+    // real atom index and in range.
+    std::vector<bool> visited(index.size(), false);
+    std::size_t visited_count = 0;
     std::vector<unsigned int> stack{*atoms.begin()};
-    visited.insert(*atoms.begin());
+    visited[*atoms.begin()] = true;
+    ++visited_count;
     while (!stack.empty()) {
         const unsigned int idx = stack.back();
         stack.pop_back();
-        const OEChem::OEAtomBase* atom = mol.GetAtom(OEChem::OEHasAtomIdx(idx));
+        const OEChem::OEAtomBase* atom = atom_at(index, idx);
         for (OESystem::OEIter<OEChem::OEAtomBase> nbr = atom->GetAtoms(); nbr; ++nbr) {
             const unsigned int nbr_idx = nbr->GetIdx();
-            if (atoms.count(nbr_idx) != 0 && visited.insert(nbr_idx).second) {
+            if (atoms.count(nbr_idx) != 0 && !visited[nbr_idx]) {
+                visited[nbr_idx] = true;
+                ++visited_count;
                 stack.push_back(nbr_idx);
             }
         }
     }
-    return visited.size() == atoms.size();
+    // visited is a flag per atom index, not a set of the visited ones, so the
+    // reached count is tracked separately.
+    return visited_count == atoms.size();
 }
 
 std::string build_region_smiles(
