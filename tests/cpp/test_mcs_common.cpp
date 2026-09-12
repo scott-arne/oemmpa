@@ -186,3 +186,169 @@ TEST(MCSCommonTest, HydrogenPseudoFragmentIsExemptOnTheTargetSideToo) {
     min_ratio.SetMinVariableRatio(0.05);
     EXPECT_TRUE(OEMMPA::mcs::passes_atom_delta_filters(pair, 11u, 10u, min_ratio));
 }
+
+namespace {
+
+/// \brief Build a MatchedPair with full control over all fields for scoring tests.
+OEMMPA::MatchedPair pair_for_scoring(
+    unsigned int source_mol_id,
+    unsigned int target_mol_id,
+    const std::string& constant_smiles,
+    const std::string& source_variable,
+    const std::string& target_variable,
+    unsigned int cut_count,
+    int heavy_atom_delta,
+    int heavy_bond_delta
+) {
+    OEMMPA::MatchedPair pair(
+        source_mol_id, target_mol_id,
+        "src" + std::to_string(source_mol_id),
+        "tgt" + std::to_string(target_mol_id),
+        "CCO", "CCN",
+        constant_smiles,
+        source_variable, target_variable,
+        cut_count, heavy_atom_delta, heavy_bond_delta
+    );
+    const unsigned int source_heavies = 2;
+    const unsigned int target_heavies = source_heavies + static_cast<unsigned int>(
+        heavy_atom_delta >= 0 ? heavy_atom_delta : -heavy_atom_delta);
+    pair.SetVariableHeavyAtomCounts(source_heavies, target_heavies);
+    return pair;
+}
+
+}  // namespace
+
+TEST(MCSCommonTest, SelectScoredPairsKeepsAllCandidatesInKeepAllMode) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]O", "[*:1]N", 2, 0, 0));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]F", "[*:1]Cl", 1, 1, 2));
+    pairs.push_back(pair_for_scoring(3, 4, "[*:1]NN", "[*:1]C", "[*:1]O", 1, 1, 0));
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::KeepAll);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    EXPECT_EQ(selected.size(), 4u);
+}
+
+TEST(MCSCommonTest, SelectScoredPairsMinimalHeavyAtomChangePicksSmallestDelta) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]O", "[*:1]N", 2, 0, 0));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]F", "[*:1]Cl", 1, 1, 2));
+    pairs.push_back(pair_for_scoring(3, 4, "[*:1]NN", "[*:1]C", "[*:1]O", 1, 1, 0));
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::MinimalHeavyAtomChange);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].GetSourceVariableSmiles(), "[*:1]O");
+    EXPECT_EQ(selected[0].GetTargetVariableSmiles(), "[*:1]N");
+    EXPECT_EQ(selected[1].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[1].GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(MCSCommonTest, SelectScoredPairsMinimalHeavyBondChangePicksSmallestBondDelta) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]O", "[*:1]N", 2, 0, 0));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]F", "[*:1]Cl", 1, 1, 2));
+    pairs.push_back(pair_for_scoring(3, 4, "[*:1]NN", "[*:1]C", "[*:1]O", 1, 1, 0));
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::MinimalHeavyBondChange);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].GetSourceVariableSmiles(), "[*:1]O");
+    EXPECT_EQ(selected[0].GetTargetVariableSmiles(), "[*:1]N");
+    EXPECT_EQ(selected[1].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[1].GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(MCSCommonTest, SelectScoredPairsFewerCutsThenHeavyAtomChangePicksByCutsThenAtoms) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]O", "[*:1]N", 2, 0, 0));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]F", "[*:1]Cl", 1, 1, 2));
+    pairs.push_back(pair_for_scoring(3, 4, "[*:1]NN", "[*:1]C", "[*:1]O", 1, 1, 0));
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::FewerCutsThenHeavyAtomChange);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].GetSourceVariableSmiles(), "[*:1]F");
+    EXPECT_EQ(selected[0].GetTargetVariableSmiles(), "[*:1]Cl");
+    EXPECT_EQ(selected[1].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[1].GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(MCSCommonTest, SelectScoredPairsFewerCutsThenHeavyBondChangePicksByCutsThenBonds) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]C", "[*:1]CCC", 1, 2, 1));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]O", "[*:1]N", 2, 0, 0));
+    pairs.push_back(pair_for_scoring(1, 2, "[*:1]CC", "[*:1]F", "[*:1]Cl", 1, 1, 2));
+    pairs.push_back(pair_for_scoring(3, 4, "[*:1]NN", "[*:1]C", "[*:1]O", 1, 1, 0));
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::FewerCutsThenHeavyBondChange);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[0].GetTargetVariableSmiles(), "[*:1]CCC");
+    EXPECT_EQ(selected[1].GetSourceVariableSmiles(), "[*:1]C");
+    EXPECT_EQ(selected[1].GetTargetVariableSmiles(), "[*:1]O");
+}
+
+TEST(MCSCommonTest, SelectScoredPairsGroupsByMoleculeIdNotSmiles) {
+    std::vector<OEMMPA::MatchedPair> pairs;
+    OEMMPA::MatchedPair pair1(
+        1u, 2u, "src1", "tgt2", "CCO", "CCO",
+        "[*:1]CC", "[*:1]C", "[*:1]C", 1, 0, 0);
+    pair1.SetVariableHeavyAtomCounts(1, 1);
+    pairs.push_back(pair1);
+
+    OEMMPA::MatchedPair pair2(
+        3u, 4u, "src3", "tgt4", "CCO", "CCO",
+        "[*:1]CC", "[*:1]C", "[*:1]C", 1, 2, 0);
+    pair2.SetVariableHeavyAtomCounts(1, 3);
+    pairs.push_back(pair2);
+
+    OEMMPA::QueryOptions options;
+    OEMMPA::ScoringOptions scoring;
+    scoring.SetMode(OEMMPA::ScoringMode::MinimalHeavyAtomChange);
+    options.SetScoringOptions(scoring);
+
+    const std::vector<OEMMPA::MatchedPair> selected =
+        OEMMPA::mcs::select_scored_pairs(pairs, options);
+
+    ASSERT_EQ(selected.size(), 2u);
+    EXPECT_EQ(selected[0].GetSourceMoleculeId(), 1u);
+    EXPECT_EQ(selected[0].GetTargetMoleculeId(), 2u);
+    EXPECT_EQ(selected[1].GetSourceMoleculeId(), 3u);
+    EXPECT_EQ(selected[1].GetTargetMoleculeId(), 4u);
+}
