@@ -873,6 +873,16 @@ void stream_rule_environment_property_deltas(
         have_group = true;
         deltas.push_back(row.GetValue<double>(2));
     }
+
+    // A streaming result executes during iteration, so a fetch-time failure -
+    // I/O, a memory limit, cancellation, an execution error - is recorded on
+    // the result and simply stops yielding chunks. That ends the range loop in
+    // a way indistinguishable from reaching the end of the scan. Without this
+    // second check the caller would flush the partial group, close its appender
+    // and commit a truncated rule_environment_statistics as though the refresh
+    // had succeeded; throwing here unwinds into the caller's rollback instead.
+    require_success(*result, sql);
+
     if (have_group) {
         flush_group(current_key, deltas);
     }
@@ -907,6 +917,15 @@ void refresh_dataset_counts(
     }
     require_success(*update_result, update_sql);
 }
+
+/// \brief Completed groups per explicit Appender flush.
+///
+/// DuckDB's Appender only auto-flushes every 204,800 rows, which no test
+/// fixture reaches, so appends would otherwise never interleave with the live
+/// scan in any regression test. Flushing on a cadence a test can cross makes
+/// that interleaving exercisable, and bounds the appender's resident chunk
+/// collection for the same reason the scan itself is streamed.
+constexpr std::uint64_t kAppenderFlushEveryGroups = 1024;
 
 void refresh_rule_environment_statistics(
     const std::unique_ptr<duckdb::Connection>& connection,
@@ -958,6 +977,11 @@ void refresh_rule_environment_statistics(
             appender.Append(statistics.p_value);
             appender.EndRow();
             ++next_id;
+
+            const std::uint64_t groups_appended = next_id - 1;
+            if (groups_appended % kAppenderFlushEveryGroups == 0) {
+                appender.Flush();
+            }
         }
     );
     appender.Close();

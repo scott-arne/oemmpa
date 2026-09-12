@@ -322,6 +322,93 @@ void PopulateMultiGroupStatisticsCorpus(DuckDBStore& store) {
     analyzer.SaveTo(store);
 }
 
+/// \brief Fill a store with more than 1024 (rule_environment, property) groups.
+///
+/// Eight scaffolds crossed with eight substituents give sixty-four compounds
+/// whose within-scaffold pairs produce rule environments at every default
+/// radius, and two properties over all of them double the group count, since
+/// the property is half of the grouping key. The point is volume: the refresh
+/// flushes its appender every kAppenderFlushEveryGroups groups, and a corpus
+/// below that threshold would never exercise an append interleaved with the
+/// still-open scan.
+void PopulateLargeStatisticsCorpus(DuckDBStore& store) {
+    const std::vector<std::string> scaffolds = {
+        "c1ccccc1",
+        "c1ccncc1",
+        "c1ccc(F)cc1",
+        "c1ccc(Cl)cc1",
+        "c1ccc2ccccc2c1",
+        "c1ccsc1",
+        "c1ccncn1",
+        "c1ccc(OC)cc1",
+    };
+    const std::vector<std::string> substituents = {
+        "C", "CC", "CCC", "O", "OC", "N", "Cl", "Br",
+    };
+
+    Analyzer analyzer;
+    std::vector<std::string> names;
+    for (std::size_t scaffold = 0; scaffold < scaffolds.size(); ++scaffold) {
+        for (std::size_t substituent = 0; substituent < substituents.size();
+             ++substituent) {
+            const std::string name =
+                "s" + std::to_string(scaffold) + "r" + std::to_string(substituent);
+            analyzer.AddMolecule(substituents[substituent] + scaffolds[scaffold], name);
+            names.push_back(name);
+        }
+    }
+
+    double pic50 = 5.0;
+    double logp = 1.0;
+    for (const std::string& name : names) {
+        analyzer.AddProperty(name, "pIC50", pic50);
+        analyzer.AddProperty(name, "logP", logp);
+        pic50 += 0.125;
+        logp += 0.25;
+    }
+
+    analyzer.Analyze();
+    analyzer.SaveTo(store);
+}
+
+/// \brief Count the (rule_environment, property) groups the delta scan yields.
+///
+/// Derived from the source tables rather than from rule_environment_statistics,
+/// so it is an independent expectation for the refresh's row count.
+std::uint64_t CountDistinctDeltaGroups(const std::filesystem::path& database_path) {
+    duckdb::DuckDB database(database_path.string());
+    duckdb::Connection connection(database);
+
+    const std::string sql =
+        "select count(*) from ("
+        "select distinct rule_env.id, source_property.property_name_id "
+        "from pair "
+        "join constant_environment ce on ce.constant_id = pair.constant_id "
+        "join rule_environment rule_env "
+        "on rule_env.rule_id = pair.rule_id "
+        "and rule_env.environment_fingerprint_id = ce.environment_fingerprint_id "
+        "and rule_env.radius = ce.radius "
+        "and (pair.min_valid_radius is null or "
+        "(rule_env.radius between pair.min_valid_radius and pair.max_valid_radius)) "
+        "join compound_property source_property "
+        "on source_property.compound_id = pair.compound1_id "
+        "join compound_property target_property "
+        "on target_property.compound_id = pair.compound2_id "
+        "and target_property.property_name_id = source_property.property_name_id"
+        ")";
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(sql);
+    if (!result) {
+        throw std::runtime_error("DuckDB query returned no result");
+    }
+    if (result->HasError()) {
+        throw std::runtime_error("DuckDB query failed: " + result->GetError());
+    }
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    throw std::runtime_error("DuckDB count query returned no row");
+}
+
 MatchedPair MakePair(
     unsigned int source_id,
     unsigned int target_id,
@@ -1076,6 +1163,99 @@ TEST(DuckDBStoreStatistics, RefreshOverPropertyFreePairsWritesNoRows) {
     EXPECT_EQ(store.GetRowCount("rule_environment_statistics"), 0U);
     EXPECT_TRUE(ReadStatisticsRows(store).empty());
     EXPECT_EQ(store.GetSummary(true).GetNumRuleEnvironmentStatistics(), 0U);
+}
+
+// A streaming refresh can only be as safe as its error handling, and DuckDB's
+// streaming results make the unsafe case look exactly like success. This pins
+// that shape so the post-loop require_success() in
+// stream_rule_environment_property_deltas() cannot be dropped as redundant.
+//
+// The query below converts cleanly for the first 900,000 rows and then hits an
+// unconvertible string, which is many vectors past the first, so the failure
+// lands during iteration rather than while SendQuery() is still executing. It
+// uses the DuckDB API directly rather than the store because the refresh's own
+// query cannot be made to fail this way: its ORDER BY is a blocking sort that
+// finishes before SendQuery() returns, so a memory limit tight enough to break
+// it reports the error there, where the first require_success() already catches
+// it. See the task report for the end-to-end attempt and its measurements.
+TEST(DuckDBStoreStatistics, StreamingResultSignalsFetchTimeFailureOnlyOnTheResult) {
+    duckdb::DuckDB database(nullptr);
+    duckdb::Connection connection(database);
+    connection.Query("set threads=1");
+
+    const std::string sql =
+        "select cast(case when i < 900000 then cast(i as varchar) "
+        "else 'not-a-number' end as integer) from range(1000000) t(i)";
+
+    std::unique_ptr<duckdb::QueryResult> result = connection.SendQuery(sql);
+    ASSERT_NE(result, nullptr);
+    ASSERT_FALSE(result->HasError())
+        << "the query must start cleanly, or it would be caught by the check "
+           "that already runs right after SendQuery()";
+
+    std::uint64_t rows = 0;
+    bool threw = false;
+    try {
+        for (const auto& row : *result) {
+            (void)row.GetValue<std::int32_t>(0);
+            ++rows;
+        }
+    } catch (const std::exception&) {
+        threw = true;
+    }
+
+    // This is the whole point: the loop ends quietly. Nothing distinguishes it
+    // from reaching the end of the data, so a consumer that only checked the
+    // result before iterating would treat a truncated stream as a complete one.
+    EXPECT_FALSE(threw) << "iteration is expected to stop silently, not throw";
+    EXPECT_GT(rows, 0U) << "the failure must come after some rows, not before";
+    EXPECT_LT(rows, 1000000U) << "the stream must stop short of the full range";
+
+    // The error is only ever visible on the result, which is what the helper's
+    // post-loop require_success() inspects.
+    EXPECT_TRUE(result->HasError());
+}
+
+// The appender is flushed every kAppenderFlushEveryGroups completed groups, so
+// on a corpus past that threshold the refresh writes to
+// rule_environment_statistics while its own scan is still open on a second
+// connection. That interleaving is the part the smaller fixtures never reach.
+TEST(DuckDBStoreStatistics, AppenderFlushesInterleavedWithTheScanPreserveRows) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    std::vector<StatisticsRow> first;
+    std::vector<StatisticsRow> second;
+    std::uint64_t row_count = 0;
+
+    {
+        DuckDBStore store(database_path.string());
+        PopulateLargeStatisticsCorpus(store);
+
+        store.RefreshRuleEnvironmentStatistics();
+        first = ReadStatisticsRows(store);
+        row_count = store.GetRowCount("rule_environment_statistics");
+
+        // A second refresh re-runs the delete, the scan and the interleaved
+        // flushes over a table that already holds a full generation of rows.
+        store.RefreshRuleEnvironmentStatistics();
+        second = ReadStatisticsRows(store);
+    }
+
+    // Counted from the source tables, so it is an expectation the refresh did
+    // not get to produce for itself.
+    const std::uint64_t groups = CountDistinctDeltaGroups(database_path);
+
+    // 1024 is kAppenderFlushEveryGroups in src/DuckDBStore.cpp. If this ever
+    // fails, the corpus has shrunk below the flush cadence and the test has
+    // stopped covering what it claims to.
+    ASSERT_GT(groups, 1024U) << "corpus no longer crosses the appender flush cadence";
+
+    EXPECT_EQ(row_count, groups);
+    ASSERT_FALSE(first.empty());
+    EXPECT_EQ(first, second);
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {
