@@ -7,10 +7,11 @@ tests reconstruct the exact per-rule-environment property deltas the C++ engine
 aggregated and assert that Python's ``_aggregate_values`` produces identical
 results on the same inputs, so the two implementations cannot silently drift.
 
-The p-value is validated end to end against scipy: both languages now call the
-same C++ ``two_sided_t_p_value``, which computes the two-sided Student's t
-p-value via the regularized incomplete beta function, so matching the Python
-value here also matches scipy.
+The p-value is the one statistic both languages now take from the same C++
+``two_sided_t_p_value``, so their agreement here proves the wiring, not the
+numerics. ``test_python_p_value_matches_scipy_oracle`` supplies the other half
+by checking that shared value against ``scipy.stats`` directly; it skips when
+SciPy is missing, which is allowed because SciPy is optional at runtime.
 """
 
 import csv
@@ -107,7 +108,8 @@ def test_cpp_and_python_statistics_match_on_reference_dataset():
         _assert_optional_match(row.kurtosis, expected["kurtosis"])
         _assert_optional_match(row.skewness, expected["skewness"])
         _assert_optional_match(row.paired_t, expected["paired_t"])
-        # C++ now computes the same two-sided p-value as Python's scipy path.
+        # Both sides reach the same C++ function; the SciPy oracle below is
+        # what pins that function's numerics.
         _assert_optional_match(row.p_value, expected["p_value"])
         if row.p_value is not None:
             saw_p_value = True
@@ -119,3 +121,36 @@ def test_cpp_and_python_statistics_match_on_reference_dataset():
     assert saw_multi_pair
     assert saw_nonzero_variance
     assert saw_p_value
+
+
+def test_python_p_value_matches_scipy_oracle():
+    """Pin the shared C++ p-value against SciPy on the reference dataset.
+
+    The cross-language test compares two callers of one C++ function, so it
+    cannot see a drift inside that function. SciPy is the external oracle for
+    it, and is required only here: the package itself no longer imports SciPy
+    for the p-value.
+    """
+    scipy_stats = pytest.importorskip("scipy.stats")
+    from oemmpa._analytics import _p_value
+
+    store = _build_reference_store()
+    rows = store.rule_environment_statistics()
+    assert rows, "expected persisted rule-environment statistics"
+
+    compared = 0
+    for row in rows:
+        if row.paired_t is None or row.std is None:
+            continue
+        actual = _p_value(row.paired_t, row.count, row.std)
+        if actual is None:
+            continue
+        oracle = float(scipy_stats.t.sf(abs(row.paired_t), row.count - 1) * 2)
+        # The worst deviation observed on this dataset is ~1.5e-15 relative;
+        # 1e-12 absorbs libm differences across platforms without hiding drift.
+        assert actual == pytest.approx(oracle, rel=1e-12)
+        # The persisted C++ value is that same number, so one oracle pins both.
+        assert row.p_value == pytest.approx(oracle, rel=1e-12)
+        compared += 1
+
+    assert compared, "expected at least one row with a defined p-value"
