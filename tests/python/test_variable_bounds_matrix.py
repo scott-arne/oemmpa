@@ -229,9 +229,9 @@ def _group_sizes(analyzer):
 def test_mcs_methods_emit_single_candidate_groups():
     """WizePairZ, DMCSS and OEMedChem emit at most one candidate per group.
 
-    Measured at commit 50b9d6a, symmetric=False: fragmentation 931 pairs / 888
-    groups / 41 multi-candidate / max 3, wizepairz 13/13/0/1, dmcss 114/114/0/1,
-    oemedchem 30/30/0/1.
+    Measured at commit d41bb04, symmetric=False, as pairs / groups /
+    multi-candidate groups / largest group: fragmentation 1218 / 1041 / 97 / 14,
+    wizepairz 13 / 13 / 0 / 1, dmcss 114 / 114 / 0 / 1, oemedchem 32 / 32 / 0 / 1.
 
     WizePairZ and DMCSS run one MCS search per molecule pair and emit two
     orientations (forward and reverse) of that single match; each orientation
