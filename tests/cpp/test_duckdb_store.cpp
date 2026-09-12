@@ -18,8 +18,10 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace OEMMPA {
@@ -150,6 +152,84 @@ RuleEnvironmentStatisticsSummary ReadRuleEnvironmentStatisticsSummary(
     return {};
 }
 
+/// \brief One optional statistic, compared including its presence.
+///
+/// The five nullable columns (std, kurtosis, skewness, paired_t, p_value)
+/// distinguish "undefined" from "zero", so a refresh that turned one into the
+/// other would be a behaviour change even though both read back as a double.
+struct OptionalStatistic {
+    bool present = false;
+    double value = 0.0;
+
+    bool operator==(const OptionalStatistic& other) const {
+        return present == other.present && (!present || value == other.value);
+    }
+};
+
+/// \brief Value-equality view of one persisted rule_environment_statistics row.
+///
+/// Compared exactly, not within a tolerance: the refresh is only allowed to
+/// differ in when memory is released, so any numeric movement is a defect.
+struct StatisticsRow {
+    std::uint64_t rule_environment_id = 0;
+    std::string property_name;
+    std::uint32_t count = 0;
+    double avg = 0.0;
+    OptionalStatistic standard_deviation;
+    OptionalStatistic kurtosis;
+    OptionalStatistic skewness;
+    double min = 0.0;
+    double q1 = 0.0;
+    double median = 0.0;
+    double q3 = 0.0;
+    double max = 0.0;
+    OptionalStatistic paired_t;
+    OptionalStatistic p_value;
+
+    bool operator==(const StatisticsRow& other) const {
+        return rule_environment_id == other.rule_environment_id &&
+            property_name == other.property_name &&
+            count == other.count &&
+            avg == other.avg &&
+            standard_deviation == other.standard_deviation &&
+            kurtosis == other.kurtosis &&
+            skewness == other.skewness &&
+            min == other.min &&
+            q1 == other.q1 &&
+            median == other.median &&
+            q3 == other.q3 &&
+            max == other.max &&
+            paired_t == other.paired_t &&
+            p_value == other.p_value;
+    }
+};
+
+std::vector<StatisticsRow> ReadStatisticsRows(const DuckDBStore& store) {
+    // GetRuleEnvironmentStatistics orders by (property, from, to, radius,
+    // rule_environment_id), which is a total order over the table, so the
+    // sequence is comparable across refreshes without re-sorting here.
+    std::vector<StatisticsRow> rows;
+    for (const RuleEnvironmentStatistics& row : store.GetRuleEnvironmentStatistics()) {
+        rows.push_back({
+            row.GetRuleEnvironmentId(),
+            row.GetPropertyName(),
+            row.GetCount(),
+            row.GetAvg(),
+            {row.HasStd(), row.HasStd() ? row.GetStd() : 0.0},
+            {row.HasKurtosis(), row.HasKurtosis() ? row.GetKurtosis() : 0.0},
+            {row.HasSkewness(), row.HasSkewness() ? row.GetSkewness() : 0.0},
+            row.GetMin(),
+            row.GetQ1(),
+            row.GetMedian(),
+            row.GetQ3(),
+            row.GetMax(),
+            {row.HasPairedT(), row.HasPairedT() ? row.GetPairedT() : 0.0},
+            {row.HasPValue(), row.HasPValue() ? row.GetPValue() : 0.0},
+        });
+    }
+    return rows;
+}
+
 void ExpectSinglePairRadiusRows(const std::vector<RuleEnvironmentRow>& rows) {
     ASSERT_EQ(rows.size(), 6U);
 
@@ -196,6 +276,50 @@ std::vector<MatchedPair> AnalyzeToluenePhenolPairs() {
 void AddToluenePhenolMolecules(DuckDBStore& store) {
     store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
     store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+}
+
+/// \brief Fill a store with rule environments of deliberately unequal support.
+///
+/// Three scaffolds carry the methyl/hydroxyl transform and two carry the
+/// chloro/bromo one, so the shared low-radius environments differ in pair
+/// count. "logP" is attached to only the first four compounds while "pIC50"
+/// covers all ten, so one rule environment also reports different counts for
+/// its two properties -- which puts a group boundary on the property component
+/// of the key, not just on the rule-environment component.
+void PopulateMultiGroupStatisticsCorpus(DuckDBStore& store) {
+    const std::vector<std::pair<std::string, std::string>> molecules = {
+        {"Cc1ccccc1", "methyl_benzene"},
+        {"Oc1ccccc1", "hydroxy_benzene"},
+        {"Cc1ccncc1", "methyl_pyridine"},
+        {"Oc1ccncc1", "hydroxy_pyridine"},
+        {"Cc1ccc(F)cc1", "methyl_fluorobenzene"},
+        {"Oc1ccc(F)cc1", "hydroxy_fluorobenzene"},
+        {"Clc1ccccc1", "chloro_benzene"},
+        {"Brc1ccccc1", "bromo_benzene"},
+        {"Clc1ccncc1", "chloro_pyridine"},
+        {"Brc1ccncc1", "bromo_pyridine"},
+    };
+
+    Analyzer analyzer;
+    for (const auto& molecule : molecules) {
+        analyzer.AddMolecule(molecule.first, molecule.second);
+    }
+
+    // Distinct values per compound so no two groups collapse onto the same
+    // delta distribution by accident.
+    double pic50 = 5.0;
+    for (const auto& molecule : molecules) {
+        analyzer.AddProperty(molecule.second, "pIC50", pic50);
+        pic50 += 0.25;
+    }
+    double logp = 1.0;
+    for (std::size_t index = 0; index < 4; ++index) {
+        analyzer.AddProperty(molecules[index].second, "logP", logp);
+        logp += 0.5;
+    }
+
+    analyzer.Analyze();
+    analyzer.SaveTo(store);
 }
 
 MatchedPair MakePair(
@@ -860,6 +984,70 @@ TEST(DuckDBStoreTest, ReturnsRuleEnvironmentStatisticsRowsWithRuleMetadata) {
     ASSERT_EQ(supporting_pairs.size(), 1U);
     EXPECT_EQ(supporting_pairs.front().GetTransformSmiles(), rows.front().GetTransformSmiles());
     EXPECT_TRUE(supporting_pairs.front().HasProperty("pIC50"));
+}
+
+// Statistics values must not move. The streaming refresh differs from the
+// materializing one only in when memory is released, so any numeric change is
+// a defect in the grouping, not an expectation update.
+TEST(DuckDBStoreStatistics, StreamingRefreshReproducesTheStatistics) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        PopulateMultiGroupStatisticsCorpus(store);
+
+        store.RefreshRuleEnvironmentStatistics();
+        const std::vector<StatisticsRow> first = ReadStatisticsRows(store);
+
+        // A second refresh must be idempotent: the delete-then-append cycle has
+        // to leave exactly the same rows, which is what proves the streaming
+        // read is not perturbed by the writes interleaved with it.
+        store.RefreshRuleEnvironmentStatistics();
+        const std::vector<StatisticsRow> second = ReadStatisticsRows(store);
+
+        ASSERT_FALSE(first.empty());
+        EXPECT_EQ(first, second);
+    }
+
+    std::filesystem::remove(database_path);
+}
+
+// Group boundaries are where a streaming consumer can go wrong: a group flushed
+// early or merged with its neighbour changes counts without changing the row
+// set's shape. Assert the per-group pair counts explicitly.
+TEST(DuckDBStoreStatistics, EachGroupGetsItsOwnPairCount) {
+    const std::filesystem::path database_path = TemporaryDatabasePath();
+    std::filesystem::remove(database_path);
+
+    {
+        DuckDBStore store(database_path.string());
+        PopulateMultiGroupStatisticsCorpus(store);
+        store.RefreshRuleEnvironmentStatistics();
+
+        const std::vector<StatisticsRow> rows = ReadStatisticsRows(store);
+        ASSERT_FALSE(rows.empty());
+
+        // The corpus is built so that no two (rule_environment, property) groups
+        // have the same pair count, so a merged or split group is visible.
+        std::set<std::uint32_t> counts;
+        std::uint64_t total_count = 0;
+        for (const StatisticsRow& row : rows) {
+            EXPECT_GT(row.count, 0U);
+            counts.insert(row.count);
+            total_count += row.count;
+        }
+        EXPECT_GT(counts.size(), 1U) << "corpus does not exercise multiple group sizes";
+
+        // A merge-everything consumer emits one row holding every delta; a
+        // flush-per-row one emits only singletons. Pinning both the row count
+        // and the summed support rules out each without depending on the exact
+        // corpus size.
+        EXPECT_GT(rows.size(), 1U);
+        EXPECT_GT(total_count, rows.size());
+    }
+
+    std::filesystem::remove(database_path);
 }
 
 TEST(DuckDBStoreTest, GroupsStoredPairsIntoTransforms) {

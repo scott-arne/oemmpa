@@ -706,7 +706,13 @@ duckdb::Value skewness(const std::vector<double>& values, double avg) {
     double squared_delta_sum = 0.0;
     for (const double value : values) {
         const double delta = value - avg;
-        skew_top += delta * delta * delta;
+        // std::fma, not `skew_top += delta * delta * delta`. The plain form is
+        // a multiply feeding an add, which the default -ffp-contract=on lets
+        // the compiler fuse or not as inlining decisions happen to fall, so its
+        // last bit is a codegen artifact: the same inputs yield -0.75 unfused
+        // and -0.7499999999999998 fused. Requesting the fused operation pins
+        // the single-rounding result the stored statistics were built from.
+        skew_top = std::fma(delta * delta, delta, skew_top);
         squared_delta_sum += delta * delta;
     }
 
@@ -777,11 +783,13 @@ AggregateStatistics aggregate_values(std::vector<double> values) {
 
 using RuleEnvironmentPropertyKey = std::pair<std::uint64_t, std::uint64_t>;
 
-std::map<RuleEnvironmentPropertyKey, std::vector<double>>
-collect_rule_environment_property_deltas(
-    const std::unique_ptr<duckdb::Connection>& connection
-) {
-    const std::string sql =
+/// \brief Every pair's property delta, keyed by (rule_environment, property).
+///
+/// The ORDER BY is load-bearing, not cosmetic: it makes one group's rows
+/// contiguous, which is what lets the consumer below accumulate, flush and
+/// release a single group at a time instead of materializing the whole table.
+std::string rule_environment_property_delta_sql() {
+    return
         "select "
         "rule_env.id as rule_environment_id, "
         "source_property.property_name_id, "
@@ -802,20 +810,55 @@ collect_rule_environment_property_deltas(
         "on target_property.compound_id = pair.compound2_id "
         "and target_property.property_name_id = source_property.property_name_id "
         "order by rule_env.id, source_property.property_name_id, pair.id";
-    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+}
+
+/// \brief Stream the property deltas, flushing each group as it completes.
+///
+/// The scan runs on its own connection because the caller's Appender writes on
+/// the primary connection, and a write there would invalidate the open stream.
+/// The scan reads `pair`, `rule_environment`, `constant_environment` and
+/// `compound_property`; the caller's preceding delete targets only
+/// `rule_environment_statistics`, so it cannot perturb these rows.
+///
+/// \param database Database instance the reader connection is opened on.
+/// \param sql Delta query from rule_environment_property_delta_sql().
+/// \param flush_group Invoked once per completed group with its key and deltas.
+template <typename FlushGroup>
+void stream_rule_environment_property_deltas(
+    duckdb::DuckDB& database,
+    const std::string& sql,
+    FlushGroup&& flush_group
+) {
+    duckdb::Connection reader(database);
+    std::unique_ptr<duckdb::QueryResult> result = reader.SendQuery(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
     }
     require_success(*result, sql);
 
-    std::map<RuleEnvironmentPropertyKey, std::vector<double>> deltas_by_key;
+    RuleEnvironmentPropertyKey current_key{};
+    std::vector<double> deltas;
+    bool have_group = false;
+
     for (const auto& row : *result) {
-        deltas_by_key[{
+        const RuleEnvironmentPropertyKey key{
             row.GetValue<std::uint64_t>(0),
             row.GetValue<std::uint64_t>(1),
-        }].push_back(row.GetValue<double>(2));
+        };
+        if (have_group && !(key == current_key)) {
+            // The key changed, so the previous group is complete: emit it and
+            // release its deltas. clear() keeps the buffer's capacity, so the
+            // resident cost settles at the largest group rather than the table.
+            flush_group(current_key, deltas);
+            deltas.clear();
+        }
+        current_key = key;
+        have_group = true;
+        deltas.push_back(row.GetValue<double>(2));
     }
-    return deltas_by_key;
+    if (have_group) {
+        flush_group(current_key, deltas);
+    }
 }
 
 void refresh_dataset_counts(
@@ -849,11 +892,14 @@ void refresh_dataset_counts(
 }
 
 void refresh_rule_environment_statistics(
-    const std::unique_ptr<duckdb::Connection>& connection
+    const std::unique_ptr<duckdb::Connection>& connection,
+    duckdb::DuckDB& database
 ) {
-    const std::map<RuleEnvironmentPropertyKey, std::vector<double>> deltas_by_key =
-        collect_rule_environment_property_deltas(connection);
-
+    // The delete still precedes the first append, so a refresh never leaves the
+    // table holding both generations. It is safe to run it before the scan
+    // starts: the scan touches pair, rule_environment, constant_environment and
+    // compound_property, none of which this statement writes, so the reader's
+    // snapshot of the source rows is the same either side of it.
     const std::string delete_sql = "delete from rule_environment_statistics";
     std::unique_ptr<duckdb::QueryResult> delete_result = connection->Query(delete_sql);
     if (!delete_result) {
@@ -869,27 +915,34 @@ void refresh_rule_environment_statistics(
     // appended as duckdb::Value objects, which carry their own NULLs.
     duckdb::Appender appender(*connection, "rule_environment_statistics");
     std::uint64_t next_id = 1;
-    for (const auto& entry : deltas_by_key) {
-        const AggregateStatistics statistics = aggregate_values(entry.second);
-        appender.BeginRow();
-        appender.Append(duckdb::Value::UBIGINT(next_id));
-        appender.Append(duckdb::Value::UBIGINT(entry.first.first));
-        appender.Append(duckdb::Value::UBIGINT(entry.first.second));
-        appender.Append(duckdb::Value::UINTEGER(statistics.count));
-        appender.Append(duckdb::Value::DOUBLE(statistics.avg));
-        appender.Append(statistics.std);
-        appender.Append(statistics.kurtosis);
-        appender.Append(statistics.skewness);
-        appender.Append(duckdb::Value::DOUBLE(statistics.min));
-        appender.Append(duckdb::Value::DOUBLE(statistics.q1));
-        appender.Append(duckdb::Value::DOUBLE(statistics.median));
-        appender.Append(duckdb::Value::DOUBLE(statistics.q3));
-        appender.Append(duckdb::Value::DOUBLE(statistics.max));
-        appender.Append(statistics.paired_t);
-        appender.Append(statistics.p_value);
-        appender.EndRow();
-        ++next_id;
-    }
+    // Row ids follow the scan order, which is the same (rule_environment,
+    // property_name) ascending order the materializing std::map produced, so
+    // the persisted table is unchanged down to its surrogate keys.
+    stream_rule_environment_property_deltas(
+        database,
+        rule_environment_property_delta_sql(),
+        [&](const RuleEnvironmentPropertyKey& key, const std::vector<double>& deltas) {
+            const AggregateStatistics statistics = aggregate_values(deltas);
+            appender.BeginRow();
+            appender.Append(duckdb::Value::UBIGINT(next_id));
+            appender.Append(duckdb::Value::UBIGINT(key.first));
+            appender.Append(duckdb::Value::UBIGINT(key.second));
+            appender.Append(duckdb::Value::UINTEGER(statistics.count));
+            appender.Append(duckdb::Value::DOUBLE(statistics.avg));
+            appender.Append(statistics.std);
+            appender.Append(statistics.kurtosis);
+            appender.Append(statistics.skewness);
+            appender.Append(duckdb::Value::DOUBLE(statistics.min));
+            appender.Append(duckdb::Value::DOUBLE(statistics.q1));
+            appender.Append(duckdb::Value::DOUBLE(statistics.median));
+            appender.Append(duckdb::Value::DOUBLE(statistics.q3));
+            appender.Append(duckdb::Value::DOUBLE(statistics.max));
+            appender.Append(statistics.paired_t);
+            appender.Append(statistics.p_value);
+            appender.EndRow();
+            ++next_id;
+        }
+    );
     appender.Close();
 }
 
@@ -2771,7 +2824,7 @@ void DuckDBStore::RefreshDatasetCounts() {
 void DuckDBStore::RefreshRuleEnvironmentStatistics() {
     Execute("begin transaction");
     try {
-        refresh_rule_environment_statistics(connection_);
+        refresh_rule_environment_statistics(connection_, *database_);
         refresh_dataset_counts(connection_);
         Execute("commit");
     } catch (...) {
