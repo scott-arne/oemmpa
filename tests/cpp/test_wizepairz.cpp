@@ -558,6 +558,8 @@ TEST(WizePairZTest, ReversePairCarriesSwappedCounts) {
     bool saw_reverse = false;
     for (const MatchedPair& pair : pairs) {
         if (pair.GetSourceExternalId() == "toluene" && pair.GetTargetExternalId() == "ethylbenzene") {
+            // WizePairZ's MCS includes the methyl carbon, so toluene's variable is
+            // the hydrogen pseudo-fragment [*:1][H] (0 heavy atoms) vs ethyl's [*:1]C (1).
             EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 0u);
             EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
             saw_forward = true;

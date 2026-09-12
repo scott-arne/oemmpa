@@ -349,31 +349,31 @@ TEST(AnalyzerTest, OEMedChemMethodUsesCommonResultModel) {
 
 TEST(DMCSSVariableCounts, ReversePairCarriesSwappedCounts) {
     DMCSSMethod method;
-    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
-    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Clc1ccccc1", "chloro"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "CCc1ccccc1", "ethyl"));
     method.Analyze(1);
 
     QueryOptions options;
     options.SetSymmetric(true);
     const std::vector<MatchedPair> pairs = method.GetPairs(options);
 
-    ASSERT_FALSE(pairs.empty()) << "DMCSS produced no pairs for toluene/phenol";
+    ASSERT_FALSE(pairs.empty()) << "DMCSS produced no pairs for chlorobenzene/ethylbenzene";
 
     bool saw_forward = false;
     bool saw_reverse = false;
     for (const MatchedPair& pair : pairs) {
-        if (pair.GetSourceExternalId() == "toluene" && pair.GetTargetExternalId() == "phenol") {
+        if (pair.GetSourceExternalId() == "chloro" && pair.GetTargetExternalId() == "ethyl") {
             EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
-            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 2u);
             saw_forward = true;
-        } else if (pair.GetSourceExternalId() == "phenol" && pair.GetTargetExternalId() == "toluene") {
-            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+        } else if (pair.GetSourceExternalId() == "ethyl" && pair.GetTargetExternalId() == "chloro") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 2u);
             EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
             saw_reverse = true;
         }
     }
-    EXPECT_TRUE(saw_forward) << "Forward pair (toluene->phenol) not found";
-    EXPECT_TRUE(saw_reverse) << "Reverse pair (phenol->toluene) not found";
+    EXPECT_TRUE(saw_forward) << "Forward pair (chloro->ethyl) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (ethyl->chloro) not found";
 }
 
 TEST(OEMedChemVariableCounts, ReversePairCarriesSwappedCounts) {

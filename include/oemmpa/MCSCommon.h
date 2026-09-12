@@ -165,10 +165,21 @@ bool wizepairz_bound_passes_threshold(
 /// \brief Construct a MatchedPair with variable heavy-atom counts.
 ///
 /// Shared helper for the three MCS methods. Populates the pair's variable
-/// heavy-atom counts so Task 13's bounds can be applied without re-parsing
-/// SMILES. The reverse call site swaps source/target for both the variable
-/// SMILES and the counts by the same textual pattern, preventing mismatched
-/// assignment.
+/// heavy-atom counts so the shared variable-size bounds can be applied without
+/// re-parsing the fragment SMILES. The reverse call site swaps source/target
+/// for both the variable SMILES and the counts by the same textual pattern,
+/// preventing mismatched assignment.
+///
+/// \param source_record Source molecule record.
+/// \param target_record Target molecule record.
+/// \param constant_smiles SMILES of the constant region with attachment labels.
+/// \param source_variable_smiles SMILES of the source variable region.
+/// \param target_variable_smiles SMILES of the target variable region.
+/// \param source_variable_heavy_atoms Heavy-atom count of the source variable.
+/// \param target_variable_heavy_atoms Heavy-atom count of the target variable.
+/// \param cut_count Number of cuts that produced this pair.
+/// \param heavy_atom_delta Target heavy atoms minus source heavy atoms.
+/// \param heavy_bond_delta Target heavy bonds minus source heavy bonds.
 MatchedPair make_matched_pair(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
