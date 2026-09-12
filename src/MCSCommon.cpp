@@ -2,6 +2,7 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/FragmentSmiles.h"
+#include "oemmpa/PairScoring.h"
 
 #include <oechem.h>
 
@@ -105,6 +106,28 @@ bool transfer_one_double_bond(
 }
 
 }  // namespace
+
+std::vector<MatchedPair> select_scored_pairs(
+    const std::vector<MatchedPair>& pairs,
+    const QueryOptions& options
+) {
+    std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
+    for (const MatchedPair& pair : pairs) {
+        candidates_by_group[CandidateKey{
+            pair.GetConstantSmiles(),
+            pair.GetSourceMoleculeId(),
+            pair.GetTargetMoleculeId()}]
+            .push_back(pair);
+    }
+    std::vector<MatchedPair> selected;
+    selected.reserve(pairs.size());
+    for (const auto& entry : candidates_by_group) {
+        const std::vector<MatchedPair> group =
+            PairScoring::Select(entry.second, options.GetScoringOptions());
+        selected.insert(selected.end(), group.begin(), group.end());
+    }
+    return selected;
+}
 
 bool is_heavy_atom(const OEChem::OEAtomBase* atom) {
     return atom != nullptr && atom->GetAtomicNum() > 1;

@@ -10,6 +10,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -134,6 +135,24 @@ std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<uns
 std::string build_region_smiles(const OEChem::OEMolBase& mol, const std::set<unsigned int>& selected_atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const RegionRenderOptions& render_options);
 std::string render_mapped_region_with_explicit_h(const OEChem::OEMolBase& mol, const std::set<unsigned int>& atoms, const std::vector<Boundary>& boundaries, bool selected_side_is_constant, const std::unordered_map<unsigned int, unsigned int>& atom_map_indices);
 bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs);
+/// \brief A scoring group: constant SMILES plus the two molecule identifiers.
+///
+/// Promoted from src/MemoryIndex.cpp so every backend groups identically. The
+/// second and third fields are molecule ids, not molecule SMILES: two
+/// re-registered copies of one structure are two compounds and must stay in
+/// two groups.
+using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
+
+/// \brief Group candidates by CandidateKey and score each group.
+///
+/// Mirrors MemoryIndex's per-group PairScoring::Select so every backend applies
+/// the same scoring semantics. Groups never span constants, so per-group
+/// selection is equivalent to selecting after the whole corpus.
+std::vector<MatchedPair> select_scored_pairs(
+    const std::vector<MatchedPair>& pairs,
+    const QueryOptions& options
+);
+
 /// \brief Shared post-MCS query filter: heavy-atom delta plus the four
 /// variable-size bounds.
 ///

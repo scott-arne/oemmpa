@@ -533,7 +533,7 @@ std::vector<MatchedPair> WizePairZMethod::GetPairs(const QueryOptions& options) 
         }
         out.push_back(pair);
     }
-    return out;
+    return mcs::select_scored_pairs(out, options);
 }
 
 std::vector<Transform> WizePairZMethod::GetTransforms(const QueryOptions& options) const {

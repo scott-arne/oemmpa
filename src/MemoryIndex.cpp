@@ -1,6 +1,7 @@
 #include "oemmpa/MemoryIndex.h"
 
 #include "oemmpa/Error.h"
+#include "oemmpa/MCSCommon.h"
 #include "oemmpa/PairScoring.h"
 #include "oemmpa/ThreadSupport.h"
 #include "oemmpa/VariableFragmentMetrics.h"
@@ -374,8 +375,6 @@ MatchedPair make_pair(
     );
 }
 
-using CandidateKey = std::tuple<std::string, unsigned int, unsigned int>;
-
 FragInfo make_frag_info(const Fragmentation& fragmentation, const MemoryIndex& index) {
     FragInfo info;
     info.fragmentation = &fragmentation;
@@ -412,8 +411,8 @@ std::vector<FragInfo> build_frag_infos(
 }
 
 void add_candidate_if_allowed(
-    std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
-    std::map<CandidateKey, std::unordered_set<std::string>>& seen_by_group,
+    std::map<mcs::CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
+    std::map<mcs::CandidateKey, std::unordered_set<std::string>>& seen_by_group,
     const FragInfo& source,
     const FragInfo& target,
     const std::string& constant_smiles,
@@ -489,7 +488,7 @@ void add_candidate_if_allowed(
         std::to_string(pair.GetCutCount()) + "\x1f" +
         std::to_string(pair.GetHeavyAtomDelta()) + "\x1f" +
         std::to_string(pair.GetHeavyBondDelta());
-    const CandidateKey group_key{
+    const mcs::CandidateKey group_key{
         constant_smiles, pair.GetSourceMoleculeId(), pair.GetTargetMoleculeId()};
     if (!seen_by_group[group_key].insert(dedup_key).second) {
         return;
@@ -498,8 +497,8 @@ void add_candidate_if_allowed(
 }
 
 void add_hydrogen_candidates_for_fragmentation(
-    std::map<CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
-    std::map<CandidateKey, std::unordered_set<std::string>>& seen_by_group,
+    std::map<mcs::CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
+    std::map<mcs::CandidateKey, std::unordered_set<std::string>>& seen_by_group,
     const Fragmentation& source_fragmentation,
     const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
     const MemoryIndex& index,
@@ -732,8 +731,8 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
     const auto process_constant = [&](const std::string& constant_smiles,
                                       VariableOrderKeyCache& order_key_cache,
                                       std::vector<MatchedPair>& out_pairs) {
-        std::map<CandidateKey, std::vector<MatchedPair>> candidates_by_group;
-        std::map<CandidateKey, std::unordered_set<std::string>> seen_by_group;
+        std::map<mcs::CandidateKey, std::vector<MatchedPair>> candidates_by_group;
+        std::map<mcs::CandidateKey, std::unordered_set<std::string>> seen_by_group;
 
         const std::vector<Fragmentation> fragmentations =
             with_hydrogen_fragmentations(

@@ -106,13 +106,20 @@ def _options(query):
     also what lets the DuckDB half of the matrix persist *the same* selection,
     via ``save_analyzer(query_options=...)``.
 
-    :param query: Mapping of any of the four bound names to their values.
+    :param query: Mapping of any of the four bound names to their values, plus
+        optionally ``scoring_mode`` as a string enumerator name.
     :returns: A raw ``_oemmpa.QueryOptions`` with ``symmetric`` off.
     """
     options = oemmpa._oemmpa.QueryOptions()
     # False is what index_mode="mmpdb" sets, so both halves of the matrix select
     # the same orientation.
     options.SetSymmetric(False)
+    query = dict(query)
+    if "scoring_mode" in query:
+        mode_name = query.pop("scoring_mode")
+        scoring_options = oemmpa._oemmpa.ScoringOptions()
+        scoring_options.SetMode(getattr(oemmpa._oemmpa, f"ScoringMode_{mode_name}"))
+        options.SetScoringOptions(scoring_options)
     _apply_variable_fragment_filters(options, **query)
     return options
 
@@ -345,4 +352,72 @@ def test_store_matches_memory_for_dmcss_without_over_cutting_molecules(bound, tm
         bound,
         tmp_path / f"dmcss-subset-{name}.duckdb",
         f"dmcss-without-over-cutting/{name}",
+    )
+
+
+SCORING_MODES = [
+    "KeepAll",
+    "MinimalHeavyAtomChange",
+    "MinimalHeavyBondChange",
+    "FewerCutsThenHeavyAtomChange",
+    "FewerCutsThenHeavyBondChange",
+]
+
+
+@pytest.mark.parametrize("mode", SCORING_MODES)
+def test_oemedchem_scoring_is_invariant_on_this_fixture(mode):
+    """OEMedChem emits at most one candidate per group on this fixture.
+
+    OEMedChem can produce multiple candidates per group in general (when the
+    same two molecules share multiple distinct MCS matches), but the SureChEMBL
+    fixture happens not to contain such pairs. On this input, OEMedChem behaves
+    identically to DMCSS and WizePairZ: every group has exactly one candidate,
+    so scoring is a proven no-op.
+    """
+    analyzer = _analyzed("oemedchem")
+    assert _pair_keys(analyzer, {"scoring_mode": mode}) == _pair_keys(
+        analyzer, {"scoring_mode": "KeepAll"}
+    )
+
+
+@pytest.mark.parametrize("method", ["dmcss", "wizepairz"])
+@pytest.mark.parametrize("mode", SCORING_MODES)
+def test_single_candidate_methods_are_scoring_invariant(method, mode):
+    """DMCSS and WizePairZ emit at most one candidate per group, so every
+    scoring mode selects the same set. This is a proven no-op, not an
+    ignored option.
+    """
+    analyzer = _analyzed(method)
+    assert _pair_keys(analyzer, {"scoring_mode": mode}) == _pair_keys(
+        analyzer, {"scoring_mode": "KeepAll"}
+    )
+
+
+def test_grouping_does_not_merge_duplicate_structures():
+    """Two compounds with identical SMILES under different ids are two groups.
+
+    The regression that motivates keying on molecule id rather than molecule
+    SMILES: with a SMILES key, MinimalHeavyAtomChange would collapse the two
+    duplicates into one group and drop one compound's pairs outright. Real
+    corpora contain re-registered duplicates, so this is not hypothetical.
+
+    Uses fragmentation rather than an MCS method because OEMedChem's analyzer
+    deduplicates by SMILES before our grouping logic runs.
+    """
+    analyzer = oemmpa.Analyzer(method="fragmentation")
+    with FIXTURE.open(encoding="utf-8") as handle:
+        rows = [line.split() for line in handle]
+    for smiles, molecule_id in rows:
+        analyzer.add_molecule(smiles, id=molecule_id)
+    # Re-register a structure with pairs under a second identifier.
+    dup_index = 1  # S11
+    duplicate_id = rows[dup_index][1] + "-dup"
+    analyzer.add_molecule(rows[dup_index][0], id=duplicate_id)
+    analyzer.analyze()
+
+    scored = _pair_keys(analyzer, {"scoring_mode": "MinimalHeavyAtomChange"})
+    original_ids = {rows[dup_index][1]}
+    assert any(key[0] in original_ids or key[1] in original_ids for key in scored)
+    assert any(duplicate_id in (key[0], key[1]) for key in scored), (
+        "the duplicate structure's pairs were merged into the original's group"
     )

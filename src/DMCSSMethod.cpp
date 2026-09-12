@@ -191,7 +191,7 @@ std::vector<MatchedPair> DMCSSMethod::GetPairs(const QueryOptions& options) cons
         pairs.push_back(pair);
     }
 
-    return pairs;
+    return mcs::select_scored_pairs(pairs, options);
 }
 
 std::vector<Transform> DMCSSMethod::GetTransforms(const QueryOptions& options) const {

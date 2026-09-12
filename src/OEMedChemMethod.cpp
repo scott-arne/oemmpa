@@ -363,7 +363,7 @@ std::vector<MatchedPair> OEMedChemMethod::GetPairs(const QueryOptions& options) 
 
         pairs.push_back(pair);
     }
-    return pairs;
+    return mcs::select_scored_pairs(pairs, options);
 }
 
 std::vector<Transform> OEMedChemMethod::GetTransforms(const QueryOptions& options) const {
