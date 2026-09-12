@@ -524,8 +524,9 @@ print(prediction.to_dict())
 The statistics result names follow MMPDB conventions: `count`, `avg`, `std`,
 `kurtosis`, `skewness`, `min`, `q1`, `median`, `q3`, `max`, `paired_t`, and
 `p_value`. Standard deviation uses sample variance, and quartiles use the same
-method-3 convention used by MMPDB. SciPy is imported only when needed for
-`p_value`; unsupported p-values are returned as `None`.
+method-3 convention used by MMPDB. The `p_value` comes from the extension's
+`two_sided_t_p_value`, so it needs no SciPy; unsupported p-values are returned
+as `None`.
 
 ### Uncertainty-aware statistics (Kramer 2014)
 

@@ -15,6 +15,7 @@ add_executable(oemmpa_tests
     test_oemmpa.cpp
     test_data_objects.cpp
     test_pair_scoring.cpp
+    test_statistics.cpp
     test_query_options.cpp
     test_fragmentation_strategy.cpp
     test_fragmenter.cpp

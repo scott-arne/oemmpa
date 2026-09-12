@@ -115,10 +115,10 @@ def test_no_uncertainty_is_byte_for_byte_unchanged():
 
 
 def test_no_uncertainty_without_scipy_still_works(monkeypatch):
-    # The default (no-sigma) path must work WITHOUT scipy. The base p_value
-    # computation already degrades to None when scipy is absent (pre-existing
-    # behavior); this documents that "default behavior unaffected" contract:
-    # it must not raise, and returns the base collection with p_value None.
+    # The default (no-sigma) path must work WITHOUT scipy. The base p_value now
+    # comes from the C++ two_sided_t_p_value, so blocking scipy leaves it fully
+    # computed; this documents that "default behavior unaffected" contract:
+    # it must not raise, and returns the base collection with a real p_value.
     import sys
 
     from oemmpa import compute_transform_statistics
@@ -131,7 +131,10 @@ def test_no_uncertainty_without_scipy_still_works(monkeypatch):
     row = stats["[*:1]C>>[*:1]O"]
     assert row.count == 2
     assert row.avg == pytest.approx(2.0)
-    assert row.p_value is None  # scipy blocked -> graceful None, no crash
+    # scipy blocked -> the C++ p-value still computes, no crash. The reference
+    # is scipy.stats.t.sf(2.0, 1) * 2 for the t = 2.0, df = 1 row above.
+    assert row.p_value is not None
+    assert row.p_value == pytest.approx(0.2951672353008665, abs=1e-12)
 
 
 def test_missing_property_raises():

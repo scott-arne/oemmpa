@@ -1,8 +1,12 @@
 """Build configuration guardrails."""
 
+import builtins
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,3 +72,29 @@ def test_swig_openeye_grid_dependency_is_explicitly_linked():
     uses_grid_bindings = "oegrid.h" in swig_interface or "OEScalarGrid" in swig_interface
 
     assert not uses_grid_bindings or "OpenEye::OEGrid" in swig_cmake
+
+
+def test_p_value_does_not_require_scipy(monkeypatch):
+    """The p-value comes from the C++ extension, not SciPy.
+
+    Deliberately not in test_statistics_parity.py: that module is skipped
+    entirely without DuckDB, which is the build this guarantee is for.
+    """
+    from oemmpa import _analytics
+
+    real_import = builtins.__import__
+
+    def _no_scipy(name, *args, **kwargs):
+        if name.startswith("scipy"):
+            raise ImportError("scipy is not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_scipy)
+    # An earlier test in the session may already have imported scipy, and
+    # importlib.import_module bypasses builtins.__import__ for a cached module.
+    # None entries close that hole, as test_kramer_gating.py does.
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.stats", None)
+    assert _analytics._p_value(2.228138851986273, 11, 1.0) == pytest.approx(
+        0.05, abs=1e-9
+    )

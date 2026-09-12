@@ -117,6 +117,7 @@ set(OEMMPA_SOURCES
     src/TransformApplication.cpp
     src/QueryOptions.cpp
     src/PairScoring.cpp
+    src/Statistics.cpp
     src/MemoryIndex.cpp
     src/ThreadSupport.cpp
 )

@@ -1,8 +1,8 @@
 """Transform statistics and prediction helpers."""
 
 from dataclasses import dataclass
-import importlib
 
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._dataframe import (
     AGGREGATE_FIELDS,
     TRANSFORM_SMIRKS_COLUMNS,
@@ -116,14 +116,16 @@ def _skewness(values, avg):
 
 
 def _p_value(paired_t, count, std):
+    """Two-sided p-value for a paired t statistic.
+
+    :param paired_t: The t statistic, or ``None`` when undefined.
+    :param count: Number of pairs.
+    :param std: Standard deviation of the deltas.
+    :returns: The two-sided p-value, or ``None`` when it is undefined.
+    """
     if count <= 1 or std == 0.0 or paired_t is None:
         return None
-
-    try:
-        scipy_stats = importlib.import_module("scipy.stats")
-    except ImportError:
-        return None
-    return float(scipy_stats.t.sf(abs(paired_t), count - 1) * 2)
+    return float(_oemmpa.two_sided_t_p_value(float(paired_t), float(count - 1)))
 
 
 def _aggregate_values(values):

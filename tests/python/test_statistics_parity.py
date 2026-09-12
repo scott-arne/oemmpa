@@ -7,10 +7,10 @@ tests reconstruct the exact per-rule-environment property deltas the C++ engine
 aggregated and assert that Python's ``_aggregate_values`` produces identical
 results on the same inputs, so the two implementations cannot silently drift.
 
-The p-value is validated end to end against scipy: Python's ``_p_value`` uses
-``scipy.stats.t.sf`` and C++ computes the same two-sided Student's t p-value via
-the regularized incomplete beta function, so matching the Python value here also
-matches scipy.
+The p-value is validated end to end against scipy: both languages now call the
+same C++ ``two_sided_t_p_value``, which computes the two-sided Student's t
+p-value via the regularized incomplete beta function, so matching the Python
+value here also matches scipy.
 """
 
 import csv

@@ -399,8 +399,8 @@ oemmpa rgroup2smarts --input rgroups.txt --output cut_smarts.txt
 transformation. For example, if matched pairs include pIC50 values, OEMMPA can
 report the average and median pIC50 change associated with each transformation.
 The statistic names follow MMPDB conventions, including `count`, `avg`, `std`,
-`median`, quartiles, and `p_value`. SciPy is optional; when it is unavailable
-or the sample does not support a t-test, `p_value` is `None`.
+`median`, quartiles, and `p_value`. The `p_value` is computed by the extension
+and needs no SciPy; when the sample does not support a t-test it is `None`.
 
 ```python
 from oemmpa import compute_transform_statistics, predict_transform_delta
