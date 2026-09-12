@@ -364,12 +364,46 @@ def test_transform_addpair_exposes_only_the_copying_overload():
     Nothing else in the suite notices the difference, which is why the signature
     is asserted directly. ``build_transforms`` is likewise an implementation
     detail that must not become a public Python name.
+
+    The signature alone is not conclusive, because a build that exposed *only*
+    the rvalue overload would present ``(self, pair)`` as well. The behavioural
+    half of this test closes that gap: the rvalue typemap converts its argument
+    with ``SWIG_POINTER_RELEASE``, which clears the proxy's ``thisown`` flag and
+    hands the C++ object to the transform. Ownership is therefore asserted
+    before the pair is touched again, so a regression fails on a boolean rather
+    than by reading freed memory.
     """
     _oemmpa = import_worktree_raw_bindings()
 
     signature = inspect.signature(_oemmpa.Transform.AddPair)
     assert list(signature.parameters) == ["self", "pair"]
     assert not hasattr(_oemmpa, "build_transforms")
+
+    pair = _oemmpa.MatchedPair(
+        1,
+        2,
+        "source",
+        "target",
+        "CC",
+        "CO",
+        "C[*:1]",
+        "C[*:1]",
+        "O[*:1]",
+        1,
+        0,
+        0,
+    )
+    transform = _oemmpa.Transform("C[*:1]>>O[*:1]")
+    assert pair.thisown
+    transform_smiles = pair.GetTransformSmiles()
+
+    transform.AddPair(pair)
+
+    assert pair.thisown, "AddPair took ownership of the caller's MatchedPair"
+    assert pair.GetTransformSmiles() == transform_smiles
+    stored_pairs = transform.GetPairs()
+    assert len(stored_pairs) == 1
+    assert stored_pairs[0].GetTransformSmiles() == transform_smiles
 
 
 def test_explicit_threads_matches_default():

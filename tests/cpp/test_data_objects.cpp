@@ -93,11 +93,19 @@ namespace {
 /// sync.
 ///
 /// \param transform_smiles Transform SMILES of the form "<source>>><target>".
+/// \param source_molecule_id Source molecule id. Defaulted, and overridden only
+///        by tests that need two pairs of the same transform to be
+///        distinguishable from one another.
+/// \param target_molecule_id Target molecule id, likewise.
 /// \returns A pair carrying that transform SMILES.
-MatchedPair MakeTestPairWithTransform(const std::string& transform_smiles) {
+MatchedPair MakeTestPairWithTransform(
+    const std::string& transform_smiles,
+    unsigned int source_molecule_id = 1,
+    unsigned int target_molecule_id = 2
+) {
     const std::string::size_type separator = transform_smiles.find(">>");
     return MatchedPair(
-        1, 2, "a", "b",
+        source_molecule_id, target_molecule_id, "a", "b",
         "CC", "CO",
         "C[*:1]",
         transform_smiles.substr(0, separator),
@@ -178,11 +186,15 @@ TEST(BuildTransforms, GroupsPairsByTransformSmiles) {
     // the duplicated transform split across non-adjacent positions: an
     // unordered_map hands its entries back in bucket order, so only the explicit
     // sort can produce the ordering the std::map this replaced guaranteed.
+    //
+    // The two same-transform pairs also carry distinct molecule ids and sit at
+    // non-adjacent positions, so the order they are recovered in below is the
+    // order they were inserted in and not an artefact of adjacency.
     std::vector<OEMMPA::MatchedPair> pairs;
     pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]O"));
-    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N", 11, 12));
     pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]Br"));
-    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N"));
+    pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]N", 21, 22));
     pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]Cl"));
     pairs.push_back(MakeTestPairWithTransform("[*:1]C>>[*:1]F"));
 
@@ -199,8 +211,14 @@ TEST(BuildTransforms, GroupsPairsByTransformSmiles) {
     EXPECT_EQ(transforms[0].GetPairs().size(), 1u);
     EXPECT_EQ(transforms[1].GetPairs().size(), 1u);
     EXPECT_EQ(transforms[2].GetPairs().size(), 1u);
-    EXPECT_EQ(transforms[3].GetPairs().size(), 2u);
     EXPECT_EQ(transforms[4].GetPairs().size(), 1u);
+
+    ASSERT_EQ(transforms[3].GetPairs().size(), 2u);
+    EXPECT_EQ(transforms[3].GetPairs()[0].GetSourceMoleculeId(), 11u)
+        << "pairs must keep their insertion order within a transform";
+    EXPECT_EQ(transforms[3].GetPairs()[0].GetTargetMoleculeId(), 12u);
+    EXPECT_EQ(transforms[3].GetPairs()[1].GetSourceMoleculeId(), 21u);
+    EXPECT_EQ(transforms[3].GetPairs()[1].GetTargetMoleculeId(), 22u);
 }
 
 TEST(TransformAddPair, ConstReferenceOverloadIsRetainedAndLeavesTheSourceIntact) {
@@ -237,11 +255,26 @@ TEST(TransformAddPair, RvalueOverloadMovesTheHeapBuffer) {
 
 TEST(TransformAddPair, RvalueOverloadStillRejectsAMismatchedTransform) {
     // Validation runs before the move, so the throwing path must not have
-    // consumed the argument.
-    OEMMPA::Transform transform("[*:1]C>>[*:1]N");
-    OEMMPA::MatchedPair pair = MakeTestPairWithTransform("[*:1]C>>[*:1]O");
+    // consumed the argument. Both SMILES are longer than the small-string
+    // optimization buffer, so the source still owns its heap allocation and its
+    // address is evidence that nothing was moved out of it.
+    const std::string transform_smiles =
+        "[*:1]c1ccc(cc1)C(=O)NCCCC>>[*:1]c1ccc(cc1)C(=O)NCCCCC";
+    const std::string mismatched_smiles =
+        "[*:1]c1ccc(cc1)C(=O)NCCCC>>[*:1]c1ccc(cc1)C(=O)NCCCCCC";
+    ASSERT_GT(mismatched_smiles.size(), 22u);
+
+    OEMMPA::Transform transform(transform_smiles);
+    OEMMPA::MatchedPair pair = MakeTestPairWithTransform(mismatched_smiles);
+    const char* original_buffer = pair.GetTransformSmiles().data();
+
     EXPECT_THROW(transform.AddPair(std::move(pair)), OEMMPA::AnalysisStateError);
+
     EXPECT_TRUE(transform.GetPairs().empty());
+    EXPECT_EQ(pair.GetTransformSmiles(), mismatched_smiles)
+        << "the rejected pair must still hold its own value";
+    EXPECT_EQ(pair.GetTransformSmiles().data(), original_buffer)
+        << "validation must run before the move, leaving the buffer in place";
 }
 
 TEST(MatchedPairTest, CarriesOptionalEnvironmentSmirksAnnotation) {
