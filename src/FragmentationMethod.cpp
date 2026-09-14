@@ -72,6 +72,11 @@ void FragmentationMethod::Analyze(unsigned int threads) {
     };
     std::vector<MoleculeResult> results(molecule_count);
     std::atomic<std::size_t> cursor{0};
+    // Serial Analyze stops at the first molecule that fails. Without this the
+    // parallel path would fragment the whole remaining corpus and then report
+    // the very error it already had, which the up-enumeration cap turned from a
+    // theoretical case into a reachable one.
+    std::atomic<bool> failed{false};
     const unsigned int worker_count =
         std::min<unsigned int>(threads, static_cast<unsigned int>(molecule_count));
     last_analyze_worker_count_ = worker_count;
@@ -97,7 +102,8 @@ void FragmentationMethod::Analyze(unsigned int threads) {
     for (unsigned int w = 0; w < worker_count; ++w) {
         workers.emplace_back([&, w]() {
             std::size_t i;
-            while ((i = cursor.fetch_add(1)) < molecule_count) {
+            while (!failed.load(std::memory_order_acquire) &&
+                   (i = cursor.fetch_add(1)) < molecule_count) {
                 try {
                     const MoleculeRecord& molecule = molecules_[i];
                     std::vector<Fragmentation> frags =
@@ -111,6 +117,10 @@ void FragmentationMethod::Analyze(unsigned int threads) {
                     results[i].fragmentations = std::move(frags);
                 } catch (...) {
                     results[i].error = std::current_exception();
+                    // Set only after the exception is recorded. No worker reads
+                    // results; the main thread does, after joining every worker,
+                    // and the join is what orders that read.
+                    failed.store(true, std::memory_order_release);
                 }
             }
         });
@@ -122,11 +132,13 @@ void FragmentationMethod::Analyze(unsigned int threads) {
     for (std::size_t i = 0; i < molecule_count; ++i) {
         if (results[i].error) {
             // Determinism guarantee: rethrow the exception from the lowest-index
-            // failing molecule, so the thrown exception is invariant across thread
-            // counts for a given input sequence. This is not exercised by a test
-            // because Phase-1 failures (fragmenter_.Fragment OR
-            // validate_and_measure_fragmentation) are not reachable from valid
-            // public API input: valid molecules always fragment cleanly.
+            // failing molecule, so the thrown exception is invariant across
+            // thread counts for a given input sequence. Stopping early cannot
+            // weaken that. The claimed indices are a contiguous prefix of the
+            // corpus -- fetch_add hands them out in order and a worker never
+            // abandons one it has claimed -- so the globally lowest failing
+            // index always lies inside the prefix, whatever the workers skipped
+            // beyond it.
             std::rethrow_exception(results[i].error);
         }
     }
@@ -158,6 +170,18 @@ Fragmenter* FragmentationMethod::GetFragmenter() {
 void FragmentationMethod::SetFragmenter(const Fragmenter& fragmenter) {
     fragmenter_ = fragmenter;
     analyzed_ = false;
+}
+
+void FragmentationMethod::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    // The fragmenter stays the single source of truth for the getter; the base
+    // member is written too so a maintainer reading it finds no stale value.
+    AnalysisMethod::SetRingPerceptionPolicy(policy);
+    fragmenter_.SetRingPerceptionPolicy(policy);
+    analyzed_ = false;
+}
+
+RingPerceptionPolicy FragmentationMethod::GetRingPerceptionPolicy() const {
+    return fragmenter_.GetRingPerceptionPolicy();
 }
 
 void FragmentationMethod::RequireAnalyzed() const {

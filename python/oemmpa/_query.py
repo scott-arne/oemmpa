@@ -771,6 +771,7 @@ def analyze_dataframe(
     id=None,
     properties=None,
     method="fragmentation",
+    ring_perception="consulted",
     threads=None,
 ):
     """Analyze molecules and properties from a dataframe-like object.
@@ -780,6 +781,8 @@ def analyze_dataframe(
     :param id: Optional column containing molecule identifiers.
     :param properties: Optional iterable of numeric property columns.
     :param method: Analysis method passed to :class:`oemmpa.Analyzer`.
+    :param ring_perception: ``"consulted"`` (the default) or ``"strict"``; see
+        :meth:`oemmpa.Analyzer.set_ring_perception_policy`.
     :param threads: Optional worker count. ``None`` resolves from the
         ``OEMMPA_ANALYZE_THREADS`` environment variable (else single-threaded);
         an explicit int (including ``1``) is used as-is (clamped to the CPU
@@ -787,6 +790,7 @@ def analyze_dataframe(
     :returns: :class:`AnalysisResult`.
     """
     analyzer = Analyzer(method=method)
+    analyzer.set_ring_perception_policy(ring_perception)
     molecule_smiles = {}
     report = load_dataframe_rows(
         analyzer,

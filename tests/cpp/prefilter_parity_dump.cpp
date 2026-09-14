@@ -10,7 +10,7 @@
 
 namespace {
 
-/// \brief The seven-field natural key used by the golden pair dumps.
+/// \brief The eight-field natural key used by the golden pair dumps.
 std::string natural_key(const OEMMPA::MatchedPair& pair) {
     std::ostringstream key;
     key << pair.GetSourceExternalId() << '\t'

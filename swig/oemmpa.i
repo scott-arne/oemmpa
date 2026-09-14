@@ -1,6 +1,10 @@
 // swig/oemmpa.i
 // SWIG interface file for oemmpa Python bindings
-%module("threads"=1) _oemmpa
+// The docstring is the reading rule for everything -doxygen copies out of the
+// headers: a :raises: line below names the C++ type the header declares, which
+// is never what Python catches. The generated module is rebuilt from this file
+// on every configure, so the note cannot live in the generated module itself.
+%module(docstring="Low-level OEMMPA bindings, generated from the C++ headers. The :raises: lines in these docstrings are copied from those headers and name C++ exception types, such as RingPerceptionError or InvalidQueryError; the classes of those names in this module are wrapped C++ classes, not Python exceptions, and cannot be caught. Every C++ exception raised through these bindings reaches Python as RuntimeError. The handwritten functions of the oemmpa package are the exception: they convert the cases their own docstrings document into ValueError.", "threads"=1) _oemmpa
 
 // ============================================================================
 // GIL release configuration (MUST be here, before any wrapper-generating directives)
@@ -425,19 +429,35 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/Fragmentation.h"
 %include "../include/oemmpa/MoleculeRecord.h"
 %include "../include/oemmpa/LoadReport.h"
+// kHydrogenVariableSmiles is the shared C++ literal for the synthesized hydrogen
+// variable fragment. SWIG turns a namespace-scope global into a module attribute
+// on the generated proxy plus an entry on the `cvar` holder; no Python caller
+// wants either. The directive has to sit here rather than with the FragmentSmiles
+// ignores below, because a %ignore placed after the %include of the header that
+// declares the symbol has already missed its chance.
+%ignore OEMMPA::kHydrogenVariableSmiles;
+// count_variable_heavy_atoms is the C++ seam that keeps the store, the
+// in-memory index and MatchedPair's accessors counting a fragment the same way.
+// Its std::optional return has no typemap, so SWIG would expose an opaque proxy
+// object; Python callers read the counts off the pair instead. Same placement
+// rule as the ignore above: it must precede the %include.
+%ignore OEMMPA::count_variable_heavy_atoms;
 %include "../include/oemmpa/MatchedPair.h"
 %include "../include/oemmpa/Transform.h"
 %include "../include/oemmpa/RuleEnvironmentStatistics.h"
 %include "../include/oemmpa/TransformApplication.h"
 %include "../include/oemmpa/QueryOptions.h"
-// The fragment renderer, so a Python measurement can compare OEMMPA's
+// Only the fragment renderer, so a Python measurement can compare OEMMPA's
 // stereo cleanup against RDKit's parse-time cleanup on the same molecule.
 // Everything else in the header is C++-only plumbing: StereoCleanupContext and
 // TetrahedralParity hold raw OEAtomBase pointers and std::vector<bool> with no
 // cross-runtime typemap, assert_tetrahedral_parity() takes a std::function, the
 // three predicates are meaningless without a context to pass them, and
 // ScopedMapIndexClear is a C++ scope guard whose whole contract is the point at
-// which its destructor runs.
+// which its destructor runs. clear_fragmentation_invalidated_stereo() is the
+// cleanup pass render_fragment_smiles() already runs for its caller; exporting
+// it as well would offer Python a second, in-place entry point into the header
+// and move the fragment SMILES flag set out of the one function that owns it.
 %ignore OEMMPA::StereoCleanupContext;
 %ignore OEMMPA::TetrahedralParity;
 %ignore OEMMPA::ScopedMapIndexClear;
@@ -448,6 +468,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::is_potential_stereocenter;
 %ignore OEMMPA::capture_tetrahedral_parity;
 %ignore OEMMPA::assert_tetrahedral_parity;
+%ignore OEMMPA::clear_fragmentation_invalidated_stereo;
 %include "../include/oemmpa/FragmentSmiles.h"
 // The ported ring perception, so a Python measurement can score OEMMPA's
 // symmetrized SSSR and bridgehead set against RDKit's Chem.GetSymmSSSR() and
@@ -455,6 +476,13 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // returns a std::vector<bool> with no cross-runtime typemap and is redundant
 // with bridgehead_atoms(), which is the form the measurement consumes.
 %ignore OEMMPA::find_bridgeheads;
+// The queue-bound seam is a test fixture, not API: it exists so a C++ test can
+// reach the abort path without carrying a molecule big enough to queue 200000
+// partial rings, and it is process-wide, so a Python caller could only use it to
+// break every other thread's ring perception. Same placement rule as the ignores
+// above -- it must precede the %include.
+%ignore OEMMPA::detail::set_ring_search_queue_bound_for_tests;
+%ignore OEMMPA::detail::ring_search_queue_bound;
 %include "../include/oemmpa/RingPerception.h"
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"

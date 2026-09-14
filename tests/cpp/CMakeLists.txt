@@ -20,6 +20,7 @@ add_executable(oemmpa_tests
     test_fragmentation_strategy.cpp
     test_fragmenter.cpp
     test_fragment_smiles.cpp
+    test_ring_perception.cpp
     test_stereo_enumeration.cpp
     test_environment_fingerprint.cpp
     test_mcs_common.cpp

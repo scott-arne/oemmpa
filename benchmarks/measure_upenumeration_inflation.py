@@ -1,9 +1,9 @@
 """Measure what up-enumeration costs in records, pairs and build time.
 
-Answers spec open question 1. Run it once in a worktree built from Task 4's
-commit -- the last one before up-enumeration emits anything -- and once in
-the current tree, then diff the two JSON files. The script has no notion of
-"before" itself, so it runs unchanged against either build.
+Run it once against a build made from the last commit before up-enumeration
+emits anything and once against the current tree, then diff the two JSON
+files. The script has no notion of "before" itself, so it runs unchanged
+against either build.
 
 Uses the SureChEMBL corpus at one of the staged benchmark's own sizes so the
 result is comparable with committed benchmark records. The proprietary corpus
@@ -89,14 +89,15 @@ def _label_counts(oemmpa, corpus: Path) -> dict[str, int]:
         practice the installed main one -- and would silently count the wrong
         build's records.
     :param corpus: SMILES file to fragment.
-    :returns: Label name to record count. On a build predating Task 4 every
-        record lands under ``"unlabelled"``, which is exactly the baseline
-        count the comparison needs.
+    :returns: Label name to record count. On a build predating up-enumeration
+        every record lands under ``"unlabelled"``, which is exactly the
+        baseline count the comparison needs.
     """
     fragmenter = oemmpa.oemmpa.Fragmenter()
     labels: Counter[str] = Counter()
-    # Resolved on first use, not up front: on a pre-Task-4 build the enum does
-    # not exist and looking for it would abort a legitimate baseline run.
+    # Resolved on first use, not up front: on a build predating up-enumeration
+    # the enum does not exist and looking for it would abort a legitimate
+    # baseline run.
     names: dict[int, str] | None = None
     # read_smiles yields (smiles, id) tuples (benchmarks/rdkit_compare.py)
     for index, (smiles, _title) in enumerate(read_smiles(corpus), start=1):

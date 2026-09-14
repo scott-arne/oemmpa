@@ -217,6 +217,11 @@ std::set<unsigned int> attachment_labels(
 }
 
 std::string variable_component_smiles(OEChem::OEMolBase& mol) {
+    // A RingPerceptionError from here propagates on purpose. Rendering one
+    // caller-supplied transform has nothing to continue with -- there is no
+    // other candidate and no partial answer worth returning -- so the caller
+    // has to hear about it. The per-transform loop below, which does have other
+    // candidates, decide for themselves via skip_unsupported_transforms.
     return render_fragment_smiles(mol);
 }
 
@@ -462,6 +467,16 @@ std::vector<GeneratedProduct> TransformApplicator::GenerateProducts(
         try {
             products = ApplyVariableTransform(working, transform.GetTransformSmiles());
         } catch (const InvalidQueryError&) {
+            if (options.GetSkipUnsupportedTransforms()) {
+                continue;
+            }
+            throw;
+        } catch (const RingPerceptionError&) {
+            // Separate clause because a ring-perception refusal is a
+            // FragmentationError, not an InvalidQueryError, but the same option
+            // governs it: a transform RDKit cannot ring-perceive is as
+            // unsupported here as one it cannot parse, and either way the rest
+            // of the rule set is still worth applying.
             if (options.GetSkipUnsupportedTransforms()) {
                 continue;
             }

@@ -108,6 +108,29 @@ bool transfer_one_double_bond(
 
 }  // namespace
 
+std::vector<MoleculeRecord> admitted_molecules(const std::vector<MoleculeRecord>& molecules) {
+    std::vector<MoleculeRecord> admitted;
+    admitted.reserve(molecules.size());
+    for (const MoleculeRecord& record : molecules) {
+        if (perceives_rings(record.GetMol())) {
+            admitted.push_back(record);
+        }
+    }
+    return admitted;
+}
+
+const std::vector<MoleculeRecord>& admitted_under_policy(
+    const std::vector<MoleculeRecord>& records,
+    RingPerceptionPolicy policy,
+    std::vector<MoleculeRecord>& owned
+) {
+    if (policy != RingPerceptionPolicy::STRICT) {
+        return records;
+    }
+    owned = admitted_molecules(records);
+    return owned;
+}
+
 std::vector<MatchedPair> select_scored_pairs(
     const std::vector<MatchedPair>& pairs,
     const QueryOptions& options

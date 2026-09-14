@@ -1,6 +1,9 @@
 #include "oemmpa/RingPerception.h"
 
+#include "oemmpa/Error.h"
+
 #include <algorithm>
+#include <atomic>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
@@ -8,6 +11,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -86,16 +90,37 @@
 namespace OEMMPA {
 namespace {
 
-/// Upstream's RingUtils::MAX_BFSQ_SIZE.
+/// Upstream's RingUtils::MAX_BFSQ_SIZE, the default of the bound the two BFS
+/// loops enforce. Only the test seam in RingPerception.h moves it.
 const std::size_t MAX_BFSQ_SIZE = 200000;
 
+std::atomic<std::size_t>& ring_search_queue_bound_storage() {
+    static std::atomic<std::size_t> bound{MAX_BFSQ_SIZE};
+    return bound;
+}
+
+const char* const QUEUE_BOUND_EXCEEDED =
+    "ring perception exceeded RDKit's search bound (MAX_BFSQ_SIZE); RDKit "
+    "rejects this structure";
+
+const char* const SEARCH_INVARIANT_VIOLATED =
+    "ring perception violated one of RDKit's search invariants; RDKit rejects "
+    "this structure";
+
 /// Upstream throws on the two paths this signals -- the BFS queue bound and the
-/// degree-three neighbour invariants. Throwing out of a stereo-cleanup pass
-/// would turn a pathological input into a failed fragmentation, so the public
-/// entry points catch this and fall back to upstream's own approximate ring
-/// finder, which is what findSSSR already does when it comes up short of the
-/// cyclomatic number.
-struct RingSearchAbort {};
+/// degree-three neighbour invariants. It stays a file-local type so the search's
+/// helpers need no public error type, and the entry point converts it once, to
+/// RingPerceptionError. It is not degraded to the approximate finder: upstream's
+/// throw fails sanitization, so these are the structures Chem.MolFromSmiles
+/// returns None for and mmpdb never sees, and an approximate ring set here would
+/// silently answer stereo questions RDKit refused to answer at all.
+struct RingSearchAbort {
+    explicit RingSearchAbort(const char* reason_in)
+        : reason(reason_in) {}
+
+    /// Sentence handed to RingPerceptionError. Static storage; never freed.
+    const char* reason;
+};
 
 using IntVect = std::vector<int>;
 using VectIntVect = std::vector<IntVect>;
@@ -294,13 +319,13 @@ void convert_to_bonds(const IntVect& ring, IntVect& bond_ring, const RingGraph& 
     for (std::size_t i = 0; i + 1 < rsiz; ++i) {
         const int bond = mol.bond_between(ring[i], ring[i + 1]);
         if (bond < 0) {
-            throw RingSearchAbort();
+            throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
         }
         bond_ring[i] = bond;
     }
     const int closing = mol.bond_between(ring[rsiz - 1], ring[0]);
     if (closing < 0) {
-        throw RingSearchAbort();
+        throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
     }
     bond_ring[rsiz - 1] = closing;
 }
@@ -367,8 +392,8 @@ int smallest_rings_bfs(
 
     unsigned int cur_size = UINT_MAX;
     while (!bfsq.empty()) {
-        if (bfsq.size() >= MAX_BFSQ_SIZE) {
-            throw RingSearchAbort();
+        if (bfsq.size() >= detail::ring_search_queue_bound()) {
+            throw RingSearchAbort(QUEUE_BOUND_EXCEEDED);
         }
 
         const int curr = bfsq.front();
@@ -502,7 +527,7 @@ void find_sssr_for_dup_cands(
             std::queue<int> changed;
             const IntIntVectMap::const_iterator dmci = dup_map.find(dup_cand);
             if (dmci == dup_map.end()) {
-                throw RingSearchAbort();
+                throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
             }
             for (int dni : dmci->second) {
                 trim_bonds(dni, mol, changed, atom_degrees_copy, active_bonds_copy);
@@ -636,14 +661,14 @@ void find_rings_d2_nodes(
                 for (std::size_t i = 0; i + 1 < nring.size(); ++i) {
                     const int bond = mol.bond_between(nring[i], nring[i + 1]);
                     if (bond < 0) {
-                        throw RingSearchAbort();
+                        throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
                     }
                     ring_bonds[bond] = true;
                     ring_atoms[nring[i]] = true;
                 }
                 const int closing = mol.bond_between(nring[0], nring[nring.size() - 1]);
                 if (closing < 0) {
-                    throw RingSearchAbort();
+                    throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
                 }
                 ring_bonds[closing] = true;
                 ring_atoms[nring[nring.size() - 1]] = true;
@@ -715,7 +740,7 @@ void find_rings_d3_node(
         }
     }
     if (n3 == -1) {
-        throw RingSearchAbort();
+        throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
     }
 
     if (nsmall == 2) {
@@ -730,7 +755,7 @@ void find_rings_d3_node(
             }
         }
         if (f < 0) {
-            throw RingSearchAbort();
+            throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
         }
 
         VectIntVect trings;
@@ -761,7 +786,7 @@ void find_rings_d3_node(
             f2 = n2;
         }
         if (f1 < 0 || f2 < 0) {
-            throw RingSearchAbort();
+            throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
         }
 
         VectIntVect trings;
@@ -801,8 +826,8 @@ bool atom_search_bfs(
     std::deque<IntVect> bfsq;
     bfsq.push_back(IntVect{start_atom_idx});
     while (!bfsq.empty()) {
-        if (bfsq.size() >= MAX_BFSQ_SIZE) {
-            throw RingSearchAbort();
+        if (bfsq.size() >= detail::ring_search_queue_bound()) {
+            throw RingSearchAbort(QUEUE_BOUND_EXCEEDED);
         }
         const IntVect tv = bfsq.front();
         bfsq.pop_front();
@@ -854,14 +879,14 @@ bool find_ring_connecting_atoms(
         for (std::size_t i = 0; i + 1 < nring.size(); ++i) {
             const int bidx = mol.bond_between(nring[i], nring[i + 1]);
             if (bidx < 0) {
-                throw RingSearchAbort();
+                throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
             }
             ring_bonds[bidx] = true;
             ring_atoms[nring[i]] = true;
         }
         const int closing = mol.bond_between(nring[0], nring[nring.size() - 1]);
         if (closing < 0) {
-            throw RingSearchAbort();
+            throw RingSearchAbort(SEARCH_INVARIANT_VIOLATED);
         }
         ring_bonds[closing] = true;
         ring_atoms[nring[nring.size() - 1]] = true;
@@ -1127,14 +1152,19 @@ void symmetrize_sssr(const RingGraph& mol, VectIntVect& res) {
 }
 
 /// The symmetrized ring set in dense atom ids, with upstream's throwing paths
-/// degraded to its own approximate finder.
+/// reported rather than approximated.
+///
+/// findSSSR's own short-of-the-cyclomatic-number fallback to fast_find_rings
+/// stays where upstream put it, inside symmetrize_sssr(). The throwing paths do
+/// not join it: upstream lets them out of sanitization, so the callers that can
+/// drop the structure entirely are the ones entitled to decide, and a ring set
+/// invented here would answer stereo questions RDKit declined to answer.
 VectIntVect perceive_rings(const RingGraph& graph) {
     VectIntVect rings;
     try {
         symmetrize_sssr(graph, rings);
-    } catch (const RingSearchAbort&) {
-        rings.clear();
-        fast_find_rings(graph, rings);
+    } catch (const RingSearchAbort& abort) {
+        throw RingPerceptionError(abort.reason);
     }
     return rings;
 }
@@ -1156,6 +1186,15 @@ std::vector<std::vector<unsigned int>> symmetrized_sssr(const OEChem::OEMolBase&
         result.push_back(std::move(mapped));
     }
     return result;
+}
+
+bool perceives_rings(const OEChem::OEMolBase& mol) {
+    try {
+        perceive_rings(build_ring_graph(mol));
+    } catch (const RingPerceptionError&) {
+        return false;
+    }
+    return true;
 }
 
 std::vector<bool> find_bridgeheads(const OEChem::OEMolBase& mol) {
@@ -1234,5 +1273,17 @@ std::vector<unsigned int> bridgehead_atoms(const OEChem::OEMolBase& mol) {
     }
     return indices;
 }
+
+namespace detail {
+
+void set_ring_search_queue_bound_for_tests(std::size_t bound) {
+    ring_search_queue_bound_storage().store(bound, std::memory_order_relaxed);
+}
+
+std::size_t ring_search_queue_bound() {
+    return ring_search_queue_bound_storage().load(std::memory_order_relaxed);
+}
+
+}  // namespace detail
 
 }  // namespace OEMMPA

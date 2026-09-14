@@ -356,10 +356,12 @@ MatchedPair make_pair(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
     const std::string& constant_smiles,
+    const SmilesMetrics& source_variable_metrics,
+    const SmilesMetrics& target_variable_metrics,
     int heavy_atom_delta,
     int heavy_bond_delta
 ) {
-    return MatchedPair(
+    MatchedPair pair(
         source_record.GetInternalId(),
         target_record.GetInternalId(),
         source_record.GetExternalId(),
@@ -373,6 +375,14 @@ MatchedPair make_pair(
         heavy_atom_delta,
         heavy_bond_delta
     );
+    // The candidate loop measured both fragments to reach this point, so record
+    // the counts here rather than leaving the pair's accessors to re-parse the
+    // fragment SMILES for every caller that asks.
+    pair.SetVariableHeavyAtomCounts(
+        source_variable_metrics.heavy_atom_count,
+        target_variable_metrics.heavy_atom_count
+    );
+    return pair;
 }
 
 FragInfo make_frag_info(const Fragmentation& fragmentation, const MemoryIndex& index) {
@@ -478,6 +488,8 @@ void add_candidate_if_allowed(
         *source.record,
         *target.record,
         constant_smiles,
+        source_variable_metrics,
+        target_variable_metrics,
         heavy_atom_delta,
         heavy_bond_delta
     );

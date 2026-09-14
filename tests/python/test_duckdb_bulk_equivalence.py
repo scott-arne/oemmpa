@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _duckdb_dump as dump  # noqa: E402
 
 GOLDEN_DIR = dump.REPO_ROOT / "tests" / "data" / "duckdb_golden"
+REGENERATION_MANIFEST = GOLDEN_DIR / "schema4_regeneration.tsv"
 
 
 def _load_golden(table: str) -> list[tuple]:
@@ -74,6 +75,32 @@ def test_bulk_save_matches_golden(tmp_path):
             assert count == len(_load_golden(table)), f"{table} row count changed"
     finally:
         con.close()
+
+
+def test_regeneration_manifest_explains_every_changed_golden_row():
+    """The committed schema-4 manifest must book nothing in bucket ``d``.
+
+    ``classify_regeneration.py`` assigns every row the schema-4 regeneration
+    changed to exactly one bucket, and ``d`` is the bucket for a row it could
+    not explain. The script refuses to exit zero on a non-zero ``d``, but the
+    manifest it writes is a committed file that nothing read back, so a hand
+    edit or a manifest regenerated from the wrong "before" directory could
+    reintroduce an unexplained row with no test noticing. Reading it here makes
+    the snapshot a guardrail, and comparing its table list against the tables
+    the dump actually writes keeps a newly added table from arriving with no
+    classification at all.
+    """
+    with open(REGENERATION_MANIFEST, encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle, delimiter="\t", quoting=csv.QUOTE_NONE))
+    assert rows, f"{REGENERATION_MANIFEST} is empty"
+
+    unexplained = [
+        (row["file"], row["count"]) for row in rows if row["bucket"] == "d" and int(row["count"])
+    ]
+    assert not unexplained, f"unexplained regeneration rows: {unexplained}"
+
+    classified = {row["file"] for row in rows if row["bucket"] == "d"}
+    assert classified == {f"{table}.tsv" for table in dump.TABLES}
 
 
 def test_changed_property_reload_overwrites(tmp_path):

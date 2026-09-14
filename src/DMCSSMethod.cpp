@@ -2,10 +2,12 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/MCSCommon.h"
+#include "oemmpa/RingPerception.h"
 
 #include <oechem.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <string>
@@ -128,12 +130,32 @@ void DMCSSMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
+void DMCSSMethod::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    // Invalidates the cached analysis; the base declaration says why.
+    AnalysisMethod::SetRingPerceptionPolicy(policy);
+    analyzed_ = false;
+}
+
 void DMCSSMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
-    pairs_ = mcs::run_all_pairs(molecules_, threads, last_worker_count_,
+    std::vector<MoleculeRecord> owned;
+    const std::vector<MoleculeRecord>& candidates =
+        mcs::admitted_under_policy(molecules_, GetRingPerceptionPolicy(), owned);
+    pairs_ = mcs::run_all_pairs(candidates, threads, last_worker_count_,
         [](const MoleculeRecord& a, const MoleculeRecord& b,
            std::vector<MatchedPair>& sink) {
-            add_mcs_pair_if_valid(a, b, sink);
+            // A candidate pair whose region rendering runs into a ring
+            // perception RDKit itself rejects is skipped and the analysis goes
+            // on, the same rule Fragmenter::Fragment() applies to such a
+            // molecule. Rewinding the sink to the count taken before the attempt
+            // keeps a half-emitted pair -- one direction without its reverse --
+            // out of the result.
+            const std::size_t emitted = sink.size();
+            try {
+                add_mcs_pair_if_valid(a, b, sink);
+            } catch (const RingPerceptionError&) {
+                sink.resize(emitted);
+            }
         });
     analyzed_ = true;
 }

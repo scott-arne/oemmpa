@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -40,6 +41,19 @@ using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsi
 /// deciding a duplicate needs the retained record, not just the knowledge that one
 /// exists.
 using RetainedFragmentations = std::map<FragmentationKey, std::size_t>;
+
+/// Emission count charged against one role assignment's up-enumeration budget.
+///
+/// The cap it is compared against is an unsigned int, and the guard only fires
+/// once the count is strictly greater, so the count has to be able to exceed
+/// every cap the caller can set -- including the maximum, where a counter of the
+/// cap's own width would saturate and silently turn the guard off.
+using UpEnumerationBudgetCounter = std::uint64_t;
+static_assert(
+    std::numeric_limits<UpEnumerationBudgetCounter>::max() >
+        std::numeric_limits<unsigned int>::max(),
+    "the up-enumeration counter must outrange the cap so the guard stays satisfiable"
+);
 
 /// The same cut with its endpoints in ascending index order, so that which end
 /// of the bond a strategy reported first cannot change the cut's identity.
@@ -259,10 +273,11 @@ OEChem::OEAtomBase* GetAtomByIndex(OEChem::OEMolBase& mol, unsigned int atom_idx
 /// \brief Re-express cuts found on `original` in `clone`'s index space.
 ///
 /// OEGraphMol compacts sparse atom and bond indices when it copies, and
-/// OESuppressHydrogens leaves exactly that kind of gap behind. So cut discovery
-/// has to stay on the caller's molecule -- BondIndexFragmentationStrategy reads
-/// its configured indices literally, and in the copy they would name different
-/// bonds, or none at all -- while everything downstream works on the copy. The
+/// OESuppressHydrogens leaves exactly that kind of gap behind. So by default cut
+/// discovery stays on the caller's molecule -- a strategy that answers in the
+/// caller's numbering, BondIndexFragmentationStrategy among them, would in the
+/// copy name different bonds, or none at all -- while everything downstream
+/// works on the copy. The
 /// bridge is the parallel-traversal invariant ComputeChiralFlags already relies
 /// on: a copy visits its atoms in the source's order, whatever it renumbers them
 /// to. The bond index is re-derived from the translated endpoints rather than
@@ -1434,7 +1449,7 @@ void AddFragmentationsForRoleAssignment(
     unsigned int cut_count,
     bool labels_are_arbitrary,
     unsigned int max_up_enumerations,
-    std::uint64_t& emitted,
+    UpEnumerationBudgetCounter& emitted,
     RetainedFragmentations& seen,
     std::vector<Fragmentation>& fragmentations
 ) {
@@ -1672,7 +1687,7 @@ void AddFragmentationForCombination(
         // one cut combination). mmpdb caps only its multi-cut path, which has
         // one partition per combination, and enumerates single-cut orientations
         // separately, so one budget per orientation matches it on every capped path.
-        std::uint64_t emitted = 0;
+        UpEnumerationBudgetCounter emitted = 0;
         AddFragmentationsForRoleAssignment(
             molecule_id,
             cut_mol,
@@ -1726,6 +1741,7 @@ Fragmenter::Fragmenter(const Fragmenter& other)
       max_cuts_(other.max_cuts_),
       max_cut_bonds_(other.max_cut_bonds_),
       max_up_enumerations_(other.max_up_enumerations_),
+      ring_perception_policy_(other.ring_perception_policy_),
       has_max_heavy_atoms_(other.has_max_heavy_atoms_),
       max_heavy_atoms_(other.max_heavy_atoms_),
       has_max_rotatable_bonds_(other.has_max_rotatable_bonds_),
@@ -1740,6 +1756,7 @@ Fragmenter& Fragmenter::operator=(const Fragmenter& other) {
         max_cuts_ = other.max_cuts_;
         max_cut_bonds_ = other.max_cut_bonds_;
         max_up_enumerations_ = other.max_up_enumerations_;
+        ring_perception_policy_ = other.ring_perception_policy_;
         has_max_heavy_atoms_ = other.has_max_heavy_atoms_;
         max_heavy_atoms_ = other.max_heavy_atoms_;
         has_max_rotatable_bonds_ = other.has_max_rotatable_bonds_;
@@ -1782,6 +1799,10 @@ void Fragmenter::SetMaxCutBonds(unsigned int max_cut_bonds) {
 
 void Fragmenter::SetMaxUpEnumerations(unsigned int max_up_enumerations) {
     max_up_enumerations_ = max_up_enumerations;
+}
+
+void Fragmenter::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    ring_perception_policy_ = policy;
 }
 
 void Fragmenter::SetMaxHeavyAtoms(unsigned int max_heavy_atoms) {
@@ -1846,7 +1867,35 @@ unsigned int Fragmenter::GetMaxUpEnumerations() const {
     return max_up_enumerations_;
 }
 
+RingPerceptionPolicy Fragmenter::GetRingPerceptionPolicy() const {
+    return ring_perception_policy_;
+}
+
 std::vector<Fragmentation> Fragmenter::Fragment(
+    unsigned int molecule_id,
+    const OEChem::OEMolBase& mol
+) const {
+    // Under either policy a molecule whose ring perception hits one of RDKit's
+    // failure paths where the stereo cleanup consults it -- a tetrahedral tag
+    // on any nitrogen, ring or not, in the parent normalization or in a
+    // rendered fragment -- is skipped the same way. RDKit throws on the same
+    // structures out of sanitization, so an empty result is the parity answer.
+    // Under the consulted policy a molecule whose cleanup never consults the
+    // ring set is fragmented as usual even though RDKit would refuse to parse
+    // it; the Stereochemistry section of docs/python-api.md states both
+    // contracts. The catch is here, around the whole pass, because ring
+    // perception is reachable from the parent normalization and from every
+    // fragment rendered underneath it, and a partial record set from a
+    // structure RDKit rejected is worth less than none. Whatever records had
+    // accumulated go with it.
+    try {
+        return BuildFragmentations(molecule_id, mol);
+    } catch (const RingPerceptionError&) {
+        return {};
+    }
+}
+
+std::vector<Fragmentation> Fragmenter::BuildFragmentations(
     unsigned int molecule_id,
     const OEChem::OEMolBase& mol
 ) const {
@@ -1861,6 +1910,16 @@ std::vector<Fragmentation> Fragmenter::Fragment(
         has_max_rotatable_bonds_ &&
         CountUniqueBondMatches(mol, rotatable_subsearch_, "rotatable") > max_rotatable_bonds_
     ) {
+        return {};
+    }
+    // Under the strict policy the parent is put to RDKit's question before
+    // anything is cut: a molecule whose ring perception the ported search
+    // rejects is one RDKit would refuse to parse, so mmpdb never fragments it,
+    // and neither does this. It sits after the size limits so that a molecule
+    // they drop for free never pays for a ring search, and after the strategy
+    // check so that a misconfigured fragmenter still says so. Skipped like one
+    // over max_heavy_atoms_: no records, no error.
+    if (ring_perception_policy_ == RingPerceptionPolicy::STRICT && !perceives_rings(mol)) {
         return {};
     }
 
@@ -1886,13 +1945,15 @@ std::vector<Fragmentation> Fragmenter::Fragment(
         normalized ? static_cast<const OEChem::OEMolBase&>(*normalized) : mol;
 
     // Which molecule the strategy is shown has three cases. Without a copy there
-    // is only one molecule to show it. With a copy, a strategy that reads
-    // caller-supplied indices literally still has to be shown the caller's
-    // molecule -- the copy renumbers, so there the same indices name other bonds,
-    // or none -- and its answer is then moved into the copy's numbering. Every
-    // other strategy is shown the normalized parent, which is what mmpdb does:
-    // it runs its cut SMARTS on the parsed-and-cleaned molecule, so a
-    // stereo-sensitive query never selects a cut on a tag RDKit already dropped.
+    // is only one molecule to show it. With a copy, the default is still the
+    // caller's molecule -- the copy renumbers, so there the same indices name
+    // other bonds, or none, and a strategy that has never heard of the
+    // normalization can only be speaking the caller's numbering -- and its answer
+    // is then moved into the copy's numbering, which the parallel traversal makes
+    // a bijection. A strategy that opts out is shown the normalized parent
+    // instead, which is what mmpdb does: it runs its cut SMARTS on the
+    // parsed-and-cleaned molecule, so a stereo-sensitive query never selects a
+    // cut on a tag RDKit already dropped.
     //
     // In all three the order is fixed by the endpoints' indices in the caller's
     // molecule. Attachment labels are handed out in cut order, so that order has

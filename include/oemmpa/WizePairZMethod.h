@@ -26,6 +26,9 @@ public:
     /// \brief Set the maximum environment radius (default 4).
     void SetMaxEnvironmentRadius(unsigned int radius);
 
+    /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.
+    void SetRingPerceptionPolicy(RingPerceptionPolicy policy) override;
+
 private:
     void RequireAnalyzed() const;
 

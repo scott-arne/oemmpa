@@ -4,6 +4,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"
+#include "ring_search_bound_guard.h"
 
 #include "oedesalt/Desalter.h"
 
@@ -479,6 +480,114 @@ TEST(TransformApplicationTest, CanRejectUnsupportedTransformsDuringGeneration) {
             "C([*:1])[*:2]>>O[*:1]"
         );
     }
+}
+
+// A transform whose source variable is a tagged ring nitrogen. Rendering that
+// variable back into SMIRKS consults ring perception -- the stereo cleanup asks
+// for bridgeheads only when a tagged nitrogen is present -- so a forced search
+// bound makes exactly this transform unrenderable while an ordinary one still
+// applies. The pair is only there to give the transform evidence.
+Transform MakeTaggedRingNitrogenTransform() {
+    Transform tagged("[*:1][N@]1CCCCC1>>[*:1]O");
+    tagged.AddPair(MakeSingleCutPair(
+        "phenyl_piperidine",
+        "phenol",
+        "Cc1ccc(cc1)[N@]1CCCCC1",
+        "Cc1ccc(cc1)O",
+        "[*:1][N@]1CCCCC1",
+        "[*:1]O"
+    ));
+    return tagged;
+}
+
+Transform MakeMethylToHydroxyTransform() {
+    Transform methyl_to_hydroxy("C[*:1]>>O[*:1]");
+    methyl_to_hydroxy.AddPair(MakeSingleCutPair(
+        "tol",
+        "phenol",
+        "Cc1ccccc1",
+        "Oc1ccccc1",
+        "C[*:1]",
+        "O[*:1]"
+    ));
+    return methyl_to_hydroxy;
+}
+
+// A transform RDKit could not ring-perceive is as unsupported as one it could
+// not parse, so the same option has to cover it; otherwise one such transform
+// in a rule set aborts a generation run that asked to be tolerant.
+TEST(TransformApplicationTest, SkipsRingPerceptionFailuresWhenSkippingUnsupported) {
+    GenerationOptions options;
+    options.SetMinEvidence(1);
+
+    const ScopedRingSearchQueueBound forced(1);
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Cc1ccccc1",
+            {MakeTaggedRingNitrogenTransform(), MakeMethylToHydroxyTransform()},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetSmiles(), "c1ccc(cc1)O");
+    EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
+}
+
+// The other half of the option: a caller that asked to hear about unsupported
+// transforms hears about this one too, with the ring-perception type intact.
+TEST(TransformApplicationTest, ReportsRingPerceptionFailuresWhenNotSkipping) {
+    GenerationOptions options;
+    options.SetMinEvidence(1);
+    options.SetSkipUnsupportedTransforms(false);
+
+    const ScopedRingSearchQueueBound forced(1);
+    EXPECT_THROW(
+        TransformApplicator::GenerateProducts(
+            "Cc1ccccc1",
+            {MakeTaggedRingNitrogenTransform(), MakeMethylToHydroxyTransform()},
+            options
+        ),
+        RingPerceptionError
+    );
+}
+
+// Applying one transform has no other candidate to continue with and no option
+// to consult, so the refusal reaches the caller.
+TEST(TransformApplicationTest, SingleTransformApplicationPropagatesRingPerceptionFailure) {
+    const ScopedRingSearchQueueBound forced(1);
+    EXPECT_THROW(
+        TransformApplicator::ApplyVariableTransform(
+            "Cc1ccccc1",
+            "[*:1][N@]1CCCCC1>>[*:1]O"
+        ),
+        RingPerceptionError
+    );
+
+    // An explicit SMIRKS is parsed, never rendered back from a fragment, so it
+    // never reaches ring perception. This is why the documentation does not
+    // list apply_transform_smirks among the entry points that can report the
+    // refusal.
+    EXPECT_NO_THROW(
+        TransformApplicator::ApplySmirks("Cc1ccccc1", "[CH3:2][*:1]>>[OH:2][*:1]")
+    );
+}
+
+// The control: nothing above is a property of these transforms. Under the
+// shipped bound both render, and the tagged one simply finds no match in
+// toluene.
+TEST(TransformApplicationTest, BothTransformsRenderUnderTheShippedBound) {
+    GenerationOptions options;
+    options.SetMinEvidence(1);
+
+    const std::vector<GeneratedProduct> products =
+        TransformApplicator::GenerateProducts(
+            "Cc1ccccc1",
+            {MakeTaggedRingNitrogenTransform(), MakeMethylToHydroxyTransform()},
+            options
+        );
+
+    ASSERT_EQ(products.size(), 1U);
+    EXPECT_EQ(products.front().GetTransformSmiles(), "C[*:1]>>O[*:1]");
 }
 
 TEST(TransformApplicationTest, RejectsMalformedVariableTransform) {

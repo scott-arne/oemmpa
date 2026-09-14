@@ -1,6 +1,7 @@
 """Pythonic facade for OEMMPA analysis."""
 
 import operator
+from typing import ClassVar
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
@@ -334,17 +335,81 @@ class Analyzer:
             raise ValueError(str(exc)) from exc
         return self
 
+    _RING_PERCEPTION_POLICIES: ClassVar[dict[str, int]] = {
+        "consulted": _oemmpa.RingPerceptionPolicy_CONSULTED,
+        "strict": _oemmpa.RingPerceptionPolicy_STRICT,
+    }
+
+    def set_ring_perception_policy(self, policy):
+        """Choose how molecules RDKit's ring perception would refuse are treated.
+
+        ``"consulted"`` (the default) runs the ported search only where the
+        stereo cleanup needs RDKit's bridgehead rule and skips a molecule or a
+        candidate pair only when the search fails there; ``"strict"`` validates
+        every molecule's complete ring topology once and skips the ones the
+        search rejects in every method, which is what MMPDB does when
+        ``Chem.MolFromSmiles`` returns ``None``. Strict costs one ring search
+        per molecule and rejects structures OEChem perceives without
+        difficulty. See the Stereochemistry section of docs/python-api.md.
+
+        :param policy: ``"consulted"`` or ``"strict"`` (case-insensitive), or one
+            of the ``_oemmpa.RingPerceptionPolicy_*`` constants.
+        :returns: ``self`` for chaining.
+        :raises ValueError: If ``policy`` is neither.
+        """
+        self._raw_analyzer.SetRingPerceptionPolicy(
+            self._coerce_ring_perception_policy(policy)
+        )
+        return self
+
+    def get_ring_perception_policy(self):
+        """The ring-perception policy in force, ``"consulted"`` or ``"strict"``."""
+        raw = self._raw_analyzer.GetRingPerceptionPolicy()
+        for name, value in self._RING_PERCEPTION_POLICIES.items():
+            if value == raw:
+                return name
+        raise RuntimeError(f"unknown ring perception policy value {raw!r}")
+
+    @classmethod
+    def _coerce_ring_perception_policy(cls, policy):
+        if isinstance(policy, str):
+            try:
+                return cls._RING_PERCEPTION_POLICIES[policy.strip().lower()]
+            except KeyError:
+                raise ValueError(
+                    "ring perception policy must be 'consulted' or 'strict', "
+                    f"got {policy!r}"
+                ) from None
+        # Equality alone would admit lookalikes: a bool or a float compares equal
+        # to one of the integer constants and would then reach the binding, which
+        # raises TypeError instead of the ValueError promised here. Only an int
+        # that is one of the constants passes, and the constant itself is returned.
+        if isinstance(policy, int) and not isinstance(policy, bool):
+            for constant in cls._RING_PERCEPTION_POLICIES.values():
+                if policy == constant:
+                    return constant
+        raise ValueError(
+            f"ring perception policy must be 'consulted' or 'strict', got {policy!r}"
+        )
+
     def set_fragmentation_max_up_enumerations(self, max_up_enumerations):
-        """Set the maximum records one role assignment may emit during fragmentation.
+        """Cap the up-enumerations one role assignment may attempt during fragmentation.
 
         Up-enumeration is a 3^k product over created stereocentres. The cap bounds
         it per role assignment (one constant/variable orientation of one cut
-        combination); exceeding it throws rather than silently truncating. mmpdb
-        caps only its multi-cut path, which has one partition per combination, and
-        enumerates single-cut orientations separately, so one budget per orientation
-        matches it on every capped path.
+        combination) and counts the attempts made beyond that assignment's baseline
+        record: ``N`` permits the baseline plus ``N`` further attempted emissions,
+        and the ``N + 2``-th attempt raises ``RuntimeError`` rather than silently
+        truncating. A cap of 0 therefore permits the baseline record alone.
+        Attempts are charged before deduplication, so a configuration later
+        discarded as a duplicate still consumes budget. Every unsigned int value is
+        honoured, and the default of 1000 matches mmpdb. mmpdb caps only its
+        multi-cut path, which has one partition per combination, and enumerates
+        single-cut orientations separately, so one budget per orientation matches it
+        on every capped path.
 
-        :param max_up_enumerations: Maximum number of records per role assignment.
+        :param max_up_enumerations: Attempted up-enumerations permitted beyond the
+            baseline record of one role assignment.
         :returns: ``self`` for chaining.
         :raises ValueError: If the analyzer is not using the fragmentation method.
         """

@@ -128,8 +128,8 @@ TEST(EnvironmentFingerprintTest, EquivalentConstantsUseCanonicalLocalOrdering) {
 // graph, so it is a neighbour, not part of the atom's hydrogen count. OEChem's
 // GetTotalHCount() counts it, which made a deuterated attachment carbon read
 // H1 and collapse onto the protio constant's radius-1 environment. mmpdb 3.1.4
-// keeps them apart: [C;X4;H0;+0;!R] against [C;X4;H1;+0;!R] (oracle in the
-// Task 26 plan text, four-molecule d/h-propanol file).
+// keeps them apart: [C;X4;H0;+0;!R] against [C;X4;H1;+0;!R], measured on a
+// four-molecule deuterated/protio propanol file.
 TEST(EnvironmentFingerprintTest, IsotopicHydrogenIsNotCountedAsHydrogen) {
     const std::vector<EnvironmentFingerprint> deuterated =
         ComputeConstantEnvironmentFingerprints("[*:1]C([2H])(C)C", 0, 2);
@@ -207,7 +207,8 @@ TEST(EnvironmentFingerprintTest, MaterializedHydrogensAreNotEnvironmentNodes) {
     expect_stereo_agnostic("[*:1][C@@H](C)CC", "[*:1]C(C)CC");
 
     // Control: suppression must not reach the isotope-labelled hydrogens that
-    // RDKit's RemoveHs keeps too, or Task 26's deuterium node would vanish.
+    // RDKit's RemoveHs keeps too, or the deuterium node pinned by
+    // IsotopicHydrogenIsNotCountedAsHydrogen would vanish.
     const std::vector<EnvironmentFingerprint> deuterated =
         ComputeConstantEnvironmentFingerprints("[*:1]C([2H])(C)C", 0, 2);
     ASSERT_EQ(deuterated.size(), 3U);

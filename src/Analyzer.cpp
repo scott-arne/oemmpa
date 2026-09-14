@@ -300,6 +300,15 @@ void Analyzer::SetWizePairZMaxEnvironmentRadius(unsigned int radius) {
     analyzed_ = false;
 }
 
+void Analyzer::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    method_->SetRingPerceptionPolicy(policy);
+    analyzed_ = false;
+}
+
+RingPerceptionPolicy Analyzer::GetRingPerceptionPolicy() const {
+    return method_->GetRingPerceptionPolicy();
+}
+
 void Analyzer::ConfigureDesalting(bool strip_solvents, bool aggressive) {
     desalter_ = std::make_shared<OEDESALT::Desalter>(
         OEDESALT::Desalter::WithBundledPatterns(strip_solvents, aggressive)

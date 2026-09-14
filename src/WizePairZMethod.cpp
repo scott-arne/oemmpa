@@ -2,11 +2,13 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/MCSCommon.h"
+#include "oemmpa/RingPerception.h"
 #include "oemmpa/Transform.h"
 
 #include <oechem.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <map>
 #include <queue>
@@ -303,8 +305,8 @@ EnvironmentHierarchy encode_environment_hierarchy(
     return hierarchy;
 }
 
-// Single MCS + 90% identity threshold; RECS marking + single-fragment validation
-// (Task 6); per-radius explicit-H SMIRKS hierarchy + hydrogen substituents (Task 7).
+// Single MCS + 90% identity threshold; RECS marking + single-fragment
+// validation; per-radius explicit-H SMIRKS hierarchy + hydrogen substituents.
 void add_wizepairz_pair_if_valid(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
@@ -499,14 +501,34 @@ void WizePairZMethod::SetMaxEnvironmentRadius(unsigned int radius) {
 }
 unsigned int WizePairZMethod::LastAnalyzeWorkerCount() const { return last_worker_count_; }
 
+void WizePairZMethod::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    // Invalidates the cached analysis; the base declaration says why.
+    AnalysisMethod::SetRingPerceptionPolicy(policy);
+    analyzed_ = false;
+}
+
 void WizePairZMethod::Analyze(unsigned int threads) {
     analyzed_ = false;
     const double fraction = mcs_identity_fraction_;
     const unsigned int max_radius = max_environment_radius_;
-    pairs_ = mcs::run_all_pairs(molecules_, threads, last_worker_count_,
+    std::vector<MoleculeRecord> owned;
+    const std::vector<MoleculeRecord>& candidates =
+        mcs::admitted_under_policy(molecules_, GetRingPerceptionPolicy(), owned);
+    pairs_ = mcs::run_all_pairs(candidates, threads, last_worker_count_,
         [fraction, max_radius](const MoleculeRecord& a, const MoleculeRecord& b,
                                std::vector<MatchedPair>& sink) {
-            add_wizepairz_pair_if_valid(a, b, fraction, max_radius, sink);
+            // A candidate pair whose region or environment rendering runs into a
+            // ring perception RDKit itself rejects is skipped and the analysis
+            // goes on, the same rule Fragmenter::Fragment() applies to such a
+            // molecule. Rewinding the sink to the count taken before the attempt
+            // keeps a half-emitted pair -- one direction without its reverse --
+            // out of the result.
+            const std::size_t emitted = sink.size();
+            try {
+                add_wizepairz_pair_if_valid(a, b, fraction, max_radius, sink);
+            } catch (const RingPerceptionError&) {
+                sink.resize(emitted);
+            }
         });
     analyzed_ = true;
 }

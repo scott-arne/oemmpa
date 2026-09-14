@@ -27,19 +27,21 @@ public:
     /// \returns Cut bonds identified by the strategy.
     virtual std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const = 0;
 
-    /// \brief Whether FindCutBonds reads caller-supplied indices literally.
+    /// \brief Whether FindCutBonds answers in the caller's atom and bond numbering.
     ///
     /// The fragmenter cuts a stereo-normalized copy of the parent, and an
-    /// OEGraphMol copy renumbers atoms and bonds as it makes them. A strategy
-    /// that answers with indices it was configured with is therefore given the
-    /// caller's molecule, so those indices still name the bonds the caller
-    /// numbered. Every other strategy is given the normalized parent, so that a
-    /// structural query cannot select a cut on a stereo tag the normalization
-    /// has already discarded.
+    /// OEGraphMol copy renumbers atoms and bonds as it makes them. The default
+    /// is therefore to hand the strategy the molecule the caller passed in, the
+    /// only numbering a strategy that knows nothing of the normalization can be
+    /// speaking; the fragmenter moves the answer into the copy's numbering
+    /// itself, which is a bijection and so safe for any strategy. A strategy
+    /// whose query is structural and stereo-sensitive opts out by returning
+    /// false and is given the normalized parent instead, so that it cannot
+    /// select a cut on a stereo tag the normalization has already discarded.
     ///
-    /// \returns true when the strategy interprets caller-supplied indices
-    ///          literally; false -- the default -- for structural strategies.
-    virtual bool UsesCallerIndices() const { return false; }
+    /// \returns true -- the default -- when the strategy answers in the
+    ///          caller's numbering; false to run against the normalized parent.
+    virtual bool UsesCallerIndices() const { return true; }
 
     /// \brief Create an independent copy of this strategy.
     ///
@@ -58,6 +60,13 @@ public:
     explicit SmartsFragmentationStrategy(const std::vector<std::string>& smarts);
 
     std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const override;
+    /// \brief Opt out of the caller's numbering: false.
+    ///
+    /// This is the built-in structural strategy, and a SMARTS can be
+    /// stereo-sensitive, so it has to run on the normalized parent -- the
+    /// molecule mmpdb would have parsed -- rather than on an input tag RDKit
+    /// would already have dropped.
+    bool UsesCallerIndices() const override;
     std::unique_ptr<FragmentationStrategy> Clone() const override;
 
     static SmartsFragmentationStrategy RDKitCompatible();

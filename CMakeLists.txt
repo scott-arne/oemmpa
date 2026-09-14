@@ -210,3 +210,10 @@ install(EXPORT oemmpa-targets
     NAMESPACE OEMMPA::
     DESTINATION lib/cmake/oemmpa
 )
+
+# BSD clause 2: a binary distribution assembled from this install surface has
+# to reproduce the notices, and no .cpp reaches it. Wheels get the same two
+# files through `license-files` in pyproject.toml.
+install(FILES LICENSE LICENSES/RDKit-BSD-3-Clause.txt
+    DESTINATION share/licenses/oemmpa
+)

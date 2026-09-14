@@ -132,6 +132,8 @@ public:
     /// \returns Reaction-ready SMIRKS for supported connected variables with
     ///     one to three attachment labels.
     /// \throws InvalidQueryError If the transform is malformed or unsupported.
+    /// \throws RingPerceptionError If a variable fragment defeats ring
+    ///     perception; see FragmentSmiles.h.
     static std::string BuildVariableTransformSmirks(
         const std::string& variable_transform_smiles
     );
@@ -143,6 +145,8 @@ public:
     /// \returns Reaction-ready SMIRKS for supported connected variables with
     ///     one to three attachment labels.
     /// \throws InvalidQueryError If either variable is malformed or unsupported.
+    /// \throws RingPerceptionError If a variable fragment defeats ring
+    ///     perception; see FragmentSmiles.h.
     static std::string BuildVariableTransformSmirks(
         const std::string& source_variable_smiles,
         const std::string& target_variable_smiles
@@ -157,6 +161,8 @@ public:
     /// \returns Deduplicated canonical product SMILES records.
     /// \throws InvalidMoleculeError If the source SMILES is invalid.
     /// \throws InvalidQueryError If the transform is malformed or unsupported.
+    /// \throws RingPerceptionError If a variable fragment defeats ring
+    ///     perception; see FragmentSmiles.h.
     static std::vector<TransformProduct> ApplyVariableTransform(
         const std::string& source_smiles,
         const std::string& variable_transform_smiles,
@@ -172,6 +178,8 @@ public:
     /// \returns Deduplicated canonical product SMILES records.
     /// \throws InvalidMoleculeError If the source molecule has no atoms.
     /// \throws InvalidQueryError If the transform is malformed or unsupported.
+    /// \throws RingPerceptionError If a variable fragment defeats ring
+    ///     perception; see FragmentSmiles.h.
     static std::vector<TransformProduct> ApplyVariableTransform(
         const OEChem::OEMolBase& source_mol,
         const std::string& variable_transform_smiles,
@@ -185,6 +193,8 @@ public:
     /// \returns Deduplicated canonical product SMILES records.
     /// \throws InvalidMoleculeError If the pair source SMILES is invalid.
     /// \throws InvalidQueryError If the pair transform is malformed or unsupported.
+    /// \throws RingPerceptionError If a variable fragment defeats ring
+    ///     perception; see FragmentSmiles.h.
     static std::vector<TransformProduct> ApplyPairTransform(const MatchedPair& pair);
 
     /// \brief Generate products from a transform collection and source SMILES.
@@ -202,6 +212,9 @@ public:
     /// \throws InvalidQueryError If an unsupported transform is encountered
     ///     and ``GenerationOptions::GetSkipUnsupportedTransforms()`` is
     ///     ``false``.
+    /// \throws RingPerceptionError If a transform's variable fragment defeats
+    ///     ring perception and
+    ///     ``GenerationOptions::GetSkipUnsupportedTransforms()`` is ``false``.
     static std::vector<GeneratedProduct> GenerateProducts(
         const std::string& source_smiles,
         const std::vector<Transform>& transforms,
@@ -220,6 +233,9 @@ public:
     /// \throws InvalidQueryError If an unsupported transform is encountered
     ///     and ``GenerationOptions::GetSkipUnsupportedTransforms()`` is
     ///     ``false``.
+    /// \throws RingPerceptionError If a transform's variable fragment defeats
+    ///     ring perception and
+    ///     ``GenerationOptions::GetSkipUnsupportedTransforms()`` is ``false``.
     static std::vector<GeneratedProduct> GenerateProducts(
         const OEChem::OEMolBase& source_mol,
         const std::vector<Transform>& transforms,

@@ -2,6 +2,8 @@
 
 #include "oemmpa/Error.h"
 
+#include <oechem.h>
+
 namespace OEMMPA {
 namespace {
 
@@ -12,9 +14,32 @@ std::string make_transform_smiles(
     return source_variable_smiles + ">>" + target_variable_smiles;
 }
 
+unsigned int resolve_variable_heavy_atoms(
+    const std::optional<unsigned int>& recorded,
+    const std::string& variable_smiles
+) {
+    if (recorded.has_value()) {
+        return *recorded;
+    }
+
+    // An accessor on the query path must not throw over a fragment it cannot
+    // parse, and a fragment with no atoms to count has no heavy atoms either,
+    // so an unreadable SMILES reports the same 0 an empty one would.
+    return count_variable_heavy_atoms(variable_smiles).value_or(0);
+}
+
 }  // namespace
 
 const char* const kHydrogenVariableSmiles = "[*:1][H]";
+
+std::optional<unsigned int> count_variable_heavy_atoms(const std::string& variable_smiles) {
+    OEChem::OEGraphMol mol;
+    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
+        return std::nullopt;
+    }
+
+    return OEChem::OECount(mol, OEChem::OEIsHeavy());
+}
 
 MatchedPair::MatchedPair(
     unsigned int source_molecule_id,
@@ -170,12 +195,20 @@ void MatchedPair::SetVariableHeavyAtomCounts(
     target_variable_heavy_atoms_ = target_heavy_atoms;
 }
 
+bool MatchedPair::HasRecordedVariableHeavyAtomCounts() const {
+    // The setter is the only writer and always writes both, so either optional
+    // answers the question; both are read so a future partial writer cannot
+    // report a half-recorded pair as recorded.
+    return source_variable_heavy_atoms_.has_value() &&
+        target_variable_heavy_atoms_.has_value();
+}
+
 unsigned int MatchedPair::GetSourceVariableHeavyAtoms() const {
-    return source_variable_heavy_atoms_;
+    return resolve_variable_heavy_atoms(source_variable_heavy_atoms_, source_variable_smiles_);
 }
 
 unsigned int MatchedPair::GetTargetVariableHeavyAtoms() const {
-    return target_variable_heavy_atoms_;
+    return resolve_variable_heavy_atoms(target_variable_heavy_atoms_, target_variable_smiles_);
 }
 
 }  // namespace OEMMPA

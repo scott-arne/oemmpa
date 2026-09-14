@@ -2,11 +2,13 @@
 
 #include "oemmpa/Error.h"
 #include "oemmpa/MCSCommon.h"
+#include "oemmpa/RingPerception.h"
 
 #include <oechem.h>
 #include <oemedchem.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <map>
 #include <set>
@@ -270,12 +272,24 @@ void OEMedChemMethod::AddMolecule(const MoleculeRecord& record) {
     analyzed_ = false;
 }
 
+void OEMedChemMethod::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
+    // Invalidates the cached analysis; the base declaration says why.
+    AnalysisMethod::SetRingPerceptionPolicy(policy);
+    analyzed_ = false;
+}
+
 void OEMedChemMethod::Analyze(unsigned int /*threads*/) {
     analyzed_ = false;
 
     OEMedChem::OEMatchedPairAnalyzer analyzer(make_analyzer_options());
     std::unordered_map<unsigned int, const MoleculeRecord*> records_by_id;
+    const bool strict = GetRingPerceptionPolicy() == RingPerceptionPolicy::STRICT;
     for (const MoleculeRecord& record : molecules_) {
+        // Under the strict policy a molecule the ported search rejects is kept
+        // out of the native analyzer altogether, so it can reach no pair.
+        if (strict && !perceives_rings(record.GetMol())) {
+            continue;
+        }
         const int status = analyzer.AddMol(record.GetMol(), record.GetInternalId());
         if (status < 0 && !is_expected_index_filter(status)) {
             throw AnalysisStateError(
@@ -302,7 +316,18 @@ void OEMedChemMethod::Analyze(unsigned int /*threads*/) {
             native_pair;
             ++native_pair
         ) {
-            add_native_pair(*native_pair, records_by_id, next_pairs);
+            // A candidate pair whose region rendering runs into a ring
+            // perception RDKit itself rejects is skipped and the analysis goes
+            // on, the same rule Fragmenter::Fragment() applies to such a
+            // molecule. Rewinding to the count taken before the attempt keeps a
+            // half-emitted pair -- one direction without its reverse -- out of
+            // the result.
+            const std::size_t emitted = next_pairs.size();
+            try {
+                add_native_pair(*native_pair, records_by_id, next_pairs);
+            } catch (const RingPerceptionError&) {
+                next_pairs.resize(emitted);
+            }
         }
     }
 

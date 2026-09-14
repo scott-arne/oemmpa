@@ -160,10 +160,12 @@ The `oemmpa build` command applies mmpdb-equivalent defaults for fragment filter
 `--max-heavies 100`, `--max-rotatable-bonds 10`, `--max-variable-heavies 10`, and
 non-symmetric indexing. These defaults can be overridden by passing `none` to any
 of the filter flags or `--symmetric` to enable bidirectional pair indexing. The
-fragment-size filters apply to the default `fragmentation` method; the MCS-based
-methods (`dmcss`, `oemedchem`, `wizepairz`) filter persisted pairs by heavy-atom
-change and orientation only. See [docs/cli.md](docs/cli.md) for the per-method
-flag rules.
+molecule-size filters (`--max-heavies`, `--max-rotatable-bonds`) apply to the
+default `fragmentation` method; the four variable-fragment size filters,
+`--max-variable-heavies 10` included, apply to every method, and the MCS-based
+methods (`dmcss`, `oemedchem`, `wizepairz`) require both sides of a pair to pass
+(a `[*:1][H]` pseudo-fragment side is exempt). See [docs/cli.md](docs/cli.md)
+for the per-method flag rules.
 
 Every input is also desalted by default — deliberately more rigorously than
 mmpdb/RDKit's default SaltRemover. Use `--no-desalt` or `--salt-file` for a
@@ -424,9 +426,44 @@ vrzn bump minor
 vrzn set 1.0.0
 ```
 
+### Upgrading To 4.0.0
+
+4.0.0 moves the store to schema version 4, and a database built with 3.x must be
+rebuilt from source. There is no migration path. Fragment SMILES now carry
+stereochemistry — atom stereo, bond stereo, and isotopes — so every rule, pair,
+and transform SMILES a 3.x database holds was written without it, and the
+missing information cannot be recovered from the stored rows. Rebuilding also
+picks up the stereo-aware fragment SMILES and the created-stereocentre
+enumeration, which makes the index larger: at n=3000 on public SureChEMBL data,
+against 3.1.2 on the same corpus, records grow 1.10x, pairs 3.02x, and
+transforms 5.13x. Most of the pair growth is the enumeration itself, which
+alone multiplied pairs 2.75x and transforms 2.83x when it landed.
+
+Custom `FragmentationStrategy` subclasses are handed the caller's molecule, in
+the caller's atom and bond numbering, by default; the fragmenter translates
+their cuts into the stereo-normalized copy it actually fragments. A structural,
+stereo-sensitive strategy opts out by returning false from
+`UsesCallerIndices()`, as the built-in SMARTS strategy does, and is shown the
+normalized parent instead.
+
+The up-enumeration cap (`set_fragmentation_max_up_enumerations`, default 1000)
+permits the baseline record plus N attempted up-enumerations per role
+assignment, charged before deduplication; exceeding it raises. See
+[docs/python-api.md](docs/python-api.md) for the full statement.
+
+Molecules whose ring perception RDKit would refuse are handled by a policy every
+method takes: `consulted`, the default, skips one only where the stereo cleanup
+consults the ported search and it fails; `strict`
+(`set_ring_perception_policy("strict")`, `--ring-perception strict`) validates
+every molecule's ring topology first and skips the ones RDKit would refuse, as
+MMPDB does. See the Stereochemistry section of
+[docs/python-api.md](docs/python-api.md).
+
 ## License
 
-MIT
+MIT for OEMMPA's own code, with the RDKit-derived file described below under
+RDKit's BSD 3-Clause license. Distributions declare the combination as the SPDX
+expression `MIT AND BSD-3-Clause`.
 
 ### Third-party code
 
@@ -435,4 +472,6 @@ MIT
 license; the copyright notice and the full license text are retained in that
 file's header comment. The same notice and license text are carried as a plain
 file at `LICENSES/RDKit-BSD-3-Clause.txt`, which `license-files` ships in the
-wheel so binary distributions reproduce them.
+wheel so binary distributions reproduce them. The CMake install places `LICENSE`
+and `LICENSES/RDKit-BSD-3-Clause.txt` under `share/licenses/oemmpa`, so binary
+distributions built from either surface carry the notice.

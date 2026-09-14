@@ -49,11 +49,12 @@ By default, `build` writes the MMPDB-compatible non-symmetric orientation.
 absolute heavy-atom change, and `--max-frac-trans` limits the relative
 heavy-atom change. Note that `--max-heavies` (without `-transf`) is a distinct
 option that caps the size of whole molecules fragmented; write the transform
-cap in full as `--max-heavies-transf`. OEMMPA also accepts the MMPDB variable-size spellings
+cap in full as `--max-heavies-transf`. The MMPDB variable-size spellings
 `--min-variable-heavies`, `--max-variable-heavies`, `--min-variable-ratio`, and
-`--max-variable-ratio` so compatible build scripts can pass their option set;
-those values are validated at the CLI boundary. Use `--max-variable-heavies
-none` for the MMPDB no-limit spelling.
+`--max-variable-ratio` bound the variable fragment of every persisted pair
+under every analysis method (a `[*:1][H]` pseudo-fragment side is exempt), and
+`--max-variable-heavies` defaults to 10. Use
+`--max-variable-heavies none` for the MMPDB no-limit spelling.
 
 R-group fragmentation controls can be supplied when the store is built:
 
@@ -113,6 +114,16 @@ oemmpa build \
   --output analysis.oemmpa.duckdb
 ```
 
+Every method takes one more option:
+
+- `--ring-perception {consulted,strict}` — how molecules RDKit's ring perception
+  would refuse are treated (default `consulted`). `strict` validates every
+  molecule's ring topology first and skips the ones RDKit would refuse, in every
+  method, as MMPDB does; see the Stereochemistry section of the Python guide.
+
+Like the other method flags, `--ring-perception` is rejected by the commands
+that read a prebuilt store.
+
 Fragmentation-only flags — `--cut-rgroup`, `--cut-rgroup-file`, `--max-heavies`,
 and `--max-rotatable-bonds` — require `--method fragmentation` (or no explicit
 method, since fragmentation is the default) and are rejected for the MCS-based
@@ -120,13 +131,17 @@ methods.
 
 The variable-fragment size filters — `--min-variable-heavies`,
 `--max-variable-heavies`, `--min-variable-ratio`, and `--max-variable-ratio`,
-including the default `--max-variable-heavies 10` — only affect the
-`fragmentation` method. The MCS-based methods (`dmcss`, `oemedchem`, `wizepairz`)
-enumerate pairs from a maximum common substructure rather than from enumerated
-variable fragments, so they filter persisted pairs by heavy-atom change
-(`--max-heavies-transf`, `--max-frac-trans`) and orientation (`--symmetric`)
-only. They accept the variable-size flags for MMPDB-compatible build scripts but
-do not apply them.
+including the default `--max-variable-heavies 10` — apply to every method. The
+MCS-based methods (`dmcss`, `oemedchem`, `wizepairz`) enumerate pairs from a
+maximum common substructure rather than from enumerated variable fragments, and
+they bound each pair's variable fragment on both sides: the source and the
+target variable fragment must both pass, with a `[*:1][H]` pseudo-fragment
+exempt on the side that carries it, as the fragmentation method exempts it
+too. A bare MCS build therefore drops pairs
+whose variable side exceeds 10 heavy atoms; pass `--max-variable-heavies none`
+to lift that default. The heavy-atom change filters (`--max-heavies-transf`,
+`--max-frac-trans`) and the orientation option (`--symmetric`) apply to every
+method as well.
 
 ### Salt And Solvent Removal
 

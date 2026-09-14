@@ -144,6 +144,10 @@ std::vector<CutBond> SmartsFragmentationStrategy::FindCutBonds(
     return cut_bonds;
 }
 
+bool SmartsFragmentationStrategy::UsesCallerIndices() const {
+    return false;
+}
+
 std::unique_ptr<FragmentationStrategy> SmartsFragmentationStrategy::Clone() const {
     return std::make_unique<SmartsFragmentationStrategy>(*this);
 }

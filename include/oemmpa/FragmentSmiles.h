@@ -99,6 +99,9 @@ struct StereoCleanupContext {
 ///        ranking must not treat ``[*:1]`` and ``[*:2]`` as different
 ///        substituents.
 /// \returns The context, with every vector sized to GetMaxAtomIdx().
+/// \throws RingPerceptionError When a tetrahedrally tagged nitrogen is present,
+///         so the bridgehead flags are computed, and the ported ring
+///         perception hits one of RDKit's failure paths doing so.
 StereoCleanupContext build_stereo_cleanup_context(const OEChem::OEMolBase& mol);
 
 /// \brief Whether RDKit's parse-time cleanup would keep `atom`'s tetrahedral tag.
@@ -156,6 +159,8 @@ bool rdkit_keeps_tetrahedral_tag(
 ///        OEPerceiveSymmetry() and OEFindRingAtomsAndBonds() on a molecule whose
 ///        attachment map indices are zero.
 /// \returns true when the tag survives as one half of a dependent pair.
+/// \throws RingPerceptionError Propagated from build_stereo_cleanup_context(),
+///         which this overload runs itself.
 bool has_dependent_ring_stereo(const OEChem::OEAtomBase& atom);
 
 /// \brief has_dependent_ring_stereo() against a precomputed context.
@@ -217,6 +222,11 @@ private:
 /// \throws FragmentationError If OEChem reports fewer hydrogens on an atom than
 ///         it has isotope-labelled hydrogen neighbours, which leaves the
 ///         tag-retention rules with no substituent count to apply.
+/// \throws RingPerceptionError When a tagged nitrogen, ring or not, sends the
+///         pass to ring perception and the search hits one of RDKit's failure
+///         paths.
+///         RDKit rejects such a structure outright, so callers that can drop the
+///         molecule should, rather than render it with the tag left alone.
 void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol);
 
 /// \brief Render a fragment as isomeric, attachment-mapped canonical SMILES.
@@ -231,6 +241,8 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol);
 /// \returns The rendered SMILES.
 /// \throws FragmentationError Propagated from the cleanup pass; `mol` keeps its
 ///         map indices.
+/// \throws RingPerceptionError Propagated from the cleanup pass, for a structure
+///         RDKit itself refuses to perceive; `mol` keeps its map indices.
 std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydrogens = false);
 
 /// \brief One atom's tetrahedral parity, read against an explicit neighbour order.

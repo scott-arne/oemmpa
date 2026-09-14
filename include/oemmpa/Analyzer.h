@@ -6,6 +6,7 @@
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
+#include "oemmpa/RingPerception.h"
 #include "oemmpa/Transform.h"
 
 #include <oechem.h>
@@ -88,12 +89,21 @@ public:
     /// \brief Configure fragmentation-method maximum rotatable bond count.
     void SetFragmentationMaxRotatableBonds(unsigned int max_rotatable_bonds);
 
-    /// \brief Cap the records one role assignment may emit during fragmentation.
+    /// \brief Cap the up-enumerations one role assignment may attempt.
     ///
     /// Forwards to Fragmenter::SetMaxUpEnumerations. The cap is per role
-    /// assignment (one constant/variable orientation of one cut combination).
-    /// Without this the cap is unreachable from the public API, because the
-    /// fragmenter accessors are private.
+    /// assignment (one constant/variable orientation of one cut combination)
+    /// and counts the attempts made beyond that assignment's baseline record:
+    /// N permits the baseline plus N further attempted emissions, and the
+    /// (N+2)th attempt throws. Attempts are charged before deduplication, so a
+    /// configuration later discarded as a duplicate still consumes budget; 0
+    /// permits the baseline record alone. Every unsigned int value is honoured,
+    /// and the default of 1000 matches mmpdb. Without this the cap is
+    /// unreachable from the public API, because the fragmenter accessors are
+    /// private.
+    ///
+    /// \param max_up_enumerations Attempted up-enumerations permitted beyond the
+    ///        baseline record of one role assignment.
     void SetFragmentationMaxUpEnumerations(unsigned int max_up_enumerations);
 
     /// \brief Clear fragmentation-method maximum molecule heavy atom count.
@@ -113,6 +123,13 @@ public:
 
     /// \brief Configure wizepairz-method maximum environment radius.
     void SetWizePairZMaxEnvironmentRadius(unsigned int radius);
+
+    /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.
+    ///
+    /// Forwards to the active method; every method supports both policies.
+    /// CONSULTED is the default. See RingPerceptionPolicy.
+    void SetRingPerceptionPolicy(RingPerceptionPolicy policy);
+    RingPerceptionPolicy GetRingPerceptionPolicy() const;
 
     /// \brief Configure the shared desalter from oedesalt's compiled-in salt
     /// (and optional solvent) patterns. Applied to every molecule added

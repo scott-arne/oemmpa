@@ -250,6 +250,11 @@ Stores are versioned. A store written by an older oemmpa (schema version 1, whic
 stored one `pair` row per environment radius) is not read in place — rebuild it
 from source with the current version.
 
+OEMMPA 4.0.0 is schema version 4, and a database built with 3.x has to be
+rebuilt as well. There is no migration: fragment SMILES now carry
+stereochemistry, and the missing stereo information is not recoverable from a
+version-3 database that never stored it.
+
 By default `save()` persists every analyzed pair, which is convenient for small
 datasets but can produce very large stores when molecules carry big variable
 fragments. Pass a variable-fragment bound to keep only the more interesting

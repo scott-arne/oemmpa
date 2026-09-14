@@ -78,6 +78,9 @@ class PairResult:
         :returns: Deduplicated canonical product SMILES.
         :raises ValueError: If the pair transform is unsupported by the
             current transform-application layer.
+        :raises RuntimeError: If a variable fragment defeats ring perception
+            (the Stereochemistry section of docs/python-api.md says which
+            structures).
         """
         from ._transform import apply_pair_transform
 

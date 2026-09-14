@@ -446,7 +446,7 @@ TEST(UpEnumerationCap, ThrowsWhenACombinationExceedsTheLimit) {
 // combinations with a maximum of 3 in any one role assignment, so a cap of 2
 // must pass -- a counter accumulated across the whole molecule would throw on
 // the fourth record instead.
-TEST(UpEnumerationCap, IsScopedToOneCutCombination) {
+TEST(UpEnumerationCap, IsScopedToOneRoleAssignment) {
     OEMMPA::Fragmenter fragmenter;
     fragmenter.SetMaxCuts(1);
     fragmenter.SetMaxUpEnumerations(2);
@@ -470,9 +470,11 @@ TEST(UpEnumerationCap, SurvivesCopyConstructionAndAssignment) {
     EXPECT_EQ(assigned.GetMaxUpEnumerations(), 7u);
 }
 
-// The maximum unsigned int value must remain effective (not silently disable
-// the cap). With the uint64 counter, emitted > UINT_MAX is satisfiable, so the
-// guard throws at record UINT_MAX + 2 instead of never.
+// The maximum unsigned int value is accepted like any other and the molecule
+// fragments normally under it. That the guard also stays satisfiable there --
+// emitted > UINT_MAX has to be reachable, which needs a counter wider than the
+// cap -- is not something a 14-record molecule could show; it is the
+// static_assert on UpEnumerationBudgetCounter in Fragmenter.cpp.
 TEST(UpEnumerationCap, MaximumValueDoesNotDisableTheGuard) {
     OEMMPA::Fragmenter fragmenter;
     fragmenter.SetMaxCuts(1);
@@ -548,8 +550,9 @@ TEST(EnumerationPairing, BaselineRecordWinsTheDedup) {
 }
 
 // The index keeps the first insertion and does not relabel. Within one molecule
-// the fragmenter emits baseline-precedent records (Task 5), so the previous test
-// (baseline-first insertion) is the production case. This test documents that the
+// the fragmenter always emits a role assignment's baseline record before any of
+// its enumerated records, so the previous test (baseline-first insertion) is the
+// production case. This test documents that the
 // index itself has no special baseline semantics: it keeps whichever record arrived
 // first, so an enumerated-first insertion (legal when called directly but impossible
 // from Fragment()) keeps the enumerated record.

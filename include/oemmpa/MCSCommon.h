@@ -4,6 +4,7 @@
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
+#include "oemmpa/RingPerception.h"
 
 #include <oechem.h>
 
@@ -256,6 +257,38 @@ MatchedPair make_matched_pair(
     unsigned int cut_count,
     int heavy_atom_delta,
     int heavy_bond_delta
+);
+
+/// \brief The molecules the strict ring-perception policy admits.
+///
+/// A record is kept when the ported ring perception accepts its molecule -- the
+/// test RDKit's parse applies to the whole structure -- and a rejected molecule
+/// takes part in no pair. Only the strict policy calls this, so the consulted
+/// path never pays for the copy.
+///
+/// \param molecules The staged records.
+/// \returns The admitted records, in their original order.
+std::vector<MoleculeRecord> admitted_molecules(const std::vector<MoleculeRecord>& molecules);
+
+/// \brief The records an MCS method may pair under `policy`.
+///
+/// Under CONSULTED that is `records` itself, untouched and uncopied; under
+/// STRICT it is the admitted subset, which is built into `owned` so the
+/// returned reference stays valid for as long as `owned` does.
+///
+/// The strict policy asks RDKit's question of every molecule once, here,
+/// rather than of every candidate pair inside the callback: the answer is a
+/// property of the molecule, and a rejected one must reach no pair at all.
+///
+/// \param records The staged records.
+/// \param policy The method's ring-perception policy.
+/// \param owned Storage the caller owns for the admitted subset; it must
+///     outlive every use of the returned reference.
+/// \returns The records to pair: `records` under CONSULTED, `owned` under STRICT.
+const std::vector<MoleculeRecord>& admitted_under_policy(
+    const std::vector<MoleculeRecord>& records,
+    RingPerceptionPolicy policy,
+    std::vector<MoleculeRecord>& owned
 );
 
 /// \brief Parallel all-pairs MCS driver for wizepairz and dmcss.

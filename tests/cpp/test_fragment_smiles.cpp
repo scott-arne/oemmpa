@@ -884,9 +884,10 @@ std::string cut_and_render(const std::string& smiles, const std::string& smarts,
 
 }  // namespace
 
-// Captopril: cutting the alpha carbon's CH2S neighbour is the case Task 2 found
-// inverted against mmpdb. The reference is the parent with the dummy written
-// where the branch was, rendered through the same renderer.
+// Captopril: cutting the alpha carbon's CH2S neighbour is the case that rendered
+// inverted against mmpdb before parity was transferred across the cut. The
+// reference is the parent with the dummy written where the branch was, rendered
+// through the same renderer.
 TEST(FragmentSmiles, ParityTransferPreservesCentreAcrossACut) {
     const std::string reference = render("C[C@H]([*:1])C(=O)N1CCC[C@H]1C(=O)O.[*:1]CS");
     const std::string parent = "C[C@H](CS)C(=O)N1CCC[C@H]1C(=O)O";

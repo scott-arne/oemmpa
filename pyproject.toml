@@ -6,7 +6,10 @@ build-backend = "scikit_build_core.build"
 name = "oemmpa"
 version = "4.0.0"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
-license = "MIT"
+# The wheel is not purely MIT: src/RingPerception.cpp is derived from RDKit and
+# stays under RDKit's BSD 3-Clause terms, so the compiled extension is covered by
+# both licenses at once.
+license = "MIT AND BSD-3-Clause"
 # RDKit's notice ships alongside the MIT license because src/RingPerception.cpp
 # is derived from RDKit, and BSD condition 2 requires binary distributions to
 # reproduce the notice; a wheel contains no .cpp to carry it.

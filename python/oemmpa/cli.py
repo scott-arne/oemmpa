@@ -215,6 +215,17 @@ def _add_method_arguments(parser):
         default=None,
         help="Wizepairz maximum environment radius (default 4, valid range [1, 5]).",
     )
+    parser.add_argument(
+        "--ring-perception",
+        choices=["consulted", "strict"],
+        default=None,
+        help=(
+            "How molecules RDKit's ring perception would refuse are treated. "
+            "consulted (default) skips one only where the stereo cleanup consults "
+            "the ported search and it fails; strict validates every molecule's ring "
+            "topology first and skips the ones RDKit would refuse, in every method."
+        ),
+    )
 
 
 def _add_desalting_arguments(parser):
@@ -839,6 +850,18 @@ def _configure_wizepairz(analyzer, args):
     )
 
 
+def _configure_ring_perception(analyzer, args):
+    """Apply --ring-perception to a facade :class:`Analyzer`.
+
+    Every method takes the policy, so unlike the wizepairz and fragmentation
+    helpers this one is not gated on ``--method``. An absent flag leaves the
+    analyzer's policy alone.
+    """
+    ring_perception = getattr(args, "ring_perception", None)
+    if ring_perception is not None:
+        analyzer.set_ring_perception_policy(ring_perception)
+
+
 def _build_analyzer(args, *, load_properties=None):
     method = getattr(args, "method", None)
     if method is None:
@@ -859,6 +882,7 @@ def _build_analyzer(args, *, load_properties=None):
     elif method == "wizepairz":
         _configure_wizepairz(analyzer, args)
     _configure_desalting(analyzer, args)
+    _configure_ring_perception(analyzer, args)
     molecule_report = analyzer.add_molecules_from_file(args.smiles)
     if molecule_report.rejected_count:
         first_error = molecule_report.errors[0]
@@ -912,9 +936,10 @@ def _build_query_options(args):
         options.SetMaxHeavyAtomChange(args.max_heavies_transf)
     if args.max_frac_trans is not None:
         options.SetMaxRelativeHeavyAtomChange(args.max_frac_trans)
-    # MMPDB-compatible variable-fragment size filters. ``--max-variable-heavies
-    # none`` parses to ``None`` (no limit), matching the other "no limit"
-    # defaults, so only concrete values are pushed to the query options.
+    # Variable-fragment size bounds, in the MMPDB spellings. Every analysis
+    # method applies them. ``--max-variable-heavies none`` parses to ``None``
+    # (no limit), matching the other "no limit" defaults, so only concrete
+    # values are pushed to the query options.
     if args.max_variable_heavies is not None:
         options.SetMaxVariableHeavies(args.max_variable_heavies)
     if args.min_variable_heavies is not None:
@@ -1081,7 +1106,7 @@ def _reject_persisted_fragmentation_options(args, command):
 
 
 def _reject_persisted_method_options(args, command):
-    """Reject wizepairz method flags when reading a prebuilt store.
+    """Reject method flags when reading a prebuilt store.
 
     The analysis method and its configuration are fixed at build time; method
     flags have no effect when reading a persisted database and should not be
@@ -1090,6 +1115,7 @@ def _reject_persisted_method_options(args, command):
     for option, value in (
         ("--mcs-identity-fraction", getattr(args, "mcs_identity_fraction", None)),
         ("--max-environment-radius", getattr(args, "max_environment_radius", None)),
+        ("--ring-perception", getattr(args, "ring_perception", None)),
     ):
         if value is not None:
             raise ValueError(
@@ -1427,25 +1453,28 @@ def _build_parser():
         "--min-variable-heavies",
         type=_nonnegative_int,
         default=None,
-        help="Compatibility parser for MMPDB minimum variable heavy atoms.",
+        help="Minimum variable-fragment heavy atoms; applied by every method.",
     )
     build_parser.add_argument(
         "--max-variable-heavies",
         type=_optional_nonnegative_int,
         default=10,
-        help="Maximum variable-fragment heavy atoms (MMPDB default 10); use 'none' for no limit.",
+        help=(
+            "Maximum variable-fragment heavy atoms (MMPDB default 10), applied by "
+            "every method; use 'none' for no limit."
+        ),
     )
     build_parser.add_argument(
         "--min-variable-ratio",
         type=_positive_variable_ratio,
         default=None,
-        help="Compatibility parser for MMPDB minimum variable heavy-atom ratio.",
+        help="Minimum variable-fragment heavy-atom ratio; applied by every method.",
     )
     build_parser.add_argument(
         "--max-variable-ratio",
         type=_variable_ratio,
         default=None,
-        help="Compatibility parser for MMPDB maximum variable heavy-atom ratio.",
+        help="Maximum variable-fragment heavy-atom ratio; applied by every method.",
     )
     build_parser.add_argument(
         "--max-heavies-transf",

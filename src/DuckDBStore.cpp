@@ -18,6 +18,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <tuple>
@@ -1011,9 +1012,13 @@ bool compare_pairs(const MatchedPair& lhs, const MatchedPair& rhs) {
     );
 }
 
-// Heavy-atom count of a variable SMILES, counted the same way as the in-memory
-// path (OEChem OEIsHeavy). Cached by SMILES so the common case of many pairs
-// sharing a variable fragment parses each distinct fragment once.
+// Heavy-atom count of a variable SMILES, counted by the shared
+// count_variable_heavy_atoms so the store and MatchedPair's own accessors
+// cannot drift; the in-memory index applies the same OEIsHeavy rule to
+// fragments it has already parsed. Cached by SMILES so the common case of many pairs
+// sharing a variable fragment parses each distinct fragment once. A fragment
+// the store cannot parse is a corrupt row, not a zero-sized fragment, so this
+// caller turns the shared function's empty result into an error.
 unsigned int variable_heavy_atom_count(
     const std::string& variable_smiles,
     std::unordered_map<std::string, unsigned int>& cache
@@ -1022,13 +1027,12 @@ unsigned int variable_heavy_atom_count(
     if (cached != cache.end()) {
         return cached->second;
     }
-    OEChem::OEGraphMol mol;
-    if (!OEChem::OESmilesToMol(mol, variable_smiles)) {
+    const std::optional<unsigned int> count = count_variable_heavy_atoms(variable_smiles);
+    if (!count.has_value()) {
         throw StorageError("invalid variable SMILES in store: " + variable_smiles);
     }
-    const unsigned int count = OEChem::OECount(mol, OEChem::OEIsHeavy());
-    cache.emplace(variable_smiles, count);
-    return count;
+    cache.emplace(variable_smiles, *count);
+    return *count;
 }
 
 // Apply the variable-fragment size bounds to already-materialized store pairs,

@@ -273,6 +273,13 @@ std::vector<MatchedPair> AnalyzeToluenePhenolPairs() {
     return analyzer.GetPairs();
 }
 
+// Identify a pair by the fields the pair table preserves, so an in-memory pair
+// can be matched with the same pair read back from the store.
+std::string PairIdentity(const MatchedPair& pair) {
+    return pair.GetSourceExternalId() + ">" + pair.GetTargetExternalId() + ">" +
+        pair.GetConstantSmiles() + ">" + pair.GetTransformSmiles();
+}
+
 void AddToluenePhenolMolecules(DuckDBStore& store) {
     store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
     store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
@@ -543,7 +550,7 @@ TEST(DuckDBStoreTest, NumPairsAndStatisticsMatchAfterNormalization) {
     store.AddMoleculeProperty(2, "pIC50", 7.5);
     // Store a SINGLE directional pair so this is genuinely a
     // 1-pair/6-environment scenario (AddPairs would store both directions -> 2
-    // physical pairs / 12 environments; that path is covered by Task 5/7).
+    // physical pairs / 12 environments, which the next test covers).
     store.AddPair(AnalyzeToluenePhenolPairs().front());
     store.RefreshRuleEnvironmentStatistics();
 
@@ -871,6 +878,48 @@ TEST(DuckDBStoreTest, StoresAndReadsBackAnalyzedPairs) {
     EXPECT_EQ(stored_pairs.front().GetSourceVariableSmiles(), input_pairs.front().GetSourceVariableSmiles());
     EXPECT_EQ(stored_pairs.front().GetTargetVariableSmiles(), input_pairs.front().GetTargetVariableSmiles());
     EXPECT_EQ(stored_pairs.front().GetTransformSmiles(), input_pairs.front().GetTransformSmiles());
+}
+
+TEST(DuckDBStoreTest, ReadBackFragmentationPairsKeepTheirVariableHeavyAtomCounts) {
+    // The pair table has no columns for the two variable heavy-atom counts, so
+    // a pair read back from the store carries nothing recorded and must derive
+    // the counts from its variable SMILES. A caller cannot be allowed to tell
+    // the stored pair apart from the analyzed one.
+    DuckDBStore store;
+    store.InitializeSchema();
+    AddToluenePhenolMolecules(store);
+
+    const std::vector<MatchedPair> input_pairs = AnalyzeToluenePhenolPairs();
+    ASSERT_FALSE(input_pairs.empty());
+    store.AddPairs(input_pairs);
+
+    std::map<std::string, std::pair<unsigned int, unsigned int>> expected_counts;
+    for (const MatchedPair& pair : input_pairs) {
+        EXPECT_TRUE(pair.HasRecordedVariableHeavyAtomCounts())
+            << "the analyzed pair should carry counts recorded by its producer";
+        expected_counts[PairIdentity(pair)] = {
+            pair.GetSourceVariableHeavyAtoms(), pair.GetTargetVariableHeavyAtoms()};
+    }
+    ASSERT_EQ(expected_counts.size(), input_pairs.size())
+        << "pair identities must be unique for the comparison below to mean anything";
+
+    const std::vector<MatchedPair> stored_pairs = store.GetPairs();
+    ASSERT_EQ(stored_pairs.size(), input_pairs.size());
+
+    bool saw_nonzero_on_both_sides = false;
+    for (const MatchedPair& pair : stored_pairs) {
+        const auto expected = expected_counts.find(PairIdentity(pair));
+        ASSERT_NE(expected, expected_counts.end()) << "read pair is not one of the analyzed pairs";
+        EXPECT_FALSE(pair.HasRecordedVariableHeavyAtomCounts())
+            << "the pair table has no column for the counts, so a read pair recounts them";
+        EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), expected->second.first);
+        EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), expected->second.second);
+        if (pair.GetSourceVariableHeavyAtoms() > 0u && pair.GetTargetVariableHeavyAtoms() > 0u) {
+            saw_nonzero_on_both_sides = true;
+        }
+    }
+    EXPECT_TRUE(saw_nonzero_on_both_sides)
+        << "all counts were zero, so the comparison could not have failed";
 }
 
 TEST(DuckDBStoreTest, VariableBoundsMatchInMemoryAndStoreBackends) {
@@ -2964,6 +3013,66 @@ TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsValidRadiusBounds) {
     std::filesystem::remove(path);
     std::filesystem::remove(roundtrip_path);
     std::filesystem::remove(frag_path);
+}
+
+TEST(DuckDBStoreTest, PersistedWizePairZPairsKeepTheirVariableHeavyAtomCounts) {
+    // WizePairZ records the counts on the pairs it builds; the store cannot
+    // persist them, so the read-back pairs recount from their variable SMILES.
+    // Both routes have to agree for an MCS method too, not just for the
+    // fragment-and-index one.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+
+    WizePairZMethod method;
+    method.SetMcsIdentityFraction(0.5);
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+    method.Analyze(1);
+    const std::vector<MatchedPair> original_pairs = method.GetPairs(QueryOptions{});
+    ASSERT_FALSE(original_pairs.empty());
+
+    std::map<std::string, std::pair<unsigned int, unsigned int>> expected_counts;
+    for (const MatchedPair& pair : original_pairs) {
+        EXPECT_TRUE(pair.HasRecordedVariableHeavyAtomCounts())
+            << "WizePairZ should record the counts on the pairs it builds";
+        expected_counts[PairIdentity(pair)] = {
+            pair.GetSourceVariableHeavyAtoms(), pair.GetTargetVariableHeavyAtoms()};
+    }
+    ASSERT_EQ(expected_counts.size(), original_pairs.size())
+        << "pair identities must be unique for the comparison below to mean anything";
+
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccc(C)cc1", "pxylene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccc(O)cc1", "hydroquinone"));
+        store.SetAnalysisMethod("wizepairz");
+        store.AddPairs(original_pairs);
+    }
+
+    std::vector<MatchedPair> read_pairs;
+    {
+        DuckDBStore store(path.string());
+        read_pairs = store.GetPairs();
+    }
+    ASSERT_EQ(read_pairs.size(), original_pairs.size());
+
+    bool saw_nonzero_on_both_sides = false;
+    for (const MatchedPair& pair : read_pairs) {
+        const auto expected = expected_counts.find(PairIdentity(pair));
+        ASSERT_NE(expected, expected_counts.end()) << "read pair is not one of the analyzed pairs";
+        EXPECT_FALSE(pair.HasRecordedVariableHeavyAtomCounts())
+            << "the pair table has no column for the counts, so a read pair recounts them";
+        EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), expected->second.first);
+        EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), expected->second.second);
+        if (pair.GetSourceVariableHeavyAtoms() > 0u && pair.GetTargetVariableHeavyAtoms() > 0u) {
+            saw_nonzero_on_both_sides = true;
+        }
+    }
+    EXPECT_TRUE(saw_nonzero_on_both_sides)
+        << "all counts were zero, so the comparison could not have failed";
+
+    std::filesystem::remove(path);
 }
 
 TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsEnvironmentSmirks) {

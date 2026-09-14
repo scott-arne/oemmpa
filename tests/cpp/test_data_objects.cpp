@@ -302,12 +302,47 @@ MatchedPair MakeTestPair() {
         1, 0, 0
     );
 }
+
+// A pair carrying no recorded counts, whose two variable fragments have
+// different sizes so a count taken from the wrong side would be visible.
+MatchedPair MakeUnrecordedPair(
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+) {
+    return MatchedPair(
+        1, 2, "test-a", "test-b",
+        "OCCc1ccccc1", "Clc1ccccc1",
+        "[*:1]c1ccccc1", source_variable_smiles, target_variable_smiles,
+        1, 0, 0
+    );
+}
 }  // namespace
 
-TEST(MatchedPairVariableCounts, DefaultToZero) {
-    const OEMMPA::MatchedPair pair = MakeTestPair();
-    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 0u);
+TEST(MatchedPairVariableCounts, UnrecordedCountsComeFromTheVariableSmiles) {
+    // Producers that never recorded the counts -- a pair read back from a
+    // store, for one -- still report the real fragment sizes.
+    const MatchedPair pair = MakeUnrecordedPair("[*:1]CCO", "[*:1]Cl");
+    EXPECT_FALSE(pair.HasRecordedVariableHeavyAtomCounts());
+    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 3u);
+    EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+}
+
+TEST(MatchedPairVariableCounts, HydrogenPseudoFragmentCountsZero) {
+    // Zero is the truthful count for the synthesized hydrogen fragment, which
+    // is why the size bounds exempt that side by SMILES rather than by count.
+    const MatchedPair pair = MakeUnrecordedPair("[*:1]CCO", kHydrogenVariableSmiles);
+    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 3u);
     EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 0u);
+}
+
+TEST(MatchedPairVariableCounts, RecordedCountsWinOverTheVariableSmiles) {
+    MatchedPair pair = MakeUnrecordedPair("[*:1]CCO", "[*:1]Cl");
+    ASSERT_FALSE(pair.HasRecordedVariableHeavyAtomCounts());
+
+    pair.SetVariableHeavyAtomCounts(7, 9);
+    EXPECT_TRUE(pair.HasRecordedVariableHeavyAtomCounts());
+    EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 7u);
+    EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 9u);
 }
 
 TEST(MatchedPairVariableCounts, RoundTrip) {

@@ -36,6 +36,16 @@ public:
         : OEMMPAError(message) {}
 };
 
+// Ring perception gave up, as RDKit's own findSSSR does on the same structure.
+// There the throw fails sanitization, so Chem.MolFromSmiles returns None and
+// mmpdb never fragments the structure; here it is a fragmentation failure
+// because the callers that can skip the molecule outright do exactly that.
+class RingPerceptionError : public FragmentationError {
+public:
+    explicit RingPerceptionError(const std::string& message)
+        : FragmentationError(message) {}
+};
+
 class EnvironmentFingerprintError : public OEMMPAError {
 public:
     explicit EnvironmentFingerprintError(const std::string& message)

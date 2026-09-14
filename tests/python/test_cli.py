@@ -532,6 +532,75 @@ def test_cli_build_max_variable_heavies_default_is_ten():
     assert args.max_variable_heavies == 10
 
 
+def _persisted_pair_variables(database):
+    """Return {(source_id, target_id): (source_variable, target_variable)}.
+
+    `list --recount` only reports counts, so identifying *which* pair a bound
+    dropped needs the persisted rows themselves, read the way
+    `_stored_clean_smiles` reads the compound table.
+    """
+    import duckdb
+
+    connection = duckdb.connect(str(database), read_only=True)
+    try:
+        rows = connection.execute(
+            "select src.public_id, tgt.public_id, f.smiles, t.smiles "
+            "from pair p "
+            "join compound src on src.id = p.compound1_id "
+            "join compound tgt on tgt.id = p.compound2_id "
+            "join rule r on r.id = p.rule_id "
+            "join rule_smiles f on f.id = r.from_smiles_id "
+            "join rule_smiles t on t.id = r.to_smiles_id"
+        ).fetchall()
+    finally:
+        connection.close()
+    return {
+        (source_id, target_id): (source_variable, target_variable)
+        for source_id, target_id, source_variable, target_variable in rows
+    }
+
+
+def test_cli_build_applies_variable_heavies_default_to_mcs_method(tmp_path):
+    # The variable-size bounds are not fragmentation-only: the MCS methods
+    # apply them per side, so a bare `--method dmcss` build enforces the
+    # default max-variable-heavies=10 too. Phenol/toluene differ by one heavy
+    # atom on a shared phenyl constant and survive; phenol/dodecylbenzene's
+    # 12-heavy dodecyl variable fragment exceeds the default and is persisted
+    # only under `--max-variable-heavies none`.
+    smiles = tmp_path / "phenyl.smi"
+    smiles.write_text(
+        "Oc1ccccc1 phenol\n"
+        "Cc1ccccc1 toluene\n"
+        "CCCCCCCCCCCCc1ccccc1 dodecylbenzene\n",
+        encoding="utf-8",
+    )
+
+    default_db = tmp_path / "default.oemmpa.duckdb"
+    _run_cli(
+        "build", "--method", "dmcss", "--smiles", str(smiles),
+        "--output", str(default_db),
+    )
+
+    unlimited_db = tmp_path / "unlimited.oemmpa.duckdb"
+    _run_cli(
+        "build", "--method", "dmcss", "--smiles", str(smiles),
+        "--max-variable-heavies", "none", "--output", str(unlimited_db),
+    )
+
+    unlimited_pairs = _persisted_pair_count(unlimited_db)
+    default_pairs = _persisted_pair_count(default_db)
+    assert unlimited_pairs > 0
+    # The default bound must drop the dodecyl pair, not the whole set.
+    assert 0 < default_pairs < unlimited_pairs
+
+    dodecyl_pair = ("phenol", "dodecylbenzene")
+    assert _persisted_pair_variables(unlimited_db)[dodecyl_pair] == (
+        "[*:1]O",
+        "[*:1]CCCCCCCCCCCC",
+    )
+    assert dodecyl_pair not in _persisted_pair_variables(default_db)
+
+
 def test_cli_build_method_flag_selects_analysis_method(tmp_path):
     smiles = tmp_path / "molecules.smi"
     smiles.write_text("Cc1ccccc1 tol\nOc1ccccc1 phenol\n", encoding="utf-8")

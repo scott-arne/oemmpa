@@ -66,6 +66,8 @@ def build_variable_transform_smirks(transform):
     :returns: Chemically explicit unimolecular SMIRKS.
     :raises ValueError: If the transform is malformed or currently
         unsupported.
+    :raises RuntimeError: If a variable fragment defeats ring perception (the
+        Stereochemistry section of docs/python-api.md says which structures).
     """
     try:
         return _oemmpa.TransformApplicator.BuildVariableTransformSmirks(
@@ -86,6 +88,8 @@ def apply_variable_transform(source, transform, *, desalter=None):
         source molecule so it desalts consistently with the stored corpus.
     :returns: Deduplicated canonical product SMILES.
     :raises ValueError: If the source molecule or transform is invalid.
+    :raises RuntimeError: If a variable fragment defeats ring perception (the
+        Stereochemistry section of docs/python-api.md says which structures).
     """
     try:
         if desalter is None:
@@ -111,6 +115,8 @@ def apply_pair_transform(pair):
     :param pair: :class:`PairResult` or raw ``_oemmpa.MatchedPair``.
     :returns: Deduplicated canonical product SMILES.
     :raises ValueError: If the source molecule or transform is invalid.
+    :raises RuntimeError: If a variable fragment defeats ring perception (the
+        Stereochemistry section of docs/python-api.md says which structures).
     """
     raw_pair = getattr(pair, "_raw_pair", pair)
     try:
@@ -140,8 +146,10 @@ def generate_products(
     :param min_evidence: Minimum transform evidence count. Use ``0`` to
         disable evidence filtering.
     :param skip_unsupported: Whether malformed or unsupported observed
-        transforms should be ignored. When ``False``, those errors raise
-        :class:`ValueError`.
+        transforms, and transforms whose variable fragment defeats ring
+        perception, should be ignored. When ``False``, the malformed and
+        unsupported cases raise :class:`ValueError` and the ring-perception
+        refusal raises :class:`RuntimeError`.
     :param statistics: Optional transform statistics used to attach prediction
         metadata to generated products.
     :param aggregation: Statistic used for predicted-delta metadata on the
@@ -151,6 +159,9 @@ def generate_products(
     :returns: :class:`GeneratedProductCollection` of generated product rows.
     :raises ValueError: If the source molecule is invalid, ``min_evidence`` is
         negative, or unsupported transforms are not skipped.
+    :raises RuntimeError: If a transform's variable fragment defeats ring
+        perception and unsupported transforms are not skipped (the
+        Stereochemistry section of docs/python-api.md says which structures).
     """
     min_evidence = int(min_evidence)
     if min_evidence < 0:
@@ -216,13 +227,19 @@ def generate_products_from_rule_environments(
     :param selection: Optional structured rule selection options.
     :param min_evidence: Optional product-generation evidence threshold. When
         omitted, the selected rule environment's ``min_pairs`` setting is used.
-    :param skip_unsupported: Whether unsupported observed transforms should be
-        skipped.
+    :param skip_unsupported: Whether malformed or unsupported observed
+        transforms, and transforms whose variable fragment defeats ring
+        perception, should be skipped, as for :func:`generate_products`.
     :param statistics: Optional statistics override for prediction metadata.
     :param desalter: Optional ``_oemmpa.Desalter`` applied to the caller-supplied
         source molecule so it desalts consistently with the stored corpus.
     :param filters: Keyword filters accepted by ``RuleSelectionOptions``.
     :returns: :class:`GeneratedProductCollection` of generated product rows.
+    :raises ValueError: If the source molecule is invalid, ``min_evidence`` is
+        negative, or unsupported transforms are not skipped.
+    :raises RuntimeError: If a transform's variable fragment defeats ring
+        perception and unsupported transforms are not skipped (the
+        Stereochemistry section of docs/python-api.md says which structures).
     """
     from ._rule_environment import _coerce_selection, find_transform_environments
 

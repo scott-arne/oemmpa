@@ -3,14 +3,19 @@
 #include "oemmpa/Analyzer.h"
 #include "oemmpa/DMCSSMethod.h"
 #include "oemmpa/Error.h"
+#include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/OEMedChemMethod.h"
+#include "oemmpa/WizePairZMethod.h"
 #include "oemmpa/oemmpa.h"
+#include "ring_search_bound_guard.h"
 
 #include <oesystem.h>
 
 #include <algorithm>
+#include <atomic>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -331,6 +336,264 @@ TEST(AnalyzerTest, DMCSSParallelMatchesSerial) {
     }
 }
 
+namespace {
+
+/// The halogen pair below differs only at the 4-position, so both sides render
+/// a constant whose cleanup runs with the tagged ring nitrogen present, which
+/// is what makes the cleanup consult ring perception. Toluene and phenol carry
+/// no stereo at all, so their cleanup returns before it would ask for a ring
+/// set: they are the control that a forced bound does not simply stop the
+/// analysis. The plain-cl/plain-br pair is the same two piperidines without the
+/// nitrogen tag, so it is the sharper control: same ring, same size, same
+/// halogen substitution, and it survives a forced bound because the gate is
+/// the tag and not the ring.
+///
+/// The tagged and untagged copies of one halogen never pair with each other.
+/// A piperidine nitrogen is neither a bridgehead nor in a three-membered ring,
+/// so RDKit's rule clears its tag -- deciding that is the consult of ring
+/// perception -- and ring-cl's fragments then render spelled exactly like
+/// plain-cl's; identical fragments on both sides are no pair. Cross-halogen
+/// copies do pair unforced (plain-br with ring-cl, plain-cl with ring-br)
+/// under fragmentation, DMCSS and WizePairZ; under a forced bound the tagged
+/// molecules contribute nothing, so those pairs go with them and no assertion
+/// below depends on them.
+void AddRingPerceptionSkipCorpus(Analyzer& analyzer) {
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddMolecule("C[N@]1CCC(Cl)CC1", "ring-cl");
+    analyzer.AddMolecule("C[N@]1CCC(Br)CC1", "ring-br");
+    analyzer.AddMolecule("CN1CCC(Cl)CC1", "plain-cl");
+    analyzer.AddMolecule("CN1CCC(Br)CC1", "plain-br");
+}
+
+/// The skip corpus plus an acyclic pair. Under the strict policy a forced bound
+/// rejects every ring molecule -- toluene and phenol included, because the
+/// question is now asked of every molecule and not only where the cleanup needs
+/// it -- so the control that the analysis still runs has to be ring-free.
+void AddStrictPolicyCorpus(Analyzer& analyzer) {
+    AddRingPerceptionSkipCorpus(analyzer);
+    analyzer.AddMolecule("CCCCCCCCCO", "nonanol");
+    analyzer.AddMolecule("CCCCCCCCCCl", "nonyl-cl");
+}
+
+bool MentionsMolecule(const std::vector<MatchedPair>& pairs, const std::string& external_id) {
+    return std::any_of(
+        pairs.begin(),
+        pairs.end(),
+        [&external_id](const MatchedPair& pair) {
+            return pair.GetSourceExternalId() == external_id ||
+                pair.GetTargetExternalId() == external_id;
+        }
+    );
+}
+
+// The methods keep their pairs until the next Analyze, so a policy change has
+// to make the last analysis stale on the method itself, not only on the
+// Analyzer that usually fronts it: a caller holding the method directly must
+// re-analyze before GetPairs answers again. RequireAnalyzed() is what says so,
+// with the same AnalysisStateError it raises before any analysis.
+template <typename Method>
+void ExpectPolicyChangeInvalidatesTheAnalysis(const char* name) {
+    Method method;
+    method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+    method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+    method.Analyze(1);
+    EXPECT_FALSE(method.GetPairs(QueryOptions()).empty()) << name;
+
+    method.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(method.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT) << name;
+    EXPECT_THROW(method.GetPairs(QueryOptions()), AnalysisStateError) << name;
+    method.Analyze(1);
+    EXPECT_FALSE(method.GetPairs(QueryOptions()).empty()) << name;
+}
+
+}  // namespace
+
+// A molecule RDKit cannot ring-perceive contributes no records, so it cannot
+// reach a pair -- and the molecules around it are untouched, because the skip
+// is per molecule and not per analysis. Both thread counts are exercised: the
+// parallel path must swallow nothing and escape nothing either.
+TEST(AnalyzerTest, FragmentationSkipsMoleculesWhoseRingPerceptionFails) {
+    auto run = [](unsigned int threads) {
+        Analyzer analyzer;
+        AddRingPerceptionSkipCorpus(analyzer);
+        analyzer.Analyze(threads);
+        return analyzer.GetPairs();
+    };
+
+    const std::vector<MatchedPair> unforced = run(1);
+    ASSERT_TRUE(HasUnorderedPair(unforced, "ring-cl", "ring-br"));
+    ASSERT_TRUE(HasUnorderedPair(unforced, "plain-cl", "plain-br"));
+
+    const ScopedRingSearchQueueBound forced(1);
+    for (const unsigned int threads : {1u, 2u}) {
+        const std::vector<MatchedPair> pairs = run(threads);
+        EXPECT_TRUE(HasUnorderedPair(pairs, "tol", "phenol")) << "threads " << threads;
+        // The untagged piperidines differ from the skipped ones by the tag
+        // alone, so their survival is what shows the skip follows the tag.
+        EXPECT_TRUE(HasUnorderedPair(pairs, "plain-cl", "plain-br")) << "threads " << threads;
+        EXPECT_FALSE(MentionsMolecule(pairs, "ring-cl")) << "threads " << threads;
+        EXPECT_FALSE(MentionsMolecule(pairs, "ring-br")) << "threads " << threads;
+    }
+}
+
+// The same rule at the MCS methods' own granularity: the candidate pair whose
+// region rendering hits the failed search is dropped and the run carries on.
+TEST(AnalyzerTest, DMCSSSkipsCandidatePairsWhoseRingPerceptionFails) {
+    auto run = [](unsigned int threads) {
+        Analyzer analyzer("dmcss");
+        AddRingPerceptionSkipCorpus(analyzer);
+        analyzer.Analyze(threads);
+        return analyzer.GetPairs();
+    };
+
+    const std::vector<MatchedPair> unforced = run(1);
+    ASSERT_TRUE(HasUnorderedPair(unforced, "ring-cl", "ring-br"));
+    ASSERT_TRUE(HasUnorderedPair(unforced, "plain-cl", "plain-br"));
+
+    const ScopedRingSearchQueueBound forced(1);
+    for (const unsigned int threads : {1u, 2u}) {
+        const std::vector<MatchedPair> pairs = run(threads);
+        EXPECT_TRUE(HasUnorderedPair(pairs, "tol", "phenol")) << "threads " << threads;
+        EXPECT_TRUE(HasUnorderedPair(pairs, "plain-cl", "plain-br")) << "threads " << threads;
+        EXPECT_FALSE(HasUnorderedPair(pairs, "ring-cl", "ring-br")) << "threads " << threads;
+    }
+}
+
+// WizePairZ carries its own copy of the catch-and-rewind, so it needs its own
+// evidence: with only the DMCSS test in place, deleting WizePairZMethod's catch
+// would leave the suite green. The default identity fraction of 0.90 admits
+// every pair the assertions read: the bound is floor(0.90 x the larger heavy
+// atom count), so the piperidines need 7 of their 8 heavy atoms in the MCS
+// and toluene and phenol 6 of 7, which is exactly what each pair shares.
+TEST(AnalyzerTest, WizePairZSkipsCandidatePairsWhoseRingPerceptionFails) {
+    auto run = [](unsigned int threads) {
+        Analyzer analyzer("wizepairz");
+        AddRingPerceptionSkipCorpus(analyzer);
+        analyzer.Analyze(threads);
+        return analyzer.GetPairs();
+    };
+
+    const std::vector<MatchedPair> unforced = run(1);
+    ASSERT_TRUE(HasUnorderedPair(unforced, "ring-cl", "ring-br"));
+    ASSERT_TRUE(HasUnorderedPair(unforced, "plain-cl", "plain-br"));
+
+    const ScopedRingSearchQueueBound forced(1);
+    for (const unsigned int threads : {1u, 2u}) {
+        const std::vector<MatchedPair> pairs = run(threads);
+        EXPECT_TRUE(HasUnorderedPair(pairs, "tol", "phenol")) << "threads " << threads;
+        EXPECT_TRUE(HasUnorderedPair(pairs, "plain-cl", "plain-br")) << "threads " << threads;
+        EXPECT_FALSE(HasUnorderedPair(pairs, "ring-cl", "ring-br")) << "threads " << threads;
+    }
+}
+
+// OEMedChem's third copy of the same catch-and-rewind. It chooses its own
+// candidate pairs rather than taking a threshold, so the unforced run is the
+// assertion that the corpus reaches the path at all.
+TEST(AnalyzerTest, OEMedChemSkipsCandidatePairsWhoseRingPerceptionFails) {
+    auto run = [](unsigned int threads) {
+        Analyzer analyzer("oemedchem");
+        AddRingPerceptionSkipCorpus(analyzer);
+        analyzer.Analyze(threads);
+        return analyzer.GetPairs();
+    };
+
+    const std::vector<MatchedPair> unforced = run(1);
+    ASSERT_TRUE(HasUnorderedPair(unforced, "ring-cl", "ring-br"));
+    ASSERT_TRUE(HasUnorderedPair(unforced, "plain-cl", "plain-br"));
+
+    const ScopedRingSearchQueueBound forced(1);
+    for (const unsigned int threads : {1u, 2u}) {
+        const std::vector<MatchedPair> pairs = run(threads);
+        EXPECT_TRUE(HasUnorderedPair(pairs, "tol", "phenol")) << "threads " << threads;
+        EXPECT_TRUE(HasUnorderedPair(pairs, "plain-cl", "plain-br")) << "threads " << threads;
+        EXPECT_FALSE(HasUnorderedPair(pairs, "ring-cl", "ring-br")) << "threads " << threads;
+    }
+}
+
+// Every method reads the policy through Analyzer: the default is consulted, a
+// set is visible through the getter, and no method refuses it.
+TEST(AnalyzerTest, RingPerceptionPolicyRoundTripsThroughEveryMethod) {
+    for (const char* method : {"fragmentation", "dmcss", "wizepairz", "oemedchem"}) {
+        Analyzer analyzer(method);
+        EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED) << method;
+        analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+        EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT) << method;
+        analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::CONSULTED);
+        EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED) << method;
+    }
+}
+
+// Under the strict policy the forced bound rejects every ring molecule in every
+// method -- the piperidines whether tagged or not, and toluene and phenol too --
+// while the acyclic pair, which never starts the search, still pairs. Unforced,
+// strict changes nothing, which is the assertion that it does not over-reject.
+TEST(AnalyzerTest, StrictPolicySkipsEveryRejectedMoleculeInEveryMethod) {
+    for (const char* method : {"fragmentation", "dmcss", "wizepairz", "oemedchem"}) {
+        auto run = [method](unsigned int threads) {
+            Analyzer analyzer(method);
+            analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+            AddStrictPolicyCorpus(analyzer);
+            analyzer.Analyze(threads);
+            return analyzer.GetPairs();
+        };
+
+        const std::vector<MatchedPair> unforced = run(1);
+        ASSERT_TRUE(HasUnorderedPair(unforced, "ring-cl", "ring-br")) << method;
+        ASSERT_TRUE(HasUnorderedPair(unforced, "plain-cl", "plain-br")) << method;
+        ASSERT_TRUE(HasUnorderedPair(unforced, "nonanol", "nonyl-cl")) << method;
+
+        const ScopedRingSearchQueueBound forced(1);
+        for (const unsigned int threads : {1u, 2u}) {
+            const std::vector<MatchedPair> pairs = run(threads);
+            EXPECT_TRUE(HasUnorderedPair(pairs, "nonanol", "nonyl-cl"))
+                << method << " threads " << threads;
+            for (const char* rejected : {"tol", "phenol", "ring-cl", "ring-br", "plain-cl", "plain-br"}) {
+                EXPECT_FALSE(MentionsMolecule(pairs, rejected))
+                    << method << " " << rejected << " threads " << threads;
+            }
+        }
+    }
+}
+
+TEST(AnalyzerTest, ChangingThePolicyOnAMethodInvalidatesItsAnalysis) {
+    ExpectPolicyChangeInvalidatesTheAnalysis<FragmentationMethod>("fragmentation");
+    ExpectPolicyChangeInvalidatesTheAnalysis<DMCSSMethod>("dmcss");
+    ExpectPolicyChangeInvalidatesTheAnalysis<WizePairZMethod>("wizepairz");
+    ExpectPolicyChangeInvalidatesTheAnalysis<OEMedChemMethod>("oemedchem");
+}
+
+namespace {
+
+// Strict admission asks perceives_rings() of record.GetMol(), and GetMol() on
+// a default-constructed record fails with InvalidMoleculeError. That fail-fast
+// is part of the analysis contract (the WizePairZ prefilter tests pin it for
+// the consulted path), so the admission pass must not turn it into a silent
+// skip: only the ring-perception refusal is caught, and only inside
+// perceives_rings(). Both thread counts, because the admission pass runs
+// before the parallel driver either way and must fail the same way, and all
+// three MCS methods, because OEMedChem asks the question at its own site.
+template <typename Method>
+void ExpectInvalidRecordFailsStrictAnalysis(const char* name) {
+    for (const unsigned int threads : {1u, 4u}) {
+        Method method;
+        method.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+        method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
+        method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+        method.AddMolecule(MoleculeRecord());
+        EXPECT_THROW(method.Analyze(threads), InvalidMoleculeError)
+            << name << " threads " << threads;
+    }
+}
+
+}  // namespace
+
+TEST(AnalyzerTest, StrictAdmissionLetsAnInvalidRecordFailTheAnalysis) {
+    ExpectInvalidRecordFailsStrictAnalysis<DMCSSMethod>("dmcss");
+    ExpectInvalidRecordFailsStrictAnalysis<WizePairZMethod>("wizepairz");
+    ExpectInvalidRecordFailsStrictAnalysis<OEMedChemMethod>("oemedchem");
+}
+
 TEST(AnalyzerTest, OEMedChemMethodUsesCommonResultModel) {
     Analyzer analyzer("oemedchem");
     analyzer.AddMolecule("Cc1ccccc1", "tol");
@@ -485,6 +748,43 @@ TEST(OEMedChemVariableCounts, VariableRatioUsesEachSidesOwnMoleculeAsDenominator
         << "Forward pair dropped at max_variable_ratio 0.55: the target side's 2 heavy "
            "atoms were scored against the wrong molecule";
     EXPECT_TRUE(saw_reverse) << "Reverse pair (butane->propane) not found";
+}
+
+TEST(FragmentationVariableCounts, PairsCarryTheirVariableFragmentCounts) {
+    // Chlorobenzene -> ethylbenzene shares the phenyl constant, so the variable
+    // fragments are [*:1]Cl (1 heavy atom) and [*:1]CC (2). The fragment-and-index
+    // backend measures both while building the pair, so the counts must reach
+    // GetPairs in the pair's own direction.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Clc1ccccc1", "chloro");
+    analyzer.AddMolecule("CCc1ccccc1", "ethyl");
+    analyzer.Analyze();
+
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs(options);
+    ASSERT_FALSE(pairs.empty());
+
+    bool saw_forward = false;
+    bool saw_reverse = false;
+    for (const MatchedPair& pair : pairs) {
+        // Recorded by the backend itself, not recovered by the getters: a
+        // producer that stopped recording would leave the counts right and
+        // this assertion wrong.
+        EXPECT_TRUE(pair.HasRecordedVariableHeavyAtomCounts())
+            << "the fragment-and-index backend must record the counts it measured";
+        if (pair.GetSourceExternalId() == "chloro" && pair.GetTargetExternalId() == "ethyl") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 1u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 2u);
+            saw_forward = true;
+        } else if (pair.GetSourceExternalId() == "ethyl" && pair.GetTargetExternalId() == "chloro") {
+            EXPECT_EQ(pair.GetSourceVariableHeavyAtoms(), 2u);
+            EXPECT_EQ(pair.GetTargetVariableHeavyAtoms(), 1u);
+            saw_reverse = true;
+        }
+    }
+    EXPECT_TRUE(saw_forward) << "Forward pair (chloro->ethyl) not found";
+    EXPECT_TRUE(saw_reverse) << "Reverse pair (ethyl->chloro) not found";
 }
 
 TEST(AnalyzerTest, UnknownMethodsRaiseUnsupportedMethodErrors) {
@@ -862,6 +1162,83 @@ TEST(ParallelAnalyzeTest, ParallelPathThrowsDuplicateIdErrorBeforeFragmentation)
         },
         DuplicateIdError
     );
+}
+
+namespace {
+
+/// The default cut strategy with a call counter attached, so a test can see how
+/// many molecules a parallel Analyze actually fragmented. The counter is shared
+/// rather than copied because each worker fragments with its own copy of the
+/// method's fragmenter, and copying a Fragmenter clones its strategy.
+class CountingFragmentationStrategy : public FragmentationStrategy {
+public:
+    explicit CountingFragmentationStrategy(std::shared_ptr<std::atomic<unsigned int>> calls)
+        : wrapped_(SmartsFragmentationStrategy::RDKitCompatible()), calls_(std::move(calls)) {}
+
+    std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase& mol) const override {
+        calls_->fetch_add(1, std::memory_order_relaxed);
+        return wrapped_.FindCutBonds(mol);
+    }
+
+    bool UsesCallerIndices() const override { return wrapped_.UsesCallerIndices(); }
+
+    std::unique_ptr<FragmentationStrategy> Clone() const override {
+        return std::make_unique<CountingFragmentationStrategy>(*this);
+    }
+
+private:
+    SmartsFragmentationStrategy wrapped_;
+    std::shared_ptr<std::atomic<unsigned int>> calls_;
+};
+
+}  // namespace
+
+// Serial Analyze stops at the first molecule that fails, and the parallel path
+// has to stop there too: the up-enumeration cap makes worker failures reachable
+// from valid input, so a run that keeps claiming work fragments the entire
+// remaining corpus only to report the error it already had. Every molecule here
+// exceeds a cap of 1, so the number of molecules claimed is the whole measure.
+TEST(ParallelAnalyzeTest, StopsClaimingMoleculesAfterTheFirstFailure) {
+    const std::shared_ptr<std::atomic<unsigned int>> calls =
+        std::make_shared<std::atomic<unsigned int>>(0);
+    FragmentationMethod method;
+    // The accessors are private on the concrete method and public on the
+    // interface, which is the only way in from outside the library.
+    AnalysisMethod& method_interface = method;
+    Fragmenter* fragmenter = method_interface.GetFragmenter();
+    ASSERT_NE(fragmenter, nullptr);
+    fragmenter->SetStrategy(CountingFragmentationStrategy(calls));
+    fragmenter->SetMaxCuts(1);
+    fragmenter->SetMaxUpEnumerations(1);
+
+    const unsigned int first_id = 100;
+    for (unsigned int offset = 0; offset < 32; ++offset) {
+        method.AddMolecule(MoleculeRecord::FromSmiles(
+            first_id + offset, "OCC(CO)N", "m" + std::to_string(offset)));
+    }
+
+    EXPECT_THROW(
+        {
+            try {
+                method.Analyze(4);
+            } catch (const FragmentationError& error) {
+                // Index 0 is always claimed first and always fails, so which
+                // error surfaces is fixed however the workers interleave.
+                EXPECT_NE(
+                    std::string(error.what()).find("for molecule " + std::to_string(first_id)),
+                    std::string::npos
+                ) << error.what();
+                throw;
+            }
+        },
+        FragmentationError
+    );
+
+    // A worker only observes the failure between molecules, so it may already
+    // have claimed one when the flag goes up -- but no worker claims a second.
+    EXPECT_GE(calls->load(), 1u);
+    EXPECT_LE(calls->load(), method.LastAnalyzeWorkerCount())
+        << "the run kept claiming molecules after the first failure";
 }
 
 TEST(ParallelAnalyzeTest, GetPairsAndTransformsIdenticalAcrossThreadCounts) {

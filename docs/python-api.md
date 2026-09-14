@@ -43,6 +43,24 @@ The `identity_fraction` parameter controls the MCS identity threshold
 maximum environment radius for per-radius SMIRKS hierarchy (default 4, valid
 range `[1, 5]`).
 
+Every method takes a ring-perception policy:
+
+```python
+analyzer = Analyzer()
+analyzer.set_ring_perception_policy("strict")
+analyzer.get_ring_perception_policy()  # "strict"
+```
+
+`consulted`, the default, is the behaviour described under Stereochemistry:
+the ported RDKit ring perception is consulted only where the stereo cleanup
+needs it. `strict` asks RDKit's question of every molecule first and skips
+the ones the search rejects in every method, as MMPDB does when
+`Chem.MolFromSmiles` returns `None`; it costs one ring search per molecule and
+rejects structures OEChem itself perceives without difficulty. The constants
+`_oemmpa.RingPerceptionPolicy_CONSULTED` and `_oemmpa.RingPerceptionPolicy_STRICT`
+are accepted too, and `_oemmpa.perceives_rings(mol)` answers the strict test for
+one OEChem molecule.
+
 ### add_molecule
 
 ```python
@@ -314,6 +332,76 @@ Use `clear_max_heavy_atoms=True` or `clear_max_rotatable_bonds=True` to remove
 those optional molecule-size guards. Invalid settings raise `ValueError` and
 leave the previous fragmentation settings in place.
 
+### Stereochemistry
+
+Fragment SMILES are isomeric: atom stereo, bond stereo, and isotopes are all
+rendered. A cut can also create a stereocentre, at an atom whose substituents
+only become distinguishable once the attachment point is there. Those centres
+are enumerated into the up-enumeration groups the way MMPDB does it, so both
+configurations reach the index instead of one arbitrary choice.
+
+Both behaviours make the index larger. At n=3000 on public SureChEMBL data,
+measured against 3.1.2 on the same corpus, records grow 1.10x, pairs 3.02x, and
+transforms 5.13x. Most of the pair growth is the enumeration itself, which
+alone multiplied pairs 2.75x and transforms 2.83x when it landed.
+
+```python
+analyzer = Analyzer()
+analyzer.set_fragmentation_max_up_enumerations(200)
+```
+
+`set_fragmentation_max_up_enumerations` caps how many up-enumerations a single
+role assignment may attempt, where a role assignment is one constant/variable
+orientation of one cut combination and the enumeration inside it is a 3^k
+product over the created stereocentres. The count is of the attempts made beyond
+that assignment's baseline record, so a cap of `N` permits the baseline plus `N`
+further attempted emissions and the `N + 2`-th attempt raises; a cap of 0 permits
+the baseline record alone. Attempts are charged before deduplication, so a
+configuration later discarded as a duplicate still consumes budget. Every
+unsigned int value is honoured, and the default of 1000 matches MMPDB's
+`--max-up-enumerations`. Exceeding the cap raises rather than quietly
+truncating, because a truncated enumeration would leave an incomplete index with
+nothing to show for it; the error reaches Python as a `RuntimeError`, like every
+other error raised from C++. MMPDB caps only its multiple-cut path, so a single
+cut that would exceed the cap enumerates without bound there and reports the
+problem here.
+
+A few structures defeat ring perception itself. Deciding which stereo tags a cut
+invalidates can require the molecule's ring set, and OEMMPA consults it for one
+thing only: RDKit's bridgehead rule, asked about as soon as a tetrahedral tag
+sits on any nitrogen of the molecule being cleaned, ring or not, whether that
+molecule is the parent or a rendered fragment. The search OEMMPA carries from
+RDKit gives up on the same inputs RDKit's own does: past its BFS queue bound, or
+on a neighbour configuration its invariants rule out. RDKit reports that as a
+sanitization failure, so `Chem.MolFromSmiles` returns `None` and MMPDB never
+fragments the structure at all. Where OEMMPA consults the search and it gives
+up, OEMMPA does not guess: the fragmenter produces no records for that molecule
+and an MCS method drops the candidate pair, the rest of the analysis is
+unaffected, and nothing is raised. A structure whose stereo cleanup never needs
+the ring set is fragmented as usual even though RDKit itself would refuse to
+parse it -- OEChem perceives it without difficulty, and OEMMPA does not reject
+inputs on RDKit's behalf -- so such a molecule can appear in an OEMMPA index and
+never in an MMPDB one. That is the default, `consulted`, policy.
+`Analyzer.set_ring_perception_policy("strict")` asks for RDKit's answer instead:
+every molecule's complete ring topology is validated once with the ported search
+before it takes part in the analysis, and a molecule the search rejects
+contributes no fragmentation records and no MCS pairs in any method, nothing is
+raised, and the rest of the analysis is unaffected. Outside that pipeline the
+refusal surfaces as a `RuntimeError`. The low-level entry points --
+`symmetrized_sssr`, `bridgehead_atoms`, `render_fragment_smiles` -- raise it,
+and so does applying a single observed transform
+(`build_variable_transform_smirks`, `apply_variable_transform`,
+`apply_pair_transform`, `PairResult.apply_transform`), because a caller who
+asked about one transform has nothing else to carry on with.
+`apply_transform_smirks` is unaffected, since an explicit SMIRKS is parsed
+rather than rendered from a fragment. Generating products over a collection of
+transforms does have others to carry on with, so it treats the refusal as one
+more unsupported transform: skipped when `skip_unsupported=True` (the default),
+raised otherwise.
+
+Databases written by OEMMPA 3.x predate all of this and cannot be migrated. See
+the store-version note in the quickstart.
+
 ### add_property
 
 ```python
@@ -484,7 +572,10 @@ Invalid source molecules, invalid transform SMIRKS, malformed observed
 transformations, and unsupported observed transformations raise `ValueError`.
 During collection-level generation, unsupported observed transformations are
 skipped by default. Use `skip_unsupported=False` if you want the first
-unsupported transformation to stop the job. The lower-level C++ binding also
+unsupported transformation to stop the job. A transform whose variable fragment
+defeats ring perception (see Stereochemistry) counts as unsupported here and
+obeys the same switch, except that it reports as `RuntimeError` rather than
+`ValueError` when it is not skipped. The lower-level C++ binding also
 exposes `GenerationOptions`, `GeneratedProduct`, `GeneratedProductVector`,
 `TransformApplicator`, `TransformProduct`, and `TransformProductVector` through
 `oemmpa._oemmpa`.

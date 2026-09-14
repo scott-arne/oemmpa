@@ -106,6 +106,33 @@ def test_cpp_analyzer_binding_accepts_smiles():
     assert len(pairs) > 0
 
 
+def test_pair_binding_reports_variable_fragment_heavy_atom_counts():
+    _oemmpa = import_worktree_raw_bindings()
+
+    analyzer = _oemmpa.Analyzer()
+    analyzer.AddMolecule("Clc1ccccc1", "chloro")
+    analyzer.AddMolecule("CCc1ccccc1", "ethyl")
+    analyzer.Analyze()
+
+    pairs = analyzer.GetPairs()
+    counts = {
+        (pair.GetSourceExternalId(), pair.GetTargetExternalId()): (
+            pair.GetSourceVariableHeavyAtoms(),
+            pair.GetTargetVariableHeavyAtoms(),
+        )
+        for pair in pairs
+    }
+
+    # The backend records what it measured; the getters would report the same
+    # numbers from the SMILES even if it stopped, so assert the recording too.
+    assert all(pair.HasRecordedVariableHeavyAtomCounts() for pair in pairs)
+
+    # The shared phenyl constant leaves [*:1]Cl (one heavy atom) against
+    # [*:1]CC (two), reported in each pair's own direction.
+    assert counts[("chloro", "ethyl")] == (1, 2)
+    assert counts[("ethyl", "chloro")] == (2, 1)
+
+
 def test_fragmentation_binding_exposes_hydrogen_constant():
     from openeye import oechem
 
@@ -330,6 +357,39 @@ def test_cpp_exceptions_surface_as_runtime_error():
         analyzer.AddMolecule("Oc1ccccc1", "tol")
 
 
+def test_the_generated_module_says_how_to_read_its_raises_lines():
+    """SWIG copies the headers' ``\\throws`` clauses, which name C++ types.
+
+    ``-doxygen`` turns every ``\\throws RingPerceptionError`` in a header into a
+    ``:raises RingPerceptionError:`` line in the generated proxy, and a reader
+    who takes that at face value writes ``except RingPerceptionError``, which
+    can never match: ``%exception`` converts every C++ exception to
+    ``RuntimeError``, and the proxy class of that name is a wrapped C++ class
+    with no exception ancestry at all. The generated module cannot be edited --
+    it is rebuilt from the interface file -- so the reading rule lives in the
+    module docstring, and this is what keeps it there.
+
+    All three halves are asserted together because each is what makes the other
+    two matter: the docstring states the rule, the raw call shows the rule is
+    the truth, and the proxy class shows why the rule is needed.
+    """
+    package = import_worktree_oemmpa()
+    raw = package._oemmpa
+    proxy = package.oemmpa
+
+    docstring = proxy.__doc__ or ""
+    assert "RuntimeError" in docstring, (
+        "the generated proxy module has no docstring explaining that its "
+        ":raises: lines name C++ types and every C++ error arrives as "
+        "RuntimeError"
+    )
+
+    with pytest.raises(RuntimeError):
+        raw.TransformApplicator.BuildVariableTransformSmirks("not a transform")
+
+    assert not issubclass(proxy.RingPerceptionError, BaseException)
+
+
 def test_returned_pair_vector_elements_expose_getters():
     _oemmpa = import_worktree_raw_bindings()
 
@@ -404,6 +464,72 @@ def test_transform_addpair_exposes_only_the_copying_overload():
     stored_pairs = transform.GetPairs()
     assert len(stored_pairs) == 1
     assert stored_pairs[0].GetTransformSmiles() == transform_smiles
+
+
+def test_internal_cpp_helpers_are_not_exported_to_python():
+    """Pin the two header symbols that reach Python only through SWIG's defaults.
+
+    ``clear_fragmentation_invalidated_stereo()`` is the cleanup pass that
+    ``render_fragment_smiles()`` already runs for its caller. The renderer is the
+    one ``FragmentSmiles.h`` entry point this binding means to publish; exporting
+    the pass as well offers Python a way to mutate a molecule in place and then
+    render it with some other flag set, which is exactly the decision the header
+    says lives in one place. ``kHydrogenVariableSmiles`` is a C++ constant that
+    three source files compare against, and SWIG turns a namespace-scope global
+    into a module attribute on the generated proxy plus an entry on the ``cvar``
+    holder. Neither has a Python caller anywhere in ``python/``, ``tests/python/``,
+    ``benchmarks/`` or ``docs/``, so both are ``%ignore``d in ``swig/oemmpa.i``.
+    Nothing else in the suite notices when they come back, which is why the
+    surface is asserted directly.
+    """
+    package = import_worktree_oemmpa()
+    raw = package._oemmpa
+    proxy = package.oemmpa
+
+    assert not hasattr(raw, "clear_fragmentation_invalidated_stereo")
+    assert not hasattr(proxy, "clear_fragmentation_invalidated_stereo")
+
+    # The constant never appears as an attribute of the extension module itself:
+    # SWIG publishes C++ globals on ``cvar`` and re-exports them from the proxy,
+    # so a check against ``raw`` alone would pass while the name is still there.
+    assert not hasattr(raw, "kHydrogenVariableSmiles")
+    assert not hasattr(proxy, "kHydrogenVariableSmiles")
+    swig_globals = getattr(raw, "cvar", None)
+    assert swig_globals is None or not hasattr(swig_globals, "kHydrogenVariableSmiles")
+
+    # Control: the renderer is deliberately exported and must survive the ignores.
+    assert hasattr(raw, "render_fragment_smiles")
+
+
+def test_ring_search_queue_bound_seam_is_not_exported_to_python():
+    """Keep the ring search's test seam out of the Python surface.
+
+    ``OEMMPA::detail::set_ring_search_queue_bound_for_tests()`` lets a C++ test
+    reach the abort path without a molecule large enough to queue 200000 partial
+    rings. It writes a process-wide value that every worker reads, so a Python
+    caller could only use it to make some other thread's ring perception fail.
+    SWIG flattens namespaces unless it is told otherwise, so without the
+    ``%ignore``s in ``swig/oemmpa.i`` both ``detail`` functions would land on the
+    module as plain top-level names. Nothing else in the suite notices when they
+    come back, which is why the surface is asserted directly.
+
+    The control half is the perception itself: decalin has to keep returning its
+    two six-membered rings through the bindings, so an ``%ignore`` that took the
+    whole header down with it would fail here rather than pass quietly.
+    """
+    from openeye import oechem
+
+    package = import_worktree_oemmpa()
+    raw = package._oemmpa
+    proxy = package.oemmpa
+
+    for name in ("set_ring_search_queue_bound_for_tests", "ring_search_queue_bound"):
+        assert not hasattr(raw, name)
+        assert not hasattr(proxy, name)
+
+    mol = oechem.OEGraphMol()
+    assert oechem.OESmilesToMol(mol, "C1CCC2CCCCC2C1")
+    assert sorted(len(ring) for ring in raw.symmetrized_sssr(mol)) == [6, 6]
 
 
 def test_explicit_threads_matches_default():

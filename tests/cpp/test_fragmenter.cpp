@@ -7,6 +7,7 @@
 #include "oemmpa/MemoryIndex.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
+#include "ring_search_bound_guard.h"
 
 #include <oechem.h>
 
@@ -597,6 +598,109 @@ TEST(FragmenterTest, DefaultMaxCutBondsSuppressesManyCutBondMolecules) {
     EXPECT_FALSE(fragmenter.Fragment(45, large).empty());
 }
 
+// A structure whose ring perception exceeds RDKit's search bound is one RDKit
+// itself refuses to sanitize, so Chem.MolFromSmiles returns None and mmpdb
+// never fragments it. Fragment() gives the same answer it gives a molecule over
+// max_heavy_atoms: no records at all, rather than records built on an
+// approximate ring set that would decide the stereo tags differently.
+//
+// The four inputs choose the branch on purpose, and only the first reaches the
+// ring search. build_stereo_cleanup_context returns before computing bridgehead
+// flags unless some tetrahedral tag sits on a nitrogen, so: the tagged
+// N-methylpiperidine goes through the search and is skipped; the same ring
+// without the tag never enters the cleanup's tagged-atom pass at all; the ring
+// tagged on a carbon does enter it, and still does not ask for a ring set,
+// because the gate is the tagged atom's element and not the presence of a ring;
+// and the acyclic stereocentre is the case that has no ring either way. Being
+// unfragmentable under a forced bound is thus a property of the failed search,
+// not of the bound being installed, and a ring in the molecule is not by itself
+// enough to trigger it -- which is the contract Fragmenter.h states.
+TEST(FragmenterTest, RingPerceptionFailureSuppressesOnlyTheMoleculeThatNeedsIt) {
+    OEChem::OEGraphMol tagged_ring = MolFromSmiles("C[N@]1CCCCC1");
+    OEChem::OEGraphMol untagged_ring = MolFromSmiles("CN1CCCCC1");
+    OEChem::OEGraphMol carbon_tagged_ring = MolFromSmiles("C[C@H]1CCCCC1");
+    OEChem::OEGraphMol acyclic = MolFromSmiles("C[C@H](O)CC");
+    OEChem::OESuppressHydrogens(tagged_ring);
+    OEChem::OESuppressHydrogens(untagged_ring);
+    OEChem::OESuppressHydrogens(carbon_tagged_ring);
+    OEChem::OESuppressHydrogens(acyclic);
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+
+    EXPECT_FALSE(fragmenter.Fragment(51, tagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(53, acyclic).empty());
+    EXPECT_FALSE(fragmenter.Fragment(55, untagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(57, carbon_tagged_ring).empty());
+
+    const ScopedRingSearchQueueBound forced(1);
+    EXPECT_TRUE(fragmenter.Fragment(51, tagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(53, acyclic).empty());
+    EXPECT_FALSE(fragmenter.Fragment(55, untagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(57, carbon_tagged_ring).empty());
+}
+
+// The strict policy asks RDKit's question of every molecule before fragmenting
+// it, so under a forced bound every ring molecule is skipped -- tagged or not,
+// nitrogen or not -- and only the acyclic one, which never starts the search,
+// still fragments. The consulted policy is the default and keeps the branch
+// structure the test above pins.
+TEST(FragmenterTest, StrictPolicySkipsEveryMoleculeTheSearchRejects) {
+    OEChem::OEGraphMol tagged_ring = MolFromSmiles("C[N@]1CCCCC1");
+    OEChem::OEGraphMol untagged_ring = MolFromSmiles("CN1CCCCC1");
+    OEChem::OEGraphMol carbon_tagged_ring = MolFromSmiles("C[C@H]1CCCCC1");
+    OEChem::OEGraphMol acyclic = MolFromSmiles("C[C@H](O)CC");
+    for (OEChem::OEGraphMol* mol : {&tagged_ring, &untagged_ring, &carbon_tagged_ring, &acyclic}) {
+        OEChem::OESuppressHydrogens(*mol);
+    }
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED);
+    fragmenter.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+
+    // Unforced, strict changes nothing: the search accepts all four.
+    EXPECT_FALSE(fragmenter.Fragment(61, tagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(63, untagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(65, carbon_tagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(67, acyclic).empty());
+
+    const ScopedRingSearchQueueBound forced(1);
+    EXPECT_TRUE(fragmenter.Fragment(61, tagged_ring).empty());
+    EXPECT_TRUE(fragmenter.Fragment(63, untagged_ring).empty());
+    EXPECT_TRUE(fragmenter.Fragment(65, carbon_tagged_ring).empty());
+    EXPECT_FALSE(fragmenter.Fragment(67, acyclic).empty());
+
+    // The policy is an option like the others: both the copy constructor and
+    // the copy assignment carry it. Fragmenter writes both by hand (the
+    // strategy is cloned), so each is its own line to forget.
+    const Fragmenter copy(fragmenter);
+    EXPECT_EQ(copy.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_TRUE(copy.Fragment(63, untagged_ring).empty());
+
+    Fragmenter assigned = MakeAcyclicHeavyAtomFragmenter();
+    EXPECT_EQ(assigned.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED);
+    EXPECT_FALSE(assigned.Fragment(63, untagged_ring).empty());
+    assigned = fragmenter;
+    EXPECT_EQ(assigned.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_TRUE(assigned.Fragment(63, untagged_ring).empty());
+}
+
+// The strict check is one more skip among the fragmenter's own, not a gate in
+// front of them: the strategy check still comes first. The default constructor
+// installs a strategy, so the only fragmenter without one is a moved-from
+// object -- which is exactly the state the strategy check exists to report.
+// Under STRICT with the bound forced, that error still wins over the skip.
+TEST(FragmenterTest, StrictPolicyDoesNotPreemptTheStrategyCheck) {
+    OEChem::OEGraphMol ring = MolFromSmiles("CN1CCCCC1");
+    OEChem::OESuppressHydrogens(ring);
+    Fragmenter source = MakeAcyclicHeavyAtomFragmenter();
+    source.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    const Fragmenter moved_to(std::move(source));
+    ASSERT_FALSE(moved_to.Fragment(75, ring).empty());
+
+    const ScopedRingSearchQueueBound forced(1);
+    EXPECT_TRUE(moved_to.Fragment(75, ring).empty());
+    EXPECT_THROW(source.Fragment(77, ring), FragmentationError);
+}
+
 TEST(FragmenterTest, MaxHeavyAtomsSuppressesLargeMolecules) {
     OEChem::OEGraphMol large = MolFromSmiles("CCCCCCCC");
     OEChem::OEGraphMol small = MolFromSmiles("c1ccccc1O");
@@ -1100,6 +1204,74 @@ TEST(FragmenterTest, ExplicitBondIndexAboveTheCopiedRangeIsStillValid) {
 
 namespace {
 
+/// A subclass of the shape that existed before stereo normalization: it answers
+/// with one cut it was given, in the numbering of the molecule the caller
+/// handed the fragmenter, and -- like every out-of-tree subclass compiled
+/// against the old header -- says nothing about which molecule it expects.
+class LegacyFixedCutStrategy : public FragmentationStrategy {
+public:
+    explicit LegacyFixedCutStrategy(const CutBond& cut) : cut_(cut) {}
+
+    std::vector<CutBond> FindCutBonds(const OEChem::OEMolBase&) const override {
+        return {cut_};
+    }
+
+    std::unique_ptr<FragmentationStrategy> Clone() const override {
+        return std::make_unique<LegacyFixedCutStrategy>(*this);
+    }
+
+private:
+    CutBond cut_;
+};
+
+/// The caller-numbered description of the single bond to the molecule's
+/// chlorine, read off the caller's molecule before any fragmentation runs.
+CutBond CutBondToChlorine(const OEChem::OEMolBase& mol) {
+    for (OESystem::OEIter<OEChem::OEBondBase> bond = mol.GetBonds(); bond; ++bond) {
+        const unsigned int begin_idx = bond->GetBgn()->GetIdx();
+        const unsigned int end_idx = bond->GetEnd()->GetIdx();
+        if (bond->GetBgn()->GetAtomicNum() != 17 && bond->GetEnd()->GetAtomicNum() != 17) {
+            continue;
+        }
+        const auto endpoints = std::minmax(begin_idx, end_idx);
+        return {endpoints.first, endpoints.second, bond->GetIdx()};
+    }
+    return {0, 0, 0};
+}
+
+}  // namespace
+
+// A strategy that predates the stereo-normalizing copy cannot opt into being
+// shown the caller's molecule, because the opt-in did not exist when it was
+// written. It therefore has to be the default: this one names the C-Cl bond by
+// the indices the caller can see, and on the copy -- which compacts the gap
+// OESuppressHydrogens left -- those same indices name the C-C bond to the
+// hydroxyethyl arm instead, so the wrong bond is cut without a word.
+TEST(FragmenterTest, LegacyStrategyWithoutAnOptInCutsTheBondTheCallerNumbered) {
+    const OEChem::OEGraphMol mol = SparselyIndexedChloroAlcohol();
+    const CutBond chlorine_cut = CutBondToChlorine(mol);
+    ASSERT_NE(chlorine_cut.begin_atom_idx, chlorine_cut.end_atom_idx) << "no C-Cl bond to cut";
+
+    LegacyFixedCutStrategy strategy(chlorine_cut);
+    Fragmenter fragmenter(strategy);
+    const std::vector<Fragmentation> fragmentations = fragmenter.Fragment(1, mol);
+
+    // The reference is the same cut requested through the strategy that already
+    // reads caller indices literally, so the two routes have to agree bond for
+    // bond rather than merely producing something.
+    EXPECT_EQ(
+        NormalizeFragmentations(fragmentations),
+        NormalizeFragmentations(FragmentAtBondIndex(mol, chlorine_cut.bond_idx))
+    );
+
+    const Fragmentation* chloride_cut =
+        RecordWithVariable(fragmentations, ExpectedFragmentSmiles("[*:1]Cl"));
+    ASSERT_NE(chloride_cut, nullptr) << "the cut the caller named was C-Cl, and that is not it";
+    EXPECT_EQ(chloride_cut->GetConstantSmiles(), ExpectedFragmentSmiles("C[C@H]([*:1])CCO"));
+}
+
+namespace {
+
 /// A cut SMARTS that only matches a tagged tetrahedral carbon, so what it finds
 /// says which molecule the strategy was handed.
 const char* const STEREO_SENSITIVE_SMARTS = "[C@H:1]-[CH2:2]";
@@ -1119,9 +1291,9 @@ std::vector<Fragmentation> StereoSensitiveSmartsFragmentations(const OEChem::OEM
 
 }  // namespace
 
-// The other half of the same contract: only a strategy that reads indices
-// literally gets the caller's molecule. A structural query has to see the
-// molecule mmpdb would have parsed -- RDKit drops the tag on `C[C@H](C)CO`,
+// The other half of the same contract: the built-in SMARTS strategy opts out
+// of the caller's molecule, which is the default. A structural query has to
+// see the molecule mmpdb would have parsed -- RDKit drops the tag on `C[C@H](C)CO`,
 // whose tagged carbon carries two identical methyls, and upstream then runs its
 // cut SMARTS on the cleaned molecule. Selecting cuts on the caller's molecule
 // let a stereo-sensitive SMARTS match a tag the normalization had already

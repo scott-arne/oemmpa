@@ -19,6 +19,9 @@ public:
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
     unsigned int LastAnalyzeWorkerCount() const override;
 
+    /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.
+    void SetRingPerceptionPolicy(RingPerceptionPolicy policy) override;
+
 private:
     void RequireAnalyzed() const;
 
