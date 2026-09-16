@@ -128,6 +128,50 @@ TEST(SeriesTest, ABucketWithOneRGroupIsNotASeries) {
     EXPECT_TRUE(index.GetSeries().empty());
 }
 
+TEST(SeriesTest, ABucketWithOneCompoundIsNotASeries) {
+    // A symmetric multi-cut fragmentation gives one compound two distinct
+    // R-groups under one constant: p-cresol's two substituents can be labelled
+    // either way round. Two R-groups are not enough on their own, because the
+    // pair path never pairs a compound with itself, so the bucket has nothing
+    // to rank or transfer until a second compound joins it.
+    const std::string constant = "[*:1]c1ccc([*:2])cc1";
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "Cc1ccc(O)cc1", "p-cresol"));
+    index.AddFragmentation(MakeFragmentation(1, constant, "[*:1]C.[*:2]O", 2));
+    index.AddFragmentation(MakeFragmentation(1, constant, "[*:1]O.[*:2]C", 2));
+
+    EXPECT_TRUE(index.GetSeries().empty());
+
+    index.AddMolecule(MakeMolecule(2, "Cc1ccc(N)cc1", "p-toluidine"));
+    index.AddFragmentation(MakeFragmentation(2, constant, "[*:1]C.[*:2]N", 2));
+
+    const std::vector<Series>& series = index.GetSeries();
+
+    ASSERT_EQ(series.size(), 1U);
+    EXPECT_EQ(series[0].GetConstantSmiles(), constant);
+    EXPECT_EQ(series[0].GetCutCount(), 2U);
+    // The second compound makes the whole bucket a series: its own R-group and
+    // both of the first compound's are members.
+    ASSERT_EQ(series[0].Size(), 3U);
+    EXPECT_EQ(series[0].GetMembers()[0],
+              SeriesMember("[*:1]C.[*:2]N", 2, {2}, {"p-toluidine"}));
+    EXPECT_EQ(series[0].GetMembers()[1],
+              SeriesMember("[*:1]C.[*:2]O", 2, {1}, {"p-cresol"}));
+    EXPECT_EQ(series[0].GetMembers()[2],
+              SeriesMember("[*:1]O.[*:2]C", 2, {1}, {"p-cresol"}));
+    std::vector<unsigned int> compound_ids;
+    for (const SeriesMember& member : series[0].GetMembers()) {
+        compound_ids.insert(
+            compound_ids.end(),
+            member.GetMoleculeIds().begin(),
+            member.GetMoleculeIds().end());
+    }
+    std::sort(compound_ids.begin(), compound_ids.end());
+    compound_ids.erase(
+        std::unique(compound_ids.begin(), compound_ids.end()), compound_ids.end());
+    EXPECT_EQ(compound_ids, (std::vector<unsigned int>{1, 2}));
+}
+
 TEST(SeriesTest, SeriesIgnoreThePairFiltersSoAPairlessRGroupIsStillAMember) {
     MemoryIndex index;
     index.AddMolecule(MakeMolecule(1, "Cc1ccccc1", "toluene"));

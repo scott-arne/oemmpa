@@ -45,8 +45,10 @@ private:
 /// atom-mapped canonical string the fragmentation index keys on. A constant
 /// that carries records of several cut counts yields one series per cut count,
 /// because records of different cut counts never pair. Members are sorted by
-/// R-group SMILES. A series has at least two members; a cut count with one
-/// R-group is not a series.
+/// R-group SMILES. A series has at least two members realized by at least two
+/// distinct compounds; a cut count with one R-group is not a series, and
+/// neither is one whose R-groups all come from a single compound, because the
+/// pair path never pairs a compound with itself.
 class Series {
 public:
     Series(

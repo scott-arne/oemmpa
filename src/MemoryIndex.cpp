@@ -1109,6 +1109,21 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
             if (molecule_ids_by_variable.size() < 2) {
                 continue;
             }
+            // Two R-groups are not enough on their own: one compound can
+            // realize several distinct R-groups under one constant, because a
+            // symmetric multi-cut fragmentation can label the same substituents
+            // either way round. The pair path never pairs a compound with
+            // itself, so such a bucket has nothing to rank or transfer, and it
+            // is dropped here exactly as a bucket with one R-group is. The
+            // members are complete at this point, hydrogen member included, so
+            // their union is the compounds the series would span.
+            std::set<unsigned int> partition_molecule_ids;
+            for (const auto& entry : molecule_ids_by_variable) {
+                partition_molecule_ids.insert(entry.second.begin(), entry.second.end());
+            }
+            if (partition_molecule_ids.size() < 2) {
+                continue;
+            }
             if (!constant_measured) {
                 constant_heavy_atoms =
                     parse_smiles_metrics(constant_smiles, "constant").heavy_atom_count;
