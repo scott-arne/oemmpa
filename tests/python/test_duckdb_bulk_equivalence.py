@@ -88,8 +88,17 @@ def test_bulk_save_matches_golden(golden_store_connection):
     # now normalized to one physical row per (compound1, compound2, rule,
     # constant); its golden is the per-radius fanned view, so guard the
     # reconstructed dump count for pair and the independent physical
-    # count(*) for the tables that are not fanned by the dump query.
-    for table in ("pair", "rule_environment", "rule_environment_statistics"):
+    # count(*) for the tables that are not fanned by the dump query. The
+    # series tables are dumped through inner joins, which would drop a row
+    # pointing at a missing series, rule_smiles or compound instead of
+    # reporting it, so their physical count is guarded too.
+    for table in (
+        "pair",
+        "rule_environment",
+        "rule_environment_statistics",
+        "series",
+        "series_member",
+    ):
         if table == "pair":
             count = len(dump.natural_key_rows(con, table))
         else:

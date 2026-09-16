@@ -123,6 +123,14 @@ SPEC: dict[str, list[str]] = {
 
 BUCKETS = ("a", "b", "c", "d", "e", "f", "g", "h", "n")
 
+#: The tables schema 5 introduced. They are the only ones allowed to be missing
+#: from the old golden; every other file must exist on both sides.
+SCHEMA5_TABLES = ("series", "series_member")
+
+#: Which golden a file is read from. The new side is the regeneration's own
+#: output and is never allowed to be missing.
+OLD, NEW = "old", "new"
+
 #: Derived-table precedence. A row referenced by pair rows of several buckets is
 #: reported under the first of these that applies. ``h`` and ``n`` are absent on
 #: purpose: they are assigned by dedicated classifiers, never inherited from a
@@ -773,6 +781,10 @@ def build_index(rows: list[Row], columns: tuple[int, ...]) -> dict[Row, list[Row
 def build_variable_index(rows: list[Row]) -> dict[Row, list[Row]]:
     """Index pair rows by either variable side, as ``rule_smiles`` is referenced.
 
+    Used only by the generic ``rule_smiles`` branch of ``classify_derived``,
+    which the schema-5 routing bypasses; both are kept for the next
+    regeneration.
+
     :param rows: ``pair.tsv`` rows.
     :returns: One-element key tuple mapped to the pair rows using it.
     """
@@ -783,19 +795,28 @@ def build_variable_index(rows: list[Row]) -> dict[Row, list[Row]]:
     return index
 
 
-def read_table(directory: Path, table: str) -> list[Row]:
+def read_table(directory: Path, table: str, *, side: str) -> list[Row]:
     """Read one golden TSV.
+
+    A missing file is never read as "this table has no rows". Doing so would
+    certify a regeneration that crashed before writing a file, or a pair of
+    empty directories, as byte-identical. The single exception is a table
+    schema 5 introduced, which by construction has no file on the old side;
+    an existing file with no lines is a real answer and is read as such.
 
     :param directory: Golden directory.
     :param table: Table name, without the ``.tsv`` suffix.
-    :returns: One tuple per line, in file order; no rows when the file is
-        absent.
+    :param side: ``OLD`` for the snapshot taken before the regeneration,
+        ``NEW`` for the directory the regeneration wrote.
+    :returns: One tuple per line, in file order.
+    :raises SystemExit: If the file is missing on the new side, or missing on
+        the old side for a table that predates schema 5.
     """
     path = directory / f"{table}.tsv"
-    # A table the regeneration introduces has no file on the old side, and an
-    # absent file is exactly "no rows before" for the classification.
     if not path.exists():
-        return []
+        if side == OLD and table in SCHEMA5_TABLES:
+            return []
+        raise SystemExit(f"{path} is missing: the {side} golden is incomplete")
     with open(path, encoding="utf-8") as handle:
         return [tuple(line.rstrip("\n").split("\t")) for line in handle]
 
@@ -823,15 +844,19 @@ def classify_schema_addition(
 
     :param table: Table name, for the error message.
     :param before: Rows of the old file; must be empty.
-    :param after: Rows of the new file.
+    :param after: Rows of the new file; must not be empty.
     :returns: ``(counts, examples)`` with everything under ``n``.
     :raises SystemExit: If the old file had rows, which means the table is
-        not an addition and must be classified like any other.
+        not an addition and must be classified like any other; or if the new
+        file has no rows, which means the regeneration did not populate it and
+        booking zero additions would certify the gap.
     """
     if before:
         raise SystemExit(f"{table} existed before the regeneration; it is not a schema addition")
+    if not after:
+        raise SystemExit(f"{table} has no rows after the regeneration; it was never populated")
     counts: Counter = Counter({"n": len(after)})
-    examples: dict[str, Row] = {"n": after[0]} if after else {}
+    examples: dict[str, Row] = {"n": after[0]}
     return counts, examples
 
 
@@ -965,6 +990,10 @@ def classify_derived(
     own_columns: tuple[int, ...] = ()
     pair_index_before: dict[Row, list[Row]] | None = None
     pair_index_after: dict[Row, list[Row]] | None = None
+    # Unreachable while ``classify`` routes rule_smiles to
+    # classify_num_heavies_population, which is specific to the 4 -> 5
+    # regeneration; the generic branch stays for the next one, where
+    # num_heavies is no longer the story and the pair inheritance applies again.
     if table == "rule_smiles":
         own_columns = (0,)
         pair_index_before = build_variable_index(before_pairs)
@@ -1078,9 +1107,9 @@ def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
             "column spec and _duckdb_dump.TABLES disagree: "
             f"{sorted(set(SPEC) ^ set(TABLES))}"
         )
-    before_pairs = read_table(old_dir, "pair")
-    after_pairs = read_table(new_dir, "pair")
-    records = build_record_truth(read_table(old_dir, "compound"))
+    before_pairs = read_table(old_dir, "pair", side=OLD)
+    after_pairs = read_table(new_dir, "pair", side=NEW)
+    records = build_record_truth(read_table(old_dir, "compound", side=OLD))
     pair_report, bucket_before, bucket_after = classify_pairs(
         before_pairs, after_pairs, records
     )
@@ -1088,12 +1117,12 @@ def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     for table in TABLES:
         if table == "pair":
             continue
-        before_rows = read_table(old_dir, table)
-        after_rows = read_table(new_dir, table)
+        before_rows = read_table(old_dir, table, side=OLD)
+        after_rows = read_table(new_dir, table, side=NEW)
         # The two schema-5 tables and the one schema-5 column changed for
         # reasons the pair-inheritance cascade cannot express, so each gets its
         # own classifier before the generic branch sees the rows.
-        if table in ("series", "series_member"):
+        if table in SCHEMA5_TABLES:
             report[table] = classify_schema_addition(table, before_rows, after_rows)
             continue
         if table == "rule_smiles":
