@@ -3372,5 +3372,158 @@ TEST(DuckDBStoreSchema5, RuleSmilesHeavyCountsArePopulatedOnBothSavePaths) {
     std::filesystem::remove(pairs_path);
 }
 
+namespace {
+
+// Populate a store with a hand-built two-series fixture. Series 1 reaches the
+// same R-group through two compounds, so its distinct-R-group length (2) is
+// smaller than its membership row count (3); both num_members values are
+// written deliberately wrong -- one too high, one too low -- so a count that is
+// never recomputed cannot pass for a correct one.
+void InsertStaleSeriesFixture(DuckDBStore& store) {
+    store.Execute(
+        "insert into compound "
+        "(id, public_id, input_smiles, clean_smiles, clean_num_heavies) values "
+        "(1, 'c1', 'Cc1ccccc1', 'Cc1ccccc1', 7),"
+        "(2, 'c2', 'CCc1ccccc1', 'CCc1ccccc1', 8),"
+        "(3, 'c3', 'Oc1ccccc1', 'Oc1ccccc1', 7)");
+    store.Execute(
+        "insert into constant_smiles (id, smiles) values "
+        "(1, '[*:1]c1ccccc1'), (2, '[*:1]c1ccc([*:2])cc1')");
+    store.Execute(
+        "insert into rule_smiles (id, smiles, num_heavies) values "
+        "(1, '[*:1]C', 1), (2, '[*:1]CC', 2), (3, '[*:1]O', 1)");
+    store.Execute(
+        "insert into series "
+        "(id, constant_id, cut_count, constant_num_heavies, num_members) values "
+        "(1, 1, 1, 6, 99), (2, 2, 2, 6, 0)");
+    store.Execute(
+        "insert into series_member (id, series_id, rule_smiles_id, compound_id) values "
+        "(1, 1, 1, 1), (2, 1, 1, 2), (3, 1, 2, 1), (4, 2, 3, 1)");
+}
+
+}  // namespace
+
+TEST(DuckDBStoreSchema5, UnparsableVariableSmilesIsRejectedBeforeAnyRowIsWritten) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+
+        // Non-empty but unreadable by OEChem, so the empty-string guard lets it
+        // through and only a heavy-atom count check can stop it. Putting it on
+        // the target side means the source R-group has already been staged when
+        // the save is refused, which is what makes the rollback observable.
+        const MatchedPair pair(
+            1, 2, "toluene", "phenol",
+            "Cc1ccccc1", "Oc1ccccc1",
+            "[*:1]c1ccccc1",
+            "[*:1]C", "not-a-smiles",
+            1, 0, 0);
+
+        bool rejected = false;
+        std::string message;
+        try {
+            store.AddPair(pair);
+        } catch (const StorageError& error) {
+            rejected = true;
+            message = error.what();
+        }
+        EXPECT_TRUE(rejected)
+            << "a variable SMILES with no heavy-atom count must be refused";
+        EXPECT_NE(message.find("not-a-smiles"), std::string::npos)
+            << "the error must name the offending SMILES, got: " << message;
+
+        // Rejection happens before any cache or staging mutation, so the whole
+        // save rolls back: nothing the pair would have created survives, and the
+        // compounds added beforehand are untouched.
+        EXPECT_EQ(store.GetRowCount("rule_smiles"), 0U);
+        EXPECT_EQ(store.GetRowCount("rule"), 0U);
+        EXPECT_EQ(store.GetRowCount("pair"), 0U);
+        EXPECT_EQ(store.GetRowCount("constant_smiles"), 0U);
+        EXPECT_EQ(store.GetRowCount("compound"), 2U);
+    }
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        // A stored NULL num_heavies means a corrupt row, so a refused save must
+        // not be able to create one.
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select count(*) from rule_smiles where num_heavies is null"), 0U);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSchema5, RefreshDatasetCountsRebuildsSeriesLengthsAndBothSummaryBranchesAgree) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        InsertStaleSeriesFixture(store);
+        store.RefreshDatasetCounts();
+
+        // The three counts differ from one another (3 compounds, 2 series, 4
+        // membership rows), so a transposed constructor argument or a swapped
+        // select column surfaces as a wrong value instead of passing.
+        const DatabaseSummary cached = store.GetSummary();
+        EXPECT_EQ(cached.GetNumCompounds(), 3U);
+        EXPECT_EQ(cached.GetNumSeries(), 2U);
+        EXPECT_EQ(cached.GetNumSeriesMembers(), 4U);
+
+        const DatabaseSummary recounted = store.GetSummary(true);
+        EXPECT_EQ(recounted.GetNumCompounds(), 3U);
+        EXPECT_EQ(recounted.GetNumSeries(), 2U);
+        EXPECT_EQ(recounted.GetNumSeriesMembers(), 4U);
+    }
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        // A series' length is its distinct R-groups: series 1 holds three
+        // membership rows but only two R-groups, because one R-group is reached
+        // through two compounds. Both stale seeds must have been overwritten.
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select num_members::ubigint from series where id = 1"), 2U);
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select num_members::ubigint from series where id = 2"), 1U);
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select num_series::ubigint from dataset where id = 1"), 2U);
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select num_series_members::ubigint from dataset where id = 1"), 4U);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSchema5, SequenceReconciliationCoversBothSeriesTables) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        InsertStaleSeriesFixture(store);
+        // Verbatim ids bypass the sequences, which a fresh schema left at 1.
+        // AddPairs is the public entry that reconciles them; an empty batch
+        // exercises the reconciliation on its own.
+        store.AddPairs(std::vector<MatchedPair>{});
+        store.Execute(
+            "insert into series "
+            "(id, constant_id, cut_count, constant_num_heavies, num_members) "
+            "values (nextval('seq_series_id'), 1, 3, 6, 0)");
+        store.Execute(
+            "insert into series_member (id, series_id, rule_smiles_id, compound_id) "
+            "values (nextval('seq_series_member_id'), 1, 3, 2)");
+    }
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        // Both sequences must resume past the verbatim maxima (series 2,
+        // series_member 4) rather than restarting at 1 and colliding.
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select id from series where cut_count = 3"), 3U);
+        EXPECT_EQ(ScalarUBigint(connection,
+            "select id from series_member where rule_smiles_id = 3 and compound_id = 2"), 5U);
+    }
+    std::filesystem::remove(path);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

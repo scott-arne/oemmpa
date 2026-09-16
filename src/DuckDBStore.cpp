@@ -94,8 +94,8 @@ struct NewConstant {
 struct NewRuleSmiles {
     std::uint64_t id;
     std::string smiles;
-    // Empty only for a fragment SMILES OEChem cannot parse, which AppendBulk
-    // has already rejected by the time these rows are staged.
+    // Always engaged: AppendBulk rejects a fragment SMILES OEChem cannot parse
+    // before it stages the row, so an unmeasured count never gets this far.
     std::optional<unsigned int> num_heavies;
 };
 
@@ -1546,11 +1546,12 @@ void AppendRuleSmiles(
         appender.BeginRow();
         appender.Append(duckdb::Value::UBIGINT(row.id));
         appender.Append(duckdb::Value(row.smiles));
-        // A heavy-atom count is written whenever the fragment SMILES parses,
-        // under the fragmenter's rule (atomic number above 1, so the attachment
-        // point and the [*:1][H] pseudo-fragment count nothing). NULL survives
-        // only for an unparsable SMILES, which AppendBulk already rejects
-        // earlier, so a stored NULL means a corrupt row rather than a
+        // Every staged row carries a count, because AppendBulk refuses a
+        // variable SMILES whose heavy atoms it cannot count rather than letting
+        // the row through unmeasured. The count follows the fragmenter's rule
+        // (atomic number above 1, so the attachment point and the [*:1][H]
+        // pseudo-fragment count nothing). The NULL arm is unreachable defence in
+        // depth: a stored NULL would mark a corrupt row, never a
         // never-measured one.
         appender.Append(
             row.num_heavies ? duckdb::Value::UINTEGER(*row.num_heavies)
@@ -2589,9 +2590,24 @@ void DuckDBStore::AppendBulk(
         auto resolve_rule_smiles = [&](const std::string& smiles) -> std::uint64_t {
             auto it = rule_smiles_id_cache_.find(smiles);
             if (it != rule_smiles_id_cache_.end()) return it->second;
+            // Measure before minting an id, because a fragment OEChem cannot
+            // read has no heavy-atom count and would otherwise be stored as a
+            // NULL num_heavies -- indistinguishable from a corrupt row, and
+            // fatal to a later heavy-atom-filtered query. Throwing here, ahead
+            // of the counter, the cache and the staging vector, leaves the
+            // caches and the owning transaction to roll the whole save back.
+            // The check sits on the cache-miss path so a repeated R-group is
+            // still resolved without re-parsing it.
+            const std::optional<unsigned int> num_heavies =
+                count_variable_heavy_atoms(smiles);
+            if (!num_heavies.has_value()) {
+                throw StorageError(
+                    "cannot store unparsable variable SMILES in rule_smiles: " +
+                    smiles);
+            }
             const std::uint64_t id = rule_smiles_counter();
             rule_smiles_id_cache_.emplace(smiles, id);
-            new_rule_smiles.push_back({id, smiles, count_variable_heavy_atoms(smiles)});
+            new_rule_smiles.push_back({id, smiles, num_heavies});
             return id;
         };
         const std::uint64_t from_id =
