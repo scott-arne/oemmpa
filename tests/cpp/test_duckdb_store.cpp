@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <ostream>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1871,7 +1872,12 @@ TEST(DuckDBStoreBulk, AddPairsRejectsEmptyVariableSmilesAndLeavesNoRows) {
 // generic StorageError a raw Appender collision would throw -- and the owning
 // transaction leaves no partial rows.
 TEST(DuckDBStoreBulk, SaveToDuplicateExternalIdThrowsDuplicateIdError) {
-    Analyzer analyzer;
+    // An MCS analysis rather than the default fragmentation one: a
+    // series-producing analysis is refused into any non-empty store before the
+    // id checks it would otherwise reach, and the contract under test is the
+    // external-id collision itself, which both methods raise from the same
+    // bulk-save validation.
+    Analyzer analyzer("dmcss");
     analyzer.AddMolecule("Cc1ccccc1", "tol");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
     analyzer.Analyze();
@@ -3530,12 +3536,16 @@ namespace {
 
 // Three phenyl compounds share one constant, so the series they form has three
 // members rather than the two a single pair would give: the smallest input that
-// tells a per-member row apart from a per-pair row.
+// tells a per-member row apart from a per-pair row. The fourth compound repeats
+// phenol's structure under an external id of its own, so one member is realized
+// by two compounds and a per-(member, compound) row is told apart from a
+// per-member row as well.
 Analyzer MakePhenylAnalyzer() {
     Analyzer analyzer;
     analyzer.AddMolecule("c1ccccc1", "benzene");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
     analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol-dup");
     analyzer.Analyze();
     return analyzer;
 }
@@ -3558,6 +3568,71 @@ std::map<std::string, std::string> TableDigests(duckdb::Connection& connection) 
         digests[name] = result->Fetch()->GetValue(0, 0).ToString();
     }
     return digests;
+}
+
+// One tuple per series_member row, joined to the series it belongs to, the
+// constant that defines that series and the R-group the member realizes. Row
+// counts and a spot check survive a swapped compound, a hard-coded cut count or
+// a heavy count taken from the wrong fragment; the whole ordered row set does
+// not, so the tests compare that instead.
+struct SeriesMemberRow {
+    std::string constant_smiles;
+    unsigned int cut_count = 0;
+    unsigned int constant_num_heavies = 0;
+    unsigned int num_members = 0;
+    std::string rule_smiles;
+    unsigned int rule_num_heavies = 0;
+    std::uint64_t compound_id = 0;
+};
+
+bool operator==(const SeriesMemberRow& left, const SeriesMemberRow& right) {
+    return left.constant_smiles == right.constant_smiles &&
+        left.cut_count == right.cut_count &&
+        left.constant_num_heavies == right.constant_num_heavies &&
+        left.num_members == right.num_members &&
+        left.rule_smiles == right.rule_smiles &&
+        left.rule_num_heavies == right.rule_num_heavies &&
+        left.compound_id == right.compound_id;
+}
+
+// Without this gtest prints the raw bytes of the struct, which says nothing
+// about which column of which row differs.
+std::ostream& operator<<(std::ostream& stream, const SeriesMemberRow& row) {
+    return stream << "{constant=" << row.constant_smiles
+        << ", cut_count=" << row.cut_count
+        << ", constant_num_heavies=" << row.constant_num_heavies
+        << ", num_members=" << row.num_members
+        << ", rule_smiles=" << row.rule_smiles
+        << ", rule_num_heavies=" << row.rule_num_heavies
+        << ", compound=" << row.compound_id << "}";
+}
+
+// Every persisted series membership in one deterministic order: by constant,
+// then cut count, then R-group SMILES, then compound.
+std::vector<SeriesMemberRow> SeriesRows(duckdb::Connection& connection) {
+    std::unique_ptr<duckdb::QueryResult> result = connection.Query(
+        "select c.smiles, s.cut_count, s.constant_num_heavies, s.num_members, "
+        "rs.smiles, rs.num_heavies, sm.compound_id "
+        "from series_member sm "
+        "join series s on s.id = sm.series_id "
+        "join constant_smiles c on c.id = s.constant_id "
+        "join rule_smiles rs on rs.id = sm.rule_smiles_id "
+        "order by 1, 2, 5, 7");
+    if (!result || result->HasError()) {
+        throw std::runtime_error("series row query failed");
+    }
+    std::vector<SeriesMemberRow> rows;
+    for (const auto& row : *result) {
+        rows.push_back({
+            row.GetValue<std::string>(0),
+            row.GetValue<unsigned int>(1),
+            row.GetValue<unsigned int>(2),
+            row.GetValue<unsigned int>(3),
+            row.GetValue<std::string>(4),
+            row.GetValue<unsigned int>(5),
+            row.GetValue<std::uint64_t>(6)});
+    }
+    return rows;
 }
 
 }  // namespace
@@ -3595,18 +3670,57 @@ TEST(DuckDBStoreSeriesSave, SaveToWritesOneRowPerSeriesAndMemberCompound) {
     }
     duckdb::DuckDB database(path.string());
     duckdb::Connection connection(database);
-    // The phenyl series: three members on compounds 1, 2, 3 with their heavy counts.
+    // The whole persisted mapping. One series over the phenyl constant, whose
+    // three R-groups are methyl, hydroxyl and the hydrogen pseudo-fragment that
+    // benzene contributes; the compounds are numbered in the order the analyzer
+    // received them (benzene 1, phenol 2, toluene 3, phenol-dup 4). Hydroxyl is
+    // realized twice, by phenol and by its duplicate, which is why the member
+    // rows number four while the series still has three members.
+    const std::vector<SeriesMemberRow> expected = {
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]C", 1U, 3U},
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]O", 1U, 2U},
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]O", 1U, 4U},
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1][H]", 0U, 1U},
+    };
+    EXPECT_EQ(SeriesRows(connection), expected);
+    EXPECT_EQ(ScalarUBigint(connection, "select count(*) from series_member"), 4U);
+    // The dataset counts member rows, not members, so the duplicate compound
+    // shows up there too rather than being folded into num_members.
     EXPECT_EQ(ScalarUBigint(connection,
-        "select count(*) from series_member sm "
-        "join series s on s.id = sm.series_id "
-        "join constant_smiles c on c.id = s.constant_id "
-        "where c.smiles = '[*:1]c1ccccc1'"), 3U);
-    EXPECT_EQ(ScalarUBigint(connection,
-        "select s.constant_num_heavies from series s "
-        "join constant_smiles c on c.id = s.constant_id where c.smiles = '[*:1]c1ccccc1'"), 6U);
-    EXPECT_EQ(ScalarUBigint(connection,
-        "select sm.compound_id from series_member sm "
-        "join rule_smiles rs on rs.id = sm.rule_smiles_id where rs.smiles = '[*:1][H]'"), 1U);
+        "select num_series_members from dataset where id = 1"), 4U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, MultiCutSeriesArePersistedWithTheirLinkerMembers) {
+    // Two phenyl rings joined by a linker: the two-cut constant carries both
+    // rings, so its members are the linkers themselves and its heavy count is
+    // twelve rather than six. The one-cut series over a single ring rides along
+    // in the same store, so a cut_count taken from anywhere but the series it
+    // belongs to shows up here.
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1ccccc1Cc1ccccc1", "diphenylmethane");
+    analyzer.AddMolecule("c1ccccc1CCc1ccccc1", "dibenzyl");
+    analyzer.AddMolecule("c1ccccc1Oc1ccccc1", "diphenyl-ether");
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+        EXPECT_EQ(store.GetRowCount("series"), 2U);
+        EXPECT_EQ(store.GetRowCount("series_member"), 6U);
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    const std::vector<SeriesMemberRow> expected = {
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]CCc1ccccc1", 8U, 2U},
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]Cc1ccccc1", 7U, 1U},
+        {"[*:1]c1ccccc1", 1U, 6U, 3U, "[*:1]Oc1ccccc1", 7U, 3U},
+        {"[*:1]c1ccccc1.[*:2]c1ccccc1", 2U, 12U, 3U, "[*:1]CC[*:2]", 2U, 2U},
+        {"[*:1]c1ccccc1.[*:2]c1ccccc1", 2U, 12U, 3U, "[*:1]C[*:2]", 1U, 1U},
+        {"[*:1]c1ccccc1.[*:2]c1ccccc1", 2U, 12U, 3U, "[*:1]O[*:2]", 1U, 3U},
+    };
+    EXPECT_EQ(SeriesRows(connection), expected);
     std::filesystem::remove(path);
 }
 
@@ -3787,6 +3901,147 @@ TEST(DuckDBStoreSeriesSave, DirectPairWritesAreRefusedOnceSeriesAreStored) {
         // reconciliation it is the only public entry point for.
         EXPECT_NO_THROW(store.AddPairs(std::vector<MatchedPair>{}));
         EXPECT_EQ(store.GetSummary().GetSeriesSource(), "fragmentation");
+    }
+
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        EXPECT_EQ(TableDigests(connection), before);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, DirectPairWritesAreRefusedAfterASeriesProducingSaveWroteNoSeries) {
+    // One compound forms no series at all, yet the analysis that saved the store
+    // was the series-producing one and the store says so. A refusal keyed on the
+    // stored series rows alone would let a pair through here, leaving a store
+    // that claims a completed enumeration it no longer describes.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        Analyzer analyzer;
+        analyzer.AddMolecule("c1ccccc1", "benzene");
+        analyzer.Analyze();
+        analyzer.SaveTo(store);
+        ASSERT_EQ(store.GetRowCount("series"), 0U);
+        ASSERT_EQ(store.GetSummary().GetSeriesSource(), "fragmentation");
+        // A molecule cannot make a series wrong, so this one is still accepted
+        // and gives the refused pair a second endpoint that really exists.
+        store.AddMolecule(
+            MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "chlorobenzene"));
+    }
+
+    std::map<std::string, std::string> before;
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        before = TableDigests(connection);
+    }
+    ASSERT_FALSE(before.empty());
+
+    {
+        DuckDBStore store(path.string());
+        const MatchedPair pair(
+            1, 100, "benzene", "chlorobenzene",
+            "c1ccccc1", "Clc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1][H]", "[*:1]Cl",
+            1, 1, 1);
+        EXPECT_THROW(store.AddPair(pair), StorageError);
+        EXPECT_THROW(store.AddPairs({pair}), StorageError);
+        EXPECT_NO_THROW(store.AddPairs(std::vector<MatchedPair>{}));
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "fragmentation");
+    }
+
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        EXPECT_EQ(TableDigests(connection), before);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, AZeroSeriesFragmentationSaveIsRefusedIntoAPairStore) {
+    // The analysis enumerates no series only because it holds one compound; it
+    // is still the enumeration that would own the store. Accepting it would
+    // stamp a store built through the direct pair API as series-producing while
+    // leaving it without a single series row, so the refusal follows the method
+    // rather than what this particular analysis happened to enumerate.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Cc1ccccc1", "stored-toluene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(101, "Oc1ccccc1", "stored-phenol"));
+        store.AddPair(MatchedPair(
+            100, 101, "stored-toluene", "stored-phenol",
+            "Cc1ccccc1", "Oc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1]C", "[*:1]O",
+            1, 0, 0));
+    }
+
+    std::map<std::string, std::string> before;
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        before = TableDigests(connection);
+    }
+    ASSERT_FALSE(before.empty());
+
+    {
+        DuckDBStore store(path.string());
+        Analyzer analyzer;
+        // Internal id 1 and an external id, structure and pair identity of its
+        // own, so no duplicate check can stand in for the contract here.
+        analyzer.AddMolecule("c1ccccc1", "benzene");
+        analyzer.Analyze();
+        ASSERT_TRUE(analyzer.GetSeries().empty());
+        EXPECT_THROW(analyzer.SaveTo(store), StorageError);
+        EXPECT_EQ(store.GetRowCount("compound"), 2U);
+        // The store still reports that no analyzer save ever computed series for
+        // it, so a later direct pair write stays legitimate.
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "not-computed");
+    }
+
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        EXPECT_EQ(TableDigests(connection), before);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, ASeriesProducingSaveIsRefusedIntoAStoreHoldingOnlyACompound) {
+    // Neither a pair nor a series is needed to spoil the contract: a compound
+    // the enumeration never saw already sits outside every series it computed,
+    // so the store would describe more molecules than its series do.
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        // Internal id 100, its own external id and a structure none of the
+        // analyzer's molecules carry, so nothing but the contract can refuse.
+        store.AddMolecule(
+            MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "stored-chlorobenzene"));
+    }
+
+    std::map<std::string, std::string> before;
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        before = TableDigests(connection);
+    }
+    ASSERT_FALSE(before.empty());
+
+    {
+        DuckDBStore store(path.string());
+        Analyzer analyzer = MakePhenylAnalyzer();
+        EXPECT_THROW(analyzer.SaveTo(store), StorageError);
+        EXPECT_EQ(store.GetRowCount("compound"), 1U);
+        EXPECT_EQ(store.GetRowCount("series"), 0U);
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "not-computed");
     }
 
     {

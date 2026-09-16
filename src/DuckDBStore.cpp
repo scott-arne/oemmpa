@@ -2079,6 +2079,15 @@ void DuckDBStore::SetSeriesSource(const std::string& source) {
     execute_prepared(connection_, sql, std::move(values));
 }
 
+std::string DuckDBStore::FirstPopulatedCoreTable() const {
+    for (const char* table : {"compound", "pair", "series"}) {
+        if (GetRowCount(table) != 0) {
+            return table;
+        }
+    }
+    return std::string();
+}
+
 void DuckDBStore::AddMolecule(const MoleculeRecord& molecule) {
     if (molecule.GetCanonicalSmiles().empty()) {
         throw StorageError("molecule record has no canonical SMILES");
@@ -2594,17 +2603,28 @@ void DuckDBStore::AppendBulk(
     // batches are deliberately not guarded: neither can make a stored series
     // wrong, and the empty batch is the only public way to reconcile sequences.
     if (!series.empty()) {
-        for (const char* table : {"compound", "pair", "series"}) {
-            if (GetRowCount(table) != 0) {
-                throw StorageError(
-                    std::string("series can only be written into an empty store, but ") +
-                    table + " already holds rows; rebuild the store");
-            }
+        const std::string populated = FirstPopulatedCoreTable();
+        if (!populated.empty()) {
+            throw StorageError(
+                "series can only be written into an empty store, but " + populated +
+                " already holds rows; rebuild the store");
         }
-    } else if (!pairs.empty() && GetRowCount("series") != 0) {
-        throw StorageError(
-            "pairs cannot be written into a store that holds series, because the "
-            "stored series would no longer describe every pair; rebuild the store");
+    } else if (!pairs.empty()) {
+        // The series rows alone do not say whether an enumeration owns this
+        // store: a series-producing analysis of a set that yielded none stamps
+        // series_source and writes no series row, and a pair appended to that
+        // store would be outside an enumeration it claims to have completed.
+        // The stamp is therefore the authority, and the rows only catch a store
+        // whose stamp predates this contract. 'none' (a method with no series to
+        // offer) and 'not-computed' (no analyzer save at all) stay open to
+        // direct pair writes.
+        const std::string source = read_series_source(connection_);
+        if (GetRowCount("series") != 0 || (source != "not-computed" && source != "none")) {
+            throw StorageError(
+                "pairs cannot be written into a store that holds a series-producing "
+                "analysis, because direct pair writes would leave its series "
+                "incomplete; rebuild the store");
+        }
     }
     for (const Series& entry : series) {
         for (const SeriesMember& member : entry.GetMembers()) {

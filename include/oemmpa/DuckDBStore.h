@@ -299,6 +299,13 @@ private:
     // so a store with zero series always says why.
     void SetSeriesSource(const std::string& source);
 
+    // Name the first of compound, pair and series that already holds rows, or
+    // return an empty string when the store holds none of them. A
+    // series-producing analysis owns the whole store it is saved into, so both
+    // AppendBulk's series guard and Analyzer::SaveTo's precondition read
+    // emptiness from here rather than each deciding what empty means.
+    std::string FirstPopulatedCoreTable() const;
+
     // Reject stores written by an older schema revision. A v2 store always has a
     // dataset row carrying oemmpa_schema_version; a populated store with a `pair`
     // table but no such row is a pre-versioned legacy store. Either legacy shape

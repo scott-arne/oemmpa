@@ -450,20 +450,37 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
     store.InitializeSchema();
     store.Execute("begin transaction");
     try {
+        // A series-producing analysis owns the whole store it is saved into:
+        // each of its series lists every R-group its constant carried across
+        // the analyzed set, so a compound, pair or series this analysis never
+        // saw leaves those series describing only part of the store. The check
+        // follows the method rather than what this analysis happened to
+        // enumerate, because an analysis that yields no series still stamps the
+        // store as series-producing, and accepting it would relabel a store
+        // that was built elsewhere.
+        if (method_->ProducesSeries() && !store.FirstPopulatedCoreTable().empty()) {
+            throw StorageError(
+                "a series-producing analysis can only be saved into an empty "
+                "store; rebuild the store");
+        }
+
         // Stamp the store's single analysis method before any rows are written,
         // so a save into a store built with a different method fails before it
         // mutates state.
         store.SetAnalysisMethod(method_name_);
 
-        // Say whether this method enumerates series, so a store with zero
-        // series rows is never ambiguous: 'fragmentation' means computed and
-        // empty, 'none' means the method has no series to offer.
-        store.SetSeriesSource(method_->ProducesSeries() ? method_name_ : "none");
-
         // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
         // through the non-owning helper inside this single owning transaction.
         // Series ride the same transaction; they take no options.
         store.AppendBulk(molecules_, GetPairs(options), GetSeries());
+
+        // Say whether this method enumerates series, so a store with zero
+        // series rows is never ambiguous: 'fragmentation' means computed and
+        // empty, 'none' means the method has no series to offer. Stamped after
+        // the rows, because AppendBulk reads it to refuse direct pair writes
+        // into a store an enumeration owns and this save's own pairs are not
+        // such a write.
+        store.SetSeriesSource(method_->ProducesSeries() ? method_name_ : "none");
 
         // Properties stay on the existing upsert DML path (AddMoleculeProperty),
         // inside the SAME transaction, keyed by the verbatim analyzer id
