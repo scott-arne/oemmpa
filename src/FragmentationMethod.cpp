@@ -163,6 +163,11 @@ std::vector<Transform> FragmentationMethod::GetTransforms(const QueryOptions& op
     return index_.GetTransforms(options);
 }
 
+std::vector<Series> FragmentationMethod::GetSeries() const {
+    RequireAnalyzed();
+    return index_.GetSeries();
+}
+
 Fragmenter* FragmentationMethod::GetFragmenter() {
     return &fragmenter_;
 }

@@ -7,6 +7,7 @@
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RingPerception.h"
+#include "oemmpa/Series.h"
 #include "oemmpa/Transform.h"
 
 #include <oechem.h>
@@ -222,6 +223,18 @@ public:
     ///
     /// Throws if Analyze() has not succeeded since the last mutation.
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
+
+    /// \brief Return the matched molecular series of the analysed index.
+    ///
+    /// Empty for a method that does not produce series (see ProducesSeries).
+    /// Throws if Analyze() has not succeeded since the last mutation.
+    std::vector<Series> GetSeries() const;
+
+    /// \brief Whether the configured method enumerates series.
+    ///
+    /// True for the fragmentation method, false for the MCS methods, which
+    /// build pairs without a fragment index.
+    bool ProducesSeries() const;
 
 #if OEMMPA_HAS_DUCKDB
     /// \brief Save staged molecules, properties, and analyzed pairs to DuckDB.

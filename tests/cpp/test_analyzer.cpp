@@ -6,6 +6,7 @@
 #include "oemmpa/FragmentationMethod.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/OEMedChemMethod.h"
+#include "oemmpa/Series.h"
 #include "oemmpa/WizePairZMethod.h"
 #include "oemmpa/oemmpa.h"
 #include "ring_search_bound_guard.h"
@@ -20,6 +21,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace OEMMPA {
@@ -995,6 +997,119 @@ TEST(AnalyzerTest, GetTransformsHonorsAsymmetricQueryOptions) {
             );
         }
     }
+}
+
+TEST(AnalyzerTest, GetSeriesRequiresAnalyzeAndReportsTheFragmentationSeries) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    EXPECT_TRUE(analyzer.ProducesSeries());
+    EXPECT_THROW(analyzer.GetSeries(), AnalysisStateError);
+
+    analyzer.Analyze();
+
+    const std::vector<Series> series = analyzer.GetSeries();
+    ASSERT_FALSE(series.empty());
+    bool phenyl_seen = false;
+    for (const Series& entry : series) {
+        if (entry.GetConstantSmiles() == "[*:1]c1ccccc1") {
+            phenyl_seen = true;
+            EXPECT_EQ(entry.Size(), 2U);
+        }
+    }
+    EXPECT_TRUE(phenyl_seen);
+}
+
+TEST(AnalyzerTest, McsMethodsProduceNoSeries) {
+    // The same three names RingPerceptionPolicyRoundTripsThroughEveryMethod
+    // (line 516) constructs unguarded; this test binary is built with OEMedChem.
+    for (const char* method : {"dmcss", "wizepairz", "oemedchem"}) {
+        Analyzer analyzer(method);
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        EXPECT_FALSE(analyzer.ProducesSeries()) << method;
+        EXPECT_TRUE(analyzer.GetSeries().empty()) << method;
+    }
+}
+
+TEST(AnalyzerTest, CreatedStereocentreUpEnumerationDoesNotJoinSeries) {
+    // Isopentane has no stereocentre of its own, but cutting one of its two
+    // methyls leaves a carbon with four distinct neighbours, so the cut creates
+    // one. The fragmenter up-enumerates both assignments of that created centre:
+    // ConstantUp records under the guessed constants [*:1][C@H](C)CC and
+    // [*:1][C@@H](C)CC, and VariableUp records whose guessed R-groups hang off
+    // the methyl constant. Those guesses are not evidence about isopentane, so
+    // they must neither make it a member of the series the assigned compounds
+    // form nor add guessed stereo R-groups to the methyl constant's series.
+    Analyzer analyzer;
+    analyzer.AddMolecule("CC(C)CC", "iso");
+    analyzer.AddMolecule("CC(O)CC", "rac-OH");
+    analyzer.AddMolecule("C[C@H](O)CC", "R-OH");
+    analyzer.AddMolecule("C[C@H](N)CC", "R-NH2");
+    analyzer.Analyze();
+
+    unsigned int stereo_constant_series = 0;
+    std::vector<std::string> stereo_constant_ids;
+    bool created_centre_series_seen = false;
+    std::vector<std::string> created_centre_ids;
+    for (const Series& entry : analyzer.GetSeries()) {
+        const bool stereo_constant = entry.GetConstantSmiles().find('@') != std::string::npos;
+        std::vector<std::string> ids;
+        for (const SeriesMember& member : entry.GetMembers()) {
+            const bool stereo_variable =
+                member.GetVariableSmiles().find('@') != std::string::npos;
+            for (const std::string& id : member.GetExternalIds()) {
+                // Only the guarded records could file isopentane under a guessed
+                // constant or give it a guessed R-group, so this is the whole
+                // footprint the up-enumeration would leave on the series.
+                if (id == "iso") {
+                    EXPECT_FALSE(stereo_constant) << entry.GetConstantSmiles();
+                    EXPECT_FALSE(stereo_variable)
+                        << entry.GetConstantSmiles() << " " << member.GetVariableSmiles();
+                }
+                ids.push_back(id);
+            }
+        }
+        std::sort(ids.begin(), ids.end());
+        if (stereo_constant && entry.Size() >= 2) {
+            ++stereo_constant_series;
+            stereo_constant_ids = ids;
+        }
+        if (entry.GetConstantSmiles() == "[*:1]C(C)CC" && entry.GetCutCount() == 1) {
+            created_centre_series_seen = true;
+            created_centre_ids = ids;
+        }
+    }
+
+    // Both assigned compounds cut to the same specified constant, and nothing
+    // else does, so exactly one series carries a stereocentre on its constant.
+    EXPECT_EQ(stereo_constant_series, 1U);
+    EXPECT_EQ(stereo_constant_ids, (std::vector<std::string>{"R-NH2", "R-OH"}));
+
+    // The constant the cut leaves unspecified is where isopentane belongs, next
+    // to the racemic alcohol that cuts to the same place.
+    EXPECT_TRUE(created_centre_series_seen);
+    EXPECT_EQ(created_centre_ids, (std::vector<std::string>{"iso", "rac-OH"}));
+}
+
+TEST(ParallelAnalyzeTest, SeriesAreIdenticalAcrossThreadCounts) {
+    const std::vector<std::pair<std::string, std::string>> molecules = {
+        {"Cc1ccccc1", "toluene"}, {"Oc1ccccc1", "phenol"}, {"Clc1ccccc1", "chlorobenzene"},
+        {"CCc1ccccc1", "ethylbenzene"}, {"Cc1ccncc1", "picoline"}, {"Oc1ccncc1", "hydroxypyridine"},
+        {"CCCCO", "butanol"}, {"CCCCN", "butylamine"}, {"CCCCCl", "chlorobutane"},
+    };
+    std::vector<std::vector<Series>> results;
+    for (const unsigned int threads : {1U, 4U}) {
+        Analyzer analyzer;
+        for (const auto& entry : molecules) {
+            analyzer.AddMolecule(entry.first, entry.second);
+        }
+        analyzer.Analyze(threads);
+        results.push_back(analyzer.GetSeries());
+    }
+    ASSERT_FALSE(results[0].empty());
+    EXPECT_EQ(results[0], results[1]);
 }
 
 TEST(AnalyzerDesalt, ConfiguredDesalterStripsOnAddMolecule) {

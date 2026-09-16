@@ -19,6 +19,8 @@ public:
     void Analyze(unsigned int threads) override;
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const override;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
+    std::vector<Series> GetSeries() const override;
+    bool ProducesSeries() const override { return true; }
     unsigned int LastAnalyzeWorkerCount() const override { return last_analyze_worker_count_; }
 
     /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.

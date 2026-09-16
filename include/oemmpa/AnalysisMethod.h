@@ -6,6 +6,7 @@
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RingPerception.h"
+#include "oemmpa/Series.h"
 #include "oemmpa/Transform.h"
 
 #include <vector>
@@ -24,6 +25,14 @@ public:
     virtual Fragmenter* GetFragmenter() { return nullptr; }
     virtual void SetFragmenter(const Fragmenter&) {}
     virtual unsigned int LastAnalyzeWorkerCount() const { return 1; }
+
+    /// \brief Return the matched molecular series this method enumerated.
+    ///
+    /// Only a method that fragments molecules has series to report; the MCS
+    /// methods build pairs without a fragment index and return none. Use
+    /// ProducesSeries() to tell "none found" from "not produced".
+    virtual std::vector<Series> GetSeries() const { return {}; }
+    virtual bool ProducesSeries() const { return false; }
 
     /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.
     ///

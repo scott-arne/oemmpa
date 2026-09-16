@@ -430,6 +430,15 @@ std::vector<Transform> Analyzer::GetTransforms(const QueryOptions& options) cons
     return build_transforms(GetPairs(options));
 }
 
+std::vector<Series> Analyzer::GetSeries() const {
+    RequireAnalyzed();
+    return method_->GetSeries();
+}
+
+bool Analyzer::ProducesSeries() const {
+    return method_->ProducesSeries();
+}
+
 #if OEMMPA_HAS_DUCKDB
 void Analyzer::SaveTo(DuckDBStore& store) const {
     SaveTo(store, QueryOptions());

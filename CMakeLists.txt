@@ -119,6 +119,7 @@ set(OEMMPA_SOURCES
     src/PairScoring.cpp
     src/Statistics.cpp
     src/MemoryIndex.cpp
+    src/Series.cpp
     src/ThreadSupport.cpp
 )
 

@@ -643,6 +643,68 @@ bool query_options_equal(const QueryOptions& a, const QueryOptions& b) {
         && a.GetScoringOptions().GetMode() == b.GetScoringOptions().GetMode();
 }
 
+// Run `process(i, state)` for every constant index in [0, constant_count),
+// serially when `worker_count` is 1 and on that many work-stealing threads
+// otherwise. `process` must write only to its own constant's output slot, so
+// the workers never share state except the atomic cursor; `State` is created
+// once per worker (the pair enumeration keeps its order-key cache there). The
+// lowest-worker-index failure is rethrown so the exception is invariant across
+// thread counts.
+template <typename State, typename Process>
+void for_each_constant(std::size_t constant_count, unsigned int worker_count, Process process) {
+    const unsigned int workers = std::min<unsigned int>(
+        worker_count, static_cast<unsigned int>(constant_count));
+    if (workers <= 1 || constant_count <= 1) {
+        State state;
+        for (std::size_t i = 0; i < constant_count; ++i) {
+            process(i, state);
+        }
+        return;
+    }
+
+    // OEChem is reachable from both enumerations (order-key resolution, the
+    // metrics-fallback parse, the constant heavy-atom count), so the memory
+    // pool must be thread-safe before workers spawn.
+    ensure_thread_safe_mempool();
+
+    std::vector<std::exception_ptr> errors(workers);
+    std::atomic<std::size_t> cursor{0};
+    std::vector<std::thread> threads;
+    threads.reserve(workers);
+    struct JoinAllGuard {
+        std::vector<std::thread>& threads;
+        ~JoinAllGuard() {
+            for (std::thread& thread : threads) {
+                if (thread.joinable()) {
+                    thread.join();
+                }
+            }
+        }
+    } join_all_guard{threads};
+
+    for (unsigned int w = 0; w < workers; ++w) {
+        threads.emplace_back([&, w]() {
+            State state;
+            try {
+                std::size_t i;
+                while ((i = cursor.fetch_add(1)) < constant_count) {
+                    process(i, state);
+                }
+            } catch (...) {
+                errors[w] = std::current_exception();
+            }
+        });
+    }
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+    for (const std::exception_ptr& error : errors) {
+        if (error) {
+            std::rethrow_exception(error);
+        }
+    }
+}
+
 }  // namespace
 
 VariableFragmentMetrics validate_and_measure_fragmentation(const Fragmentation& fragmentation) {
@@ -670,6 +732,7 @@ void MemoryIndex::Clear() {
     constant_buckets_.clear();
     fragmentation_keys_.clear();
     pairs_cache_valid_ = false;
+    series_cache_valid_ = false;
 }
 
 void MemoryIndex::SetPairThreadCount(unsigned int count) {
@@ -689,6 +752,7 @@ void MemoryIndex::AddMolecule(const MoleculeRecord& record) {
     molecules_.emplace(internal_id, record);
     molecule_ids_by_canonical_smiles_[record.GetCanonicalSmiles()].push_back(internal_id);
     pairs_cache_valid_ = false;
+    series_cache_valid_ = false;
 }
 
 void MemoryIndex::AddFragmentation(const Fragmentation& fragmentation) {
@@ -728,8 +792,9 @@ void MemoryIndex::AddValidatedFragmentation(const Fragmentation& fragmentation) 
 }
 
 void MemoryIndex::InsertFragmentation(Fragmentation stored) {
-    // Any insertion changes the pair enumeration; drop the memoized result.
+    // Any insertion changes both enumerations; drop the memoized results.
     pairs_cache_valid_ = false;
+    series_cache_valid_ = false;
     const FragmentationKey key = {
         stored.GetMoleculeId(),
         stored.GetConstantSmiles(),
@@ -912,82 +977,28 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
     // job that ran analyze(threads=1) resolves to 1 here, so the pair phase stays
     // serial and cannot oversubscribe. Output is byte-identical to serial because
     // groups are disjoint per constant and the final std::sort (a strict total
-    // order over all pair fields) normalizes the concatenation order.
+    // order over all pair fields) normalizes the concatenation order. Collecting
+    // each constant's pairs in a slot indexed by its position in the sorted
+    // `constants` list reproduces the serial pre-sort order however the workers
+    // stole the constants, so the final std::sort keeps its near-sorted input.
+    std::vector<std::vector<MatchedPair>> per_constant(constants.size());
+    for_each_constant<VariableOrderKeyCache>(
+        constants.size(), pair_thread_count_,
+        [&](std::size_t i, VariableOrderKeyCache& order_key_cache) {
+            process_constant(constants[i], order_key_cache, per_constant[i]);
+        });
+
     std::vector<MatchedPair> pairs;
-    const unsigned int worker_count = std::min<unsigned int>(
-        pair_thread_count_, static_cast<unsigned int>(constants.size()));
-
-    if (worker_count <= 1 || constants.size() <= 1) {
-        VariableOrderKeyCache order_key_cache;
-        for (const std::string& constant_smiles : constants) {
-            process_constant(constant_smiles, order_key_cache, pairs);
-        }
-    } else {
-        // OEChem is reachable from the enumeration (asymmetric order-key resolution
-        // and the metrics-fallback parse), so the memory pool must be thread-safe
-        // before workers spawn.
-        ensure_thread_safe_mempool();
-
-        // Collect each constant's pairs in a slot indexed by its position in the
-        // sorted `constants` list. Work-stealing still balances load across workers,
-        // but reassembling in constant order below reproduces the serial pre-sort
-        // order, so the final std::sort stays cheap (near-sorted input) instead of
-        // paying to sort a work-steal-scrambled vector.
-        std::vector<std::vector<MatchedPair>> per_constant(constants.size());
-        std::vector<std::exception_ptr> errors(worker_count);
-        std::atomic<std::size_t> cursor{0};
-
-        std::vector<std::thread> workers;
-        workers.reserve(worker_count);
-        struct JoinAllGuard {
-            std::vector<std::thread>& workers;
-            ~JoinAllGuard() {
-                for (std::thread& worker : workers) {
-                    if (worker.joinable()) {
-                        worker.join();
-                    }
-                }
-            }
-        } join_all_guard{workers};
-
-        for (unsigned int w = 0; w < worker_count; ++w) {
-            workers.emplace_back([&, w]() {
-                VariableOrderKeyCache order_key_cache;
-                try {
-                    std::size_t i;
-                    while ((i = cursor.fetch_add(1)) < constants.size()) {
-                        process_constant(constants[i], order_key_cache, per_constant[i]);
-                    }
-                } catch (...) {
-                    errors[w] = std::current_exception();
-                }
-            });
-        }
-        for (std::thread& worker : workers) {
-            worker.join();
-        }
-
-        // Rethrow the lowest-worker-index failure so the thrown exception is
-        // invariant across thread counts. Valid public-API input never triggers
-        // one (metrics are cached and SMILES are valid), matching the precedent in
-        // FragmentationMethod::Analyze.
-        for (const std::exception_ptr& error : errors) {
-            if (error) {
-                std::rethrow_exception(error);
-            }
-        }
-
-        std::size_t total_pairs = 0;
-        for (const std::vector<MatchedPair>& slice : per_constant) {
-            total_pairs += slice.size();
-        }
-        pairs.reserve(total_pairs);
-        for (std::vector<MatchedPair>& slice : per_constant) {
-            pairs.insert(
-                pairs.end(),
-                std::make_move_iterator(slice.begin()),
-                std::make_move_iterator(slice.end()));
-        }
+    std::size_t total_pairs = 0;
+    for (const std::vector<MatchedPair>& slice : per_constant) {
+        total_pairs += slice.size();
+    }
+    pairs.reserve(total_pairs);
+    for (std::vector<MatchedPair>& slice : per_constant) {
+        pairs.insert(
+            pairs.end(),
+            std::make_move_iterator(slice.begin()),
+            std::make_move_iterator(slice.end()));
     }
 
     std::sort(pairs.begin(), pairs.end(), compare_pairs);
@@ -1001,6 +1012,105 @@ const std::vector<MatchedPair>& MemoryIndex::CachedPairs(const QueryOptions& opt
         pairs_cache_valid_ = true;
     }
     return pairs_cache_;
+}
+
+std::vector<Series> MemoryIndex::ComputeSeries() const {
+    const std::map<std::string, std::vector<unsigned int>> molecule_ids_by_smiles =
+        molecule_ids_by_canonical_smiles(molecules_);
+    const std::vector<std::string> constants = sorted_constants(constant_buckets_);
+
+    // At most one series per constant, so the slot vector doubles as the
+    // presence flag; constants are sorted, so concatenating the slots yields
+    // the documented order without a final sort.
+    std::vector<std::vector<Series>> per_constant(constants.size());
+
+    const auto process_constant = [&](std::size_t i, int&) {
+        const std::string& constant_smiles = constants[i];
+        const BucketMembers members = prepare_bucket_members(
+            constant_smiles,
+            sorted_fragmentations(constant_buckets_.at(constant_smiles)),
+            molecule_ids_by_smiles,
+            molecule_ids_by_canonical_smiles_
+        );
+
+        // std::map keeps the members sorted by R-group SMILES; std::set keeps a
+        // member's molecule ids ascending and deduplicated.
+        std::map<std::string, std::set<unsigned int>> molecule_ids_by_variable;
+        std::map<std::string, unsigned int> heavy_atoms_by_variable;
+        unsigned int cut_count = 0;
+        for (const Fragmentation& record : members.records) {
+            cut_count = record.GetCutCount();
+            // An up-enumerated record is a guess about a stereocentre the cut
+            // created; it must not lend the compound a second R-group.
+            if (record.GetEnumerationLabel() != Fragmentation::EnumerationLabel::None) {
+                continue;
+            }
+            molecule_ids_by_variable[record.GetVariableSmiles()].insert(record.GetMoleculeId());
+            if (heavy_atoms_by_variable.count(record.GetVariableSmiles()) == 0) {
+                heavy_atoms_by_variable.emplace(
+                    record.GetVariableSmiles(),
+                    record.HasVariableMetrics()
+                        ? record.GetVariableHeavyAtomCount()
+                        : parse_smiles_metrics(record.GetVariableSmiles(), "variable").heavy_atom_count);
+            }
+        }
+
+        // Membership follows pair eligibility: a compound is a hydrogen member
+        // exactly when the pair enumeration would pair it as a hydrogen partner
+        // for at least one record of this bucket, whichever source names it.
+        std::set<unsigned int> hydrogen_ids(
+            members.synthesized_hydrogen_ids.begin(), members.synthesized_hydrogen_ids.end());
+        for (const std::vector<unsigned int>& parents : members.record_hydrogen_parent_ids) {
+            hydrogen_ids.insert(parents.begin(), parents.end());
+        }
+        if (!hydrogen_ids.empty()) {
+            molecule_ids_by_variable[kHydrogenVariableSmiles].insert(
+                hydrogen_ids.begin(), hydrogen_ids.end());
+            heavy_atoms_by_variable.emplace(kHydrogenVariableSmiles, 0U);
+        }
+
+        if (molecule_ids_by_variable.size() < 2) {
+            return;
+        }
+
+        std::vector<SeriesMember> series_members;
+        series_members.reserve(molecule_ids_by_variable.size());
+        for (const auto& entry : molecule_ids_by_variable) {
+            std::vector<unsigned int> ids(entry.second.begin(), entry.second.end());
+            std::vector<std::string> external_ids;
+            external_ids.reserve(ids.size());
+            for (const unsigned int id : ids) {
+                external_ids.push_back(molecules_.at(id).GetExternalId());
+            }
+            series_members.emplace_back(
+                entry.first, heavy_atoms_by_variable.at(entry.first),
+                std::move(ids), std::move(external_ids));
+        }
+        per_constant[i].emplace_back(
+            0,
+            constant_smiles,
+            cut_count,
+            parse_smiles_metrics(constant_smiles, "constant").heavy_atom_count,
+            std::move(series_members));
+    };
+
+    for_each_constant<int>(constants.size(), pair_thread_count_, process_constant);
+
+    std::vector<Series> series;
+    for (std::vector<Series>& slot : per_constant) {
+        for (Series& entry : slot) {
+            series.push_back(std::move(entry));
+        }
+    }
+    return series;
+}
+
+const std::vector<Series>& MemoryIndex::GetSeries() const {
+    if (!series_cache_valid_) {
+        series_cache_ = ComputeSeries();
+        series_cache_valid_ = true;
+    }
+    return series_cache_;
 }
 
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {

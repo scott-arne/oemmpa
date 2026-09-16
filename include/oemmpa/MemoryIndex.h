@@ -5,6 +5,7 @@
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
+#include "oemmpa/Series.h"
 #include "oemmpa/Transform.h"
 
 #include <set>
@@ -24,6 +25,15 @@ public:
     const MoleculeRecord& GetMolecule(unsigned int internal_id) const;
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
+
+    /// \brief Return the matched molecular series of the index.
+    ///
+    /// One series per constant bucket with at least two distinct baseline
+    /// R-groups, hydrogen member included where the pair enumeration would
+    /// pair one; series take no query options, so the result is memoized
+    /// until the next mutation. Sorted by constant SMILES; members by R-group
+    /// SMILES; molecule ids ascending.
+    const std::vector<Series>& GetSeries() const;
 
 private:
     // The parallel analyzer validates and measures every fragmentation in its
@@ -52,6 +62,8 @@ private:
     std::vector<MatchedPair> ComputePairs(const QueryOptions& options) const;
     const std::vector<MatchedPair>& CachedPairs(const QueryOptions& options) const;
 
+    std::vector<Series> ComputeSeries() const;
+
     using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;
 
     std::unordered_map<unsigned int, MoleculeRecord> molecules_;
@@ -70,6 +82,11 @@ private:
     mutable bool pairs_cache_valid_ = false;
     mutable QueryOptions pairs_cache_options_;
     mutable std::vector<MatchedPair> pairs_cache_;
+
+    // Series depend on the index contents alone (no options), so one slot is
+    // the whole cache; invalidated by the same mutators as the pair cache.
+    mutable bool series_cache_valid_ = false;
+    mutable std::vector<Series> series_cache_;
 };
 
 }  // namespace OEMMPA

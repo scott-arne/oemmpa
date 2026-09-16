@@ -25,6 +25,7 @@ add_executable(oemmpa_tests
     test_environment_fingerprint.cpp
     test_mcs_common.cpp
     test_memory_index.cpp
+    test_series.cpp
     test_analyzer.cpp
     test_transform_application.cpp
     test_wizepairz.cpp
