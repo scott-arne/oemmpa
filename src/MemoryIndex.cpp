@@ -275,7 +275,7 @@ std::vector<Fragmentation> with_hydrogen_fragmentations(
 // only with the record that named them, never with the rest of the bucket.
 std::vector<unsigned int> authoritative_hydrogen_parent_ids(
     const Fragmentation& record,
-    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_canonical_smiles
+    const std::unordered_map<std::string, std::vector<unsigned int>>& canonical_smiles_ids
 ) {
     if (record.GetCutCount() != 1 ||
         record.GetVariableSmiles() == kHydrogenVariableSmiles) {
@@ -285,8 +285,8 @@ std::vector<unsigned int> authoritative_hydrogen_parent_ids(
     if (hydrogen_parent_smiles.empty()) {
         return {};
     }
-    const auto parents = molecule_ids_by_canonical_smiles.find(hydrogen_parent_smiles);
-    if (parents == molecule_ids_by_canonical_smiles.end()) {
+    const auto parents = canonical_smiles_ids.find(hydrogen_parent_smiles);
+    if (parents == canonical_smiles_ids.end()) {
         return {};
     }
     std::vector<unsigned int> ids;
@@ -301,10 +301,12 @@ std::vector<unsigned int> authoritative_hydrogen_parent_ids(
 // Everything the two enumerations know about one constant bucket, prepared
 // once so pairs and series can never disagree about who is in it.
 // `loop_fragmentations` is the pairwise loop's input: the sorted records plus
-// the bucket-level hydrogen records. `record_hydrogen_parent_ids[i]` are the
-// parents that pair only with `records[i]`. The two hydrogen sources are kept
-// apart on purpose: flattening them into one set would send a record-level
-// parent through the pairwise loop and pair it with every other record.
+// the bucket-level hydrogen records. It is synthesized only when asked for,
+// because building it copies and re-sorts the whole bucket and the series
+// enumeration never reads it. `record_hydrogen_parent_ids[i]` are the parents
+// that pair only with `records[i]`. The two hydrogen sources are kept apart on
+// purpose: flattening them into one set would send a record-level parent
+// through the pairwise loop and pair it with every other record.
 struct BucketMembers {
     std::vector<Fragmentation> records;
     std::vector<Fragmentation> loop_fragmentations;
@@ -316,18 +318,21 @@ BucketMembers prepare_bucket_members(
     const std::string& constant_smiles,
     const std::vector<Fragmentation>& sorted_bucket,
     const std::map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
-    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_canonical_smiles
+    const std::unordered_map<std::string, std::vector<unsigned int>>& canonical_smiles_ids,
+    bool with_loop_fragmentations
 ) {
     BucketMembers members;
     members.records = sorted_bucket;
     members.synthesized_hydrogen_ids =
         synthesized_hydrogen_parent_ids(constant_smiles, molecule_ids_by_smiles);
-    members.loop_fragmentations = with_hydrogen_fragmentations(
-        sorted_bucket, constant_smiles, members.synthesized_hydrogen_ids);
+    if (with_loop_fragmentations) {
+        members.loop_fragmentations = with_hydrogen_fragmentations(
+            sorted_bucket, constant_smiles, members.synthesized_hydrogen_ids);
+    }
     members.record_hydrogen_parent_ids.reserve(sorted_bucket.size());
     for (const Fragmentation& record : sorted_bucket) {
         members.record_hydrogen_parent_ids.push_back(
-            authoritative_hydrogen_parent_ids(record, molecule_ids_by_canonical_smiles));
+            authoritative_hydrogen_parent_ids(record, canonical_smiles_ids));
     }
     return members;
 }
@@ -643,6 +648,9 @@ bool query_options_equal(const QueryOptions& a, const QueryOptions& b) {
         && a.GetScoringOptions().GetMode() == b.GetScoringOptions().GetMode();
 }
 
+// The `State` for an enumeration that keeps nothing per worker.
+struct NoState {};
+
 // Run `process(i, state)` for every constant index in [0, constant_count),
 // serially when `worker_count` is 1 and on that many work-stealing threads
 // otherwise. `process` must write only to its own constant's output slot, so
@@ -736,8 +744,8 @@ void MemoryIndex::Clear() {
 }
 
 void MemoryIndex::SetPairThreadCount(unsigned int count) {
-    // Threading choice only; it never changes the emitted pair set, so the memoized
-    // result (if any) stays valid.
+    // Threading choice only; neither the emitted pair set nor the emitted series
+    // depend on the worker count, so both memoized results (if any) stay valid.
     pair_thread_count_ = count;
 }
 
@@ -873,7 +881,8 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
             constant_smiles,
             sorted_buckets.at(constant_smiles),
             molecule_ids_by_smiles,
-            molecule_ids_by_canonical_smiles_
+            molecule_ids_by_canonical_smiles_,
+            /*with_loop_fragmentations=*/true
         );
 
         // Resolve each fragmentation's molecule record and variable metrics
@@ -1024,13 +1033,14 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
     // the documented order without a final sort.
     std::vector<std::vector<Series>> per_constant(constants.size());
 
-    const auto process_constant = [&](std::size_t i, int&) {
+    const auto process_constant = [&](std::size_t i, NoState&) {
         const std::string& constant_smiles = constants[i];
         const BucketMembers members = prepare_bucket_members(
             constant_smiles,
             sorted_fragmentations(constant_buckets_.at(constant_smiles)),
             molecule_ids_by_smiles,
-            molecule_ids_by_canonical_smiles_
+            molecule_ids_by_canonical_smiles_,
+            /*with_loop_fragmentations=*/false
         );
 
         // std::map keeps the members sorted by R-group SMILES; std::set keeps a
@@ -1039,12 +1049,13 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
         std::map<std::string, unsigned int> heavy_atoms_by_variable;
         unsigned int cut_count = 0;
         for (const Fragmentation& record : members.records) {
-            cut_count = record.GetCutCount();
             // An up-enumerated record is a guess about a stereocentre the cut
             // created; it must not lend the compound a second R-group.
             if (record.GetEnumerationLabel() != Fragmentation::EnumerationLabel::None) {
                 continue;
             }
+            // Read from a member, never from an excluded guess.
+            cut_count = record.GetCutCount();
             molecule_ids_by_variable[record.GetVariableSmiles()].insert(record.GetMoleculeId());
             if (heavy_atoms_by_variable.count(record.GetVariableSmiles()) == 0) {
                 heavy_atoms_by_variable.emplace(
@@ -1055,12 +1066,22 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
             }
         }
 
-        // Membership follows pair eligibility: a compound is a hydrogen member
-        // exactly when the pair enumeration would pair it as a hydrogen partner
-        // for at least one record of this bucket, whichever source names it.
+        // Membership follows pair eligibility with respect to members: a
+        // compound is a hydrogen member exactly when a member of this bucket
+        // would pair it as a hydrogen partner. The bucket-level source names the
+        // compound this constant caps to, which every member of the bucket would
+        // pair with; a record-level parent is named by one record alone, so it
+        // qualifies only when that record is itself a member, which an
+        // up-enumerated guess is not. `record_hydrogen_parent_ids` is aligned
+        // with `records`.
         std::set<unsigned int> hydrogen_ids(
             members.synthesized_hydrogen_ids.begin(), members.synthesized_hydrogen_ids.end());
-        for (const std::vector<unsigned int>& parents : members.record_hydrogen_parent_ids) {
+        for (std::size_t r = 0; r < members.records.size(); ++r) {
+            if (members.records[r].GetEnumerationLabel() !=
+                Fragmentation::EnumerationLabel::None) {
+                continue;
+            }
+            const std::vector<unsigned int>& parents = members.record_hydrogen_parent_ids[r];
             hydrogen_ids.insert(parents.begin(), parents.end());
         }
         if (!hydrogen_ids.empty()) {
@@ -1094,7 +1115,7 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
             std::move(series_members));
     };
 
-    for_each_constant<int>(constants.size(), pair_thread_count_, process_constant);
+    for_each_constant<NoState>(constants.size(), pair_thread_count_, process_constant);
 
     std::vector<Series> series;
     for (std::vector<Series>& slot : per_constant) {

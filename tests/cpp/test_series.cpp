@@ -6,6 +6,8 @@
 #include "oemmpa/MemoryIndex.h"
 #include "oemmpa/Series.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -97,6 +99,7 @@ TEST(SeriesTest, RecordLevelHydrogenParentAloneMakesAHydrogenMember) {
     const std::vector<Series>& series = index.GetSeries();
 
     ASSERT_EQ(series.size(), 1U);
+    ASSERT_EQ(series[0].Size(), 2U);
     EXPECT_EQ(series[0].GetMembers()[1],
               SeriesMember("[*:1][H]", 0, {3}, {"toluene"}));
 }
@@ -112,6 +115,7 @@ TEST(SeriesTest, BucketLevelHydrogenSourceAloneMakesAHydrogenMember) {
     const std::vector<Series>& series = index.GetSeries();
 
     ASSERT_EQ(series.size(), 1U);
+    ASSERT_EQ(series[0].Size(), 2U);
     EXPECT_EQ(series[0].GetMembers()[1],
               SeriesMember("[*:1][H]", 0, {1}, {"benzene"}));
 }
@@ -144,7 +148,12 @@ TEST(SeriesTest, SeriesIgnoreThePairFiltersSoAPairlessRGroupIsStillAMember) {
 
 TEST(SeriesTest, UpEnumeratedRecordsDoNotJoinASeries) {
     MemoryIndex index = MakePhenylIndex();
-    Fragmentation guessed(2, "[*:1]c1ccccc1", "[*:1]N", 1);
+    // The guess also names a hydrogen parent of its own, toluene, which the
+    // bucket-level cap cannot reach (that cap finds benzene). Both of the ways
+    // a record can enter a series are therefore covered by this one record.
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    Fragmentation guessed(
+        2, "[*:1]c1ccccc1", "[*:1]N", 1, toluene.GetCanonicalSmiles());
     guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::ConstantUp);
     index.AddFragmentation(guessed);
 
@@ -155,6 +164,12 @@ TEST(SeriesTest, UpEnumeratedRecordsDoNotJoinASeries) {
     for (const SeriesMember& member : series[0].GetMembers()) {
         EXPECT_NE(member.GetVariableSmiles(), "[*:1]N");
     }
+    // A compound is a hydrogen member when a member of this bucket would pair
+    // it as a hydrogen partner. The guess is not a member, so the parent only
+    // it names is not one either; benzene, which the cap names, still is.
+    EXPECT_EQ(series[0].GetMembers()[2].GetExternalIds(),
+              (std::vector<std::string>{"benzene"}));
+    EXPECT_EQ(series[0].GetMembers()[2], SeriesMember("[*:1][H]", 0, {1}, {"benzene"}));
 }
 
 TEST(SeriesTest, DuplicateStructuresShareOneMember) {
@@ -165,6 +180,7 @@ TEST(SeriesTest, DuplicateStructuresShareOneMember) {
     const std::vector<Series>& series = index.GetSeries();
 
     ASSERT_EQ(series.size(), 1U);
+    ASSERT_EQ(series[0].Size(), 3U);
     EXPECT_EQ(series[0].GetMembers()[1],
               SeriesMember("[*:1]O", 1, {2, 4}, {"phenol", "phenol-again"}));
 }
@@ -217,6 +233,24 @@ TEST(SeriesTest, MutationInvalidatesTheMemoizedSeries) {
     EXPECT_EQ(index.GetSeries()[0].Size(), 4U);
     index.Clear();
     EXPECT_TRUE(index.GetSeries().empty());
+
+    // AddMolecule alone must invalidate too: the bucket-level hydrogen source
+    // reads the molecule table, so loading the capped compound adds a member
+    // without any bucket changing.
+    MemoryIndex hydrogen_less;
+    hydrogen_less.AddMolecule(MakeMolecule(1, "Oc1ccccc1", "phenol"));
+    hydrogen_less.AddMolecule(MakeMolecule(2, "Cc1ccccc1", "toluene"));
+    hydrogen_less.AddFragmentation(MakeFragmentation(1, "[*:1]c1ccccc1", "[*:1]O"));
+    hydrogen_less.AddFragmentation(MakeFragmentation(2, "[*:1]c1ccccc1", "[*:1]C"));
+    ASSERT_EQ(hydrogen_less.GetSeries().size(), 1U);
+    ASSERT_EQ(hydrogen_less.GetSeries()[0].Size(), 2U);
+
+    hydrogen_less.AddMolecule(MakeMolecule(3, "c1ccccc1", "benzene"));
+
+    ASSERT_EQ(hydrogen_less.GetSeries().size(), 1U);
+    ASSERT_EQ(hydrogen_less.GetSeries()[0].Size(), 3U);
+    EXPECT_EQ(hydrogen_less.GetSeries()[0].GetMembers()[2],
+              SeriesMember("[*:1][H]", 0, {3}, {"benzene"}));
 }
 
 }  // namespace test

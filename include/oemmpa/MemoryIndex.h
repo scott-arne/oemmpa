@@ -71,7 +71,8 @@ private:
     std::unordered_map<std::string, std::vector<Fragmentation>> constant_buckets_;
     std::set<FragmentationKey> fragmentation_keys_;
 
-    // Worker count for parallel pair enumeration in ComputePairs; 1 == serial.
+    // Worker count for the parallel enumerations in ComputePairs and
+    // ComputeSeries; 1 == serial.
     unsigned int pair_thread_count_ = 1;
 
     // Single-slot memoization of the most-recent GetPairs(options) result. mutable
