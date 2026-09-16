@@ -230,30 +230,106 @@ std::map<std::string, std::vector<unsigned int>> molecule_ids_by_canonical_smile
     return ids_by_smiles;
 }
 
-std::vector<Fragmentation> with_hydrogen_fragmentations(
-    const std::vector<Fragmentation>& fragmentations,
+// The bucket-level hydrogen source: the compounds equal to `constant_smiles`
+// capped with hydrogen. Empty for a multi-cut constant (the cap needs exactly
+// one attachment point) or when no such compound is loaded.
+std::vector<unsigned int> synthesized_hydrogen_parent_ids(
     const std::string& constant_smiles,
     const std::map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles
 ) {
-    std::vector<Fragmentation> expanded = fragmentations;
     const std::string hydrogen_smiles = constant_with_hydrogen_smiles(constant_smiles);
     if (hydrogen_smiles.empty()) {
-        return expanded;
+        return {};
     }
-
     const auto id_iter = molecule_ids_by_smiles.find(hydrogen_smiles);
     if (id_iter == molecule_ids_by_smiles.end()) {
+        return {};
+    }
+    return id_iter->second;
+}
+
+std::vector<Fragmentation> with_hydrogen_fragmentations(
+    const std::vector<Fragmentation>& fragmentations,
+    const std::string& constant_smiles,
+    const std::vector<unsigned int>& hydrogen_parent_ids
+) {
+    std::vector<Fragmentation> expanded = fragmentations;
+    if (hydrogen_parent_ids.empty()) {
         return expanded;
     }
 
-    for (const unsigned int molecule_id : id_iter->second) {
-        Fragmentation hydrogen(molecule_id, constant_smiles, "[*:1][H]", 1);
+    for (const unsigned int molecule_id : hydrogen_parent_ids) {
+        Fragmentation hydrogen(molecule_id, constant_smiles, kHydrogenVariableSmiles, 1);
         // The synthesized [*:1][H] fragment has a known, constant shape:
         // 0 heavy atoms, 0 heavy bonds, one attachment point (label 1).
         hydrogen.SetVariableMetrics(0, 0, {1});
         expanded.push_back(std::move(hydrogen));
     }
     return sorted_fragmentations(expanded);
+}
+
+// The record-level hydrogen source: the compounds equal to this record's own
+// constant-with-hydrogen SMILES, which the fragmenter computed with the stereo
+// cleanup, minus the record's molecule. Empty for a multi-cut record, for a
+// hydrogen record, and when no such compound is loaded. These parents pair
+// only with the record that named them, never with the rest of the bucket.
+std::vector<unsigned int> authoritative_hydrogen_parent_ids(
+    const Fragmentation& record,
+    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_canonical_smiles
+) {
+    if (record.GetCutCount() != 1 ||
+        record.GetVariableSmiles() == kHydrogenVariableSmiles) {
+        return {};
+    }
+    const std::string& hydrogen_parent_smiles = record.GetConstantWithHydrogenSmiles();
+    if (hydrogen_parent_smiles.empty()) {
+        return {};
+    }
+    const auto parents = molecule_ids_by_canonical_smiles.find(hydrogen_parent_smiles);
+    if (parents == molecule_ids_by_canonical_smiles.end()) {
+        return {};
+    }
+    std::vector<unsigned int> ids;
+    for (const unsigned int parent_id : parents->second) {
+        if (parent_id != record.GetMoleculeId()) {
+            ids.push_back(parent_id);
+        }
+    }
+    return ids;
+}
+
+// Everything the two enumerations know about one constant bucket, prepared
+// once so pairs and series can never disagree about who is in it.
+// `loop_fragmentations` is the pairwise loop's input: the sorted records plus
+// the bucket-level hydrogen records. `record_hydrogen_parent_ids[i]` are the
+// parents that pair only with `records[i]`. The two hydrogen sources are kept
+// apart on purpose: flattening them into one set would send a record-level
+// parent through the pairwise loop and pair it with every other record.
+struct BucketMembers {
+    std::vector<Fragmentation> records;
+    std::vector<Fragmentation> loop_fragmentations;
+    std::vector<unsigned int> synthesized_hydrogen_ids;
+    std::vector<std::vector<unsigned int>> record_hydrogen_parent_ids;
+};
+
+BucketMembers prepare_bucket_members(
+    const std::string& constant_smiles,
+    const std::vector<Fragmentation>& sorted_bucket,
+    const std::map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
+    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_canonical_smiles
+) {
+    BucketMembers members;
+    members.records = sorted_bucket;
+    members.synthesized_hydrogen_ids =
+        synthesized_hydrogen_parent_ids(constant_smiles, molecule_ids_by_smiles);
+    members.loop_fragmentations = with_hydrogen_fragmentations(
+        sorted_bucket, constant_smiles, members.synthesized_hydrogen_ids);
+    members.record_hydrogen_parent_ids.reserve(sorted_bucket.size());
+    for (const Fragmentation& record : sorted_bucket) {
+        members.record_hydrogen_parent_ids.push_back(
+            authoritative_hydrogen_parent_ids(record, molecule_ids_by_canonical_smiles));
+    }
+    return members;
 }
 
 bool lhs_is_asymmetric_source(
@@ -512,34 +588,16 @@ void add_hydrogen_candidates_for_fragmentation(
     std::map<mcs::CandidateKey, std::vector<MatchedPair>>& candidates_by_group,
     std::map<mcs::CandidateKey, std::unordered_set<std::string>>& seen_by_group,
     const Fragmentation& source_fragmentation,
-    const std::unordered_map<std::string, std::vector<unsigned int>>& molecule_ids_by_smiles,
+    const std::vector<unsigned int>& hydrogen_parent_ids,
     const MemoryIndex& index,
     const QueryOptions& options
 ) {
-    if (source_fragmentation.GetCutCount() != 1) {
-        return;
-    }
-    if (source_fragmentation.GetVariableSmiles() == kHydrogenVariableSmiles) {
-        return;
-    }
-
-    const std::string& hydrogen_parent_smiles =
-        source_fragmentation.GetConstantWithHydrogenSmiles();
-    if (hydrogen_parent_smiles.empty()) {
-        return;
-    }
-
-    const auto hydrogen_parent_ids = molecule_ids_by_smiles.find(hydrogen_parent_smiles);
-    if (hydrogen_parent_ids == molecule_ids_by_smiles.end()) {
+    if (hydrogen_parent_ids.empty()) {
         return;
     }
 
     const FragInfo source_info = make_frag_info(source_fragmentation, index);
-    for (const unsigned int hydrogen_parent_id : hydrogen_parent_ids->second) {
-        if (hydrogen_parent_id == source_fragmentation.GetMoleculeId()) {
-            continue;
-        }
-
+    for (const unsigned int hydrogen_parent_id : hydrogen_parent_ids) {
         Fragmentation hydrogen_fragmentation(
             hydrogen_parent_id,
             source_fragmentation.GetConstantSmiles(),
@@ -746,17 +804,17 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
         std::map<mcs::CandidateKey, std::vector<MatchedPair>> candidates_by_group;
         std::map<mcs::CandidateKey, std::unordered_set<std::string>> seen_by_group;
 
-        const std::vector<Fragmentation> fragmentations =
-            with_hydrogen_fragmentations(
-                sorted_buckets.at(constant_smiles),
-                constant_smiles,
-                molecule_ids_by_smiles
-            );
+        const BucketMembers members = prepare_bucket_members(
+            constant_smiles,
+            sorted_buckets.at(constant_smiles),
+            molecule_ids_by_smiles,
+            molecule_ids_by_canonical_smiles_
+        );
 
         // Resolve each fragmentation's molecule record and variable metrics
         // once (metrics are read straight off the Fragmentation), instead of
         // re-deriving them per candidate comparison in the O(k^2) loop below.
-        const std::vector<FragInfo> infos = build_frag_infos(fragmentations, *this);
+        const std::vector<FragInfo> infos = build_frag_infos(members.loop_fragmentations, *this);
 
         // Drop fragmentations that can never survive the per-fragment
         // variable-size bound before entering the O(k^2) loop. A non-hydrogen
@@ -831,12 +889,12 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
             }
         }
 
-        for (const Fragmentation& fragmentation : sorted_buckets.at(constant_smiles)) {
+        for (std::size_t record_index = 0; record_index < members.records.size(); ++record_index) {
             add_hydrogen_candidates_for_fragmentation(
                 candidates_by_group,
                 seen_by_group,
-                fragmentation,
-                molecule_ids_by_canonical_smiles_,
+                members.records[record_index],
+                members.record_hydrogen_parent_ids[record_index],
                 *this,
                 options
             );

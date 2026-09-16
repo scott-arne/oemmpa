@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace OEMMPA {
@@ -502,6 +503,99 @@ TEST(MemoryIndexTest, DuplicateFragmentationCanSupplyHydrogenParentMetadata) {
 
     EXPECT_TRUE(HasTransform(pairs, "[*:1]O>>[*:1][H]"));
     EXPECT_TRUE(HasTransform(pairs, "[*:1][H]>>[*:1]O"));
+}
+
+TEST(MemoryIndexTest, HydrogenSourcesKeepTheirProvenanceInPairs) {
+    // The bucket-level source caps the constant with hydrogen and finds benzene;
+    // the record-level source is whatever a record says its hydrogen parent is,
+    // here toluene for the phenol record. Benzene's hydrogen record goes through
+    // the pairwise loop and therefore pairs with BOTH real records; toluene pairs
+    // only with the phenol record that named it. The anisole record is the
+    // discriminator: a record-level parent that leaked into the pairwise loop
+    // would also pair toluene with anisole, adding two pairs to the eight below.
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    const MoleculeRecord anisole = MakeMolecule(4, "COc1ccccc1", "anisole");
+
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(phenol);
+    index.AddMolecule(toluene);
+    index.AddMolecule(anisole);
+    index.AddFragmentation(Fragmentation(
+        phenol.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]O",
+        1,
+        toluene.GetCanonicalSmiles()
+    ));
+    index.AddFragmentation(Fragmentation(
+        anisole.GetInternalId(),
+        "[*:1]c1ccccc1",
+        "[*:1]OC",
+        1
+    ));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    std::vector<std::tuple<unsigned int, unsigned int, std::string>> observed;
+    for (const MatchedPair& pair : pairs) {
+        observed.emplace_back(
+            pair.GetSourceMoleculeId(),
+            pair.GetTargetMoleculeId(),
+            pair.GetTransformSmiles()
+        );
+    }
+    std::sort(observed.begin(), observed.end());
+    const std::vector<std::tuple<unsigned int, unsigned int, std::string>> expected = {
+        {1, 2, "[*:1][H]>>[*:1]O"},
+        {1, 4, "[*:1][H]>>[*:1]OC"},
+        {2, 1, "[*:1]O>>[*:1][H]"},
+        {2, 3, "[*:1]O>>[*:1][H]"},
+        {2, 4, "[*:1]O>>[*:1]OC"},
+        {3, 2, "[*:1][H]>>[*:1]O"},
+        {4, 1, "[*:1]OC>>[*:1][H]"},
+        {4, 2, "[*:1]OC>>[*:1]O"},
+    };
+    EXPECT_EQ(observed, expected);
+}
+
+TEST(MemoryIndexTest, RecordLevelHydrogenParentPairsWithoutTheBucketLevelSource) {
+    // No benzene is loaded, so the bucket-level cap finds nothing; the phenol
+    // record still names toluene as its parent and pairs with it alone.
+    const MoleculeRecord phenol = MakeMolecule(2, "Oc1ccccc1", "phenol");
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    MemoryIndex index;
+    index.AddMolecule(phenol);
+    index.AddMolecule(toluene);
+    index.AddFragmentation(Fragmentation(
+        2, "[*:1]c1ccccc1", "[*:1]O", 1, toluene.GetCanonicalSmiles()));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    ASSERT_EQ(pairs.size(), 2U);
+    EXPECT_TRUE(HasTransform(pairs, "[*:1]O>>[*:1][H]"));
+    EXPECT_TRUE(HasTransform(pairs, "[*:1][H]>>[*:1]O"));
+    for (const MatchedPair& pair : pairs) {
+        EXPECT_TRUE(pair.GetSourceMoleculeId() == 3 || pair.GetTargetMoleculeId() == 3);
+    }
+}
+
+TEST(MemoryIndexTest, BucketLevelHydrogenSourcePairsWithoutARecordLevelParent) {
+    // Benzene is loaded and the phenol record names no parent: the pair comes
+    // from the bucket-level cap alone.
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "c1ccccc1", "benzene"));
+    index.AddMolecule(MakeMolecule(2, "Oc1ccccc1", "phenol"));
+    index.AddFragmentation(MakeFragmentation(2, "[*:1]c1ccccc1", "[*:1]O"));
+
+    const std::vector<MatchedPair> pairs = index.GetPairs(QueryOptions());
+
+    ASSERT_EQ(pairs.size(), 2U);
+    for (const MatchedPair& pair : pairs) {
+        EXPECT_TRUE(pair.GetSourceMoleculeId() == 1 || pair.GetTargetMoleculeId() == 1);
+    }
 }
 
 TEST(MemoryIndexTest, ExplicitHydrogenFragmentationDoesNotInflateSyntheticHydrogenSupport) {
