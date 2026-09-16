@@ -87,6 +87,11 @@ private:
 /// length test on the remaining members, then the constant floor, then the
 /// cut count. Declared here rather than with the query records because the
 /// stored-series read needs it before any query exists.
+///
+/// A series with no surviving members (because the member filter removed them
+/// all) is never returned, even when ``min_series_length`` is 0. For the
+/// length test, 0 and 1 are equivalent: a series is reported only when at
+/// least one member survives the member bounds.
 struct SeriesSelection {
     unsigned int min_series_length = 2;
     unsigned int max_variable_heavy_atoms = 0;

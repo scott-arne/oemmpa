@@ -238,7 +238,8 @@ public:
     /// Ordered by constant SMILES then cut count; members by R-group SMILES;
     /// a member's compounds by compound id, with the public ids parallel to
     /// them. Bounds apply in the order Series.h documents: member filter,
-    /// length test, constant floor, cut count.
+    /// length test, constant floor, cut count. A series with no surviving
+    /// members is never returned, even when min_series_length is 0.
     std::vector<Series> GetSeries(const SeriesSelection& selection = SeriesSelection()) const;
 
     /// \brief Return the number of stored series.
