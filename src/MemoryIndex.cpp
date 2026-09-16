@@ -1028,9 +1028,9 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
         molecule_ids_by_canonical_smiles(molecules_);
     const std::vector<std::string> constants = sorted_constants(constant_buckets_);
 
-    // At most one series per constant, so the slot vector doubles as the
-    // presence flag; constants are sorted, so concatenating the slots yields
-    // the documented order without a final sort.
+    // One slot per constant, holding that constant's series in ascending cut
+    // count; constants are sorted, so concatenating the slots yields the
+    // documented order without a final sort.
     std::vector<std::vector<Series>> per_constant(constants.size());
 
     const auto process_constant = [&](std::size_t i, NoState&) {
@@ -1043,20 +1043,25 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
             /*with_loop_fragmentations=*/false
         );
 
-        // std::map keeps the members sorted by R-group SMILES; std::set keeps a
-        // member's molecule ids ascending and deduplicated.
-        std::map<std::string, std::set<unsigned int>> molecule_ids_by_variable;
+        // Series identity is (constant SMILES, cut count), and one constant
+        // string can carry more than one cut count: a constant only has to
+        // contain the labels 1..cut_count, so a two-attachment constant also
+        // accepts one-cut records. The pair enumeration already refuses to pair
+        // across that divide, so the series enumeration partitions by cut count
+        // rather than merging the bucket. The outer std::map keeps the
+        // partitions in ascending cut count, the inner one keeps the members
+        // sorted by R-group SMILES, and std::set keeps a member's molecule ids
+        // ascending and deduplicated.
+        std::map<unsigned int, std::map<std::string, std::set<unsigned int>>> partitions;
         std::map<std::string, unsigned int> heavy_atoms_by_variable;
-        unsigned int cut_count = 0;
         for (const Fragmentation& record : members.records) {
             // An up-enumerated record is a guess about a stereocentre the cut
             // created; it must not lend the compound a second R-group.
             if (record.GetEnumerationLabel() != Fragmentation::EnumerationLabel::None) {
                 continue;
             }
-            // Read from a member, never from an excluded guess.
-            cut_count = record.GetCutCount();
-            molecule_ids_by_variable[record.GetVariableSmiles()].insert(record.GetMoleculeId());
+            partitions[record.GetCutCount()][record.GetVariableSmiles()].insert(
+                record.GetMoleculeId());
             if (heavy_atoms_by_variable.count(record.GetVariableSmiles()) == 0) {
                 heavy_atoms_by_variable.emplace(
                     record.GetVariableSmiles(),
@@ -1085,34 +1090,51 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
             hydrogen_ids.insert(parents.begin(), parents.end());
         }
         if (!hydrogen_ids.empty()) {
-            molecule_ids_by_variable[kHydrogenVariableSmiles].insert(
+            // Hydrogen substitution is a single-cut relationship: both sources
+            // cap exactly one attachment point and return nothing otherwise, so
+            // the hydrogen member joins the one-cut partition and no other.
+            partitions[1][kHydrogenVariableSmiles].insert(
                 hydrogen_ids.begin(), hydrogen_ids.end());
             heavy_atoms_by_variable.emplace(kHydrogenVariableSmiles, 0U);
         }
 
-        if (molecule_ids_by_variable.size() < 2) {
-            return;
-        }
-
-        std::vector<SeriesMember> series_members;
-        series_members.reserve(molecule_ids_by_variable.size());
-        for (const auto& entry : molecule_ids_by_variable) {
-            std::vector<unsigned int> ids(entry.second.begin(), entry.second.end());
-            std::vector<std::string> external_ids;
-            external_ids.reserve(ids.size());
-            for (const unsigned int id : ids) {
-                external_ids.push_back(molecules_.at(id).GetExternalId());
+        // Parsing the constant is the costly part of emitting a series and most
+        // buckets emit none, so measure it on first use and reuse the result
+        // across this constant's partitions.
+        bool constant_measured = false;
+        unsigned int constant_heavy_atoms = 0;
+        for (const auto& partition : partitions) {
+            const std::map<std::string, std::set<unsigned int>>& molecule_ids_by_variable =
+                partition.second;
+            if (molecule_ids_by_variable.size() < 2) {
+                continue;
             }
-            series_members.emplace_back(
-                entry.first, heavy_atoms_by_variable.at(entry.first),
-                std::move(ids), std::move(external_ids));
+            if (!constant_measured) {
+                constant_heavy_atoms =
+                    parse_smiles_metrics(constant_smiles, "constant").heavy_atom_count;
+                constant_measured = true;
+            }
+
+            std::vector<SeriesMember> series_members;
+            series_members.reserve(molecule_ids_by_variable.size());
+            for (const auto& entry : molecule_ids_by_variable) {
+                std::vector<unsigned int> ids(entry.second.begin(), entry.second.end());
+                std::vector<std::string> external_ids;
+                external_ids.reserve(ids.size());
+                for (const unsigned int id : ids) {
+                    external_ids.push_back(molecules_.at(id).GetExternalId());
+                }
+                series_members.emplace_back(
+                    entry.first, heavy_atoms_by_variable.at(entry.first),
+                    std::move(ids), std::move(external_ids));
+            }
+            per_constant[i].emplace_back(
+                0,
+                constant_smiles,
+                partition.first,
+                constant_heavy_atoms,
+                std::move(series_members));
         }
-        per_constant[i].emplace_back(
-            0,
-            constant_smiles,
-            cut_count,
-            parse_smiles_metrics(constant_smiles, "constant").heavy_atom_count,
-            std::move(series_members));
     };
 
     for_each_constant<NoState>(constants.size(), pair_thread_count_, process_constant);

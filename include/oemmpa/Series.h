@@ -42,9 +42,11 @@ private:
 /// \brief A matched molecular series: every R-group seen under one constant.
 ///
 /// The identity is (constant SMILES, cut count); the constant is the isomeric,
-/// atom-mapped canonical string the fragmentation index keys on, so a bucket
-/// has exactly one cut count. Members are sorted by R-group SMILES. A series
-/// has at least two members; buckets with one R-group are not series.
+/// atom-mapped canonical string the fragmentation index keys on. A constant
+/// that carries records of several cut counts yields one series per cut count,
+/// because records of different cut counts never pair. Members are sorted by
+/// R-group SMILES. A series has at least two members; a cut count with one
+/// R-group is not a series.
 class Series {
 public:
     Series(

@@ -28,11 +28,11 @@ public:
 
     /// \brief Return the matched molecular series of the index.
     ///
-    /// One series per constant bucket with at least two distinct baseline
-    /// R-groups, hydrogen member included where the pair enumeration would
-    /// pair one; series take no query options, so the result is memoized
-    /// until the next mutation. Sorted by constant SMILES; members by R-group
-    /// SMILES; molecule ids ascending.
+    /// One series per (constant SMILES, cut count) with at least two distinct
+    /// baseline R-groups, hydrogen member included where the pair enumeration
+    /// would pair one; series take no query options, so the result is memoized
+    /// until the next mutation. Sorted by constant SMILES, then by ascending
+    /// cut count; members by R-group SMILES; molecule ids ascending.
     const std::vector<Series>& GetSeries() const;
 
 private:

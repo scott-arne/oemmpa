@@ -223,6 +223,68 @@ TEST(SeriesTest, RelatedOneTwoAndThreeCutBucketsAreThreeSeries) {
     EXPECT_EQ(series[0].GetConstantHeavyAtomCount(), 1U);   // "C([*:1])([*:2])[*:3]" sorts first
 }
 
+TEST(SeriesTest, MixedCutCountsUnderOneConstantDoNotShareASeries) {
+    // A constant only has to *contain* labels 1..cut_count, so one constant
+    // string legitimately accepts records of different cut counts. The pair
+    // enumeration already refuses to pair across that divide
+    // (MemoryIndexTest.MixedCutCountsInSharedConstantDoNotPair); series identity
+    // is (constant SMILES, cut count), so each cut count is its own bucket and
+    // here each holds a single R-group, which is no series at all.
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "CC", "ethane"));
+    index.AddMolecule(MakeMolecule(2, "CCC", "propane"));
+    index.AddFragmentation(MakeFragmentation(1, "C([*:1])[*:2]", "C[*:1]", 1));
+    index.AddFragmentation(MakeFragmentation(2, "C([*:1])[*:2]", "C[*:1].C[*:2]", 2));
+
+    EXPECT_TRUE(index.GetSeries().empty());
+}
+
+TEST(SeriesTest, OneConstantWithTwoCutCountsBecomesTwoSeries) {
+    // Both cut counts of the shared constant carry two R-groups of their own, so
+    // both are series; they are emitted for the same constant in ascending cut
+    // count. The hydrogen member belongs to the single-cut series alone. It has
+    // to come from the record-level source here: capping needs exactly one
+    // attachment point, and a constant that accepts a two-cut record has at
+    // least two, so the bucket-level source is unreachable for such a constant.
+    const std::string constant = "[*:1]c1ccc([*:2])cc1";
+    const MoleculeRecord benzene = MakeMolecule(5, "c1ccccc1", "benzene");
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "Oc1ccccc1", "phenol"));
+    index.AddMolecule(MakeMolecule(2, "Cc1ccccc1", "toluene"));
+    index.AddMolecule(MakeMolecule(3, "Cc1ccc(C)cc1", "p-xylene"));
+    index.AddMolecule(MakeMolecule(4, "Cc1ccc(N)cc1", "p-toluidine"));
+    index.AddMolecule(benzene);
+    index.AddFragmentation(
+        Fragmentation(1, constant, "[*:1]O", 1, benzene.GetCanonicalSmiles()));
+    index.AddFragmentation(MakeFragmentation(2, constant, "[*:1]C", 1));
+    index.AddFragmentation(MakeFragmentation(3, constant, "[*:1]C.[*:2]C", 2));
+    index.AddFragmentation(MakeFragmentation(4, constant, "[*:1]C.[*:2]N", 2));
+
+    const std::vector<Series>& series = index.GetSeries();
+
+    ASSERT_EQ(series.size(), 2U);
+    EXPECT_EQ(series[0].GetConstantSmiles(), constant);
+    EXPECT_EQ(series[1].GetConstantSmiles(), constant);
+    EXPECT_EQ(series[0].GetCutCount(), 1U);
+    EXPECT_EQ(series[1].GetCutCount(), 2U);
+    EXPECT_EQ(series[0].GetConstantHeavyAtomCount(), 6U);
+    EXPECT_EQ(series[1].GetConstantHeavyAtomCount(), 6U);
+
+    ASSERT_EQ(series[0].Size(), 3U);
+    EXPECT_EQ(series[0].GetMembers()[0], SeriesMember("[*:1]C", 1, {2}, {"toluene"}));
+    EXPECT_EQ(series[0].GetMembers()[1], SeriesMember("[*:1]O", 1, {1}, {"phenol"}));
+    EXPECT_EQ(series[0].GetMembers()[2], SeriesMember("[*:1][H]", 0, {5}, {"benzene"}));
+
+    ASSERT_EQ(series[1].Size(), 2U);
+    EXPECT_EQ(series[1].GetMembers()[0],
+              SeriesMember("[*:1]C.[*:2]C", 2, {3}, {"p-xylene"}));
+    EXPECT_EQ(series[1].GetMembers()[1],
+              SeriesMember("[*:1]C.[*:2]N", 2, {4}, {"p-toluidine"}));
+    for (const SeriesMember& member : series[1].GetMembers()) {
+        EXPECT_NE(member.GetVariableSmiles(), "[*:1][H]");
+    }
+}
+
 TEST(SeriesTest, MutationInvalidatesTheMemoizedSeries) {
     MemoryIndex index = MakePhenylIndex();
     ASSERT_EQ(index.GetSeries()[0].Size(), 3U);
