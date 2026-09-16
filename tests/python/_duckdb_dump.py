@@ -36,6 +36,8 @@ TABLES = [
     "property_name",
     "compound_property",
     "rule_environment_statistics",
+    "series",
+    "series_member",
 ]
 
 # Natural-key SELECTs: no surrogate id columns, ORDER BY the projected columns
@@ -128,6 +130,23 @@ _QUERIES = {
         # Descriptive environment SMIRKS from the dedicated table (LEFT JOIN so
         # non-WizePairZ environments surface NULL, matching the prior behavior).
         "left join environment_smirks es on es.rule_environment_id = re.id "
+        "order by 1, 2, 3, 4, 5"
+    ),
+    # A series is keyed by its constant and cut count, so the constant SMILES
+    # plus cut_count is its natural key; the two stored counts come along as
+    # values the dump pins.
+    "series": (
+        "select c.smiles, s.cut_count, s.constant_num_heavies, s.num_members "
+        "from series s join constant_smiles c on c.id = s.constant_id "
+        "order by 1, 2, 3, 4"
+    ),
+    "series_member": (
+        "select c.smiles, s.cut_count, rs.smiles, rs.num_heavies, cp.public_id "
+        "from series_member sm "
+        "join series s on s.id = sm.series_id "
+        "join constant_smiles c on c.id = s.constant_id "
+        "join rule_smiles rs on rs.id = sm.rule_smiles_id "
+        "join compound cp on cp.id = sm.compound_id "
         "order by 1, 2, 3, 4, 5"
     ),
 }

@@ -3,11 +3,11 @@
 ``regenerate.py`` produces the golden fixtures; this script explains them. Given
 the golden directory as it was before a regeneration and the golden directory as
 it is after, it assigns every changed row of every TSV to exactly one bucket and
-writes ``schema4_regeneration.tsv``, so the manifest committed beside the
+writes ``schema5_regeneration.tsv``, so the manifest committed beside the
 fixtures is a derived artefact rather than a hand tally::
 
     python tests/data/duckdb_golden/classify_regeneration.py OLD_DIR NEW_DIR \\
-        tests/data/duckdb_golden/schema4_regeneration.tsv
+        tests/data/duckdb_golden/schema5_regeneration.tsv
 
 ``OLD_DIR`` is normally the golden extracted from the commit before the
 regeneration, for example with ``git show <sha>:tests/data/duckdb_golden/
@@ -30,6 +30,10 @@ The buckets are:
 ``g`` Pair lost because stereo now distinguishes its constants. A
       removed row with no counterpart can only be ``g`` or ``d``;
       bucket ``a`` presupposes a counterpart.
+``h`` ``rule_smiles.num_heavies``, NULL in every schema-4 row, is
+      populated from schema 5 on; the row's SMILES is unchanged.
+``n`` Row of a table schema 5 introduced (``series``,
+      ``series_member``), which has no old file to differ from.
 ``s`` Schema stamp, one row for ``dataset.tsv``.
 ===== ==============================================================
 
@@ -113,12 +117,16 @@ SPEC: dict[str, list[str]] = {
     "rule_environment_statistics": (
         [SMILES, SMILES, ENV, PLAIN, PLAIN] + [MEASURE] * 12 + [ENV]
     ),
+    "series": [SMILES, PLAIN, PLAIN, MEASURE],
+    "series_member": [SMILES, PLAIN, SMILES, PLAIN, PLAIN],
 }
 
-BUCKETS = ("a", "b", "c", "d", "e", "f", "g")
+BUCKETS = ("a", "b", "c", "d", "e", "f", "g", "h", "n")
 
 #: Derived-table precedence. A row referenced by pair rows of several buckets is
-#: reported under the first of these that applies.
+#: reported under the first of these that applies. ``h`` and ``n`` are absent on
+#: purpose: they are assigned by dedicated classifiers, never inherited from a
+#: pair row.
 PRECEDENCE = ["a", "e", "f", "c", "g", "b", "d"]
 
 STEREO_CHARS = re.compile(r"[@/\\]")
@@ -162,6 +170,11 @@ RATIONALE = {
         "mmpdb 3.1.4 indexes the same four compounds into S136/S11 and S138/S13 "
         "only, and never pairs S13 with S136 or S11 with S138."
     ),
+    "h": (
+        "rule_smiles.num_heavies is populated by schema 5 (the fragmenter's "
+        "heavy-atom rule; hydrogen 0); the row's SMILES is unchanged."
+    ),
+    "n": "Table introduced by schema 5; every row is new by construction.",
 }
 
 EMPTY_G = (
@@ -174,7 +187,7 @@ NO_CHANGE = (
 )
 
 STAMP = (
-    "kOemmpaSchemaVersion 3 -> 4. Counted 0 because the golden dump projects "
+    "kOemmpaSchemaVersion 4 -> 5. Counted 0 because the golden dump projects "
     "only analysis_method from the dataset table, so the stamp never reaches a "
     "TSV; it is pinned by the C++ tests instead."
 )
@@ -775,9 +788,15 @@ def read_table(directory: Path, table: str) -> list[Row]:
 
     :param directory: Golden directory.
     :param table: Table name, without the ``.tsv`` suffix.
-    :returns: One tuple per line, in file order.
+    :returns: One tuple per line, in file order; no rows when the file is
+        absent.
     """
-    with open(directory / f"{table}.tsv", encoding="utf-8") as handle:
+    path = directory / f"{table}.tsv"
+    # A table the regeneration introduces has no file on the old side, and an
+    # absent file is exactly "no rows before" for the classification.
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as handle:
         return [tuple(line.rstrip("\n").split("\t")) for line in handle]
 
 
@@ -795,6 +814,59 @@ def multiset_difference(before: list[Row], after: list[Row]) -> tuple[list[Row],
 
 
 TableReport = tuple[Counter, dict[str, Row]]
+
+
+def classify_schema_addition(
+    table: str, before: list[Row], after: list[Row]
+) -> TableReport:
+    """Book every row of a table that did not exist before as ``n``.
+
+    :param table: Table name, for the error message.
+    :param before: Rows of the old file; must be empty.
+    :param after: Rows of the new file.
+    :returns: ``(counts, examples)`` with everything under ``n``.
+    :raises SystemExit: If the old file had rows, which means the table is
+        not an addition and must be classified like any other.
+    """
+    if before:
+        raise SystemExit(f"{table} existed before the regeneration; it is not a schema addition")
+    counts: Counter = Counter({"n": len(after)})
+    examples: dict[str, Row] = {"n": after[0]} if after else {}
+    return counts, examples
+
+
+def classify_num_heavies_population(before: list[Row], after: list[Row]) -> TableReport:
+    """Book ``rule_smiles`` rows whose only change is a filled ``num_heavies`` as ``h``.
+
+    A removed row and an added row with the same SMILES, where the old count
+    was empty and the new one is not, form one ``h`` row. Anything else that
+    changed is ``d``: a SMILES that appeared or disappeared is a real change
+    this bucket must not hide.
+
+    :param before: Old ``rule_smiles.tsv`` rows ``(smiles, num_heavies)``.
+    :param after: New rows in the same shape.
+    :returns: ``(counts, examples)``.
+    """
+    removed, added = multiset_difference(before, after)
+    added_by_smiles: dict[str, list[Row]] = defaultdict(list)
+    for row in added:
+        added_by_smiles[row[0]].append(row)
+    counts: Counter = Counter()
+    examples: dict[str, Row] = {}
+    for row in removed:
+        twins = added_by_smiles.get(row[0], [])
+        if row[1] == "" and twins and twins[0][1] != "":
+            twin = twins.pop(0)
+            counts["h"] += 1
+            examples.setdefault("h", twin)
+        else:
+            counts["d"] += 1
+            examples.setdefault("d", row)
+    for rows in added_by_smiles.values():
+        for row in rows:
+            counts["d"] += 1
+            examples.setdefault("d", row)
+    return counts, examples
 
 
 def classify_pairs(
@@ -1016,10 +1088,21 @@ def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     for table in TABLES:
         if table == "pair":
             continue
+        before_rows = read_table(old_dir, table)
+        after_rows = read_table(new_dir, table)
+        # The two schema-5 tables and the one schema-5 column changed for
+        # reasons the pair-inheritance cascade cannot express, so each gets its
+        # own classifier before the generic branch sees the rows.
+        if table in ("series", "series_member"):
+            report[table] = classify_schema_addition(table, before_rows, after_rows)
+            continue
+        if table == "rule_smiles":
+            report[table] = classify_num_heavies_population(before_rows, after_rows)
+            continue
         report[table] = classify_derived(
             table,
-            read_table(old_dir, table),
-            read_table(new_dir, table),
+            before_rows,
+            after_rows,
             before_pairs,
             after_pairs,
             bucket_before,

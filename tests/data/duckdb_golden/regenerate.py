@@ -21,7 +21,7 @@ Run it from anywhere; every path is resolved from ``__file__``::
 
 Its companion ``classify_regeneration.py`` explains the result: given the golden
 directory before and after a run of this script it assigns every changed row to
-a bucket and rewrites ``schema4_regeneration.tsv``, so a regeneration should be
+a bucket and rewrites ``schema5_regeneration.tsv``, so a regeneration should be
 followed by a run of the classifier.
 """
 

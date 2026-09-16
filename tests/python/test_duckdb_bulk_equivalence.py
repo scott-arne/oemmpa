@@ -1,17 +1,15 @@
 """Natural-key equivalence of the DuckDB save path against a committed golden.
 
-The golden was snapshotted from a schema-4 store and is a regression guard: the
+The golden was snapshotted from a schema-5 store and is a regression guard: the
 save path must keep reproducing it. Comparison is by multiset (sorted
 natural-key tuples with duplicates) plus explicit row counts, so a
 dropped/added/de-duplicated row cannot hide.
 
-Schema 5 changes exactly one dumped value: ``rule_smiles.num_heavies``, which
-the golden still records as NULL for every row. That column is excluded from
-the table-by-table comparison, which therefore stays a hard assertion over
-every table, and is checked on its own in a dedicated strict-xfail test. Plan 1
-Task 5 regenerates the golden and removes both the exclusion and the xfail. The
-new ``series``/``series_member`` tables are not part of the dump, so they do not
-affect the comparison.
+Every table of ``_duckdb_dump.TABLES`` is compared in full, with no column
+excluded: the schema-5 tables ``series`` and ``series_member`` and the
+populated ``rule_smiles.num_heavies`` are part of the golden and are pinned
+like everything else. ``tests/data/duckdb_golden/schema5_regeneration.tsv``
+records, row by row, what the schema-5 regeneration changed.
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _duckdb_dump as dump
 
 GOLDEN_DIR = dump.REPO_ROOT / "tests" / "data" / "duckdb_golden"
-REGENERATION_MANIFEST = GOLDEN_DIR / "schema4_regeneration.tsv"
+REGENERATION_MANIFEST = GOLDEN_DIR / "schema5_regeneration.tsv"
 
 
 def _load_golden(table: str) -> list[tuple]:
@@ -52,35 +50,6 @@ def _actual_as_strings(rows: list[tuple]) -> list[tuple]:
     # The golden is TSV (all strings); normalize actual rows the same way so the
     # multiset comparison is apples-to-apples. None -> "".
     return [tuple("" if v is None else str(v) for v in row) for row in rows]
-
-
-# Columns of the dumped natural key that schema 5 deliberately changed, keyed by
-# table and given as positions in that table's dump query. Excluding them keeps
-# the rest of every table a hard assertion instead of hiding whole tables behind
-# one xfail; each exclusion is asserted on its own in a dedicated xfail test.
-# Task 5 regenerates the golden and empties this map.
-SCHEMA5_CHANGED_COLUMNS: dict[str, tuple[int, ...]] = {
-    # "select smiles, num_heavies from rule_smiles": num_heavies was NULL for
-    # every golden row and is populated from schema 5 on.
-    "rule_smiles": (1,),
-}
-
-SCHEMA5_XFAIL_REASON = (
-    "schema 5: rule_smiles.num_heavies is populated; the golden is regenerated "
-    "in plan 1 Task 5"
-)
-
-
-def _without_columns(rows: list[tuple], indexes: tuple[int, ...]) -> list[tuple]:
-    """Drop the given positions from every row.
-
-    :param rows: Natural-key rows, all of the same width.
-    :param indexes: Zero-based column positions to remove.
-    :returns: The rows with those positions removed, order preserved.
-    """
-    if not indexes:
-        return rows
-    return [tuple(value for i, value in enumerate(row) if i not in indexes) for row in rows]
 
 
 @pytest.fixture(scope="module")
@@ -111,9 +80,8 @@ def golden_store_connection(tmp_path_factory):
 def test_bulk_save_matches_golden(golden_store_connection):
     con = golden_store_connection
     for table in dump.TABLES:
-        changed = SCHEMA5_CHANGED_COLUMNS.get(table, ())
-        actual = _without_columns(_actual_as_strings(dump.natural_key_rows(con, table)), changed)
-        golden = _without_columns(_load_golden(table), changed)
+        actual = _actual_as_strings(dump.natural_key_rows(con, table))
+        golden = _load_golden(table)
         # Multiset comparison: sorted lists, duplicates preserved.
         assert sorted(actual) == sorted(golden), f"table {table} differs from golden"
     # Explicit row-count guards (independent of tuple comparison). pair is
@@ -129,25 +97,10 @@ def test_bulk_save_matches_golden(golden_store_connection):
         assert count == len(_load_golden(table)), f"{table} row count changed"
 
 
-@pytest.mark.xfail(strict=True, reason=SCHEMA5_XFAIL_REASON)
-def test_rule_smiles_heavy_counts_match_golden(golden_store_connection):
-    """Hold the one known schema-5 golden difference on its own.
-
-    ``test_bulk_save_matches_golden`` excludes ``rule_smiles.num_heavies`` so
-    that the expected difference cannot mask an unexpected one elsewhere. This
-    test carries the difference, and Task 5 deletes the xfail marker when the
-    golden is regenerated with the populated counts.
-    """
-    con = golden_store_connection
-    actual = _actual_as_strings(dump.natural_key_rows(con, "rule_smiles"))
-    golden = _load_golden("rule_smiles")
-    assert sorted(actual) == sorted(golden), "rule_smiles differs from golden"
-
-
 def test_regeneration_manifest_explains_every_changed_golden_row():
-    """The committed schema-4 manifest must book nothing in bucket ``d``.
+    """The committed schema-5 manifest must book nothing in bucket ``d``.
 
-    ``classify_regeneration.py`` assigns every row the schema-4 regeneration
+    ``classify_regeneration.py`` assigns every row the schema-5 regeneration
     changed to exactly one bucket, and ``d`` is the bucket for a row it could
     not explain. The script refuses to exit zero on a non-zero ``d``, but the
     manifest it writes is a committed file that nothing read back, so a hand
