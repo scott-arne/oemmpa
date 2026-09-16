@@ -800,22 +800,33 @@ def read_table(directory: Path, table: str, *, side: str) -> list[Row]:
 
     A missing file is never read as "this table has no rows". Doing so would
     certify a regeneration that crashed before writing a file, or a pair of
-    empty directories, as byte-identical. The single exception is a table
-    schema 5 introduced, which by construction has no file on the old side;
-    an existing file with no lines is a real answer and is read as such.
+    empty directories, as byte-identical. Everywhere else an existing file with
+    no lines is a real answer and is read as such.
+
+    The single exception is a table schema 5 introduced, which by construction
+    has no file on the old side. There the absence must be genuine: an existing
+    old-side file is refused even when it is empty, because empty is what a
+    dump that ran and failed also leaves behind, and treating it as "the table
+    did not exist" would book every new row as ``n``.
 
     :param directory: Golden directory.
     :param table: Table name, without the ``.tsv`` suffix.
     :param side: ``OLD`` for the snapshot taken before the regeneration,
         ``NEW`` for the directory the regeneration wrote.
     :returns: One tuple per line, in file order.
-    :raises SystemExit: If the file is missing on the new side, or missing on
-        the old side for a table that predates schema 5.
+    :raises SystemExit: If the file is missing on the new side, missing on the
+        old side for a table that predates schema 5, or present on the old side
+        for a table schema 5 introduced.
     """
     path = directory / f"{table}.tsv"
+    if side == OLD and table in SCHEMA5_TABLES:
+        if path.exists():
+            raise SystemExit(
+                f"{path} existed before the regeneration; "
+                "a schema-5 table must be absent from the old golden"
+            )
+        return []
     if not path.exists():
-        if side == OLD and table in SCHEMA5_TABLES:
-            return []
         raise SystemExit(f"{path} is missing: the {side} golden is incomplete")
     with open(path, encoding="utf-8") as handle:
         return [tuple(line.rstrip("\n").split("\t")) for line in handle]
@@ -851,6 +862,9 @@ def classify_schema_addition(
         file has no rows, which means the regeneration did not populate it and
         booking zero additions would certify the gap.
     """
+    # Defence in depth. Through ``classify`` the old-side file has already been
+    # refused for existing at all, so ``before`` is empty by the time it gets
+    # here; a direct caller handing over old rows is still refused.
     if before:
         raise SystemExit(f"{table} existed before the regeneration; it is not a schema addition")
     if not after:

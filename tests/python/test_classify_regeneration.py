@@ -90,6 +90,7 @@ def _write_golden_pair(
     *,
     new_rule_smiles: list[tuple[str, ...]] | None = None,
     old_series: list[tuple[str, ...]] | None = None,
+    old_series_member: list[tuple[str, ...]] | None = None,
     new_series: list[tuple[str, ...]] | None = None,
 ) -> None:
     """Write a synthetic before/after golden pair for the whole dump.
@@ -99,7 +100,9 @@ def _write_golden_pair(
     :param new_rule_smiles: Override the new ``rule_smiles`` rows, to mutate
         something the ``h`` bucket must not absorb.
     :param old_series: Write a ``series.tsv`` on the old side too, which makes
-        the table something other than a schema-5 addition.
+        the table something other than a schema-5 addition. An empty list
+        writes an existing file with no rows.
+    :param old_series_member: The same for ``series_member.tsv``.
     :param new_series: Override the new ``series`` rows, empty for a
         regeneration that produced nothing.
     """
@@ -114,6 +117,8 @@ def _write_golden_pair(
     )
     if old_series is not None:
         _write(old_dir, "series", old_series)
+    if old_series_member is not None:
+        _write(old_dir, "series_member", old_series_member)
     _write(new_dir, "series", NEW_SERIES if new_series is None else new_series)
     _write(new_dir, "series_member", NEW_SERIES_MEMBER)
 
@@ -238,19 +243,57 @@ def test_a_changed_rule_smiles_row_is_booked_d_and_refused_by_main(tmp_path, mon
 def test_a_series_table_that_already_existed_is_not_booked_as_an_addition(tmp_path):
     """Only a genuine addition may be booked ``n``.
 
-    ``classify_schema_addition`` refuses to classify a table that has rows on
-    both sides, so the run aborts instead of landing in any bucket; a later
-    regeneration, where ``series`` is no longer new, has to be given a real
-    classifier rather than inheriting this one's "everything is new".
+    The run aborts instead of landing in any bucket, and does so twice over:
+    ``read_table`` refuses an old-side file that exists at all, and
+    ``classify_schema_addition`` refuses old rows if it is ever called directly.
+    A later regeneration, where ``series`` is no longer new, has to be given a
+    real classifier rather than inheriting this one's "everything is new".
     """
     classifier = _load_classifier()
     old_dir, new_dir = tmp_path / "old", tmp_path / "new"
-    _write_golden_pair(old_dir, new_dir, old_series=[("[*:1]C", "1", "1", "3")])
+    old_rows = [("[*:1]C", "1", "1", "3")]
+    _write_golden_pair(old_dir, new_dir, old_series=old_rows)
 
     with pytest.raises(SystemExit) as failure:
         classifier.classify(old_dir, new_dir)
 
-    assert "series existed before the regeneration" in str(failure.value)
+    assert "series.tsv existed before the regeneration" in str(failure.value)
+
+    with pytest.raises(SystemExit) as direct:
+        classifier.classify_schema_addition("series", old_rows, NEW_SERIES)
+
+    assert "series existed before the regeneration" in str(direct.value)
+
+
+def test_an_existing_but_empty_old_side_series_is_not_a_schema_addition(tmp_path):
+    """Absence on the old side must be genuine absence, not an empty file.
+
+    A ``series.tsv`` that exists with no lines is a snapshot that was taken and
+    came back empty: either the old store really had the table, or the dump
+    failed. Reading it as "the table did not exist" would book every new row as
+    ``n`` and certify a regeneration nobody checked.
+    """
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_golden_pair(old_dir, new_dir, old_series=[])
+
+    with pytest.raises(SystemExit) as failure:
+        classifier.classify(old_dir, new_dir)
+
+    assert "series.tsv existed before the regeneration" in str(failure.value)
+    assert "must be absent from the old golden" in str(failure.value)
+
+
+def test_an_existing_but_empty_old_side_series_member_is_not_a_schema_addition(tmp_path):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_golden_pair(old_dir, new_dir, old_series_member=[])
+
+    with pytest.raises(SystemExit) as failure:
+        classifier.classify(old_dir, new_dir)
+
+    assert "series_member.tsv existed before the regeneration" in str(failure.value)
+    assert "must be absent from the old golden" in str(failure.value)
 
 
 def test_a_schema_five_table_with_no_new_rows_is_a_failed_regeneration(tmp_path):
