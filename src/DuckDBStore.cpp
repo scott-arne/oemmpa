@@ -3314,6 +3314,86 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
     return apply_pair_scoring(pairs, options.GetScoringOptions());
 }
 
+std::vector<Series> DuckDBStore::GetSeries(const SeriesSelection& selection) const {
+    // The member bound, the constant floor and the cut count are applied in
+    // SQL; the length test after grouping, so it sees the trimmed member list.
+    const std::string sql =
+        "select s.id, c.smiles, s.cut_count, s.constant_num_heavies, "
+        "rs.smiles, rs.num_heavies, sm.compound_id, coalesce(cp.public_id, '') "
+        "from series s "
+        "join constant_smiles c on c.id = s.constant_id "
+        "join series_member sm on sm.series_id = s.id "
+        "join rule_smiles rs on rs.id = sm.rule_smiles_id "
+        "join compound cp on cp.id = sm.compound_id "
+        "where (? = 0 or s.cut_count = ?) "
+        "and (? = 0 or s.constant_num_heavies >= ?) "
+        "and (? = 0 or coalesce(rs.num_heavies, 0) <= ?) "
+        "order by c.smiles, s.cut_count, rs.smiles, sm.compound_id";
+    duckdb::vector<duckdb::Value> values = {
+        duckdb::Value::UINTEGER(selection.cut_count),
+        duckdb::Value::UINTEGER(selection.cut_count),
+        duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms),
+        duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms),
+        duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms),
+        duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms),
+    };
+    std::unique_ptr<duckdb::QueryResult> result =
+        execute_prepared(connection_, sql, std::move(values));
+
+    std::vector<Series> series;
+    std::uint64_t current_id = 0;
+    std::string current_constant;
+    unsigned int current_cut = 0;
+    unsigned int current_heavies = 0;
+    std::vector<SeriesMember> members;
+    std::string member_smiles;
+    unsigned int member_heavies = 0;
+    std::vector<unsigned int> member_ids;
+    std::vector<std::string> member_external_ids;
+
+    const auto flush_member = [&]() {
+        if (!member_ids.empty()) {
+            members.emplace_back(member_smiles, member_heavies, member_ids, member_external_ids);
+            member_ids.clear();
+            member_external_ids.clear();
+        }
+    };
+    const auto flush_series = [&]() {
+        flush_member();
+        if (current_id != 0 && members.size() >= selection.min_series_length) {
+            series.emplace_back(current_id, current_constant, current_cut, current_heavies, members);
+        }
+        members.clear();
+    };
+
+    for (const auto& row : *result) {
+        const std::uint64_t id = row.GetValue<std::uint64_t>(0);
+        if (id != current_id) {
+            flush_series();
+            current_id = id;
+            current_constant = row.GetValue<std::string>(1);
+            current_cut = row.GetValue<std::uint32_t>(2);
+            current_heavies = row.GetValue<std::uint32_t>(3);
+            member_smiles.clear();
+        }
+        const std::string smiles = row.GetValue<std::string>(4);
+        if (smiles != member_smiles || member_ids.empty()) {
+            flush_member();
+            member_smiles = smiles;
+            member_heavies = row.GetValue<duckdb::Value>(5).IsNull()
+                ? 0U : row.GetValue<std::uint32_t>(5);
+        }
+        member_ids.push_back(static_cast<unsigned int>(row.GetValue<std::uint64_t>(6)));
+        member_external_ids.push_back(row.GetValue<std::string>(7));
+    }
+    flush_series();
+    return series;
+}
+
+std::uint64_t DuckDBStore::GetSeriesCount() const {
+    return GetRowCount("series");
+}
+
 std::vector<MatchedPair> DuckDBStore::GetPairsForRuleEnvironment(
     std::uint64_t rule_environment_id
 ) const {

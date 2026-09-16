@@ -233,6 +233,17 @@ public:
     /// \brief Group stored matched pairs filtered by query options.
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
+    /// \brief Rebuild stored matched molecular series under ``selection``.
+    ///
+    /// Ordered by constant SMILES then cut count; members by R-group SMILES;
+    /// a member's compounds by compound id, with the public ids parallel to
+    /// them. Bounds apply in the order Series.h documents: member filter,
+    /// length test, constant floor, cut count.
+    std::vector<Series> GetSeries(const SeriesSelection& selection = SeriesSelection()) const;
+
+    /// \brief Return the number of stored series.
+    std::uint64_t GetSeriesCount() const;
+
     /// \brief Seconds the last AppendBulk spent staging and appending series.
     ///
     /// A benchmark diagnostic so the series share of a save can be measured

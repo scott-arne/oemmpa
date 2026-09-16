@@ -3550,6 +3550,15 @@ Analyzer MakePhenylAnalyzer() {
     return analyzer;
 }
 
+const Series* FindSeries(const std::vector<Series>& series, const std::string& constant) {
+    for (const Series& entry : series) {
+        if (entry.GetConstantSmiles() == constant) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
+
 // One digest per table over an ordered dump of every row, so two snapshots of a
 // store compare byte for byte without enumerating columns.
 std::map<std::string, std::string> TableDigests(duckdb::Connection& connection) {
@@ -4050,6 +4059,153 @@ TEST(DuckDBStoreSeriesSave, ASeriesProducingSaveIsRefusedIntoAStoreHoldingOnlyAC
         EXPECT_EQ(TableDigests(connection), before);
     }
     std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesRead, StoredSeriesEqualTheirInMemoryTwinsExceptForTheRowId) {
+    Analyzer analyzer = MakePhenylAnalyzer();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<Series> in_memory = analyzer.GetSeries();
+    const std::vector<Series> stored = store.GetSeries();
+    ASSERT_EQ(stored.size(), in_memory.size());
+    EXPECT_EQ(store.GetSeriesCount(), stored.size());
+    for (std::size_t i = 0; i < stored.size(); ++i) {
+        // Same order (constant SMILES, cut count), same content; only the id differs.
+        EXPECT_GT(stored[i].GetSeriesId(), 0U);
+        EXPECT_EQ(stored[i].GetConstantSmiles(), in_memory[i].GetConstantSmiles());
+        EXPECT_EQ(stored[i].GetCutCount(), in_memory[i].GetCutCount());
+        EXPECT_EQ(stored[i].GetConstantHeavyAtomCount(), in_memory[i].GetConstantHeavyAtomCount());
+        EXPECT_EQ(stored[i].GetMembers(), in_memory[i].GetMembers()) << stored[i].GetConstantSmiles();
+    }
+    const Series* phenyl = FindSeries(stored, "[*:1]c1ccccc1");
+    ASSERT_NE(phenyl, nullptr);
+    const std::vector<SeriesMember> expected = {
+        SeriesMember("[*:1]C", 1, {3}, {"toluene"}),
+        SeriesMember("[*:1]O", 1, {2, 4}, {"phenol", "phenol-dup"}),
+        SeriesMember("[*:1][H]", 0, {1}, {"benzene"}),
+    };
+    EXPECT_EQ(phenyl->GetMembers(), expected);
+}
+
+TEST(DuckDBStoreSeriesRead, SelectionBoundsApplyMemberFilterBeforeTheLengthTest) {
+    // Phenyl members: hydrogen (0 heavy atoms), methyl and hydroxyl (1), ethyl (2).
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+    analyzer.Analyze();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<Series> unfiltered = store.GetSeries();
+    ASSERT_EQ(FindSeries(unfiltered, "[*:1]c1ccccc1")->Size(), 4U);
+
+    SeriesSelection at_most_one_heavy;
+    at_most_one_heavy.max_variable_heavy_atoms = 1;
+    const std::vector<Series> trimmed_series = store.GetSeries(at_most_one_heavy);
+    const Series* trimmed = FindSeries(trimmed_series, "[*:1]c1ccccc1");
+    ASSERT_NE(trimmed, nullptr);
+    ASSERT_EQ(trimmed->Size(), 3U);
+    for (const SeriesMember& member : trimmed->GetMembers()) {
+        EXPECT_LE(member.GetHeavyAtomCount(), 1U);
+    }
+
+    // The length test sees the trimmed series: four members would pass it,
+    // three do not, so the filter demonstrably runs first.
+    SeriesSelection four_after_trim;
+    four_after_trim.max_variable_heavy_atoms = 1;
+    four_after_trim.min_series_length = 4;
+    const std::vector<Series> four_trimmed = store.GetSeries(four_after_trim);
+    EXPECT_EQ(FindSeries(four_trimmed, "[*:1]c1ccccc1"), nullptr);
+    SeriesSelection four_untrimmed;
+    four_untrimmed.min_series_length = 4;
+    const std::vector<Series> four_untrimmed_series = store.GetSeries(four_untrimmed);
+    EXPECT_NE(FindSeries(four_untrimmed_series, "[*:1]c1ccccc1"), nullptr);
+
+    SeriesSelection big_constants;
+    big_constants.min_constant_heavy_atoms = 7;
+    const std::vector<Series> big_constant_series = store.GetSeries(big_constants);
+    EXPECT_EQ(FindSeries(big_constant_series, "[*:1]c1ccccc1"), nullptr);
+    big_constants.min_constant_heavy_atoms = 6;
+    const std::vector<Series> exact_constant_series = store.GetSeries(big_constants);
+    EXPECT_NE(FindSeries(exact_constant_series, "[*:1]c1ccccc1"), nullptr);
+
+    SeriesSelection by_cut;
+    by_cut.cut_count = 2;
+    for (const Series& entry : store.GetSeries(by_cut)) {
+        EXPECT_EQ(entry.GetCutCount(), 2U);
+    }
+    by_cut.cut_count = 1;
+    const std::vector<Series> cut_one_series = store.GetSeries(by_cut);
+    EXPECT_NE(FindSeries(cut_one_series, "[*:1]c1ccccc1"), nullptr);
+}
+
+TEST(DuckDBStoreSeriesRead, AStoreWithoutSeriesReadsEmpty) {
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    EXPECT_EQ(store.GetSeriesCount(), 0U);
+    EXPECT_TRUE(store.GetSeries().empty());
+}
+
+TEST(DuckDBStoreSeriesRead, RoundTripPreservesMultiCutAndDuplicateStructureSeries) {
+    // Build an analyzer with duplicate-structure compound ("phenol-dup")
+    // and multi-cut molecules (diphenylmethane, diphenylethane, diphenyl ether).
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol-dup");
+    analyzer.AddMolecule("c1ccc(Cc2ccccc2)cc1", "diphenylmethane");
+    analyzer.AddMolecule("c1ccc(CCc2ccccc2)cc1", "diphenylethane");
+    analyzer.AddMolecule("c1ccc(Oc2ccccc2)cc1", "diphenylether");
+    analyzer.Analyze();
+
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+
+    const std::vector<Series> in_memory = analyzer.GetSeries();
+    const std::vector<Series> stored = store.GetSeries();
+    ASSERT_EQ(stored.size(), in_memory.size());
+
+    // Check that members match (except for series id).
+    for (std::size_t i = 0; i < stored.size(); ++i) {
+        EXPECT_EQ(stored[i].GetConstantSmiles(), in_memory[i].GetConstantSmiles());
+        EXPECT_EQ(stored[i].GetCutCount(), in_memory[i].GetCutCount());
+        EXPECT_EQ(stored[i].GetMembers().size(), in_memory[i].GetMembers().size())
+            << "Series " << stored[i].GetConstantSmiles();
+        for (std::size_t j = 0; j < stored[i].GetMembers().size(); ++j) {
+            const SeriesMember& stored_member = stored[i].GetMembers()[j];
+            const SeriesMember& in_memory_member = in_memory[i].GetMembers()[j];
+            EXPECT_EQ(stored_member.GetVariableSmiles(), in_memory_member.GetVariableSmiles());
+            EXPECT_EQ(stored_member.GetHeavyAtomCount(), in_memory_member.GetHeavyAtomCount());
+            EXPECT_EQ(stored_member.GetMoleculeIds(), in_memory_member.GetMoleculeIds());
+            EXPECT_EQ(stored_member.GetExternalIds(), in_memory_member.GetExternalIds());
+        }
+    }
+
+    // Verify duplicate-structure: find phenyl series and check the [*:1]O member has 2 compounds.
+    const Series* phenyl = FindSeries(stored, "[*:1]c1ccccc1");
+    ASSERT_NE(phenyl, nullptr);
+    bool found_duplicate = false;
+    for (const SeriesMember& member : phenyl->GetMembers()) {
+        if (member.GetVariableSmiles() == "[*:1]O") {
+            EXPECT_EQ(member.GetMoleculeIds().size(), 2U) << "Duplicate-structure member";
+            found_duplicate = true;
+        }
+    }
+    EXPECT_TRUE(found_duplicate);
+
+    // Verify multi-cut: find the two-cut series and check cut_count.
+    const Series* two_cut = FindSeries(stored, "[*:1]c1ccccc1.[*:2]c1ccccc1");
+    ASSERT_NE(two_cut, nullptr);
+    EXPECT_EQ(two_cut->GetCutCount(), 2U);
 }
 
 }  // namespace test
