@@ -83,8 +83,12 @@ public:
     // version-3 database's rule and pair SMILES were rendered without stereo,
     // so its fragment strings cannot be reconciled with a version-4 store by
     // migration -- the stereo information was never written and is not
-    // recoverable from the stored text. Rebuild affected databases.
-    static constexpr std::uint32_t kOemmpaSchemaVersion = 4;
+    // recoverable from the stored text. Rebuild affected databases. Bumped to 5
+    // for matched molecular series: the `series` and `series_member` tables,
+    // `dataset.num_series` / `num_series_members` / `series_source`, and
+    // `rule_smiles.num_heavies` now populated. Membership cannot be recovered
+    // from `pair`, so there is no migration; rebuild.
+    static constexpr std::uint32_t kOemmpaSchemaVersion = 5;
 
     /// \brief Open an in-memory DuckDB database.
     DuckDBStore();
@@ -275,6 +279,13 @@ private:
         const std::map<std::tuple<std::uint64_t, std::uint64_t, int>,
             std::string>& staged_environment_smirks
     );
+
+    // Record on dataset whether the analysis method that saved this store
+    // enumerates series ('fragmentation'), does not ('none'), or whether no
+    // analyzer save ran at all (the column's default, 'not-computed'). Written
+    // by Analyzer::SaveTo next to the analysis method, inside its transaction,
+    // so a store with zero series always says why.
+    void SetSeriesSource(const std::string& source);
 
     // Reject stores written by an older schema revision. A v2 store always has a
     // dataset row carrying oemmpa_schema_version; a populated store with a `pair`

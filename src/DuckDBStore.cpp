@@ -49,6 +49,8 @@ const std::vector<std::string>& base_table_names() {
         "rule_environment",
         "rule_environment_statistics",
         "rule_smiles",
+        "series",
+        "series_member",
     };
     return tables;
 }
@@ -92,6 +94,9 @@ struct NewConstant {
 struct NewRuleSmiles {
     std::uint64_t id;
     std::string smiles;
+    // Empty only for a fragment SMILES OEChem cannot parse, which AppendBulk
+    // has already rejected by the time these rows are staged.
+    std::optional<unsigned int> num_heavies;
 };
 
 struct NewRule {
@@ -910,13 +915,50 @@ void refresh_dataset_counts(
         "num_rules = (select count(*) from rule),"
         "num_pairs = (select count(*) from pair),"
         "num_rule_environments = (select count(*) from rule_environment),"
-        "num_rule_environment_stats = (select count(*) from rule_environment_statistics) "
+        "num_rule_environment_stats = (select count(*) from rule_environment_statistics),"
+        "num_series = (select count(*) from series),"
+        "num_series_members = (select count(*) from series_member) "
         "where id = 1";
     std::unique_ptr<duckdb::QueryResult> update_result = connection->Query(update_sql);
     if (!update_result) {
         throw StorageError("DuckDB query returned no result: " + update_sql);
     }
     require_success(*update_result, update_sql);
+
+    // series.num_members is a denormalized fan-out count, kept in step with the
+    // membership rows here rather than at append time so a partially appended
+    // series can never leave a stale count behind. Distinct R-groups is the
+    // series' length: the same R-group reached through two compounds is one
+    // member of the series.
+    const std::string members_sql =
+        "update series set num_members = ("
+        "select count(distinct sm.rule_smiles_id) from series_member sm "
+        "where sm.series_id = series.id)";
+    std::unique_ptr<duckdb::QueryResult> members_result = connection->Query(members_sql);
+    if (!members_result) {
+        throw StorageError("DuckDB query returned no result: " + members_sql);
+    }
+    require_success(*members_result, members_sql);
+}
+
+// The series source is a stamp, not a count, so even a recounting summary reads
+// it from dataset. A store with no dataset row yet has had no analyzer save, so
+// it reports the same 'not-computed' the column would have defaulted to.
+std::string read_series_source(
+    const std::unique_ptr<duckdb::Connection>& connection
+) {
+    const std::string sql = "select series_source from dataset where id = 1";
+    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+    for (const auto& row : *result) {
+        if (!row.GetValue<duckdb::Value>(0).IsNull()) {
+            return row.GetValue<std::string>(0);
+        }
+    }
+    return "not-computed";
 }
 
 /// \brief Completed groups per explicit Appender flush.
@@ -1504,9 +1546,15 @@ void AppendRuleSmiles(
         appender.BeginRow();
         appender.Append(duckdb::Value::UBIGINT(row.id));
         appender.Append(duckdb::Value(row.smiles));
-        // num_heavies is never populated on the current per-row path; keep it
-        // NULL for equivalence with get_or_create_named_row_id.
-        appender.Append(duckdb::Value(nullptr));
+        // A heavy-atom count is written whenever the fragment SMILES parses,
+        // under the fragmenter's rule (atomic number above 1, so the attachment
+        // point and the [*:1][H] pseudo-fragment count nothing). NULL survives
+        // only for an unparsable SMILES, which AppendBulk already rejects
+        // earlier, so a stored NULL means a corrupt row rather than a
+        // never-measured one.
+        appender.Append(
+            row.num_heavies ? duckdb::Value::UINTEGER(*row.num_heavies)
+                            : duckdb::Value(nullptr));
         appender.EndRow();
     }
     appender.Close();
@@ -1712,7 +1760,12 @@ void DuckDBStore::InitializeSchema() {
             "num_rule_environment_stats ubigint,"
             // Single analysis method per store (stamped by SetAnalysisMethod on
             // first save); nullable until stamped.
-            "analysis_method varchar"
+            "analysis_method varchar,"
+            "num_series ubigint,"
+            "num_series_members ubigint,"
+            // Not nullable: an un-analysed store must still say why it holds no
+            // series, so the column defaults to 'not-computed' rather than NULL.
+            "series_source varchar not null default 'not-computed'"
             ")"
         );
         Execute(
@@ -1854,6 +1907,34 @@ void DuckDBStore::InitializeSchema() {
         Execute(
             "create index if not exists pair_compound2_idx on pair(compound2_id)"
         );
+        Execute(
+            "create table if not exists series ("
+            "id ubigint primary key,"
+            "constant_id ubigint not null references constant_smiles(id),"
+            "cut_count uinteger not null,"
+            "constant_num_heavies uinteger not null,"
+            "num_members uinteger not null,"
+            "unique (constant_id, cut_count)"
+            ")"
+        );
+        Execute(
+            "create table if not exists series_member ("
+            "id ubigint primary key,"
+            "series_id ubigint not null references series(id),"
+            "rule_smiles_id ubigint not null references rule_smiles(id),"
+            "compound_id ubigint not null references compound(id),"
+            "unique (series_id, rule_smiles_id, compound_id)"
+            ")"
+        );
+        // series_member_rule_smiles_idx is the posting list every series query
+        // starts from (R-group -> series); compound_property_property_idx lets a
+        // per-property ordering read one property's rows rather than the table.
+        Execute("create index if not exists series_constant_idx on series(constant_id)");
+        Execute("create index if not exists series_member_series_idx on series_member(series_id)");
+        Execute("create index if not exists series_member_rule_smiles_idx on series_member(rule_smiles_id)");
+        Execute(
+            "create index if not exists compound_property_property_idx "
+            "on compound_property(property_name_id, compound_id)");
 
         // Back each id column with a DuckDB sequence instead of recomputing
         // max(id)+1 on every insert. Each sequence is seeded at max(id)+1 so it
@@ -1863,7 +1944,8 @@ void DuckDBStore::InitializeSchema() {
         for (const char* table : {
             "compound", "compound_property", "constant_smiles",
             "environment_fingerprint", "pair", "property_name",
-            "rule", "rule_environment", "rule_smiles"
+            "rule", "rule_environment", "rule_smiles",
+            "series", "series_member"
         }) {
             const std::string table_name = table;
             Execute(
@@ -1932,6 +2014,12 @@ void DuckDBStore::SetAnalysisMethod(const std::string& method_name) {
     }
     const std::string sql = "update dataset set analysis_method = ? where id = 1";
     duckdb::vector<duckdb::Value> values = {duckdb::Value(method_name)};
+    execute_prepared(connection_, sql, std::move(values));
+}
+
+void DuckDBStore::SetSeriesSource(const std::string& source) {
+    const std::string sql = "update dataset set series_source = ? where id = 1";
+    duckdb::vector<duckdb::Value> values = {duckdb::Value(source)};
     execute_prepared(connection_, sql, std::move(values));
 }
 
@@ -2220,7 +2308,8 @@ void DuckDBStore::ReconcileSequences() {
     for (const char* table : {
         "compound", "compound_property", "constant_smiles",
         "environment_fingerprint", "pair", "property_name",
-        "rule", "rule_environment", "rule_smiles"
+        "rule", "rule_environment", "rule_smiles",
+        "series", "series_member"
     }) {
         const std::string table_name = table;
         const std::uint64_t start = get_max_id(connection_, table_name) + 1;
@@ -2502,7 +2591,7 @@ void DuckDBStore::AppendBulk(
             if (it != rule_smiles_id_cache_.end()) return it->second;
             const std::uint64_t id = rule_smiles_counter();
             rule_smiles_id_cache_.emplace(smiles, id);
-            new_rule_smiles.push_back({id, smiles});
+            new_rule_smiles.push_back({id, smiles, count_variable_heavy_atoms(smiles)});
             return id;
         };
         const std::uint64_t from_id =
@@ -2938,26 +3027,34 @@ std::vector<RuleEnvironmentStatistics> DuckDBStore::GetRuleEnvironmentStatistics
 
 DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
     if (recount) {
+        // The series source is never a count, so a recount still reads the
+        // stamp rather than inferring one from an empty series table.
         return DatabaseSummary(
             GetRowCount("compound"),
             GetRowCount("rule"),
             GetRowCount("pair"),
             GetRowCount("rule_environment"),
-            GetRowCount("rule_environment_statistics")
+            GetRowCount("rule_environment_statistics"),
+            GetRowCount("series"),
+            GetRowCount("series_member"),
+            read_series_source(connection_)
         );
     }
 
     const std::string sql =
         "select "
         "num_compounds, num_rules, num_pairs, num_rule_environments, "
-        "num_rule_environment_stats "
+        "num_rule_environment_stats, num_series, num_series_members, series_source "
         "from dataset "
         "where id = 1 "
         "and num_compounds is not null "
         "and num_rules is not null "
         "and num_pairs is not null "
         "and num_rule_environments is not null "
-        "and num_rule_environment_stats is not null";
+        "and num_rule_environment_stats is not null "
+        "and num_series is not null "
+        "and num_series_members is not null "
+        "and series_source is not null";
     std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
     if (!result) {
         throw StorageError("DuckDB query returned no result: " + sql);
@@ -2970,7 +3067,10 @@ DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
             row.GetValue<std::uint64_t>(1),
             row.GetValue<std::uint64_t>(2),
             row.GetValue<std::uint64_t>(3),
-            row.GetValue<std::uint64_t>(4)
+            row.GetValue<std::uint64_t>(4),
+            row.GetValue<std::uint64_t>(5),
+            row.GetValue<std::uint64_t>(6),
+            row.GetValue<std::string>(7)
         );
     }
 

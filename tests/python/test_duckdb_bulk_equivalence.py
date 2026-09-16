@@ -46,6 +46,13 @@ def _actual_as_strings(rows: list[tuple]) -> list[tuple]:
     return [tuple("" if v is None else str(v) for v in row) for row in rows]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "schema 5: rule_smiles.num_heavies is populated and the series tables "
+        "exist; the golden is regenerated in plan 1 Task 5"
+    ),
+)
 def test_bulk_save_matches_golden(tmp_path):
     import duckdb
 

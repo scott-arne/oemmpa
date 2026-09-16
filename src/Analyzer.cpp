@@ -455,6 +455,11 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
         // mutates state.
         store.SetAnalysisMethod(method_name_);
 
+        // Say whether this method enumerates series, so a store with zero
+        // series rows is never ambiguous: 'fragmentation' means computed and
+        // empty, 'none' means the method has no series to offer.
+        store.SetSeriesSource(method_->ProducesSeries() ? method_name_ : "none");
+
         // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
         // through the non-owning helper inside this single owning transaction.
         store.AppendBulk(molecules_, GetPairs(options));

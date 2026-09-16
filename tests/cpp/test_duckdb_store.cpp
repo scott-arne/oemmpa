@@ -2132,15 +2132,15 @@ TEST(DuckDBStoreBulk, SaveToThenLegacyInsertAllocatesPastMaxId) {
     std::filesystem::remove(path);
 }
 
-TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionFour) {
+TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionFive) {
     const std::string path = (std::filesystem::temp_directory_path() /
-        "oemmpa_fresh_v4.duckdb").string();
+        "oemmpa_fresh_v5.duckdb").string();
     std::filesystem::remove(path);
     {
         DuckDBStore store(path);
         store.InitializeSchema();
     }
-    // A fresh store must be stamped with the current schema version (4).
+    // A fresh store must be stamped with the current schema version (5).
     {
         duckdb::DuckDB database(path);
         duckdb::Connection connection(database);
@@ -2149,7 +2149,7 @@ TEST(DuckDBStoreTest, FreshStoreStampedSchemaVersionFour) {
         ASSERT_FALSE(result->HasError());
         const std::uint64_t version =
             result->Fetch()->GetValue(0, 0).GetValue<std::uint64_t>();
-        EXPECT_EQ(version, 4u);
+        EXPECT_EQ(version, 5u);
     }
     std::filesystem::remove(path);
 }
@@ -2231,7 +2231,7 @@ std::map<int, std::string> ReadRepresentativeMap(const std::filesystem::path& pa
 
 }  // namespace
 
-TEST(DuckDBStoreTest, StampsSchemaVersion4) {
+TEST(DuckDBStoreTest, StampsSchemaVersion5) {
     // No public schema-version getter; a fresh store is stamped at
     // InitializeSchema time, read back through a file-backed raw connection.
     const std::filesystem::path path = TemporaryDatabasePath();
@@ -2243,7 +2243,7 @@ TEST(DuckDBStoreTest, StampsSchemaVersion4) {
     duckdb::DuckDB database(path.string());
     duckdb::Connection connection(database);
     EXPECT_EQ(ScalarUBigint(
-        connection, "select oemmpa_schema_version from dataset where id = 1"), 4u);
+        connection, "select oemmpa_schema_version from dataset where id = 1"), 5u);
     std::filesystem::remove(path);
 }
 
@@ -3243,6 +3243,133 @@ TEST(DuckDBStoreTest, PersistedWizePairZPairRoundTripsEnvironmentSmirks) {
     std::filesystem::remove(path_a);
     std::filesystem::remove(path_b);
     std::filesystem::remove(frag_path);
+}
+
+TEST(DuckDBStoreSchema5, FreshStoreCarriesTheSeriesTablesTheirIndexesAndTheSource) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        EXPECT_TRUE(store.HasTable("series"));
+        EXPECT_TRUE(store.HasTable("series_member"));
+        EXPECT_EQ(store.GetRowCount("series"), 0U);
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection, "select oemmpa_schema_version from dataset where id = 1"), 5U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from information_schema.columns where table_name = 'series' "
+        "and column_name in ('id', 'constant_id', 'cut_count', 'constant_num_heavies', 'num_members')"), 5U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from information_schema.columns where table_name = 'series_member' "
+        "and column_name in ('id', 'series_id', 'rule_smiles_id', 'compound_id')"), 4U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from duckdb_indexes() where index_name in ("
+        "'series_constant_idx', 'series_member_series_idx', "
+        "'series_member_rule_smiles_idx', 'compound_property_property_idx')"), 4U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from dataset where id = 1 and series_source = 'not-computed'"), 1U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSchema5, SchemaFourStoreIsRejected) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        store.Execute("update dataset set oemmpa_schema_version = 4 where id = 1");
+    }
+    EXPECT_THROW(DuckDBStore rejected(path.string()), StorageError);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSchema5, SummaryReportsSeriesCountsAndSource) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    store.RefreshDatasetCounts();
+
+    const DatabaseSummary summary = store.GetSummary();
+    EXPECT_EQ(summary.GetNumSeries(), 0U);
+    EXPECT_EQ(summary.GetNumSeriesMembers(), 0U);
+    EXPECT_EQ(summary.GetSeriesSource(), "not-computed");
+    EXPECT_EQ(store.GetSummary(true).GetSeriesSource(), "not-computed");
+}
+
+TEST(DuckDBStoreSchema5, SaveToStampsTheSeriesSourcePerMethod) {
+    {
+        Analyzer analyzer;
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        DuckDBStore store;
+        analyzer.SaveTo(store);
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "fragmentation");
+    }
+    {
+        Analyzer analyzer("dmcss");
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        DuckDBStore store;
+        analyzer.SaveTo(store);
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "none");
+    }
+    {
+        // The direct pair API never runs the analyzer's save, so the store
+        // keeps the initial value rather than claiming series were computed.
+        Analyzer analyzer;
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        DuckDBStore store;
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
+        store.AddPairs(analyzer.GetPairs());
+        store.RefreshDatasetCounts();
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "not-computed");
+    }
+}
+
+TEST(DuckDBStoreSchema5, RuleSmilesHeavyCountsArePopulatedOnBothSavePaths) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        Analyzer analyzer;
+        analyzer.AddMolecule("c1ccccc1", "benzene");
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    {
+        duckdb::DuckDB database(path.string());
+        duckdb::Connection connection(database);
+        EXPECT_EQ(ScalarUBigint(connection, "select num_heavies from rule_smiles where smiles = '[*:1]C'"), 1U);
+        EXPECT_EQ(ScalarUBigint(connection, "select num_heavies from rule_smiles where smiles = '[*:1][H]'"), 0U);
+        EXPECT_EQ(ScalarUBigint(connection, "select count(*) from rule_smiles where num_heavies is null"), 0U);
+    }
+    std::filesystem::remove(path);
+
+    const std::filesystem::path pairs_path = TemporaryDatabasePath();
+    {
+        Analyzer analyzer;
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("CCc1ccccc1", "ethylbenzene");
+        analyzer.Analyze();
+        DuckDBStore store(pairs_path.string());
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "toluene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(2, "CCc1ccccc1", "ethylbenzene"));
+        store.AddPairs(analyzer.GetPairs());
+    }
+    {
+        duckdb::DuckDB database(pairs_path.string());
+        duckdb::Connection connection(database);
+        EXPECT_EQ(ScalarUBigint(connection, "select num_heavies from rule_smiles where smiles = '[*:1]CC'"), 2U);
+        EXPECT_EQ(ScalarUBigint(connection, "select count(*) from rule_smiles where num_heavies is null"), 0U);
+    }
+    std::filesystem::remove(pairs_path);
 }
 
 }  // namespace test
