@@ -462,7 +462,8 @@ void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
 
         // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
         // through the non-owning helper inside this single owning transaction.
-        store.AppendBulk(molecules_, GetPairs(options));
+        // Series ride the same transaction; they take no options.
+        store.AppendBulk(molecules_, GetPairs(options), GetSeries());
 
         // Properties stay on the existing upsert DML path (AddMoleculeProperty),
         // inside the SAME transaction, keyed by the verbatim analyzer id

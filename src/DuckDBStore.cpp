@@ -12,6 +12,7 @@
 #include <oechem.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -140,6 +141,21 @@ struct NewConstantEnvironment {
     std::uint64_t constant_id;
     int radius;
     std::uint64_t fingerprint_id;
+};
+
+struct NewSeries {
+    std::uint64_t id;
+    std::uint64_t constant_id;
+    unsigned int cut_count;
+    unsigned int constant_num_heavies;
+    unsigned int num_members;
+};
+
+struct NewSeriesMember {
+    std::uint64_t id;
+    std::uint64_t series_id;
+    std::uint64_t rule_smiles_id;
+    std::uint64_t compound_id;
 };
 
 std::string trim_copy(const std::string& text) {
@@ -1667,6 +1683,45 @@ void AppendPairs(
     appender.Close();
 }
 
+void AppendSeries(
+    duckdb::Connection& connection,
+    const std::vector<NewSeries>& series
+) {
+    if (series.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "series");
+    for (const NewSeries& row : series) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.id));
+        appender.Append(duckdb::Value::UBIGINT(row.constant_id));
+        appender.Append(duckdb::Value::UINTEGER(row.cut_count));
+        appender.Append(duckdb::Value::UINTEGER(row.constant_num_heavies));
+        appender.Append(duckdb::Value::UINTEGER(row.num_members));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
+void AppendSeriesMembers(
+    duckdb::Connection& connection,
+    const std::vector<NewSeriesMember>& members
+) {
+    if (members.empty()) {
+        return;
+    }
+    duckdb::Appender appender(connection, "series_member");
+    for (const NewSeriesMember& row : members) {
+        appender.BeginRow();
+        appender.Append(duckdb::Value::UBIGINT(row.id));
+        appender.Append(duckdb::Value::UBIGINT(row.series_id));
+        appender.Append(duckdb::Value::UBIGINT(row.rule_smiles_id));
+        appender.Append(duckdb::Value::UBIGINT(row.compound_id));
+        appender.EndRow();
+    }
+    appender.Close();
+}
+
 }  // namespace
 
 DuckDBStore::DuckDBStore()
@@ -2455,8 +2510,13 @@ void DuckDBStore::PreloadIdCaches() {
 
 void DuckDBStore::AppendBulk(
     const std::vector<MoleculeRecord>& molecules,
-    const std::vector<MatchedPair>& pairs
+    const std::vector<MatchedPair>& pairs,
+    const std::vector<Series>& series
 ) {
+    // A call that carries no series must not keep reporting the previous
+    // call's figure, so the diagnostic is reset before anything can throw.
+    last_series_append_seconds_ = 0.0;
+
     // --- Seed dimension/pair counters from current max(id). compound is NOT
     // counter-assigned: its id is the analyzer internal id, written verbatim.
     BulkIdCounter constant_counter{seed_counter("constant_smiles")};
@@ -2465,6 +2525,8 @@ void DuckDBStore::AppendBulk(
     BulkIdCounter fingerprint_counter{seed_counter("environment_fingerprint")};
     BulkIdCounter rule_environment_counter{seed_counter("rule_environment")};
     BulkIdCounter pair_counter{seed_counter("pair")};
+    BulkIdCounter series_counter{seed_counter("series")};
+    BulkIdCounter series_member_counter{seed_counter("series_member")};
 
     // --- Pre-load existing natural-key -> id rows so a non-empty store reuses
     // ids instead of re-minting them (preserves get_or_create_* semantics).
@@ -2521,6 +2583,37 @@ void DuckDBStore::AppendBulk(
         require_known_molecule(pair.GetTargetMoleculeId(), "target");
     }
 
+    // --- The one-save-per-store contract for series. A series lists every
+    // R-group its constant carried across the whole analyzed set, so it is only
+    // true of the store it was computed from. Written into a store that already
+    // holds rows it would describe just a part of it, and a pair appended after
+    // it would leave it silently incomplete -- neither is recoverable by
+    // recounting, because membership cannot be derived from `pair`. Both
+    // directions are refused here, ahead of every Appender, so a rejected call
+    // leaves the store byte for byte as it was. Molecule-only writes and empty
+    // batches are deliberately not guarded: neither can make a stored series
+    // wrong, and the empty batch is the only public way to reconcile sequences.
+    if (!series.empty()) {
+        for (const char* table : {"compound", "pair", "series"}) {
+            if (GetRowCount(table) != 0) {
+                throw StorageError(
+                    std::string("series can only be written into an empty store, but ") +
+                    table + " already holds rows; rebuild the store");
+            }
+        }
+    } else if (!pairs.empty() && GetRowCount("series") != 0) {
+        throw StorageError(
+            "pairs cannot be written into a store that holds series, because the "
+            "stored series would no longer describe every pair; rebuild the store");
+    }
+    for (const Series& entry : series) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            for (const unsigned int molecule_id : member.GetMoleculeIds()) {
+                require_known_molecule(molecule_id, "series member");
+            }
+        }
+    }
+
     // New-row staging vectors (only rows not already present get appended).
     std::vector<NewConstant> new_constants;
     std::vector<NewRuleSmiles> new_rule_smiles;
@@ -2560,6 +2653,32 @@ void DuckDBStore::AppendBulk(
     // pass through unchanged; anything else becomes StorageError. The owning
     // transaction (SaveTo / AddPairs) rolls back and clears id caches on throw.
     try {
+    // rule_smiles resolution is shared by the pair loop and the series loop
+    // below -- a series R-group is the same dictionary entry as a pair's
+    // variable fragment -- so it is hoisted out of both rather than duplicated.
+    auto resolve_rule_smiles = [&](const std::string& smiles) -> std::uint64_t {
+        auto it = rule_smiles_id_cache_.find(smiles);
+        if (it != rule_smiles_id_cache_.end()) return it->second;
+        // Measure before minting an id, because a fragment OEChem cannot
+        // read has no heavy-atom count and would otherwise be stored as a
+        // NULL num_heavies -- indistinguishable from a corrupt row, and
+        // fatal to a later heavy-atom-filtered query. Throwing here, ahead
+        // of the counter, the cache and the staging vector, leaves the
+        // caches and the owning transaction to roll the whole save back.
+        // The check sits on the cache-miss path so a repeated R-group is
+        // still resolved without re-parsing it.
+        const std::optional<unsigned int> num_heavies =
+            count_variable_heavy_atoms(smiles);
+        if (!num_heavies.has_value()) {
+            throw StorageError(
+                "cannot store unparsable variable SMILES in rule_smiles: " +
+                smiles);
+        }
+        const std::uint64_t id = rule_smiles_counter();
+        rule_smiles_id_cache_.emplace(smiles, id);
+        new_rule_smiles.push_back({id, smiles, num_heavies});
+        return id;
+    };
     for (const MatchedPair& pair : pairs) {
         // Preserve the legacy get_or_create_named_row_id guard: empty normalized
         // values must never be stored. AppendBulk assigns ids directly rather
@@ -2587,29 +2706,6 @@ void DuckDBStore::AppendBulk(
             }
         }
         // rule_smiles (source + target variable)
-        auto resolve_rule_smiles = [&](const std::string& smiles) -> std::uint64_t {
-            auto it = rule_smiles_id_cache_.find(smiles);
-            if (it != rule_smiles_id_cache_.end()) return it->second;
-            // Measure before minting an id, because a fragment OEChem cannot
-            // read has no heavy-atom count and would otherwise be stored as a
-            // NULL num_heavies -- indistinguishable from a corrupt row, and
-            // fatal to a later heavy-atom-filtered query. Throwing here, ahead
-            // of the counter, the cache and the staging vector, leaves the
-            // caches and the owning transaction to roll the whole save back.
-            // The check sits on the cache-miss path so a repeated R-group is
-            // still resolved without re-parsing it.
-            const std::optional<unsigned int> num_heavies =
-                count_variable_heavy_atoms(smiles);
-            if (!num_heavies.has_value()) {
-                throw StorageError(
-                    "cannot store unparsable variable SMILES in rule_smiles: " +
-                    smiles);
-            }
-            const std::uint64_t id = rule_smiles_counter();
-            rule_smiles_id_cache_.emplace(smiles, id);
-            new_rule_smiles.push_back({id, smiles, num_heavies});
-            return id;
-        };
         const std::uint64_t from_id =
             resolve_rule_smiles(pair.GetSourceVariableSmiles());
         const std::uint64_t to_id =
@@ -2792,6 +2888,55 @@ void DuckDBStore::AppendBulk(
         }
     }
 
+    // --- Series: one row per (constant, cut_count), one member row per
+    // (series, R-group, compound). Constants and R-groups resolve through the
+    // same caches as pairs, so an R-group that formed no pair still lands in
+    // rule_smiles, with its heavy count. A constant reached only through a
+    // series gets NO constant_environment rows: those describe a pair's
+    // environments and are derived only where a pair exists, and no read joins
+    // constant_environment from series. Only this loop and the two series
+    // Appenders are timed: the figure is the series share of the save.
+    std::vector<NewSeries> new_series;
+    std::vector<NewSeriesMember> new_series_members;
+    new_series.reserve(series.size());
+    double series_seconds = 0.0;
+    {
+        const auto staging_started = std::chrono::steady_clock::now();
+        for (const Series& entry : series) {
+            if (entry.GetConstantSmiles().empty()) {
+                throw StorageError("cannot store empty normalized value in constant_smiles");
+            }
+            std::uint64_t constant_id;
+            {
+                auto it = constant_id_cache_.find(entry.GetConstantSmiles());
+                if (it != constant_id_cache_.end()) {
+                    constant_id = it->second;
+                } else {
+                    constant_id = constant_counter();
+                    constant_id_cache_.emplace(entry.GetConstantSmiles(), constant_id);
+                    new_constants.push_back({constant_id, entry.GetConstantSmiles()});
+                }
+            }
+            const std::uint64_t series_id = series_counter();
+            new_series.push_back({
+                series_id, constant_id, entry.GetCutCount(),
+                entry.GetConstantHeavyAtomCount(),
+                static_cast<unsigned int>(entry.Size())});
+            for (const SeriesMember& member : entry.GetMembers()) {
+                if (member.GetVariableSmiles().empty()) {
+                    throw StorageError("cannot store empty normalized value in rule_smiles");
+                }
+                const std::uint64_t rule_smiles_id = resolve_rule_smiles(member.GetVariableSmiles());
+                for (const unsigned int molecule_id : member.GetMoleculeIds()) {
+                    new_series_members.push_back({
+                        series_member_counter(), series_id, rule_smiles_id, molecule_id});
+                }
+            }
+        }
+        series_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - staging_started).count();
+    }
+
     // --- Phase B: append everything in FK-dependency order via Appenders.
     // compound first (verbatim analyzer ids), then dimensions, then pairs.
     AppendMolecules(*connection_, molecules);
@@ -2802,6 +2947,14 @@ void DuckDBStore::AppendBulk(
     AppendConstantEnvironments(*connection_, new_constant_environments);
     AppendRuleEnvironments(*connection_, new_rule_environments);
     AppendPairs(*connection_, pair_rows);
+    {
+        const auto append_started = std::chrono::steady_clock::now();
+        AppendSeries(*connection_, new_series);
+        AppendSeriesMembers(*connection_, new_series_members);
+        series_seconds += std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - append_started).count();
+    }
+    last_series_append_seconds_ = series.empty() ? 0.0 : series_seconds;
 
     // num_pairs is derived: count physical pairs whose (rule, constant) resolve to
     // each environment's fingerprint at its radius. Set-based, off the per-pair
@@ -3180,6 +3333,10 @@ std::vector<Transform> DuckDBStore::GetTransforms(const QueryOptions& options) c
         transforms.push_back(entry.second);
     }
     return transforms;
+}
+
+double DuckDBStore::GetLastSeriesAppendSeconds() const {
+    return last_series_append_seconds_;
 }
 
 std::vector<std::string> DuckDBStore::GetTableNames() const {

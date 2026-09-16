@@ -17,6 +17,7 @@
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
+#include "oemmpa/Series.h"
 #include "oemmpa/Transform.h"
 
 namespace duckdb {
@@ -232,6 +233,14 @@ public:
     /// \brief Group stored matched pairs filtered by query options.
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
+    /// \brief Seconds the last AppendBulk spent staging and appending series.
+    ///
+    /// A benchmark diagnostic so the series share of a save can be measured
+    /// rather than inferred: it covers the series staging loop and the two
+    /// series Appenders only, never the molecule, dictionary or pair writes,
+    /// and it is 0 when the last save carried no series.
+    double GetLastSeriesAppendSeconds() const;
+
     /// \brief Return base-table names in the main schema.
     std::vector<std::string> GetTableNames() const;
 
@@ -258,13 +267,16 @@ private:
         std::uint64_t operator()() { return next++; }
     };
 
-    // Bulk resolve-then-append for molecules, dimensions, and pairs. NON-OWNING:
-    // a transaction must already be open; this never issues begin/commit/rollback.
-    // Properties are NOT handled here (they stay on the AddMoleculeProperty
-    // upsert DML path). compound.id is written verbatim from the analyzer id.
+    // Bulk resolve-then-append for molecules, dimensions, pairs, and series,
+    // which are written only when the store holds none. NON-OWNING: a
+    // transaction must already be open; this never issues
+    // begin/commit/rollback. Properties are NOT handled here (they stay on the
+    // AddMoleculeProperty upsert DML path). compound.id is written verbatim
+    // from the analyzer id.
     void AppendBulk(
         const std::vector<MoleculeRecord>& molecules,
-        const std::vector<MatchedPair>& pairs
+        const std::vector<MatchedPair>& pairs,
+        const std::vector<Series>& series = {}
     );
 
     // Seed member id caches from existing rows so a non-empty store reuses ids.
@@ -325,6 +337,11 @@ private:
     // Constant ids whose constant_environment rows already exist (persisted or
     // written this load), so populating them is idempotent across reloads.
     std::unordered_set<std::uint64_t> constant_environment_ids_;
+
+    // Series share of the last AppendBulk, reported by
+    // GetLastSeriesAppendSeconds. Reset by every AppendBulk, so a save that
+    // carried no series reports 0 rather than the previous save's figure.
+    double last_series_append_seconds_ = 0.0;
 };
 
 }  // namespace OEMMPA
