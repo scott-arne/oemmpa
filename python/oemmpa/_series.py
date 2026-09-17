@@ -6,6 +6,7 @@ the series read needs.
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 
 from . import _oemmpa
@@ -49,19 +50,30 @@ class SeriesSelectionOptions:
     cut_count: int = 0
 
     def __post_init__(self):
-        if int(self.min_series_length) < 1:
+        # Validate and normalize all fields to integral values.
+        for name in ("min_series_length", "max_variable_heavy_atoms", "min_constant_heavy_atoms", "cut_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool):
+                raise ValueError(f"{name} must be an integer, not bool")
+            try:
+                normalized = operator.index(value)
+            except TypeError:
+                raise ValueError(f"{name} must be an integer") from None
+            object.__setattr__(self, name, normalized)
+
+        if self.min_series_length < 1:
             raise ValueError("min_series_length must be at least one")
         for name in ("max_variable_heavy_atoms", "min_constant_heavy_atoms", "cut_count"):
-            if int(getattr(self, name)) < 0:
+            if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be zero (unbounded) or positive")
 
     def to_raw(self):
         """Return the equivalent ``_oemmpa.SeriesSelection``."""
         raw = _oemmpa.SeriesSelection()
-        raw.min_series_length = int(self.min_series_length)
-        raw.max_variable_heavy_atoms = int(self.max_variable_heavy_atoms)
-        raw.min_constant_heavy_atoms = int(self.min_constant_heavy_atoms)
-        raw.cut_count = int(self.cut_count)
+        raw.min_series_length = self.min_series_length
+        raw.max_variable_heavy_atoms = self.max_variable_heavy_atoms
+        raw.min_constant_heavy_atoms = self.min_constant_heavy_atoms
+        raw.cut_count = self.cut_count
         return raw
 
 

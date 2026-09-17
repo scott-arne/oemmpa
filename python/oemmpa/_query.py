@@ -17,7 +17,7 @@ from ._display import (
 )
 from ._facade import Analyzer
 from ._loading import load_dataframe_rows
-from ._series import series_rows
+from ._series import SERIES_ROW_COLUMNS, series_rows
 from ._transform import generate_products
 from ._workflow import coerce_objective
 
@@ -516,7 +516,26 @@ class SeriesQuery:
         return text_collection_summary(self.__class__.__name__, len(self))
 
     def _repr_html_(self):
-        return html_collection_preview(self.__class__.__name__, self.to_dicts())
+        # Use a generator to avoid materializing all rows for preview.
+        def row_generator():
+            for entry in self._series:
+                members = entry.GetMembers()
+                for member in members:
+                    molecule_ids = list(member.GetMoleculeIds())
+                    external_ids = list(member.GetExternalIds())
+                    for molecule_id, external_id in zip(molecule_ids, external_ids, strict=True):
+                        yield {
+                            "series_id": int(entry.GetSeriesId()),
+                            "constant": str(entry.GetConstantSmiles()),
+                            "cut_count": int(entry.GetCutCount()),
+                            "constant_num_heavies": int(entry.GetConstantHeavyAtomCount()),
+                            "num_members": int(entry.Size()),
+                            "rgroup": str(member.GetVariableSmiles()),
+                            "rgroup_num_heavies": int(member.GetHeavyAtomCount()),
+                            "molecule_id": int(molecule_id),
+                            "compound_id": str(external_id),
+                        }
+        return html_collection_preview(self.__class__.__name__, row_generator())
 
     def filter(self, constant=None, cut_count=None, min_length=None):
         """Return the series matching every given bound.
@@ -546,6 +565,7 @@ class SeriesQuery:
             library=library,
             molecules=molecules,
             smiles_columns=SERIES_SMILES_COLUMNS,
+            columns=SERIES_ROW_COLUMNS,
         )
 
     def _filter(self, predicate):

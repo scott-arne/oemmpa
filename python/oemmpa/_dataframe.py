@@ -45,6 +45,7 @@ def dataframe_from_dicts(
     molecules=False,
     smiles_columns=(),
     smirks_columns=(),
+    columns=None,
 ):
     """Return rows as a pandas or polars dataframe.
 
@@ -56,6 +57,8 @@ def dataframe_from_dicts(
         dtype.
     :param smiles_columns: Columns containing molecule or fragment SMILES.
     :param smirks_columns: Columns containing transform SMIRKS.
+    :param columns: Optional column list to use for empty frames; if omitted,
+        an empty frame has no columns.
     :returns: Dataframe from the requested backend.
     :raises ValueError: If ``library`` is unsupported.
     """
@@ -65,6 +68,7 @@ def dataframe_from_dicts(
             molecules=molecules,
             smiles_columns=smiles_columns,
             smirks_columns=smirks_columns,
+            columns=columns,
         )
     if library == "polars":
         return _polars_dataframe(
@@ -72,6 +76,7 @@ def dataframe_from_dicts(
             molecules=molecules,
             smiles_columns=smiles_columns,
             smirks_columns=smirks_columns,
+            columns=columns,
         )
     raise ValueError(f"unsupported dataframe library: {library}")
 
@@ -85,9 +90,13 @@ def rows_from(rows_or_result):
     return list(rows_or_result)
 
 
-def _pandas_dataframe(rows, *, molecules, smiles_columns, smirks_columns):
+def _pandas_dataframe(rows, *, molecules, smiles_columns, smirks_columns, columns):
     pandas = importlib.import_module("pandas")
-    frame = pandas.DataFrame(rows)
+    row_list = list(rows)
+    if not row_list and columns is not None:
+        frame = pandas.DataFrame(columns=columns)
+    else:
+        frame = pandas.DataFrame(row_list)
     if not molecules or frame.empty:
         return frame
 
@@ -114,9 +123,13 @@ def _pandas_dataframe(rows, *, molecules, smiles_columns, smirks_columns):
     return frame
 
 
-def _polars_dataframe(rows, *, molecules, smiles_columns, smirks_columns):
+def _polars_dataframe(rows, *, molecules, smiles_columns, smirks_columns, columns):
     polars = importlib.import_module("polars")
-    frame = polars.DataFrame(rows)
+    row_list = list(rows)
+    if not row_list and columns is not None:
+        frame = polars.DataFrame(schema={col: polars.Utf8 for col in columns})
+    else:
+        frame = polars.DataFrame(row_list)
     if not molecules or frame.is_empty():
         return frame
 

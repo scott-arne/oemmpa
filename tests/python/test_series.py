@@ -155,3 +155,74 @@ def test_store_series_members_counts_compound_memberships(tmp_path):
     # Four series_member rows (compound memberships), not 3 (distinct R-groups).
     assert summary["series_members"] == 4
     assert summary["series_members"] == len(store.series().to_dicts())
+
+
+def test_empty_series_dataframe_has_schema_for_pandas():
+    pandas = pytest.importorskip("pandas")
+    # MCS analyzer produces no series.
+    analyzer = Analyzer(method="dmcss")
+    analyzer.add_molecule("Cc1ccccc1", id="toluene")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.analyze()
+
+    frame = analyzer.series().to_dataframe()
+    assert isinstance(frame, pandas.DataFrame)
+    assert list(frame.columns) == list(SERIES_ROW_COLUMNS)
+    assert len(frame) == 0
+
+    # Filter with no match.
+    analyzer2 = _phenyl_analyzer()
+    frame2 = analyzer2.series().filter(cut_count=3).to_dataframe()
+    assert list(frame2.columns) == list(SERIES_ROW_COLUMNS)
+    assert len(frame2) == 0
+
+
+def test_empty_series_dataframe_has_schema_for_polars():
+    pytest.importorskip("polars")
+    # MCS analyzer produces no series.
+    analyzer = Analyzer(method="dmcss")
+    analyzer.add_molecule("Cc1ccccc1", id="toluene")
+    analyzer.add_molecule("Oc1ccccc1", id="phenol")
+    analyzer.analyze()
+
+    frame = analyzer.series().to_dataframe(library="polars")
+    assert frame.columns == list(SERIES_ROW_COLUMNS)
+    assert len(frame) == 0
+
+    # Filter with no match.
+    analyzer2 = _phenyl_analyzer()
+    frame2 = analyzer2.series().filter(cut_count=3).to_dataframe(library="polars")
+    assert frame2.columns == list(SERIES_ROW_COLUMNS)
+    assert len(frame2) == 0
+
+
+def test_selection_options_reject_non_integral_values():
+    with pytest.raises(ValueError, match="cut_count must be an integer"):
+        SeriesSelectionOptions(cut_count=-0.5)
+    with pytest.raises(ValueError, match="max_variable_heavy_atoms must be an integer"):
+        SeriesSelectionOptions(max_variable_heavy_atoms=2.5)
+    with pytest.raises(ValueError, match="min_series_length must be an integer, not bool"):
+        SeriesSelectionOptions(min_series_length=True)
+
+
+def test_series_query_preview_bounds_materialization():
+    # Create a large enough dataset that preview would show only a subset.
+    analyzer = Analyzer()
+    for i in range(10):
+        analyzer.add_molecule(f"{'C' * (i + 1)}c1ccccc1", id=f"mol_{i}")
+    analyzer.analyze()
+
+    query = analyzer.series()
+    all_rows = query.to_dicts()
+    # The phenyl core with 10 different alkyl chains = 10 member rows.
+    assert len(all_rows) >= 10
+
+    # Trigger the HTML preview.
+    html = query._repr_html_()
+    assert isinstance(html, str)
+
+    # The preview limit is 5 rows. Verify not all 10 compound IDs appear.
+    # The preview shows at most 5 rows (with "has more" indicator).
+    mol_ids_in_html = sum(1 for i in range(10) if f"mol_{i}" in html)
+    assert mol_ids_in_html <= 6  # Limit (5) + 1 for "has more" detection.
+    assert mol_ids_in_html < 10  # Not all rows materialized in preview.
