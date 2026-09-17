@@ -103,8 +103,8 @@ OEMMPA_STAGES = (
 #: added into a total: summing ``persist_series`` on top of ``persist`` would
 #: count the series writes twice.
 DIAGNOSTIC_STAGES = ("persist_series",)
-#: ``corpora[size]["source"]`` when a corpus sidecar exists but cannot be read.
-#: Distinct from ``None``, which means the corpus has no sidecar at all.
+#: ``corpora[size]["source"]`` when no sidecar vouches for the corpus on disk,
+#: whether it is missing, unreadable, or describes different bytes.
 PROVENANCE_UNAVAILABLE = "unavailable"
 
 
@@ -789,9 +789,9 @@ def _corpus_provenance(path):
 
     :param path: Corpus SMILES path.
     :returns: ``source``, ``requested_size`` and ``actual_size``. ``source`` is
-        ``None`` when no sidecar exists and ``PROVENANCE_UNAVAILABLE`` when one
-        exists but does not describe the corpus on disk, in which case ``error``
-        carries the reason.
+        ``PROVENANCE_UNAVAILABLE`` whenever no sidecar vouches for the corpus on
+        disk - missing, unreadable, or describing different bytes - and ``error``
+        then carries the reason.
     """
     data, reason = read_provenance(path)
     if reason is not None:
@@ -802,8 +802,6 @@ def _corpus_provenance(path):
             "actual_size": None,
             "error": reason,
         }
-    if data is None:
-        return {"source": None, "requested_size": None, "actual_size": None}
     return {
         "source": data.get("source"),
         "requested_size": data.get("requested_size"),

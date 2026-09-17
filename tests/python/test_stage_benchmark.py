@@ -296,6 +296,120 @@ def test_sidecar_without_a_digest_is_untrusted_and_regenerated(tmp_path, monkeyp
     assert json.loads(sidecar.read_text(encoding="utf-8"))["digest"]
 
 
+def test_a_corpus_published_without_its_sidecar_is_regenerated(tmp_path, monkeypatch):
+    # The first generation is interrupted between its two writes: the corpus is
+    # published and the sidecar never lands. Nothing on disk then says where the
+    # molecules came from, so serving them would credit a whole sweep to a source
+    # no file names - and, unlike a digest mismatch, the gap never heals.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_a)
+    cache = tmp_path / "cache"
+    original = corpus._write_provenance
+
+    def fail(*_args, **_kwargs):
+        raise OSError(errno.EIO, "sidecar write failed")
+
+    monkeypatch.setattr(corpus, "_write_provenance", fail)
+    with pytest.raises(OSError):
+        corpus.ensure_corpus(3, cache_dir=cache)
+    cached = cache / "n3.smi"
+    assert cached.exists()  # the corpus was published before the interruption
+    assert not cached.with_suffix(".provenance.json").exists()
+
+    # Source A is still within reach, so the next call rebuilds the pair instead
+    # of accepting molecules nothing vouches for.
+    monkeypatch.setattr(corpus, "_write_provenance", original)
+    healed = corpus.ensure_corpus(3, cache_dir=cache)
+    assert healed == cached
+    assert sb._corpus_provenance(healed)["source"] == str(source_a)
+
+
+def test_corpus_without_a_sidecar_is_served_but_reported_unavailable(
+    tmp_path, monkeypatch
+):
+    # The mirror case of the same interruption: no source is left to regenerate
+    # from. The molecules are still served - losing a sweep over a metadata file
+    # is the worse trade - but the run must say the provenance is unavailable
+    # rather than report no source at all, which reads as nothing being wrong.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_a)
+    cache = tmp_path / "cache"
+
+    def fail(*_args, **_kwargs):
+        raise OSError(errno.EIO, "sidecar write failed")
+
+    monkeypatch.setattr(corpus, "_write_provenance", fail)
+    with pytest.raises(OSError):
+        corpus.ensure_corpus(3, cache_dir=cache)
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", tmp_path / "gone.smi")
+
+    served = corpus.ensure_corpus(3, cache_dir=cache)
+    assert served == cache / "n3.smi" and served.exists()
+    entry = sb._corpus_provenance(served)
+    assert entry["source"] == sb.PROVENANCE_UNAVAILABLE
+    assert "sidecar" in entry["error"]
+
+
+def _interleave_two_generations(tmp_path, monkeypatch, *, sidecar_last):
+    """Publish two corpora from different sources with their sidecars deferred.
+
+    Both writers publish their corpus first, then their sidecars land in the
+    requested order. That reproduces, deterministically and without threads, the
+    window in which one generator replaces the corpus another generator is about
+    to describe.
+
+    :param sidecar_last: ``"a"`` or ``"b"``, whichever writer's sidecar lands last.
+    :returns: ``(corpus_path, source_a, source_b)``.
+    """
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    source_b = _write_source(tmp_path / "source_b.smi", "B", 5)
+    cache = tmp_path / "cache"
+    write_provenance = corpus._write_provenance
+    deferred = []
+    monkeypatch.setattr(
+        corpus,
+        "_write_provenance",
+        lambda *args, **kwargs: deferred.append((args, kwargs)),
+    )
+    for source in (source_a, source_b):
+        monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source)
+        corpus.ensure_corpus(3, cache_dir=cache, force=True)
+    assert len(deferred) == 2
+    for index in [0, 1] if sidecar_last == "b" else [1, 0]:
+        args, kwargs = deferred[index]
+        write_provenance(*args, **kwargs)
+    return cache / "n3.smi", source_a, source_b
+
+
+@pytest.mark.parametrize("sidecar_last", ["a", "b"])
+def test_interleaved_writers_never_pair_one_source_with_another_writers_bytes(
+    tmp_path, monkeypatch, sidecar_last
+):
+    # Two generators racing on one cache key: A publishes its corpus, B replaces
+    # it, and the two sidecars land afterwards in either order. A sidecar that
+    # digests the *destination* hands writer A a digest of writer B's bytes - a
+    # pair that validates perfectly while naming the wrong source. Each writer
+    # must record the digest of what it wrote itself, which leaves only two
+    # possible endings: one writer's consistent pair, or a detected mismatch.
+    path, source_a, source_b = _interleave_two_generations(
+        tmp_path, monkeypatch, sidecar_last=sidecar_last
+    )
+    assert "B0" in path.read_text(encoding="utf-8")  # B published the surviving corpus
+
+    provenance, reason = corpus.read_provenance(path)
+    if reason is None:
+        # The only trustworthy ending is B's pair: its own source over its own bytes.
+        assert provenance["source"] == str(source_b)
+    else:
+        # Untrusted for the right reason: A's sidecar carries A's own digest,
+        # which cannot describe the corpus B published over it.
+        assert provenance is None and "digest" in reason
+    assert sb._corpus_provenance(path)["source"] != str(source_a)
+
+
 def test_corpus_file_is_replaced_atomically(tmp_path, monkeypatch):
     # The corpus goes through the same rename as its sidecar, so a regeneration
     # that cannot complete leaves the previous corpus intact rather than a half

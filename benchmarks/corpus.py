@@ -13,8 +13,12 @@ committed fixtures' chemistry.
 
 Each corpus is written beside a provenance sidecar that records its source and a
 digest of its bytes. The cache is therefore self-validating: a corpus whose
-digest no longer matches its sidecar is regenerated rather than measured, so no
-run can attribute its numbers to a source that did not produce the molecules.
+digest no longer matches its sidecar - or which has no sidecar at all - is
+regenerated rather than measured, so no run can attribute its numbers to a
+source that did not produce the molecules. Each writer digests the bytes it
+published itself, so two generators racing on one cache key end either in one
+writer's consistent pair or in a mismatch the next reader rejects, never in a
+sidecar that vouches for bytes it did not write.
 
 The proprietary ``dhu_glu_ymin`` dataset is refused outright.
 """
@@ -57,7 +61,7 @@ def ensure_corpus(size, *, parquet=None, cache_dir=CACHE_DIR, force=False):
     :param force: Regenerate even if a cached corpus of sufficient size exists.
     :returns: Path to a whitespace ``SMILES id`` file with at least ``size``
         molecules (fewer only if the source is exhausted). A cached corpus is
-        reused only while its sidecar digest still matches it; otherwise it is
+        reused only while a sidecar vouches for its exact bytes; otherwise it is
         regenerated, or served unverified when no source remains, in which case
         the provenance reports no source rather than a stale one.
     :raises ValueError: If ``size`` is not positive or a proprietary path is
@@ -101,14 +105,17 @@ def read_provenance(corpus_path):
     credited to the old source.
 
     :param corpus_path: Corpus SMILES path.
-    :returns: ``(provenance, reason)``. ``(None, None)`` when no sidecar exists,
-        ``(None, reason)`` when one exists but cannot be trusted for the bytes on
-        disk, and ``(provenance, None)`` otherwise.
+    :returns: ``(provenance, reason)``. A reason is a refusal: it comes with a
+        ``None`` provenance and means nothing vouches for the bytes on disk.
+        Only ``(provenance, None)`` is a trustworthy pair.
     """
     corpus_path = Path(corpus_path)
     sidecar = corpus_path.with_suffix(".provenance.json")
     if not sidecar.exists():
-        return None, None
+        # A generation interrupted between its two writes leaves exactly this.
+        # Reading silence as consent would accept those molecules forever, and
+        # with no record to contradict, nothing later could detect it.
+        return None, "no provenance sidecar"
     try:
         data = json.loads(sidecar.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001 - any unreadable sidecar is untrusted
@@ -140,22 +147,33 @@ def _generate(size, out_path, parquet=None):
     pair or a new corpus whose digest no longer matches the old sidecar - never
     new bytes silently credited to the old source.
 
+    The digest recorded is the one the corpus write returned, so it describes the
+    bytes this call published rather than whatever sits at the path by the time
+    the sidecar is written. A generator overtaken by another therefore records a
+    digest that no longer matches, instead of describing a corpus it never wrote.
+
     :returns: ``out_path``.
     :raises _NoCorpusSource: If no source can satisfy ``size``.
     """
     resolved = _resolve_parquet(parquet)
     if resolved is not None:
-        actual = _write_from_parquet(resolved, size, out_path)
-        _write_provenance(out_path, size=size, actual=actual, source=str(resolved))
+        actual, digest = _write_from_parquet(resolved, size, out_path)
+        _write_provenance(
+            out_path, size=size, actual=actual, source=str(resolved), digest=digest
+        )
         return out_path
 
     # Offline fallback: the committed public slice covers small sizes only.
     if COMMITTED_CORPUS.exists():
         available = _count_molecules(COMMITTED_CORPUS)
         if size <= available:
-            actual = _write_head(COMMITTED_CORPUS, size, out_path)
+            actual, digest = _write_head(COMMITTED_CORPUS, size, out_path)
             _write_provenance(
-                out_path, size=size, actual=actual, source=str(COMMITTED_CORPUS)
+                out_path,
+                size=size,
+                actual=actual,
+                source=str(COMMITTED_CORPUS),
+                digest=digest,
             )
             return out_path
         raise _NoCorpusSource(
@@ -185,7 +203,8 @@ def _resolve_parquet(parquet):
 def _write_from_parquet(parquet, size, out_path):
     """Sample ``size`` filtered molecules from ``parquet`` into ``out_path``.
 
-    :returns: Number of molecules actually written.
+    :returns: ``(count, digest)`` - the molecules written and a digest of the
+        bytes this call published.
     """
     import duckdb  # type: ignore[import-not-found]  # lazy; only for parquet generation
 
@@ -207,14 +226,14 @@ def _write_from_parquet(parquet, size, out_path):
     finally:
         connection.close()
     lines = [f"{smiles} S{molecule_id}" for molecule_id, smiles in rows]
-    _replace_text(out_path, "\n".join(lines) + "\n")
-    return len(lines)
+    return len(lines), _replace_text(out_path, "\n".join(lines) + "\n")
 
 
 def _write_head(source_path, size, out_path):
     """Copy the first ``size`` molecules of ``source_path`` into ``out_path``.
 
-    :returns: Number of molecules actually written.
+    :returns: ``(count, digest)`` - the molecules written and a digest of the
+        bytes this call published.
     """
     selected = []
     with open(source_path, encoding="utf-8") as handle:
@@ -223,27 +242,34 @@ def _write_head(source_path, size, out_path):
                 selected.append(line.rstrip("\n"))
             if len(selected) >= size:
                 break
-    _replace_text(out_path, "\n".join(selected) + "\n")
-    return len(selected)
+    return len(selected), _replace_text(out_path, "\n".join(selected) + "\n")
 
 
-def _write_provenance(out_path, *, size, actual, source):
+def _write_provenance(out_path, *, size, actual, source, digest):
     """Write a sidecar JSON recording how a corpus was generated.
 
     The digest is what ties the record to the bytes: ``ensure_corpus`` serves a
     cached corpus without rewriting its sidecar, so a sidecar naming a path is
     only evidence for as long as the file it was written for is still there.
 
+    The caller supplies the digest of the bytes it wrote rather than letting this
+    function read ``out_path`` back. A re-read describes whatever is at the path
+    at that moment, which for two generators racing on one cache key can be the
+    other writer's corpus: a sidecar that validates while naming the wrong
+    source. Digesting only what was published puts that outcome out of reach
+    without any locking.
+
     :param out_path: Corpus file the sidecar is written beside.
     :param size: Requested molecule count.
     :param actual: Molecule count actually written.
     :param source: Path the corpus was sampled from.
+    :param digest: Digest of the corpus bytes the caller published.
     """
     provenance = {
         "requested_size": size,
         "actual_size": actual,
         "source": source,
-        "digest": _file_digest(out_path),
+        "digest": digest,
         "filters": {
             "mol_weight_min": MIN_MOL_WEIGHT,
             "mol_weight_max": MAX_MOL_WEIGHT,
@@ -265,6 +291,9 @@ def _replace_text(destination, text):
 
     :param destination: Path to replace.
     :param text: Complete new contents.
+    :returns: Digest of the bytes this call published, taken from the temporary
+        file before the rename so that it describes what was written here and
+        not what another writer may leave at ``destination`` afterwards.
     """
     # Same directory keeps the rename on one filesystem, which is what makes it
     # atomic; the dot prefix keeps a partial file from looking like a corpus.
@@ -280,7 +309,11 @@ def _replace_text(destination, text):
         ) as handle:
             temporary = Path(handle.name)
             handle.write(text)
+        # Digesting the temporary file rather than re-encoding ``text`` keeps the
+        # value tied to the bytes that actually reach the destination.
+        digest = _file_digest(temporary)
         os.replace(temporary, destination)
+        return digest
     finally:
         # A no-op once the replace succeeded; on failure it keeps the cache clean.
         if temporary is not None:
