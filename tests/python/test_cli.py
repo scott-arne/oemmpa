@@ -24,6 +24,9 @@ EXPECTED_PERSISTED_SUMMARY = [
     {"metric": "pairs", "value": "3"},
     {"metric": "rule_environments", "value": "18"},
     {"metric": "rule_environment_statistics", "value": "18"},
+    {"metric": "series", "value": "1"},
+    {"metric": "series_members", "value": "3"},
+    {"metric": "series_source", "value": "fragmentation"},
 ]
 
 EXPECTED_NO_PROPERTY_SUMMARY = [
@@ -32,6 +35,9 @@ EXPECTED_NO_PROPERTY_SUMMARY = [
     {"metric": "pairs", "value": "3"},
     {"metric": "rule_environments", "value": "18"},
     {"metric": "rule_environment_statistics", "value": "0"},
+    {"metric": "series", "value": "1"},
+    {"metric": "series_members", "value": "3"},
+    {"metric": "series_source", "value": "fragmentation"},
 ]
 
 PERSISTED_PREDICTION_HEADER = [
@@ -238,9 +244,22 @@ def _write_rgroup_cli_inputs(tmp_path):
 
 
 def _assert_rgroup_store_summary(database):
+    import oemmpa
+    # Open store to validate series counts, then close it before running CLI.
+    store = oemmpa.DuckDBStore(str(database))
+    expected_series_count = len(store.series())
+    expected_series_members = len(store.series().to_dicts())
+    del store  # Release the database lock
+
     result = _run_cli("list", str(database))
 
-    assert _tsv_rows(result.stdout) == [
+    rows = _tsv_rows(result.stdout)
+    # Validate series counts match what the store reports.
+    assert int(rows[5]["value"]) == expected_series_count
+    assert int(rows[6]["value"]) == expected_series_members
+
+    # Golden counts: 1 series (the phenol core with cut-rgroup filter), 2 member rows.
+    assert rows == [
         {"metric": "compounds", "value": "2"},
         {"metric": "rules", "value": "1"},
         # One physical pair row (normalized); the six per-radius memberships
@@ -248,6 +267,9 @@ def _assert_rgroup_store_summary(database):
         {"metric": "pairs", "value": "1"},
         {"metric": "rule_environments", "value": "6"},
         {"metric": "rule_environment_statistics", "value": "6"},
+        {"metric": "series", "value": "1"},
+        {"metric": "series_members", "value": "2"},
+        {"metric": "series_source", "value": "fragmentation"},
     ]
 
 
@@ -362,6 +384,9 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
         {"metric": "pairs", "value": "6"},
         {"metric": "rule_environments", "value": "36"},
         {"metric": "rule_environment_statistics", "value": "36"},
+        {"metric": "series", "value": "1"},
+        {"metric": "series_members", "value": "3"},
+        {"metric": "series_source", "value": "fragmentation"},
     ]
 
 
@@ -416,6 +441,9 @@ def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
         {"metric": "pairs", "value": "6"},
         {"metric": "rule_environments", "value": "36"},
         {"metric": "rule_environment_statistics", "value": "36"},
+        {"metric": "series", "value": "1"},
+        {"metric": "series_members", "value": "3"},
+        {"metric": "series_source", "value": "fragmentation"},
     ]
 
 
@@ -1507,6 +1535,9 @@ def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
                 "pairs": 12_345_678_901_234_567_890,
                 "rule_environments": 5,
                 "rule_environment_statistics": 6,
+                "series": 7,
+                "series_members": 8,
+                "series_source": "fragmentation",
             }
 
     output = tmp_path / "summary.tsv"

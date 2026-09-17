@@ -836,10 +836,12 @@ from ._query import (
     ObjectiveAnalysis,
     OpportunityResult,
     PairQuery,
+    SeriesQuery,
     TransformQuery,
     analyze,
     analyze_dataframe,
 )
+from ._series import SeriesSelectionOptions
 from ._storage import DuckDBStore, duckdb_available
 from ._transform import (
     apply_pair_transform,
@@ -887,6 +889,8 @@ __all__ = [
     "RuleEnvironmentStatisticsResult",
     "RuleSelectionOptions",
     "Selection",
+    "SeriesQuery",
+    "SeriesSelectionOptions",
     "TransformCollection",
     "TransformEffectModel",
     "TransformQuery",

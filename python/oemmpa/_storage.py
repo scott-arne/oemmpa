@@ -276,6 +276,26 @@ class DuckDBStore:
             TransformResult(transform) for transform in raw_transforms
         )
 
+    def series(self, selection=None):
+        """Return stored matched molecular series as a :class:`SeriesQuery`.
+
+        :param selection: Optional :class:`SeriesSelectionOptions` or raw
+            ``_oemmpa.SeriesSelection``.
+        :returns: Wrapped series collection.
+        """
+        from ._query import SeriesQuery
+
+        if selection is None:
+            raw_series = self._raw_store.GetSeries()
+        else:
+            raw_selection = selection.to_raw() if hasattr(selection, "to_raw") else selection
+            raw_series = self._raw_store.GetSeries(raw_selection)
+        return SeriesQuery(raw_series)
+
+    def series_count(self):
+        """Return the number of stored series."""
+        return int(self._raw_store.GetSeriesCount())
+
     def table_names(self):
         """Return base table names from the backing store."""
         return list(self._raw_store.GetTableNames())
@@ -307,8 +327,8 @@ class DuckDBStore:
         """Return database row counts.
 
         :param recount: When true, count rows directly from the tables.
-        :returns: Mapping with compound, rule, pair, rule environment, and
-            statistics counts.
+        :returns: Mapping with compound, rule, pair, rule environment, series,
+            and statistics counts.
         """
         raw_summary = self._raw_store.GetSummary(bool(recount))
         return {
@@ -319,6 +339,9 @@ class DuckDBStore:
             "rule_environment_statistics": int(
                 raw_summary.GetNumRuleEnvironmentStatistics()
             ),
+            "series": int(raw_summary.GetNumSeries()),
+            "series_members": int(raw_summary.GetNumSeriesMembers()),
+            "series_source": str(raw_summary.GetSeriesSource()),
         }
 
     def rule_environment_statistics_count(self, property_name):

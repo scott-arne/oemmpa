@@ -49,6 +49,7 @@ install(FILES
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_results.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_rgroup.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_rule_environment.py
+    ${CMAKE_SOURCE_DIR}/python/oemmpa/_series.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_smiles_file.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_storage.py
     ${CMAKE_SOURCE_DIR}/python/oemmpa/_transform.py

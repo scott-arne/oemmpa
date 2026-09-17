@@ -628,6 +628,9 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
         "rule_environment_statistics": observed_counts[
             "rule_environment_statistics"
         ],
+        "series": summary["series"],
+        "series_members": summary["series_members"],
+        "series_source": "fragmentation",
     }
     assert {
         "MW": store.rule_environment_statistics_count("MW"),

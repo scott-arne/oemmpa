@@ -144,6 +144,9 @@ LIST_METRICS = [
     "pairs",
     "rule_environments",
     "rule_environment_statistics",
+    "series",
+    "series_members",
+    "series_source",
 ]
 
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")

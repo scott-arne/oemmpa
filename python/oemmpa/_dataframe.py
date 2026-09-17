@@ -17,6 +17,7 @@ RULE_ENVIRONMENT_SMILES_COLUMNS = (
     "from_smiles",
     "to_smiles",
 )
+SERIES_SMILES_COLUMNS = ("constant", "rgroup")
 TRANSFORM_SMIRKS_COLUMNS = ("transform",)
 
 # Aggregate statistic fields shared by transform and rule-environment

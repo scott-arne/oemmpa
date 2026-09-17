@@ -588,6 +588,25 @@ class Analyzer:
             TransformResult(transform) for transform in raw_transforms
         )
 
+    def series(self):
+        """Return the analysed matched molecular series.
+
+        One series per constant with at least two R-groups; empty for a method
+        that does not fragment (see :attr:`produces_series`).
+
+        :returns: :class:`SeriesQuery` over the raw series.
+        :raises RuntimeError: If :meth:`analyze` has not run since the last
+            mutation.
+        """
+        from ._query import SeriesQuery
+
+        return SeriesQuery(self._raw_analyzer.GetSeries())
+
+    @property
+    def produces_series(self):
+        """Whether the configured method enumerates series."""
+        return bool(self._raw_analyzer.ProducesSeries())
+
     def _coerce_or_generate_id(self, id):
         if id is not None:
             external_id = str(id)

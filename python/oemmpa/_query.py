@@ -5,6 +5,7 @@ from __future__ import annotations
 from ._analytics import compute_transform_statistics
 from ._dataframe import (
     PAIR_SMILES_COLUMNS,
+    SERIES_SMILES_COLUMNS,
     TRANSFORM_SMIRKS_COLUMNS,
     dataframe_from_dicts,
 )
@@ -16,6 +17,7 @@ from ._display import (
 )
 from ._facade import Analyzer
 from ._loading import load_dataframe_rows
+from ._series import series_rows
 from ._transform import generate_products
 from ._workflow import coerce_objective
 
@@ -495,6 +497,61 @@ class ObjectiveAnalysis:
         )
 
 
+class SeriesQuery:
+    """Chainable matched-molecular-series query wrapper over raw ``Series``."""
+
+    def __init__(self, series):
+        self._series = list(series)
+
+    def __iter__(self):
+        return iter(self._series)
+
+    def __len__(self):
+        return len(self._series)
+
+    def __getitem__(self, key):
+        return self._series[key]
+
+    def __repr__(self):
+        return text_collection_summary(self.__class__.__name__, len(self))
+
+    def _repr_html_(self):
+        return html_collection_preview(self.__class__.__name__, self)
+
+    def filter(self, constant=None, cut_count=None, min_length=None):
+        """Return the series matching every given bound.
+
+        :param constant: Exact constant SMILES to keep.
+        :param cut_count: Cut count to keep.
+        :param min_length: Minimum number of members.
+        :returns: A new :class:`SeriesQuery`.
+        """
+        def keep(series):
+            if constant is not None and series.GetConstantSmiles() != str(constant):
+                return False
+            if cut_count is not None and series.GetCutCount() != int(cut_count):
+                return False
+            return not (min_length is not None and series.Size() < int(min_length))
+
+        return self._filter(keep)
+
+    def to_dicts(self):
+        """Return one row per (member, compound)."""
+        return series_rows(self._series)
+
+    def to_dataframe(self, library="pandas", molecules=False):
+        """Return the rows as a pandas or polars dataframe."""
+        return dataframe_from_dicts(
+            self.to_dicts(),
+            library=library,
+            molecules=molecules,
+            smiles_columns=SERIES_SMILES_COLUMNS,
+        )
+
+    def _filter(self, predicate):
+        return SeriesQuery([series for series in self._series if predicate(series)])
+
+
 class AnalysisResult:
     """Analyzed dataset with chainable query helpers."""
 
@@ -511,6 +568,7 @@ class AnalysisResult:
         self.property_names = tuple(str(name) for name in property_names)
         self._pairs_query = None
         self._transforms_query = None
+        self._series_query = None
         self._known_product_ids_cache = None
 
     @property
@@ -541,6 +599,13 @@ class AnalysisResult:
             self._transforms_query = TransformQuery(self.analyzer.transforms())
         return self._transforms_query
 
+    @property
+    def series(self):
+        """Matched-molecular-series query surface."""
+        if self._series_query is None:
+            self._series_query = self.analyzer.series()
+        return self._series_query
+
     def summary(self):
         """Return a plain analysis summary."""
         return {
@@ -548,6 +613,7 @@ class AnalysisResult:
             "molecules": len(self.molecule_smiles),
             "pairs": len(self.pairs),
             "transforms": len(self.transforms),
+            "series": len(self.series),
             "properties": list(self.property_names),
         }
 
