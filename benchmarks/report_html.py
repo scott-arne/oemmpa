@@ -511,7 +511,9 @@ function renderScaling() {
 }
 
 // ---- parallel chart ----
-const parallelStages = ["fragment", "enumerate", "materialize", "persist", "total"];
+// Series belongs here: ComputeSeries parallelises over constants on the
+// analyzer's thread count, so this chart is where its scaling is visible.
+const parallelStages = ["fragment", "enumerate", "series", "materialize", "persist", "total"];
 const parallelActive = {};
 function renderParallel() {
   const mount = document.getElementById("chart-parallel");
@@ -536,7 +538,7 @@ function renderParallel() {
     xTipLabel: (x) => x + " threads", yTip: (v) => v.toFixed(2) + "×",
   });
   const cap = document.getElementById("parallel-caption");
-  if (cap) cap.textContent = `OEMMPA at ${fmtCompact(psize)} molecules. Fragment and enumerate scale with threads; materialize and persist stay flat (single-threaded by design).`;
+  if (cap) cap.textContent = `OEMMPA at ${fmtCompact(psize)} molecules. Fragment, enumerate and series scale with threads; materialize and persist stay flat (single-threaded by design).`;
 }
 
 // ---- throughput chart (molecules/sec, comparable across tools) ----

@@ -1,6 +1,7 @@
 """Tests for the staged benchmark timers and the on-demand corpus helper."""
 
 import csv
+import errno
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,41 @@ def test_oemmpa_stages_reports_every_stage_and_the_series_figures(tiny_corpus):
     if persist is not None:
         assert persist_series is not None and 0 <= persist_series <= persist
         assert result["counts"]["database_bytes"] > result["counts"]["database_bytes_without_series"] > 0
+
+
+def test_persist_seconds_survive_a_failed_byte_measurement(tiny_corpus, monkeypatch):
+    # Sizing copies the whole store, so it can fail on disk space alone; losing
+    # the byte figures must not cost the two timings that were already taken.
+    def out_of_space(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    # Decide up front whether DuckDB is available, so a regression that drops
+    # the timings fails here instead of quietly skipping.
+    sb._import_worktree_package()
+    pytest.importorskip("oemmpa._storage")
+
+    monkeypatch.setattr(sb, "_bytes_without_series", out_of_space)
+    result = sb.oemmpa_stages(tiny_corpus, threads=1)
+    assert result["seconds"]["persist"] is not None and result["seconds"]["persist"] >= 0
+    assert result["seconds"]["persist_series"] is not None
+    assert result["counts"]["database_bytes"] is None
+    assert result["counts"]["database_bytes_without_series"] is None
+    # The rest of the stage is unaffected.
+    assert result["counts"]["series"] >= 0
+    assert result["counts"]["series_members"] >= result["counts"]["series"]
+
+
+def test_series_member_rows_matches_the_materialized_row_count(tiny_corpus):
+    # The counted figure must equal what to_dicts() would have produced; this is
+    # what lets oemmpa_stages skip building those dictionaries.
+    result = sb.oemmpa_stages(tiny_corpus, threads=1)
+    analyzer = sb._import_worktree_package().Analyzer()
+    analyzer.configure_fragmentation(max_heavy_atoms=100, max_rotatable_bonds=10)
+    analyzer.add_molecules(sb.read_smiles(tiny_corpus))
+    analyzer.analyze(1)
+    series = analyzer.series()
+    assert sb._series_member_rows(series) == len(series.to_dicts())
+    assert result["counts"]["series_members"] == len(series.to_dicts())
 
 
 def test_stage_records_carry_the_series_counts(tiny_corpus):

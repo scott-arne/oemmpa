@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 import csv
-import gc
 import importlib
 import json
 import os
@@ -90,10 +89,13 @@ DEFAULT_UNFILTERED_RDKIT_MAX = 1000
 DEFAULT_SIZES = (100, 300, 1000, 3000, 10000)
 #: Default thread sweep for the OEMMPA parallelism benchmark.
 DEFAULT_THREADS = (1, 2, 4, 8)
-#: OEMMPA stages, in pipeline order. ``persist`` is the whole save; ``persist_series``
-#: is the share of it spent staging and appending the series tables, measured
-#: inside the save rather than inferred, so ``persist - persist_series`` is the
-#: pair-side cost.
+#: OEMMPA stages, in pipeline order. ``persist`` is the whole save;
+#: ``persist_series`` is the share of it spent staging and appending the two
+#: series tables, measured inside the save rather than inferred. The series
+#: phase also adds dictionary rows (the ``rule_smiles`` and ``constant_smiles``
+#: entries only series reference), and those are appended outside the timed
+#: block, so ``persist - persist_series`` is "everything but the two series
+#: tables' appends" rather than a series-free save.
 OEMMPA_STAGES = (
     "load", "fragment", "enumerate", "series", "transforms", "materialize",
     "persist", "persist_series",
@@ -182,11 +184,28 @@ def oemmpa_stages(smiles_path, threads=1):
         "series": len(series),
         # One row per (R-group, compound): an R-group realised by several
         # compounds contributes several rows, so this exceeds the member count.
-        "series_members": len(series.to_dicts()),
+        # Counted from the member molecule ids rather than from ``to_dicts()``
+        # so a 200k-row corpus is not materialised as dictionaries to be counted.
+        "series_members": _series_member_rows(series),
         "database_bytes": persist["database_bytes"],
         "database_bytes_without_series": persist["database_bytes_without_series"],
     }
     return {"seconds": seconds, "counts": counts}
+
+
+def _series_member_rows(series):
+    """Count the ``(member, compound)`` rows a series collection would produce.
+
+    This is what ``series.to_dicts()`` would return the length of, without
+    building the dictionaries: at 10,000 molecules that is over 200,000 rows
+    whose only use would be ``len()``.
+
+    :param series: ``SeriesQuery`` (any iterable of raw ``Series``).
+    :returns: Total number of member-compound rows.
+    """
+    return sum(
+        len(member.GetMoleculeIds()) for entry in series for member in entry.GetMembers()
+    )
 
 
 #: Persist figures reported when DuckDB storage is unavailable or the save fails.
@@ -205,7 +224,8 @@ def _oemmpa_persist_seconds(analyzer, options):
     :param options: Raw ``QueryOptions`` matching the enumerate step.
     :returns: ``seconds``, ``series_seconds``, ``database_bytes`` and
         ``database_bytes_without_series``; every value is ``None`` when DuckDB
-        storage is unavailable or the save fails.
+        storage is unavailable or the save fails, and only the two byte figures
+        are ``None`` when the save succeeded but sizing it did not.
     """
     try:
         storage = importlib.import_module("oemmpa._storage")
@@ -224,17 +244,26 @@ def _oemmpa_persist_seconds(analyzer, options):
             # Read before anything else touches the store: the next bulk append,
             # even an empty one, resets the timer.
             series_seconds = float(store.raw.GetLastSeriesAppendSeconds())
-            del store  # close the connection before the file is measured and copied
-            gc.collect()
-            database_bytes = database.stat().st_size
-            return {
-                "seconds": elapsed,
-                "series_seconds": series_seconds,
-                "database_bytes": database_bytes,
-                "database_bytes_without_series": _bytes_without_series(
+            # Refcounting closes the connection here, so the file is complete
+            # before it is measured and copied; a probe confirmed the size and a
+            # reopen are already correct without a gc.collect().
+            del store
+            measured = {"seconds": elapsed, "series_seconds": series_seconds}
+            try:
+                database_bytes = database.stat().st_size
+                measured["database_bytes"] = database_bytes
+                measured["database_bytes_without_series"] = _bytes_without_series(
                     store_class, database, Path(tmp), database_bytes
-                ),
-            }
+                )
+            except Exception as exc:  # noqa: BLE001 - the two timings still stand
+                # Sizing copies the whole store (1.7 GB at 10,000 molecules), so
+                # it can fail on disk space alone. That must cost the byte
+                # figures only: the seconds are this stage's primary output and
+                # have already been measured.
+                _log(f"oemmpa persist byte figures unavailable: {exc}")
+                measured["database_bytes"] = None
+                measured["database_bytes_without_series"] = None
+            return measured
     except Exception as exc:  # noqa: BLE001 - a storage failure only drops this stage
         _log(f"oemmpa persist stage unavailable: {exc}")
         return dict(_PERSIST_UNAVAILABLE)
@@ -249,6 +278,12 @@ def _bytes_without_series(store_class, database, scratch, database_bytes):
     therefore the file size less the blocks the drop frees, which is why the two
     numbers differ only by the series rows and their indexes. The drop runs on a
     copy so the measured store is never mutated.
+
+    This is the store minus ``series``, ``series_member`` and their indexes, not
+    the store as if series had never been enumerated: the dictionary rows the
+    series phase adds (``rule_smiles`` and ``constant_smiles`` entries that only
+    series reference) are in other tables and survive the drop, so they stay
+    counted in both figures.
 
     :param store_class: ``oemmpa._storage.DuckDBStore``.
     :param database: Saved store to copy.
@@ -269,7 +304,6 @@ def _bytes_without_series(store_class, database, scratch, database_bytes):
     trimmed.raw.Execute("checkpoint")
     used_after, _ = _duckdb_block_usage(trimmed, blocks_csv)
     del trimmed
-    gc.collect()
     return database_bytes - (used_before - used_after) * block_size
 
 
@@ -777,7 +811,8 @@ def run_stage_benchmark(
         parallel_size = max(sizes) if sizes else None
 
     # Filled by the record producers so the metadata names the corpus files the
-    # run actually consumed, including sizes the sweep had to skip.
+    # run actually consumed. A size whose corpus cannot be resolved is skipped
+    # before it is recorded, so it is absent here rather than present as a hole.
     corpora = {}
     records = stage_scaling_records(
         sizes, repeats=repeats, parquet=parquet, dataset=dataset, corpora=corpora
