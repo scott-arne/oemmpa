@@ -87,8 +87,11 @@ def test_selection_options_validate_and_convert():
     raw = options.to_raw()
     assert raw.min_series_length == 3
     assert raw.max_variable_heavy_atoms == 12
+    # Zero is a valid minimum -- unbounded, and equivalent to one -- and reaches
+    # the raw selection unchanged; only a negative bound is rejected.
+    assert SeriesSelectionOptions(min_series_length=0).to_raw().min_series_length == 0
     with pytest.raises(ValueError):
-        SeriesSelectionOptions(min_series_length=0)
+        SeriesSelectionOptions(min_series_length=-1)
     with pytest.raises(ValueError):
         SeriesSelectionOptions(cut_count=-1)
 
@@ -128,6 +131,15 @@ def test_store_series_round_trips_with_ids_and_selection(tmp_path):
     assert [row["compound_id"] for row in stored] == ["toluene", "phenol", "benzene"]
     assert store.series_count() == len(store.series())
     assert len(store.series(SeriesSelectionOptions(min_series_length=4))) == 0
+    # Zero and one are the same length bound: a series with no surviving member
+    # is never returned, so the two can only differ on a series the member
+    # filter trimmed to one member. No member filter can trim this store's one
+    # series -- its R-groups carry 0, 1 and 1 heavy atoms, and the bound 0 means
+    # unbounded -- so the equivalence is asserted on the unfiltered read.
+    unbounded = store.series(SeriesSelectionOptions(min_series_length=0)).to_dicts()
+    single = store.series(SeriesSelectionOptions(min_series_length=1)).to_dicts()
+    assert unbounded == single
+    assert unbounded
 
     summary = store.summary()
     assert summary["series"] == len(store.series())

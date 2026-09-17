@@ -28,20 +28,19 @@ SERIES_ROW_COLUMNS = (
 class SeriesSelectionOptions:
     """Query-time bounds on stored series.
 
-    Zero means unbounded for the three variable/constant/cut bounds;
-    ``min_series_length`` must be at least 1 (the engine treats 0 and 1 as
-    equivalent: a series with no surviving members after the member filter is
-    never returned).
+    Zero means unbounded for every field. For ``min_series_length`` zero and one
+    are equivalent, because the engine never returns a series with no surviving
+    member: a series the member filter emptied is dropped under either bound.
 
     :param min_series_length: Minimum members a series keeps after the member
-        filter; series shorter than this are dropped.
+        filter; series shorter than this are dropped (0 = unbounded, the same
+        bound as 1).
     :param max_variable_heavy_atoms: Drop members whose R-group has more heavy
         atoms than this (0 = unbounded).
     :param min_constant_heavy_atoms: Drop series whose constant has fewer heavy
         atoms than this (0 = unbounded).
     :param cut_count: Keep only series of this cut count (0 = any).
-    :raises ValueError: If ``min_series_length`` is below one or any bound is
-        negative.
+    :raises ValueError: If any bound is negative or is not an integer.
     """
 
     min_series_length: int = 2
@@ -61,8 +60,8 @@ class SeriesSelectionOptions:
                 raise ValueError(f"{name} must be an integer") from None
             object.__setattr__(self, name, normalized)
 
-        if self.min_series_length < 1:
-            raise ValueError("min_series_length must be at least one")
+        if self.min_series_length < 0:
+            raise ValueError("min_series_length must be zero (equivalent to one) or positive")
         for name in ("max_variable_heavy_atoms", "min_constant_heavy_atoms", "cut_count"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be zero (unbounded) or positive")
