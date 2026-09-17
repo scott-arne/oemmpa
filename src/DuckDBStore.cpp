@@ -490,12 +490,13 @@ const char* win_comparison(PropertyDirection direction) {
     return direction == PropertyDirection::HIGHER_IS_BETTER ? ">" : "<";
 }
 
-// excluded(rule_smiles_id): one bound row per member of the ORIGINAL canonical
-// query. It is a separate relation from query because shortening narrows query
-// while the exclusion must not narrow with it (spec 7.3). It is appended after
-// the shared chain so ranking_ctes stays reusable by the evidence statement.
-std::string excluded_members_cte(std::size_t count) {
-    std::string sql = "excluded(rule_smiles_id) as (values ";
+// original_query(rule_smiles_id): one bound row per member of the ORIGINAL
+// canonical query. It is a separate relation from query because shortening
+// narrows query while the exclusion must not narrow with it (spec 7.3). It is
+// appended after the shared chain so ranking_ctes stays reusable by the evidence
+// statement.
+std::string original_query_cte(std::size_t count) {
+    std::string sql = "original_query(rule_smiles_id) as (values ";
     for (std::size_t i = 0; i < count; ++i) {
         if (i > 0) {
             sql += ", ";
@@ -530,13 +531,13 @@ RankingAttempt run_ranking_attempt(
     // caller supplied, so a member shortening removed from query stays excluded.
     duckdb::vector<duckdb::Value> candidate_values =
         ranking_cte_values(property_id, members, cut_count, selection);
-    // The excluded ids bind last, after every placeholder of ranking_ctes.
+    // The original query ids bind last, after every placeholder of ranking_ctes.
     for (const QueryMember& member : original_members) {
         candidate_values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
     }
     std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
         connection,
-        ctes + ", " + excluded_members_cte(original_members.size()) +
+        ctes + ", " + original_query_cte(original_members.size()) +
         "select rs.id, rs.smiles, coalesce(rs.num_heavies, 0), cast(count(*) as bigint), "
         "cast(sum(case when mv.value " + std::string(win_comparison(direction)) +
         " b.best_value then 1 else 0 end) as bigint) "
@@ -544,7 +545,7 @@ RankingAttempt run_ranking_attempt(
         "join matched m on m.series_id = mv.series_id "
         "join best b on b.series_id = mv.series_id "
         "join rule_smiles rs on rs.id = mv.rule_smiles_id "
-        "where mv.rule_smiles_id not in (select rule_smiles_id from excluded) "
+        "where mv.rule_smiles_id not in (select rule_smiles_id from original_query) "
         "group by rs.id, rs.smiles, rs.num_heavies "
         "order by rs.smiles",
         std::move(candidate_values));
@@ -590,6 +591,75 @@ std::vector<unsigned int> posting_counts(
         counts.push_back(member.rule_smiles_id == 0 || found == by_id.end() ? 0U : found->second);
     }
     return counts;
+}
+
+std::string reported_cte(std::size_t count) {
+    std::string sql = ", reported(rule_smiles_id) as (values ";
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += "(cast(? as ubigint))";
+    }
+    return sql + ") ";
+}
+
+// Evidence for query_used: every query member of every matched series, then the
+// reported candidates present in that series with their win flag. Candidates
+// below the support level were not reported, so they never appear.
+std::vector<SubstituentRankingEvidence> load_ranking_evidence(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::uint64_t property_id,
+    const std::vector<QueryMember>& members,
+    unsigned int cut_count,
+    PropertyDirection direction,
+    const SeriesSelection& selection,
+    const std::vector<CandidateRow>& reported
+) {
+    std::string sql = ranking_ctes(members.size(), direction);
+    duckdb::vector<duckdb::Value> values = ranking_cte_values(property_id, members, cut_count, selection);
+    if (!reported.empty()) {
+        sql += reported_cte(reported.size());
+        for (const CandidateRow& candidate : reported) {
+            values.push_back(duckdb::Value::UBIGINT(candidate.rule_smiles_id));
+        }
+    }
+    sql += "select * from ("
+           "select s.id, c.smiles, 0 as role_rank, q.position, rs.smiles as variable_smiles, "
+           "mv.value, false as win "
+           "from matched m "
+           "join series s on s.id = m.series_id "
+           "join constant_smiles c on c.id = s.constant_id "
+           "cross join query q "
+           "join bounded mv on mv.series_id = m.series_id and mv.rule_smiles_id = q.rule_smiles_id "
+           "join rule_smiles rs on rs.id = q.rule_smiles_id";
+    if (!reported.empty()) {
+        sql += " union all "
+               "select s.id, c.smiles, 1, 0, rs.smiles, mv.value, "
+               "mv.value " + std::string(win_comparison(direction)) + " b.best_value "
+               "from matched m "
+               "join series s on s.id = m.series_id "
+               "join constant_smiles c on c.id = s.constant_id "
+               "join bounded mv on mv.series_id = m.series_id "
+               "join reported r on r.rule_smiles_id = mv.rule_smiles_id "
+               "join best b on b.series_id = m.series_id "
+               "join rule_smiles rs on rs.id = mv.rule_smiles_id";
+    }
+    sql += ") order by 1, 3, 4, 5";
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql, std::move(values));
+    std::vector<SubstituentRankingEvidence> rows;
+    for (const auto& row : *result) {
+        SubstituentRankingEvidence entry;
+        entry.series_id = row.GetValue<std::uint64_t>(0);
+        entry.constant_smiles = row.GetValue<std::string>(1);
+        entry.role = row.GetValue<std::int32_t>(2) == 0 ? "query" : "candidate";
+        entry.position = static_cast<unsigned int>(row.GetValue<std::int32_t>(3));
+        entry.variable_smiles = row.GetValue<std::string>(4);
+        entry.value = row.GetValue<double>(5);
+        entry.win = row.GetValue<bool>(6);
+        rows.push_back(std::move(entry));
+    }
+    return rows;
 }
 
 // Name of the id-allocation sequence backing a table's primary key.
@@ -3829,6 +3899,11 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
                     if (a.heavy_atom_count != b.heavy_atom_count) return a.heavy_atom_count < b.heavy_atom_count;
                     return a.variable_smiles < b.variable_smiles;
                 });
+            if (request.include_evidence && attempt.matched > 0) {
+                result.evidence = load_ranking_evidence(
+                    connection_, property_id, members, query.cut_count,
+                    request.direction, request.selection, reported);
+            }
             break;
         }
         // Shorten: drop the member the store has posted in the fewest series;

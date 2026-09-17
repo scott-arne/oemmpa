@@ -1011,3 +1011,87 @@ TEST(SeriesRankingShortening, ExplicitQueryNeverRecommendsAMemberItDropped) {
     EXPECT_EQ(bromine.wins, 2U);   // Br 3.5 beats H 3 in both series.
     std::filesystem::remove(path);
 }
+
+TEST(SeriesRankingEvidence, RowsCoverEveryMatchedSeriesQueryFirstThenReportedCandidates) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    request.support_ladder = {5U};
+    EXPECT_TRUE(store.RankNextSubstituents(request).evidence.empty());
+    request.include_evidence = true;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    ASSERT_EQ(result.evidence.size(), 20U);   // 5 series x (3 query rows + 1 candidate row).
+    unsigned int wins = 0;
+    for (std::size_t i = 0; i < result.evidence.size(); i += 4) {
+        const SubstituentRankingEvidence& h = result.evidence[i];
+        const SubstituentRankingEvidence& f = result.evidence[i + 1];
+        const SubstituentRankingEvidence& cl = result.evidence[i + 2];
+        const SubstituentRankingEvidence& br = result.evidence[i + 3];
+        for (const SubstituentRankingEvidence* row : {&h, &f, &cl, &br}) {
+            EXPECT_EQ(row->series_id, h.series_id);
+            EXPECT_EQ(row->constant_smiles, h.constant_smiles);
+            EXPECT_NE(row->constant_smiles.find("c1ccc("), std::string::npos);
+        }
+        if (i >= 4) {
+            EXPECT_GT(h.series_id, result.evidence[i - 4].series_id);   // Ordered by series id.
+        }
+        EXPECT_EQ(h.role, "query");
+        EXPECT_EQ(h.position, 1U);
+        EXPECT_EQ(h.variable_smiles, "[*:1][H]");
+        EXPECT_DOUBLE_EQ(h.value, 3.0);
+        EXPECT_FALSE(h.win);
+        EXPECT_EQ(f.position, 2U);
+        EXPECT_EQ(f.variable_smiles, "[*:1]F");
+        EXPECT_EQ(cl.position, 3U);
+        EXPECT_EQ(cl.variable_smiles, "[*:1]Cl");
+        EXPECT_EQ(br.role, "candidate");
+        EXPECT_EQ(br.position, 0U);
+        EXPECT_EQ(br.variable_smiles, "[*:1]Br");
+        if (br.win) {
+            ++wins;
+            EXPECT_DOUBLE_EQ(br.value, 4.0);
+        }
+    }
+    EXPECT_EQ(wins, 1U);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRankingEvidence, LowerIsBetterListsChlorineAtPositionOne) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    request.direction = PropertyDirection::LOWER_IS_BETTER;
+    request.support_ladder = {5U};
+    request.include_evidence = true;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    ASSERT_EQ(result.evidence.size(), 20U);
+    EXPECT_EQ(result.evidence.front().variable_smiles, "[*:1]Cl");
+    EXPECT_EQ(result.evidence.front().position, 1U);
+    unsigned int wins = 0;
+    for (const SubstituentRankingEvidence& row : result.evidence) {
+        if (row.role == "candidate" && row.win) {
+            ++wins;
+            EXPECT_DOUBLE_EQ(row.value, 0.5);
+        }
+    }
+    EXPECT_EQ(wins, 1U);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRankingEvidence, CandidatesBelowTheSupportLevelDoNotAppear) {
+    // Ladder {2}: Br (support 5) is reported; the candidate rows name Br only, even
+    // though other members could exist below the level in other fixtures. Here the
+    // check is structural: every candidate row names a reported candidate.
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    request.support_ladder = {2U};
+    request.include_evidence = true;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    for (const SubstituentRankingEvidence& row : result.evidence) {
+        if (row.role == "candidate") {
+            EXPECT_NE(FindCandidate(result, row.variable_smiles), nullptr) << row.variable_smiles;
+        }
+    }
+    std::filesystem::remove(fixture.path);
+}
