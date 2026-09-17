@@ -490,10 +490,26 @@ const char* win_comparison(PropertyDirection direction) {
     return direction == PropertyDirection::HIGHER_IS_BETTER ? ">" : "<";
 }
 
+// excluded(rule_smiles_id): one bound row per member of the ORIGINAL canonical
+// query. It is a separate relation from query because shortening narrows query
+// while the exclusion must not narrow with it (spec 7.3). It is appended after
+// the shared chain so ranking_ctes stays reusable by the evidence statement.
+std::string excluded_members_cte(std::size_t count) {
+    std::string sql = "excluded(rule_smiles_id) as (values ";
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += "(cast(? as ubigint))";
+    }
+    return sql + ") ";
+}
+
 RankingAttempt run_ranking_attempt(
     const std::unique_ptr<duckdb::Connection>& connection,
     std::uint64_t property_id,
     const std::vector<QueryMember>& members,
+    const std::vector<QueryMember>& original_members,
     unsigned int cut_count,
     PropertyDirection direction,
     const SeriesSelection& selection
@@ -508,11 +524,19 @@ RankingAttempt run_ranking_attempt(
             attempt.matched = static_cast<unsigned int>(row.GetValue<std::int64_t>(0));
         }
     }
-    // Candidates come from bounded, so the member bound already applied; query
-    // members are excluded here (their exemption in bounded is for the length test).
+    // Candidates come from bounded, so the member bound already applied; the
+    // original query members are excluded here (their exemption in bounded is for
+    // the length test). A recommendation must be novel relative to everything the
+    // caller supplied, so a member shortening removed from query stays excluded.
+    duckdb::vector<duckdb::Value> candidate_values =
+        ranking_cte_values(property_id, members, cut_count, selection);
+    // The excluded ids bind last, after every placeholder of ranking_ctes.
+    for (const QueryMember& member : original_members) {
+        candidate_values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+    }
     std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
         connection,
-        ctes +
+        ctes + ", " + excluded_members_cte(original_members.size()) +
         "select rs.id, rs.smiles, coalesce(rs.num_heavies, 0), cast(count(*) as bigint), "
         "cast(sum(case when mv.value " + std::string(win_comparison(direction)) +
         " b.best_value then 1 else 0 end) as bigint) "
@@ -520,10 +544,10 @@ RankingAttempt run_ranking_attempt(
         "join matched m on m.series_id = mv.series_id "
         "join best b on b.series_id = mv.series_id "
         "join rule_smiles rs on rs.id = mv.rule_smiles_id "
-        "where mv.rule_smiles_id not in (select rule_smiles_id from query) "
+        "where mv.rule_smiles_id not in (select rule_smiles_id from excluded) "
         "group by rs.id, rs.smiles, rs.num_heavies "
         "order by rs.smiles",
-        ranking_cte_values(property_id, members, cut_count, selection));
+        std::move(candidate_values));
     for (const auto& row : *result) {
         CandidateRow candidate;
         candidate.rule_smiles_id = row.GetValue<std::uint64_t>(0);
@@ -3768,7 +3792,8 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
     std::vector<QueryMember> members = query.members;
     while (true) {
         const RankingAttempt attempt = run_ranking_attempt(
-            connection_, property_id, members, query.cut_count, request.direction, request.selection);
+            connection_, property_id, members, query.members, query.cut_count,
+            request.direction, request.selection);
         unsigned int level = 0;
         std::vector<CandidateRow> reported;
         for (const unsigned int ladder_level : request.support_ladder) {
