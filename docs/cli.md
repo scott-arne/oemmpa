@@ -218,7 +218,9 @@ series_source	fragmentation
 The three new metrics report matched molecular series: `series` counts distinct
 series (constant + cut pattern combinations), `series_members` counts
 `series_member` rows (compound memberships in those series), and `series_source`
-is the analysis method name or 'none' if the method produces no series.
+is one of three values: `not-computed` when no analyzer save has reached the
+store yet, `none` when the saved method produces no series, or the name of the
+saved method.
 
 `list` is accepted as an alias for `summary`.
 

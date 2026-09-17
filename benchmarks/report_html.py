@@ -737,8 +737,8 @@ def _page_body():
     <p class="explain">Where the end-to-end time goes, per tool, as a stack of
       pipeline stages. <b>Load</b> parses and desalts input; <b>fragment</b> cuts
       bonds; <b>enumerate</b> forms matched pairs (mmpdb's <code>index</code> also
-      builds rules and writes SQLite here); <b>series</b> groups single-cut
-      fragments into matched molecular series; <b>transforms</b> groups pairs into
+      builds rules and writes SQLite here); <b>series</b> groups fragments that
+      share a constant into matched molecular series; <b>transforms</b> groups pairs into
       rules; <b>materialize</b> exports rows; <b>persist</b> writes DuckDB. mmpdb
       and RDKit expose only the shared core (fragment + enumerate), and neither
       produces series. The series share of <b>persist</b> is measured too, and is
