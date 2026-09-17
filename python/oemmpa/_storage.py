@@ -196,6 +196,9 @@ class DuckDBStore:
             atom ratio.
         :raises ValueError: If a ``*_variable_*`` filter is combined with an
             explicit ``query_options``, or if ``index_mode`` is unsupported.
+        :raises RuntimeError: If the analyzer's method produces series and the
+            store already holds rows; a series-producing analysis saves only
+            into an empty store, so rebuild the store to save again.
         :returns: ``self`` for chaining.
 
         **Thread safety:** This method releases the Python GIL, so do not call it

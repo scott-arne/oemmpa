@@ -174,9 +174,21 @@ public:
     );
 
     /// \brief Store one analyzed matched pair row.
+    ///
+    /// Refused with ``StorageError`` once the store holds a series-producing
+    /// analysis -- series rows are present, or ``dataset.series_source`` names
+    /// a method -- because a pair appended afterwards would leave the stored
+    /// series incomplete. Rebuild the store instead.
     void AddPair(const MatchedPair& pair);
 
     /// \brief Store analyzed matched pair rows in one transaction.
+    ///
+    /// Refused with ``StorageError`` once the store holds a series-producing
+    /// analysis -- series rows are present, or ``dataset.series_source`` names
+    /// a method -- because a pair appended afterwards would leave the stored
+    /// series incomplete. Rebuild the store instead. An empty batch is
+    /// accepted: it writes no pair, so it cannot make a stored series
+    /// incomplete.
     void AddPairs(const std::vector<MatchedPair>& pairs);
 
     /// \brief Return true when a base-table exists in the main schema.
@@ -284,9 +296,13 @@ private:
         std::uint64_t operator()() { return next++; }
     };
 
-    // Bulk resolve-then-append for molecules, dimensions, pairs, and series,
-    // which are written only when the store holds none. NON-OWNING: a
-    // transaction must already be open; this never issues
+    // Bulk resolve-then-append for molecules, dimensions, pairs, and series.
+    // Each list has its own admission rule: molecules and dimensions are
+    // accepted into a store that already holds rows (a dimension row already
+    // present is reused rather than re-minted), pairs are refused once a
+    // series-producing analysis owns the store, and only series are
+    // unconditionally restricted to a store that holds no core rows at all.
+    // NON-OWNING: a transaction must already be open; this never issues
     // begin/commit/rollback. Properties are NOT handled here (they stay on the
     // AddMoleculeProperty upsert DML path). compound.id is written verbatim
     // from the analyzer id.

@@ -2542,6 +2542,45 @@ void DuckDBStore::AppendBulk(
     // Reuses the member caches; they are cleared by the transaction owner.
     PreloadIdCaches();
 
+    // --- The one-save-per-store contract for series, tested ahead of the
+    // molecule and pair validation below, so a call that breaks the contract is
+    // told so even when its rows would also fail a duplicate- or unknown-id
+    // check. Of the three, the contract is the one the caller cannot work
+    // around by fixing the rows. A series lists every R-group its constant
+    // carried across the whole analyzed set, so it is only true of the store it
+    // was computed from. Written into a store that already holds rows it would
+    // describe just a part of it, and a pair appended after it would leave it
+    // silently incomplete -- neither is recoverable by recounting, because
+    // membership cannot be derived from `pair`. Both directions are refused
+    // here, ahead of every Appender, so a rejected call leaves the store byte
+    // for byte as it was. Molecule-only writes and empty batches are
+    // deliberately not guarded: neither can make a stored series wrong, and the
+    // empty batch is the only public way to reconcile sequences.
+    if (!series.empty()) {
+        const std::string populated = FirstPopulatedCoreTable();
+        if (!populated.empty()) {
+            throw StorageError(
+                "series can only be written into an empty store, but " + populated +
+                " already holds rows; rebuild the store");
+        }
+    } else if (!pairs.empty()) {
+        // The series rows alone do not say whether an enumeration owns this
+        // store: a series-producing analysis of a set that yielded none stamps
+        // series_source and writes no series row, and a pair appended to that
+        // store would be outside an enumeration it claims to have completed.
+        // The stamp is therefore the authority, and the rows only catch a store
+        // whose stamp predates this contract. 'none' (a method with no series to
+        // offer) and 'not-computed' (no analyzer save at all) stay open to
+        // direct pair writes.
+        const std::string source = read_series_source(connection_);
+        if (GetRowCount("series") != 0 || (source != "not-computed" && source != "none")) {
+            throw StorageError(
+                "pairs cannot be written into a store that holds a series-producing "
+                "analysis, because direct pair writes would leave its series "
+                "incomplete; rebuild the store");
+        }
+    }
+
     // Validate molecules up front with the same semantics as the legacy
     // per-row AddMolecule, so the bulk path preserves its exception contract:
     // a duplicate external (public) id raises DuplicateIdError -- a distinct,
@@ -2579,57 +2618,27 @@ void DuckDBStore::AppendBulk(
     for (const MoleculeRecord& molecule : molecules) {
         batch_molecule_ids.insert(molecule.GetInternalId());
     }
+    // The subject phrase comes from the call site, because the series members
+    // checked further down are not a side of a pair and must not be reported as
+    // one.
     const auto require_known_molecule = [&](unsigned int molecule_id,
-                                            const char* side) {
+                                            const char* subject) {
         if (batch_molecule_ids.count(molecule_id) == 0 &&
             !HasMolecule(molecule_id)) {
-            throw StorageError(
-                std::string("cannot add pair with unknown ") + side + " molecule");
+            throw StorageError(std::string("cannot add ") + subject);
         }
     };
     for (const MatchedPair& pair : pairs) {
-        require_known_molecule(pair.GetSourceMoleculeId(), "source");
-        require_known_molecule(pair.GetTargetMoleculeId(), "target");
-    }
-
-    // --- The one-save-per-store contract for series. A series lists every
-    // R-group its constant carried across the whole analyzed set, so it is only
-    // true of the store it was computed from. Written into a store that already
-    // holds rows it would describe just a part of it, and a pair appended after
-    // it would leave it silently incomplete -- neither is recoverable by
-    // recounting, because membership cannot be derived from `pair`. Both
-    // directions are refused here, ahead of every Appender, so a rejected call
-    // leaves the store byte for byte as it was. Molecule-only writes and empty
-    // batches are deliberately not guarded: neither can make a stored series
-    // wrong, and the empty batch is the only public way to reconcile sequences.
-    if (!series.empty()) {
-        const std::string populated = FirstPopulatedCoreTable();
-        if (!populated.empty()) {
-            throw StorageError(
-                "series can only be written into an empty store, but " + populated +
-                " already holds rows; rebuild the store");
-        }
-    } else if (!pairs.empty()) {
-        // The series rows alone do not say whether an enumeration owns this
-        // store: a series-producing analysis of a set that yielded none stamps
-        // series_source and writes no series row, and a pair appended to that
-        // store would be outside an enumeration it claims to have completed.
-        // The stamp is therefore the authority, and the rows only catch a store
-        // whose stamp predates this contract. 'none' (a method with no series to
-        // offer) and 'not-computed' (no analyzer save at all) stay open to
-        // direct pair writes.
-        const std::string source = read_series_source(connection_);
-        if (GetRowCount("series") != 0 || (source != "not-computed" && source != "none")) {
-            throw StorageError(
-                "pairs cannot be written into a store that holds a series-producing "
-                "analysis, because direct pair writes would leave its series "
-                "incomplete; rebuild the store");
-        }
+        require_known_molecule(
+            pair.GetSourceMoleculeId(), "pair with unknown source molecule");
+        require_known_molecule(
+            pair.GetTargetMoleculeId(), "pair with unknown target molecule");
     }
     for (const Series& entry : series) {
         for (const SeriesMember& member : entry.GetMembers()) {
             for (const unsigned int molecule_id : member.GetMoleculeIds()) {
-                require_known_molecule(molecule_id, "series member");
+                require_known_molecule(
+                    molecule_id, "series member with unknown molecule");
             }
         }
     }

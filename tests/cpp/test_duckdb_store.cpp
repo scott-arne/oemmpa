@@ -3775,8 +3775,9 @@ TEST(DuckDBStoreSeriesSave, ASecondSaveIsRejectedAndLeavesEveryTableByteEqual) {
 
     EXPECT_THROW(analyzer.SaveTo(store), StorageError);
 
-    // A fresh analyzer numbers its molecules from 1 too, so it collides on the
-    // compound check before any series row is staged.
+    // A second, unrelated analyzer is refused by the same precondition rather
+    // than by any id collision: SaveTo admits a series-producing analysis into
+    // an empty store only, and this store already holds the first save's rows.
     Analyzer second;
     second.AddMolecule("Clc1ccccc1", "chlorobenzene");
     second.AddMolecule("Brc1ccccc1", "bromobenzene");
@@ -3910,6 +3911,28 @@ TEST(DuckDBStoreSeriesSave, DirectPairWritesAreRefusedOnceSeriesAreStored) {
         // reconciliation it is the only public entry point for.
         EXPECT_NO_THROW(store.AddPairs(std::vector<MatchedPair>{}));
         EXPECT_EQ(store.GetSummary().GetSeriesSource(), "fragmentation");
+
+        // A pair naming a molecule the store never received breaks the contract
+        // and the foreign-key precondition at once. The contract has to be the
+        // diagnosis, because it is the only one the caller can act on: adding
+        // the missing compound would still not let this pair in.
+        const MatchedPair orphan(
+            1, 999, "benzene", "never-stored",
+            "c1ccccc1", "Ic1ccccc1",
+            "[*:1]c1ccccc1", "[*:1][H]", "[*:1]I",
+            1, 1, 1);
+        bool rejected = false;
+        std::string message;
+        try {
+            store.AddPair(orphan);
+        } catch (const StorageError& error) {
+            rejected = true;
+            message = error.what();
+        }
+        EXPECT_TRUE(rejected) << "a pair into a series-owned store must be refused";
+        EXPECT_TRUE(message.find("series-producing") != std::string::npos ||
+                    message.find("empty store") != std::string::npos)
+            << "the refusal must name the series contract, got: " << message;
     }
 
     {

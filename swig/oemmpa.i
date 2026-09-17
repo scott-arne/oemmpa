@@ -371,8 +371,11 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(TransformProductVector) std::vector<OEMMPA::TransformProduct>;
 %template(GeneratedProductVector) std::vector<OEMMPA::GeneratedProduct>;
 // A series and a member carry their contents from construction, so neither has a
-// default constructor and the sized vector constructor and resize cannot compile
-// for them; this is the SWIG library's opt-out for such an element type.
+// default constructor. This is the SWIG library's opt-out for such an element
+// type: it drops the two vector members that would have to default-construct
+// one, the sized constructor vector(size_type) and the one-argument
+// resize(size_type). The two-argument resize(size_type, const value_type&) is
+// unaffected and stays wrapped.
 %std_nodefconst_type(OEMMPA::SeriesMember);
 %std_nodefconst_type(OEMMPA::Series);
 %template(SeriesMemberVector) std::vector<OEMMPA::SeriesMember>;

@@ -598,6 +598,13 @@ class Analyzer:
         :returns: :class:`SeriesQuery` over the raw series.
         :raises RuntimeError: If :meth:`analyze` has not run since the last
             mutation.
+
+        **Thread safety:** This method releases the Python GIL and fills a lazily
+        computed cache on its first call after :meth:`analyze`. Do not call from
+        multiple threads on the same ``Analyzer`` instance, and do not call it
+        concurrently with :meth:`oemmpa.DuckDBStore.save_analyzer`, which
+        enumerates the same series through the same cache; use one instance per
+        thread.
         """
         from ._query import SeriesQuery
 
