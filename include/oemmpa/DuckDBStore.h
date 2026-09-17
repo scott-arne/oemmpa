@@ -240,7 +240,12 @@ public:
     /// them. Bounds apply in the order Series.h documents: member filter,
     /// length test, constant floor, cut count. A series with no surviving
     /// members is never returned, even when min_series_length is 0.
-    std::vector<Series> GetSeries(const SeriesSelection& selection = SeriesSelection()) const;
+    ///
+    /// The selection is taken by value because the Python binding releases the
+    /// GIL for this read: copying it in the caller's thread gives the query a
+    /// snapshot that another thread cannot rewrite between the SQL bind and the
+    /// length test.
+    std::vector<Series> GetSeries(SeriesSelection selection = SeriesSelection()) const;
 
     /// \brief Return the number of stored series.
     std::uint64_t GetSeriesCount() const;

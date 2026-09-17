@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import itertools
+import threading
+
 import pytest
 
 from oemmpa import _oemmpa
@@ -14,6 +17,21 @@ def _phenyl_raw_analyzer():
     analyzer.AddMolecule("Cc1ccccc1", "toluene")
     analyzer.Analyze()
     return analyzer
+
+
+def _substituted_benzene_store():
+    """Build an in-memory store holding a few dozen series per cut count.
+
+    :returns: A raw ``DuckDBStore`` populated from disubstituted benzenes.
+    """
+    analyzer = _oemmpa.Analyzer()
+    groups = ["C", "O", "N", "F", "Cl", "CC", "OC", "CO", "CN", "Br"]
+    for index, (left, right) in enumerate(itertools.combinations_with_replacement(groups, 2)):
+        analyzer.AddMolecule(f"{left}c1ccc({right})cc1", f"cmpd{index}")
+    analyzer.Analyze()
+    store = _oemmpa.DuckDBStore()
+    analyzer.SaveTo(store)
+    return store
 
 
 def test_binding_exposes_the_series_types_and_the_selection_defaults():
@@ -74,3 +92,58 @@ def test_raw_store_reads_series_and_summary_fields(tmp_path):
     assert summary.GetNumSeries() == len(stored)
     assert summary.GetNumSeriesMembers() >= len(stored)
     assert summary.GetSeriesSource() == "fragmentation"
+
+
+@pytest.mark.skipif(not hasattr(_oemmpa, "DuckDBStore"), reason="DuckDB storage required")
+def test_raw_store_series_read_sees_one_coherent_selection_under_mutation():
+    # The read releases the GIL, so another thread can rewrite the selection while the
+    # query runs: the cut count is read when the SQL parameters are bound and the
+    # minimum length again for every grouped series. Each result must therefore reflect
+    # a snapshot of one selection, never a mixture of the bounds in force at each read.
+    store = _substituted_benzene_store()
+    whole = {}
+    for cut_count in (1, 2):
+        coherent = _oemmpa.SeriesSelection()
+        coherent.cut_count = cut_count
+        coherent.min_series_length = 2
+        whole[cut_count] = len(store.GetSeries(coherent))
+        coherent.min_series_length = 50
+        assert len(store.GetSeries(coherent)) == 0
+        # A torn read is only visible if dropping some series leaves a partial result.
+        assert whole[cut_count] > 10, f"cut count {cut_count} yielded too few series to test"
+
+    selection = _oemmpa.SeriesSelection()
+    selection.cut_count = 1
+    selection.min_series_length = 2
+    stop = threading.Event()
+
+    def flip():
+        while not stop.is_set():
+            selection.cut_count = 2
+            selection.min_series_length = 50
+            selection.cut_count = 1
+            selection.min_series_length = 2
+
+    mutator = threading.Thread(target=flip)
+    mutator.start()
+    incoherent = []
+    try:
+        for _ in range(200):
+            result = store.GetSeries(selection)
+            cut_counts = {s.GetCutCount() for s in result}
+            if len(cut_counts) > 1:
+                incoherent.append(f"one result mixed cut counts {sorted(cut_counts)}")
+            elif cut_counts:
+                cut_count = cut_counts.pop()
+                if cut_count not in whole:
+                    incoherent.append(f"a result carried cut count {cut_count}")
+                elif len(result) != whole[cut_count]:
+                    incoherent.append(
+                        f"cut count {cut_count} returned {len(result)} series, neither "
+                        f"the {whole[cut_count]} of one bound nor the none of the other"
+                    )
+    finally:
+        stop.set()
+        mutator.join(timeout=30)
+    assert not mutator.is_alive()
+    assert not incoherent, incoherent[:5]

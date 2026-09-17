@@ -3314,7 +3314,7 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
     return apply_pair_scoring(pairs, options.GetScoringOptions());
 }
 
-std::vector<Series> DuckDBStore::GetSeries(const SeriesSelection& selection) const {
+std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
     // The member bound, the constant floor and the cut count are applied in
     // SQL; the length test after grouping, so it sees the trimmed member list.
     const std::string sql =
