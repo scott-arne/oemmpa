@@ -12,6 +12,16 @@ from benchmarks.benchmark_suite import BENCHMARK_SCHEMAS, write_csv
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 COMMITTED_CORPUS = DATA_DIR / "surechembl_headtohead.smi"
+#: The fixture the committed DuckDB golden snapshot was dumped from, so its
+#: series tables are an oracle for the counts the benchmark reports.
+GOLDEN_FIXTURE = DATA_DIR / "surechembl_mmp_fixture.smi"
+GOLDEN_DUMP_DIR = DATA_DIR / "duckdb_golden"
+
+
+def _golden_rows(table):
+    """Return the row count of a committed golden dump (one row per line)."""
+    text = (GOLDEN_DUMP_DIR / f"{table}.tsv").read_text(encoding="utf-8")
+    return len(text.splitlines())
 
 
 @pytest.fixture
@@ -75,6 +85,140 @@ def test_series_member_rows_matches_the_materialized_row_count(tiny_corpus):
     series = analyzer.series()
     assert sb._series_member_rows(series) == len(series.to_dicts())
     assert result["counts"]["series_members"] == len(series.to_dicts())
+
+
+def _stage_run(persist, persist_series, fragment, database_bytes):
+    """Build one ``oemmpa_stages``-shaped result for the repeat-minimiser tests."""
+    return {
+        "seconds": {"fragment": fragment, "persist": persist, "persist_series": persist_series},
+        "counts": {
+            "series": 7,
+            "database_bytes": database_bytes,
+            "database_bytes_without_series": database_bytes - 10,
+        },
+    }
+
+
+def test_min_stages_keeps_the_persist_series_of_the_fastest_save():
+    # persist_series is a share of persist and the byte figures are measured on
+    # the store that save produced, so minimising them independently can report a
+    # share from one run against a total from another - here (10, 1) and (8, 7)
+    # would otherwise be reported as (8, 1), a save whose series share is an
+    # eighth of what any run actually measured.
+    runs = [
+        _stage_run(99.0, 9.0, 50.0, 9000),  # warmup, discarded
+        _stage_run(10.0, 1.0, 5.0, 100),
+        _stage_run(8.0, 7.0, 3.0, 200),
+    ]
+    best = sb._min_stages(lambda: runs.pop(0), repeats=2)
+    assert (best["seconds"]["persist"], best["seconds"]["persist_series"]) == (8.0, 7.0)
+    # The byte figures describe the store the winning save wrote.
+    assert best["counts"]["database_bytes"] == 200
+    assert best["counts"]["database_bytes_without_series"] == 190
+    # Stages that are not shares of one another still take an independent minimum.
+    assert best["seconds"]["fragment"] == 3.0
+
+
+def test_min_stages_keeps_the_winning_save_when_it_came_first():
+    # The mirror image: the fastest save is the earlier run, so its share and its
+    # byte figures must survive a later, slower save overwriting the counts.
+    runs = [
+        _stage_run(99.0, 9.0, 50.0, 9000),  # warmup, discarded
+        _stage_run(8.0, 7.0, 5.0, 200),
+        _stage_run(10.0, 1.0, 3.0, 100),
+    ]
+    best = sb._min_stages(lambda: runs.pop(0), repeats=2)
+    assert (best["seconds"]["persist"], best["seconds"]["persist_series"]) == (8.0, 7.0)
+    assert best["counts"]["database_bytes"] == 200
+    assert best["counts"]["database_bytes_without_series"] == 190
+    assert best["seconds"]["fragment"] == 3.0
+
+
+def test_corrupt_provenance_sidecar_does_not_lose_the_run(tmp_path):
+    # build_meta runs after the whole sweep, so a metadata file that will not
+    # parse must not raise there: hours of measurements would be discarded before
+    # the CLI ever writes JSON, HTML or CSV.
+    corpus_path = tmp_path / "n30.smi"
+    corpus_path.write_text("C methane\n", encoding="utf-8")
+    sidecar = corpus_path.with_suffix(".provenance.json")
+    sidecar.write_text('{"source": "/some/pa', encoding="utf-8")  # truncated mid-write
+
+    meta = sb.build_meta([30], [1], parallel_size=30, corpora={30: corpus_path})
+    entry = meta["corpora"]["30"]
+    assert entry["source"] == sb.PROVENANCE_UNAVAILABLE
+    assert entry["path"] == str(corpus_path)
+    assert entry["requested_size"] is None and entry["actual_size"] is None
+    assert entry["error"]  # the reason is recorded, not swallowed
+
+
+def test_run_stage_benchmark_survives_a_corrupt_sidecar(tmp_path, monkeypatch):
+    # The end-to-end version of the same guarantee: the records reach the caller.
+    monkeypatch.setattr(corpus, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    monkeypatch.setattr(
+        sb, "ensure_corpus", lambda size, **_: corpus.ensure_corpus(size, cache_dir=tmp_path)
+    )
+    corpus.ensure_corpus(30, cache_dir=tmp_path)
+    (tmp_path / "n30.provenance.json").write_text("{not json", encoding="utf-8")
+
+    records, meta = sb.run_stage_benchmark(sizes=[30], threads=[1], repeats=1)
+    assert any(r["benchmark"] == "stage_scaling" and r["tool"] == "oemmpa" for r in records)
+    assert meta["corpora"]["30"]["source"] == sb.PROVENANCE_UNAVAILABLE
+
+
+def test_provenance_sidecar_is_replaced_atomically(tmp_path, monkeypatch):
+    # A cached corpus is served without rewriting its sidecar, so a sidecar
+    # truncated by an interrupted write would persist for every later run. The
+    # destination must therefore only ever be updated by os.replace.
+    first = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    sidecar = first.with_suffix(".provenance.json")
+    original = sidecar.read_text(encoding="utf-8")
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(errno.EIO, "replace failed")
+
+    monkeypatch.setattr(corpus.os, "replace", refuse)
+    with pytest.raises(OSError):
+        corpus.ensure_corpus(30, cache_dir=tmp_path, force=True)
+    # The previous sidecar is untouched, and no partial file was left behind.
+    assert sidecar.read_text(encoding="utf-8") == original
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["n30.provenance.json", "n30.smi"]
+
+
+def test_golden_fixture_series_counts_match_the_committed_snapshot():
+    # Independent oracle: tests/data/duckdb_golden/*.tsv were dumped from the
+    # persisted store, so their row counts are what the C++ side wrote. Counting
+    # the same fixture through the Python surface must agree, which is what makes
+    # the pinned benchmark figures below trustworthy rather than self-referential.
+    oemmpa = sb._import_worktree_package()
+    analyzer = oemmpa.Analyzer()  # golden options: default fragmentation
+    analyzer.add_molecules(sb.read_smiles(GOLDEN_FIXTURE))
+    analyzer.analyze(1)
+    series = analyzer.series()
+
+    golden_series = _golden_rows("series")
+    golden_members = _golden_rows("series_member")
+    assert (golden_series, golden_members) == (226, 670)  # the snapshot has not moved
+    assert len(series) == golden_series
+    assert sb._series_member_rows(series) == golden_members
+
+
+def test_oemmpa_stages_pins_the_golden_fixture_series_counts():
+    # The same fixture through the benchmark's own configuration. The figures are
+    # lower than the golden snapshot's 226/670 because oemmpa_stages applies the
+    # mmpdb-parity filters (max-variable-heavies=10 and the fragmentation limits)
+    # that the golden dump deliberately does not.
+    result = sb.oemmpa_stages(GOLDEN_FIXTURE, threads=1)
+    assert result["counts"]["molecules"] == 40
+    assert result["counts"]["series"] == 179
+    assert result["counts"]["series_members"] == 560
+
+    records = []
+    sb._emit_stage_records(records, "surechembl", "oemmpa", "filtered", 40, 40, result)
+    assert records
+    for record in records:
+        assert record["series_count"] == 179
+        assert record["series_member_count"] == 560
 
 
 def test_stage_records_carry_the_series_counts(tiny_corpus):

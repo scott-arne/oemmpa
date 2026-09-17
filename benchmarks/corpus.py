@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 #: Git-ignored cache for generated corpora (see ``.gitignore``).
@@ -143,7 +144,19 @@ def _write_head(source_path, size, out_path):
 
 
 def _write_provenance(out_path, *, size, actual, source):
-    """Write a sidecar JSON recording how a corpus was generated."""
+    """Write a sidecar JSON recording how a corpus was generated.
+
+    Written to a temporary file in the same directory and moved into place with
+    ``os.replace``, so the sidecar is never observed half-written. This matters
+    more than it would for an ordinary cache file: ``ensure_corpus`` serves a
+    cached corpus *without* rewriting its sidecar, so a sidecar truncated by an
+    interrupted write would not heal - it would describe every later run.
+
+    :param out_path: Corpus file the sidecar is written beside.
+    :param size: Requested molecule count.
+    :param actual: Molecule count actually written.
+    :param source: Path the corpus was sampled from.
+    """
     provenance = {
         "requested_size": size,
         "actual_size": actual,
@@ -155,9 +168,26 @@ def _write_provenance(out_path, *, size, actual, source):
             "order_by": "id",
         },
     }
-    out_path.with_suffix(".provenance.json").write_text(
-        json.dumps(provenance, indent=2) + "\n", encoding="utf-8"
-    )
+    sidecar = out_path.with_suffix(".provenance.json")
+    # Same directory keeps the rename on one filesystem, which is what makes it
+    # atomic; the dot prefix keeps a partial file from looking like a corpus.
+    temporary = None
+    try:
+        with NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(sidecar.parent),
+            prefix=f".{sidecar.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(provenance, indent=2) + "\n")
+        os.replace(temporary, sidecar)
+    finally:
+        # A no-op once the replace succeeded; on failure it keeps the cache clean.
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _count_molecules(path):

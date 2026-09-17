@@ -104,6 +104,9 @@ OEMMPA_STAGES = (
 #: added into a total: summing ``persist_series`` on top of ``persist`` would
 #: count the series writes twice.
 DIAGNOSTIC_STAGES = ("persist_series",)
+#: ``corpora[size]["source"]`` when a corpus sidecar exists but cannot be read.
+#: Distinct from ``None``, which means the corpus has no sidecar at all.
+PROVENANCE_UNAVAILABLE = "unavailable"
 
 
 def _log(message):
@@ -480,9 +483,23 @@ def _filter_by_variable_heavies(fragments_by_constant, limit, chem):
 # Repeat wrapper (min per stage) for the in-process runners.
 # ---------------------------------------------------------------------------
 
+#: Timings that describe one save and must be taken from the same repeat.
+#: ``persist_series`` is a *share* of ``persist``, so minimising the two
+#: independently can pair the fastest save's total with another save's share -
+#: runs of (persist=10, share=1) and (8, 7) would be reported as (8, 1), a save
+#: whose series share is an eighth of anything measured. Every other stage times
+#: an independent phase, so its own minimum is the right "best observed" value.
+_COUPLED_PERSIST_SECONDS = ("persist", "persist_series")
+#: Counts measured on the store a save produced, coupled to it for the same reason.
+_COUPLED_PERSIST_COUNTS = ("database_bytes", "database_bytes_without_series")
+
 
 def _min_stages(run, repeats):
     """Run ``run`` once as warmup then ``repeats`` times, keeping each stage's min.
+
+    Stages are minimised independently except for the persist group
+    (``_COUPLED_PERSIST_SECONDS`` and ``_COUPLED_PERSIST_COUNTS``), which is
+    adopted whole from the repeat with the fastest ``persist``.
 
     :param run: Zero-arg callable returning a stage dict or ``None``.
     :returns: The minimized stage dict, or ``None`` if ``run`` returns ``None``.
@@ -496,14 +513,42 @@ def _min_stages(run, repeats):
             return None
         if best is None:
             best = current
+            continue
+        for stage, value in current["seconds"].items():
+            if stage in _COUPLED_PERSIST_SECONDS:
+                continue  # adopted as a group below
+            if value is not None and (
+                best["seconds"].get(stage) is None or value < best["seconds"][stage]
+            ):
+                best["seconds"][stage] = value
+        # Counts other than the byte figures are deterministic across repeats.
+        # Only keys the runner actually produces are retained, so the RDKit and
+        # mmpdb runners (which have no persist stage) keep their own count shape.
+        retained = {
+            key: best["counts"][key] for key in _COUPLED_PERSIST_COUNTS if key in best["counts"]
+        }
+        best["counts"] = dict(current["counts"])
+        if _is_faster(best["seconds"].get("persist"), current["seconds"].get("persist")):
+            for stage in _COUPLED_PERSIST_SECONDS:
+                best["seconds"][stage] = current["seconds"].get(stage)
         else:
-            for stage, value in current["seconds"].items():
-                if value is not None and (
-                    best["seconds"].get(stage) is None or value < best["seconds"][stage]
-                ):
-                    best["seconds"][stage] = value
-            best["counts"] = current["counts"]
+            best["counts"].update(retained)  # keep the winning save's store size
     return best
+
+
+def _is_faster(best_seconds, current_seconds):
+    """Report whether ``current_seconds`` should replace ``best_seconds``.
+
+    Matches the per-stage rule: a missing measurement never wins, and any
+    measurement beats a missing one.
+
+    :param best_seconds: Best timing so far, possibly ``None``.
+    :param current_seconds: Candidate timing, possibly ``None``.
+    :returns: ``True`` when the candidate is the better measurement.
+    """
+    if current_seconds is None:
+        return False
+    return best_seconds is None or current_seconds < best_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -733,21 +778,38 @@ def _corpus_provenance(path):
     """Read the sidecar ``ensure_corpus`` writes beside a corpus.
 
     A cached corpus is served without rewriting the sidecar, so reading it is
-    how the run records the source that actually produced the file.
+    how the run records the source that actually produced the file - and also why
+    a damaged sidecar is not self-healing and would greet every later run.
+
+    An unreadable sidecar is reported, never raised. This runs from
+    ``build_meta``, after the entire sweep and before the CLI has written JSON,
+    HTML or CSV, so raising here would throw away hours of measurements over a
+    metadata file that describes them.
 
     :param path: Corpus SMILES path.
-    :returns: ``source``, ``requested_size`` and ``actual_size``, or ``None``
-        values when the sidecar is missing.
+    :returns: ``source``, ``requested_size`` and ``actual_size``. ``source`` is
+        ``None`` when no sidecar exists and ``PROVENANCE_UNAVAILABLE`` when one
+        exists but cannot be read, in which case ``error`` carries the reason.
     """
     sidecar = Path(path).with_suffix(".provenance.json")
     if not sidecar.exists():
         return {"source": None, "requested_size": None, "actual_size": None}
-    data = json.loads(sidecar.read_text(encoding="utf-8"))
-    return {
-        "source": data.get("source"),
-        "requested_size": data.get("requested_size"),
-        "actual_size": data.get("actual_size"),
-    }
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        provenance = {
+            "source": data.get("source"),
+            "requested_size": data.get("requested_size"),
+            "actual_size": data.get("actual_size"),
+        }
+    except Exception as exc:  # noqa: BLE001 - metadata must not cost the records
+        _log(f"corpus provenance unreadable for {sidecar}: {exc}")
+        return {
+            "source": PROVENANCE_UNAVAILABLE,
+            "requested_size": None,
+            "actual_size": None,
+            "error": str(exc),
+        }
+    return provenance
 
 
 def build_meta(
