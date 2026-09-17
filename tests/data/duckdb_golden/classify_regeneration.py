@@ -179,8 +179,8 @@ RATIONALE = {
         "only, and never pairs S13 with S136 or S11 with S138."
     ),
     "h": (
-        "rule_smiles.num_heavies is populated by schema 5 (the fragmenter's "
-        "heavy-atom rule; hydrogen 0); the row's SMILES is unchanged."
+        "rule_smiles.num_heavies was empty at schema 4 and is filled from schema "
+        "5 on: the row's SMILES is unchanged and its new count is non-empty."
     ),
     "n": "Table introduced by schema 5; every row is new by construction.",
 }

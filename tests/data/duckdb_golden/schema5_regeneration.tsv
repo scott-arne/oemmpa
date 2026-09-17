@@ -34,7 +34,7 @@ rule_smiles.tsv	d	0		No row was left unattributed.
 rule_smiles.tsv	e	0		Canonical multi-cut attachment labels renumbered the row: the same structure, with [*:n] assigned canonically instead of by discovery order.
 rule_smiles.tsv	f	0		Pair recovered by canonical attachment labels: both sides now render the same multi-cut constant and pair for the first time. Every row has cut_count >= 2, matching the constant's attachment count.
 rule_smiles.tsv	g	0		No row of this file is lost for that reason: every removed row is either matched to a counterpart or merged into a row that survives.
-rule_smiles.tsv	h	563	[*:1]/C=C/CC | 4	rule_smiles.num_heavies is populated by schema 5 (the fragmenter's heavy-atom rule; hydrogen 0); the row's SMILES is unchanged.
+rule_smiles.tsv	h	563	[*:1]/C=C/CC | 4	rule_smiles.num_heavies was empty at schema 4 and is filled from schema 5 on: the row's SMILES is unchanged and its new count is non-empty.
 rule_smiles.tsv	n	0		Table introduced by schema 5; every row is new by construction.
 rule.tsv	a	0		File is byte-identical before and after; the regeneration does not touch it.
 rule.tsv	b	0		File is byte-identical before and after; the regeneration does not touch it.
@@ -106,7 +106,7 @@ series.tsv	d	0		No row was left unattributed.
 series.tsv	e	0		Canonical multi-cut attachment labels renumbered the row: the same structure, with [*:n] assigned canonically instead of by discovery order.
 series.tsv	f	0		Pair recovered by canonical attachment labels: both sides now render the same multi-cut constant and pair for the first time. Every row has cut_count >= 2, matching the constant's attachment count.
 series.tsv	g	0		No row of this file is lost for that reason: every removed row is either matched to a counterpart or merged into a row that survives.
-series.tsv	h	0		rule_smiles.num_heavies is populated by schema 5 (the fragmenter's heavy-atom rule; hydrogen 0); the row's SMILES is unchanged.
+series.tsv	h	0		rule_smiles.num_heavies was empty at schema 4 and is filled from schema 5 on: the row's SMILES is unchanged and its new count is non-empty.
 series.tsv	n	226	[*:1]/C=C/CC | 1 | 4 | 2	Table introduced by schema 5; every row is new by construction.
 series_member.tsv	a	0		Fragment SMILES are now rendered isomeric, so the row either gained a stereo descriptor or exists only because stereo split a transform that was degenerate when both sides rendered identically.
 series_member.tsv	b	0		No row lost a stereo descriptor; the regeneration only adds stereo.
@@ -115,5 +115,5 @@ series_member.tsv	d	0		No row was left unattributed.
 series_member.tsv	e	0		Canonical multi-cut attachment labels renumbered the row: the same structure, with [*:n] assigned canonically instead of by discovery order.
 series_member.tsv	f	0		Pair recovered by canonical attachment labels: both sides now render the same multi-cut constant and pair for the first time. Every row has cut_count >= 2, matching the constant's attachment count.
 series_member.tsv	g	0		No row of this file is lost for that reason: every removed row is either matched to a counterpart or merged into a row that survives.
-series_member.tsv	h	0		rule_smiles.num_heavies is populated by schema 5 (the fragmenter's heavy-atom rule; hydrogen 0); the row's SMILES is unchanged.
+series_member.tsv	h	0		rule_smiles.num_heavies was empty at schema 4 and is filled from schema 5 on: the row's SMILES is unchanged and its new count is non-empty.
 series_member.tsv	n	670	[*:1]/C=C/CC | 1 | [*:1]c1nc(c(n1Cc2ccc(cc2)c3ccccc3C(=O)O)C=O)Cl | 24 | S136	Table introduced by schema 5; every row is new by construction.

@@ -25,12 +25,12 @@ def test_target_methods_release_gil():
     RELEASE = ("SWIG_PYTHON_THREAD_BEGIN_ALLOW", "Py_BEGIN_ALLOW_THREADS")
     # Scan windows are the number of chars examined after a wrapper name. The
     # release check uses a wider window so it reaches the GIL macro inside larger
-    # wrapper bodies; the getter check (absence assertion) uses a tighter window
-    # so it cannot bleed into the following wrapper and read a neighbor's macro.
+    # wrapper bodies; every absence assertion uses a tighter window so it cannot
+    # bleed into the following wrapper and read a neighbor's macro.
     RELEASE_SCAN = 1500
     GETTER_SCAN = 800
-    def wrapper_releases(pattern):
-        blocks = re.findall(pattern + r"[\s\S]{0," + str(RELEASE_SCAN) + r"}", text)
+    def wrapper_releases(pattern, scan=RELEASE_SCAN):
+        blocks = re.findall(pattern + r"[\s\S]{0," + str(scan) + r"}", text)
         return blocks and any(any(r in b for r in RELEASE) for b in blocks)
     # Every one of the eight target methods must release the GIL. The two series reads
     # are named by their overload wrappers rather than by the bare method name: the
@@ -52,8 +52,11 @@ def test_target_methods_release_gil():
                    "AnalysisMethod_GetMethodName", "Fragmenter_GetMaxCuts",
                    "Analyzer_ProducesSeries", "DuckDBStore_GetSeriesCount")
     for name in non_targets:
-        assert not wrapper_releases(r"_wrap_" + name), f"{name} should NOT release the GIL"
-    # Total GIL macro count: must be low (only the 8 targets × overloads, begin+end).
+        assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), \
+            f"{name} should NOT release the GIL"
+    # Total GIL macro count: must be low. Only the BEGIN macros are counted, one
+    # per releasing wrapper body, so the bound is the 8 targets times their
+    # overloads rather than a begin-and-end pair count.
     # Pin the observed count so a regression that goes broad will fail.
     macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
     assert macro_count <= 24, f"Expected ≤24 GIL macros (8 targets), found {macro_count}"
