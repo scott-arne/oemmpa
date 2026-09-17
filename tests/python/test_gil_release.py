@@ -20,10 +20,15 @@ def test_target_methods_release_gil():
     def wrapper_releases(pattern):
         blocks = re.findall(pattern + r"[\s\S]{0," + str(RELEASE_SCAN) + r"}", text)
         return blocks and any(any(r in b for r in RELEASE) for b in blocks)
-    # Every one of the six target methods must release the GIL.
-    for name in ("Analyzer_Analyze", "Analyzer_GetPairs", "Analyzer_GetTransforms",
-                 "Analyzer_SaveTo", "DuckDBStore_AddMoleculesFromSmilesFile",
-                 "DuckDBStore_AddPropertiesFromCsvFile"):
+    # Every one of the eight target methods must release the GIL. The two series reads
+    # are named by their overload wrappers rather than by the bare method name: the
+    # prefix "DuckDBStore_GetSeries" also matches the GIL-held GetSeriesCount wrapper,
+    # so a bare prefix would pass on a build where only one of the three releases.
+    for name in ("Analyzer_Analyze", "Analyzer_GetPairs", "Analyzer_GetSeries",
+                 "Analyzer_GetTransforms", "Analyzer_SaveTo",
+                 "DuckDBStore_AddMoleculesFromSmilesFile",
+                 "DuckDBStore_AddPropertiesFromCsvFile",
+                 "DuckDBStore_GetSeries__SWIG_0", "DuckDBStore_GetSeries__SWIG_1"):
         assert wrapper_releases(r"_wrap_" + name), f"{name} should release the GIL"
     # A sampled trivial getter must NOT release (proves selectivity, no churn).
     getter = re.findall(r"_wrap_Analyzer_GetMethodName[\s\S]{0," + str(GETTER_SCAN) + r"}", text)
@@ -32,10 +37,11 @@ def test_target_methods_release_gil():
         "trivial getter should stay GIL-held"
     # Exclusivity: sample other non-target wrappers and assert they do NOT release.
     non_targets = ("Analyzer_GetFragmentationCount", "DuckDBStore_GetDatabasePath",
-                   "AnalysisMethod_GetMethodName", "Fragmenter_GetMaxCuts")
+                   "AnalysisMethod_GetMethodName", "Fragmenter_GetMaxCuts",
+                   "Analyzer_ProducesSeries", "DuckDBStore_GetSeriesCount")
     for name in non_targets:
         assert not wrapper_releases(r"_wrap_" + name), f"{name} should NOT release the GIL"
-    # Total GIL macro count: must be low (only the 6 targets × overloads, begin+end).
+    # Total GIL macro count: must be low (only the 8 targets × overloads, begin+end).
     # Pin the observed count so a regression that goes broad will fail.
     macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
-    assert macro_count <= 24, f"Expected ≤24 GIL macros (6 targets), found {macro_count}"
+    assert macro_count <= 24, f"Expected ≤24 GIL macros (8 targets), found {macro_count}"
