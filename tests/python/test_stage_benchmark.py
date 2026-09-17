@@ -23,15 +23,125 @@ def tiny_corpus(tmp_path):
     return path
 
 
-def test_oemmpa_stages_reports_every_stage(tiny_corpus):
+def test_oemmpa_stages_reports_every_stage_and_the_series_figures(tiny_corpus):
     result = sb.oemmpa_stages(tiny_corpus, threads=1)
-    # All six pipeline stages are timed (persist may be None without DuckDB).
+    # Every pipeline stage is timed (the persist stages may be None without DuckDB).
     assert set(sb.OEMMPA_STAGES) == set(result["seconds"])
+    assert "series" in sb.OEMMPA_STAGES and "persist_series" in sb.OEMMPA_STAGES
     for seconds in result["seconds"].values():
         assert seconds is None or seconds >= 0
     assert result["counts"]["molecules"] > 0
     assert result["counts"]["pairs"] >= 0
     assert result["counts"]["transforms"] >= 0
+    assert result["counts"]["series"] >= 0
+    assert result["counts"]["series_members"] >= result["counts"]["series"]
+    persist, persist_series = result["seconds"]["persist"], result["seconds"]["persist_series"]
+    if persist is not None:
+        assert persist_series is not None and 0 <= persist_series <= persist
+        assert result["counts"]["database_bytes"] > result["counts"]["database_bytes_without_series"] > 0
+
+
+def test_stage_records_carry_the_series_counts(tiny_corpus):
+    result = sb.oemmpa_stages(tiny_corpus, threads=1)
+    records = []
+    sb._emit_stage_records(records, "surechembl", "oemmpa", "filtered", 30, 30, result)
+    assert records
+    for record in records:
+        assert record["series_count"] == result["counts"]["series"]
+        assert record["series_member_count"] == result["counts"]["series_members"]
+        assert record["database_bytes"] == result["counts"]["database_bytes"]
+        assert record["database_bytes_without_series"] == result["counts"]["database_bytes_without_series"]
+        assert set(record) == set(BENCHMARK_SCHEMAS["stage_scaling"])
+
+
+def test_stage_parallel_records_carry_counts_and_exclude_the_diagnostic_from_total(
+    tiny_corpus, monkeypatch
+):
+    monkeypatch.setattr(sb, "ensure_corpus", lambda size, **_: tiny_corpus)
+    monkeypatch.setattr(sb, "_count_molecules", lambda _: 30)
+    records = sb.stage_parallel_records(30, [1, 2], repeats=1)
+    assert records
+    for record in records:
+        assert set(record) == set(BENCHMARK_SCHEMAS["stage_parallel"])
+        assert record["series_count"] >= 0
+        assert record["series_member_count"] >= record["series_count"]
+    by_stage = {(r["threads"], r["stage"]): r["seconds"] for r in records}
+    real_stages = [s for s in sb.OEMMPA_STAGES if s not in sb.DIAGNOSTIC_STAGES]
+    summed = sum(by_stage[(1, s)] for s in real_stages if by_stage.get((1, s)) is not None)
+    assert by_stage[(1, "total")] == pytest.approx(summed)
+    assert "persist_series" in sb.DIAGNOSTIC_STAGES
+
+
+def test_scaling_totals_exclude_the_diagnostic_stage():
+    rows = [
+        {"stage": "persist", "seconds": 2.0},
+        {"stage": "persist_series", "seconds": 0.5},
+        {"stage": "enumerate", "seconds": 1.0},
+    ]
+    assert sb.scaling_total_seconds(rows) == pytest.approx(3.0)
+
+
+def test_build_meta_records_the_effective_corpus_source(tiny_corpus, tmp_path, monkeypatch):
+    # The committed fallback writes a provenance sidecar; the cached path reuses it.
+    monkeypatch.setattr(corpus, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    first = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    second = corpus.ensure_corpus(30, cache_dir=tmp_path)  # served from the cache
+    assert first == second
+    meta = sb.build_meta([30], [1], parallel_size=30, parquet=None, corpora={30: second})
+    entry = meta["corpora"]["30"]
+    assert entry["source"] == str(corpus.COMMITTED_CORPUS)
+    assert entry["requested_size"] == 30
+    assert entry["actual_size"] == 30
+    assert entry["path"] == str(second)
+    assert meta["parquet_requested"] is None
+    assert meta["diagnostic_stages"] == list(sb.DIAGNOSTIC_STAGES)
+    for key in ("hostname", "machine", "git_revision", "duckdb_python_version"):
+        assert key in meta
+
+
+def _scaling_rows(tool="oemmpa", size=30):
+    common = {"benchmark": "stage_scaling", "dataset": "surechembl", "tool": tool,
+              "variant": "filtered", "size": size, "molecule_count": size, "threads": 1,
+              "pair_count": 1, "transform_count": 1, "series_count": 1,
+              "series_member_count": 2, "database_bytes": 10, "database_bytes_without_series": 8}
+    return [
+        {**common, "stage": "enumerate", "seconds": 1.0},
+        {**common, "stage": "persist", "seconds": 2.0},
+        {**common, "stage": "persist_series", "seconds": 0.5},
+    ]
+
+
+def test_console_summary_total_excludes_the_diagnostic_stage(capsys):
+    from benchmarks import benchmark_suite
+
+    benchmark_suite._print_stage_summary(_scaling_rows(), {})
+    out = capsys.readouterr().out
+    assert "oemmpa" in out and "3.000 s" in out
+    assert "3.500" not in out
+
+
+def test_html_report_excludes_diagnostic_stages_from_totals_and_shows_series():
+    from benchmarks import report_html
+
+    meta = {"diagnostic_stages": ["persist_series"], "generated_at": "2026-09-16T00:00:00+00:00"}
+    html = report_html.render_html(_scaling_rows(), meta)
+    assert '"diagnostic_stages": ["persist_series"]' in html.replace("\n", "")
+    total_seconds = html[html.index("function totalSeconds"):html.index("function stageSeconds")]
+    assert "diagnostic_stages" in total_seconds
+    assert "load → fragment → enumerate → series → transforms → materialize → persist" in html
+
+
+def test_run_stage_benchmark_records_the_corpus_it_used(tmp_path, monkeypatch):
+    monkeypatch.setattr(corpus, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    monkeypatch.setattr(sb, "ensure_corpus", lambda size, **_: corpus.ensure_corpus(size, cache_dir=tmp_path))
+    records, meta = sb.run_stage_benchmark(sizes=[30], threads=[1], repeats=1)
+    assert any(r["benchmark"] == "stage_scaling" and r["tool"] == "oemmpa" for r in records)
+    entry = meta["corpora"]["30"]
+    assert entry["path"] == str(tmp_path / "n30.smi")
+    assert entry["source"] == str(corpus.COMMITTED_CORPUS)
+    assert entry["actual_size"] == 30
 
 
 def test_rdkit_stages_filter_reduces_pairs(tiny_corpus):

@@ -26,6 +26,7 @@ if __package__ in (None, ""):
         DEFAULT_SIZES as STAGE_DEFAULT_SIZES,
         DEFAULT_THREADS as STAGE_DEFAULT_THREADS,
         run_stage_benchmark,
+        scaling_total_seconds,
     )
     from benchmarks.report_html import render_html
 else:
@@ -36,6 +37,7 @@ else:
         DEFAULT_SIZES as STAGE_DEFAULT_SIZES,
         DEFAULT_THREADS as STAGE_DEFAULT_THREADS,
         run_stage_benchmark,
+        scaling_total_seconds,
     )
     from .report_html import render_html
 
@@ -180,6 +182,10 @@ BENCHMARK_SCHEMAS = {
         "threads",
         "pair_count",
         "transform_count",
+        "series_count",
+        "series_member_count",
+        "database_bytes",
+        "database_bytes_without_series",
     ],
     "stage_parallel": [
         "benchmark",
@@ -191,6 +197,12 @@ BENCHMARK_SCHEMAS = {
         "seconds",
         "speedup",
         "efficiency",
+        "pair_count",
+        "transform_count",
+        "series_count",
+        "series_member_count",
+        "database_bytes",
+        "database_bytes_without_series",
     ],
 }
 
@@ -1483,7 +1495,9 @@ def _print_stage_summary(records, meta):
             if r["tool"] == tool and r["variant"] == "filtered" and r["size"] == top
         ]
         if rows:
-            click.echo(f"  {tool:8} {sum(r['seconds'] for r in rows):8.3f} s")
+            # Diagnostic stages are shares of another stage; the shared helper
+            # keeps this line, the HTML KPI and the parallel total consistent.
+            click.echo(f"  {tool:8} {scaling_total_seconds(rows):8.3f} s")
     totals = [r for r in parallel if r["stage"] == "total" and r.get("speedup")]
     if totals:
         best = max(totals, key=lambda r: r["speedup"])

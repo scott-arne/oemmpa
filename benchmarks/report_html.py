@@ -162,13 +162,19 @@ const NS = "http://www.w3.org/2000/svg";
 const TOOL_ORDER = ["oemmpa", "mmpdb", "rdkit"];
 const TOOL_LABEL = { oemmpa: "OEMMPA", mmpdb: "mmpdb", rdkit: "RDKit" };
 const TOOL_VAR = { oemmpa: "--series-oemmpa", mmpdb: "--series-mmpdb", rdkit: "--series-rdkit" };
-const STAGE_ORDER = ["load", "fragment", "enumerate", "transforms", "materialize", "persist"];
+const STAGE_ORDER = ["load", "fragment", "enumerate", "series", "transforms", "materialize", "persist"];
+// Diagnostic stages are shares of a stage already in STAGE_ORDER, so they are
+// deliberately absent from it: they must never become a segment of a stack or a
+// term of a total. They still belong in the measurements table, next to the
+// stage they are a share of, which is what STAGE_SORT_ORDER is for.
+const STAGE_SORT_ORDER = STAGE_ORDER.concat(META.diagnostic_stages || []);
 const STAGE_LABEL = {
-  load: "Load", fragment: "Fragment", enumerate: "Enumerate",
+  load: "Load", fragment: "Fragment", enumerate: "Enumerate", series: "Series",
   transforms: "Transforms", materialize: "Materialize", persist: "Persist",
+  persist_series: "Persist (series share)",
 };
-const STAGE_RAMP_LIGHT = ["#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#184f95", "#104281"];
-const STAGE_RAMP_DARK = ["#b7d3f6", "#86b6ef", "#5598e7", "#3987e5", "#256abf", "#184f95"];
+const STAGE_RAMP_LIGHT = ["#a7cbf4", "#86b6ef", "#5598e7", "#2a78d6", "#1c5cab", "#184f95", "#104281"];
+const STAGE_RAMP_DARK = ["#cfe2fa", "#b7d3f6", "#86b6ef", "#5598e7", "#3987e5", "#256abf", "#184f95"];
 
 const isDark = () => matchMedia("(prefers-color-scheme: dark)").matches;
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -209,7 +215,12 @@ const sizes = uniq(scaling.filter((r) => r.variant === "filtered").map((r) => r.
 const toolsPresent = TOOL_ORDER.filter((t) => scaling.some((r) => r.tool === t && r.variant === "filtered"));
 
 function totalSeconds(tool, variant, size) {
-  const rows = scaling.filter((r) => r.tool === tool && r.variant === variant && r.size === size);
+  // META.diagnostic_stages lists the stages that are a share of another stage.
+  // Adding persist_series on top of persist would count the series writes
+  // twice, so the same list Python's scaling_total_seconds skips is skipped here.
+  const diagnostic = META.diagnostic_stages || [];
+  const rows = scaling.filter((r) => r.tool === tool && r.variant === variant
+    && r.size === size && !diagnostic.includes(r.stage));
   if (!rows.length) return null;
   return rows.reduce((s, r) => s + (r.seconds || 0), 0);
 }
@@ -411,10 +422,17 @@ function stackedBars(mount, size) {
       const color = stageColor(seg.stage);
       const rect = el("rect", { x: cx - bw / 2, y: y1, width: bw, height: Math.max(0.5, y0 - y1 - gap),
         rx: 3, fill: color }, svg);
-      rect.addEventListener("pointermove", (evt) => showTip(
-        [tipTitle(`${TOOL_LABEL[b.tool]} · ${STAGE_LABEL[seg.stage]}`),
+      rect.addEventListener("pointermove", (evt) => {
+        const lines = [tipTitle(`${TOOL_LABEL[b.tool]} · ${STAGE_LABEL[seg.stage]}`),
           tipRow(color, "time", fmtTime(seg.value)),
-          tipRow(color, "share", ((seg.value / b.total) * 100).toFixed(0) + "%")], evt));
+          tipRow(color, "share", ((seg.value / b.total) * 100).toFixed(0) + "%")];
+        // Attribution only: the series writes are already inside the persist
+        // segment, so they are annotated here instead of stacked as a bar.
+        const seriesShare = seg.stage === "persist"
+          ? stageSeconds(b.tool, "filtered", size, "persist_series") : null;
+        if (seriesShare != null) lines.push(tipRow(color, "of which series", fmtTime(seriesShare)));
+        showTip(lines, evt);
+      });
       rect.addEventListener("pointerleave", hideTip);
       cursor += seg.value;
     });
@@ -430,7 +448,7 @@ function renderKpis() {
   const tiles = [];
   const oe = totalSeconds("oemmpa", "filtered", top);
   if (oe != null) tiles.push({ label: `OEMMPA end-to-end @ ${fmtCompact(top)} molecules`,
-    value: fmtTime(oe), sub: "load → fragment → enumerate → transforms → materialize → persist" });
+    value: fmtTime(oe), sub: "load → fragment → enumerate → series → transforms → materialize → persist" });
   const mm = totalSeconds("mmpdb", "filtered", top);
   if (oe != null && mm != null) tiles.push({ label: `Faster than mmpdb @ ${fmtCompact(top)}`,
     value: (mm / oe).toFixed(1) + "×", sub: `${fmtTime(mm)} vs ${fmtTime(oe)} (fragment+index vs full pipeline)` });
@@ -633,7 +651,7 @@ function renderTable() {
   body.replaceChildren();
   scaling.slice().sort((a, b) =>
     a.size - b.size || TOOL_ORDER.indexOf(a.tool) - TOOL_ORDER.indexOf(b.tool) ||
-    STAGE_ORDER.indexOf(a.stage) - STAGE_ORDER.indexOf(b.stage)
+    STAGE_SORT_ORDER.indexOf(a.stage) - STAGE_SORT_ORDER.indexOf(b.stage)
   ).forEach((r) => {
     const tr = document.createElement("tr");
     const cells = [
@@ -717,9 +735,13 @@ def _page_body():
     <p class="explain">Where the end-to-end time goes, per tool, as a stack of
       pipeline stages. <b>Load</b> parses and desalts input; <b>fragment</b> cuts
       bonds; <b>enumerate</b> forms matched pairs (mmpdb's <code>index</code> also
-      builds rules and writes SQLite here); <b>transforms</b> groups pairs into
+      builds rules and writes SQLite here); <b>series</b> groups single-cut
+      fragments into matched molecular series; <b>transforms</b> groups pairs into
       rules; <b>materialize</b> exports rows; <b>persist</b> writes DuckDB. mmpdb
-      and RDKit expose only the shared core (fragment + enumerate).
+      and RDKit expose only the shared core (fragment + enumerate), and neither
+      produces series. The series share of <b>persist</b> is measured too, and is
+      annotated on the persist segment rather than stacked: it is part of persist,
+      not an extra stage, so it is never added into a total.
       <i>How to read it &mdash;</i> a taller bar is more end-to-end time; each
       segment is one stage, so compare where each tool spends its time. Change the
       corpus size to see how the mix shifts as the dataset grows.</p>
