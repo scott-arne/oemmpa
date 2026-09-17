@@ -2,6 +2,7 @@
 
 import csv
 import errno
+import json
 from pathlib import Path
 
 import pytest
@@ -153,6 +154,8 @@ def test_corrupt_provenance_sidecar_does_not_lose_the_run(tmp_path):
 
 def test_run_stage_benchmark_survives_a_corrupt_sidecar(tmp_path, monkeypatch):
     # The end-to-end version of the same guarantee: the records reach the caller.
+    # Every source is taken away first, because otherwise the sweep repairs the
+    # pair (asserted below) and the unavailable path would never be exercised.
     monkeypatch.setattr(corpus, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
     monkeypatch.setattr(
@@ -160,10 +163,19 @@ def test_run_stage_benchmark_survives_a_corrupt_sidecar(tmp_path, monkeypatch):
     )
     corpus.ensure_corpus(30, cache_dir=tmp_path)
     (tmp_path / "n30.provenance.json").write_text("{not json", encoding="utf-8")
+    committed = corpus.COMMITTED_CORPUS
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", tmp_path / "gone.smi")
 
     records, meta = sb.run_stage_benchmark(sizes=[30], threads=[1], repeats=1)
     assert any(r["benchmark"] == "stage_scaling" and r["tool"] == "oemmpa" for r in records)
     assert meta["corpora"]["30"]["source"] == sb.PROVENANCE_UNAVAILABLE
+
+    # With a source back in reach the damage is repaired rather than carried
+    # through every later run, which a sidecar that is never rewritten would do.
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", committed)
+    healed = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    repaired = sb.build_meta([30], [1], parallel_size=30, corpora={30: healed})
+    assert repaired["corpora"]["30"]["source"] == str(committed)
 
 
 def test_provenance_sidecar_is_replaced_atomically(tmp_path, monkeypatch):
@@ -183,6 +195,128 @@ def test_provenance_sidecar_is_replaced_atomically(tmp_path, monkeypatch):
     # The previous sidecar is untouched, and no partial file was left behind.
     assert sidecar.read_text(encoding="utf-8") == original
     assert sorted(p.name for p in tmp_path.iterdir()) == ["n30.provenance.json", "n30.smi"]
+
+
+def _write_source(path, prefix, count):
+    """Write a tiny SMILES source whose ids make its identity obvious in bytes."""
+    lines = [f"{'C' * (index + 1)} {prefix}{index}" for index in range(count)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_forced_regeneration_cannot_attribute_new_bytes_to_the_old_source(
+    tmp_path, monkeypatch
+):
+    # The corpus is overwritten before its sidecar is replaced. If the sidecar
+    # write is lost, the cache holds new bytes beside a sidecar that is still
+    # valid JSON naming the *old* source - and a later non-force call accepts the
+    # cache on row count alone, so every measurement is misattributed.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    source_b = _write_source(tmp_path / "source_b.smi", "B", 5)
+
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_a)
+    cached = corpus.ensure_corpus(3, cache_dir=tmp_path / "cache")
+    assert sb._corpus_provenance(cached)["source"] == str(source_a)
+
+    # Forced regeneration from B whose sidecar write fails after the corpus is in.
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_b)
+    original = corpus._write_provenance
+
+    def fail(*_args, **_kwargs):
+        raise OSError(errno.EIO, "sidecar write failed")
+
+    monkeypatch.setattr(corpus, "_write_provenance", fail)
+    with pytest.raises(OSError):
+        corpus.ensure_corpus(3, cache_dir=tmp_path / "cache", force=True)
+    assert "B0" in cached.read_text(encoding="utf-8")  # the new bytes are in place
+
+    # The stale pair must never be read as source A.
+    stale = sb._corpus_provenance(cached)
+    assert stale["source"] == sb.PROVENANCE_UNAVAILABLE
+    assert stale["source"] != str(source_a)
+    assert "digest" in stale["error"]
+
+    # A later non-force call regenerates, because source B is available.
+    monkeypatch.setattr(corpus, "_write_provenance", original)
+    healed = corpus.ensure_corpus(3, cache_dir=tmp_path / "cache")
+    assert sb._corpus_provenance(healed)["source"] == str(source_b)
+
+
+def test_untrusted_cache_is_served_but_never_misattributed(tmp_path, monkeypatch):
+    # The mirror case: nothing can regenerate the corpus. ensure_corpus must
+    # still hand back molecules (its documented contract) rather than raise, and
+    # the provenance must say the pair cannot be trusted.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_a)
+    cached = corpus.ensure_corpus(3, cache_dir=tmp_path / "cache")
+
+    # Tamper with the bytes, then take every source away.
+    cached.write_text("CC T0\nCCC T1\nCCCC T2\n", encoding="utf-8")
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", tmp_path / "gone.smi")
+
+    served = corpus.ensure_corpus(3, cache_dir=tmp_path / "cache")
+    assert served == cached and served.exists()
+    entry = sb._corpus_provenance(served)
+    assert entry["source"] == sb.PROVENANCE_UNAVAILABLE
+    assert entry["error"]
+
+
+def test_corpus_edited_behind_its_sidecar_is_detected(tmp_path, monkeypatch):
+    # Same molecule count, different bytes: the row-count check cannot see this.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    cached = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    assert sb._corpus_provenance(cached)["source"] == str(corpus.COMMITTED_CORPUS)
+
+    lines = cached.read_text(encoding="utf-8").splitlines()
+    lines[0] = "CCO tampered"
+    cached.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert corpus._count_molecules(cached) == 30  # the old check still passes
+
+    assert sb._corpus_provenance(cached)["source"] == sb.PROVENANCE_UNAVAILABLE
+    healed = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    assert "tampered" not in healed.read_text(encoding="utf-8")
+    assert sb._corpus_provenance(healed)["source"] == str(corpus.COMMITTED_CORPUS)
+
+
+def test_sidecar_without_a_digest_is_untrusted_and_regenerated(tmp_path, monkeypatch):
+    # Sidecars written before the digest existed cannot vouch for any bytes, so
+    # every corpus already in a developer's cache takes this path once.
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    cached = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    sidecar = cached.with_suffix(".provenance.json")
+    legacy = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert legacy.pop("digest")  # the new field exists before it is removed
+    sidecar.write_text(json.dumps(legacy, indent=2) + "\n", encoding="utf-8")
+
+    assert sb._corpus_provenance(cached)["source"] == sb.PROVENANCE_UNAVAILABLE
+    healed = corpus.ensure_corpus(30, cache_dir=tmp_path)
+    assert sb._corpus_provenance(healed)["source"] == str(corpus.COMMITTED_CORPUS)
+    assert json.loads(sidecar.read_text(encoding="utf-8"))["digest"]
+
+
+def test_corpus_file_is_replaced_atomically(tmp_path, monkeypatch):
+    # The corpus goes through the same rename as its sidecar, so a regeneration
+    # that cannot complete leaves the previous corpus intact rather than a half
+    # file - or, as here, bytes from a source whose sidecar was never written.
+    source_a = _write_source(tmp_path / "source_a.smi", "A", 5)
+    _write_source(tmp_path / "source_b.smi", "B", 5)
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", source_a)
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", tmp_path / "absent.parquet")
+    cache = tmp_path / "cache"
+    corpus.ensure_corpus(3, cache_dir=cache)
+    before = (cache / "n3.smi").read_text(encoding="utf-8")
+
+    def refuse(*_args, **_kwargs):
+        raise OSError(errno.EIO, "replace failed")
+
+    monkeypatch.setattr(corpus, "COMMITTED_CORPUS", tmp_path / "source_b.smi")
+    monkeypatch.setattr(corpus.os, "replace", refuse)
+    with pytest.raises(OSError):
+        corpus.ensure_corpus(3, cache_dir=cache, force=True)
+    assert (cache / "n3.smi").read_text(encoding="utf-8") == before
+    assert sorted(p.name for p in cache.iterdir()) == ["n3.provenance.json", "n3.smi"]
 
 
 def test_golden_fixture_series_counts_match_the_committed_snapshot():

@@ -11,13 +11,20 @@ directly comparable. The same molecular-weight / connectivity filters as
 ``tests/data/build_surechembl_fixture.py`` are applied so the corpus matches the
 committed fixtures' chemistry.
 
+Each corpus is written beside a provenance sidecar that records its source and a
+digest of its bytes. The cache is therefore self-validating: a corpus whose
+digest no longer matches its sidecar is regenerated rather than measured, so no
+run can attribute its numbers to a source that did not produce the molecules.
+
 The proprietary ``dhu_glu_ymin`` dataset is refused outright.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -49,10 +56,14 @@ def ensure_corpus(size, *, parquet=None, cache_dir=CACHE_DIR, force=False):
     :param cache_dir: Directory for generated corpora.
     :param force: Regenerate even if a cached corpus of sufficient size exists.
     :returns: Path to a whitespace ``SMILES id`` file with at least ``size``
-        molecules (fewer only if the source is exhausted).
+        molecules (fewer only if the source is exhausted). A cached corpus is
+        reused only while its sidecar digest still matches it; otherwise it is
+        regenerated, or served unverified when no source remains, in which case
+        the provenance reports no source rather than a stale one.
     :raises ValueError: If ``size`` is not positive or a proprietary path is
         supplied.
-    :raises RuntimeError: If no corpus source can satisfy the request.
+    :raises RuntimeError: If no corpus source can satisfy the request and no
+        usable cached corpus exists.
     """
     size = int(size)
     if size <= 0:
@@ -62,8 +73,76 @@ def ensure_corpus(size, *, parquet=None, cache_dir=CACHE_DIR, force=False):
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_path = cache_dir / f"n{size}.smi"
     if out_path.exists() and not force and _count_molecules(out_path) >= size:
-        return out_path
+        _, reason = read_provenance(out_path)
+        if reason is None:
+            return out_path
+        # A corpus its sidecar cannot vouch for is worse than no cache at all:
+        # served as-is, every measurement taken from it would be credited to
+        # whatever source the sidecar happens to name.
+        _log(f"cached corpus {out_path.name} is untrustworthy ({reason}); regenerating")
+        try:
+            return _generate(size, out_path, parquet)
+        except _NoCorpusSource as exc:
+            # Losing the sweep over provenance would be the worse trade; the
+            # sidecar stays mismatched, so the run reports the source as
+            # unavailable rather than guessing.
+            _log(f"cannot regenerate {out_path.name} ({exc}); serving it unverified")
+            return out_path
+    return _generate(size, out_path, parquet)
 
+
+def read_provenance(corpus_path):
+    """Return the provenance of a cached corpus, but only if it can be trusted.
+
+    The sidecar describes bytes, not a path, so it is only evidence about the
+    corpus while its recorded digest still matches the file. That check is what
+    closes the window between the two writes: a corpus regenerated from a new
+    source whose sidecar write was lost is rejected here instead of being
+    credited to the old source.
+
+    :param corpus_path: Corpus SMILES path.
+    :returns: ``(provenance, reason)``. ``(None, None)`` when no sidecar exists,
+        ``(None, reason)`` when one exists but cannot be trusted for the bytes on
+        disk, and ``(provenance, None)`` otherwise.
+    """
+    corpus_path = Path(corpus_path)
+    sidecar = corpus_path.with_suffix(".provenance.json")
+    if not sidecar.exists():
+        return None, None
+    try:
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - any unreadable sidecar is untrusted
+        return None, f"sidecar unreadable: {exc}"
+    if not isinstance(data, dict):
+        return None, "sidecar is not a JSON object"
+    recorded = data.get("digest")
+    if not recorded:
+        # Sidecars written before the digest existed cannot vouch for anything.
+        return None, "sidecar records no corpus digest"
+    try:
+        actual = _file_digest(corpus_path)
+    except OSError as exc:
+        return None, f"corpus digest not computable: {exc}"
+    if actual != recorded:
+        return None, f"corpus digest {actual} does not match the recorded {recorded}"
+    return data, None
+
+
+class _NoCorpusSource(RuntimeError):
+    """No available source can produce the requested corpus."""
+
+
+def _generate(size, out_path, parquet=None):
+    """Write ``out_path`` from the best available source and record how.
+
+    The corpus is replaced atomically and its sidecar is written only once the
+    bytes are in place. An interruption therefore leaves either the previous
+    pair or a new corpus whose digest no longer matches the old sidecar - never
+    new bytes silently credited to the old source.
+
+    :returns: ``out_path``.
+    :raises _NoCorpusSource: If no source can satisfy ``size``.
+    """
     resolved = _resolve_parquet(parquet)
     if resolved is not None:
         actual = _write_from_parquet(resolved, size, out_path)
@@ -79,12 +158,17 @@ def ensure_corpus(size, *, parquet=None, cache_dir=CACHE_DIR, force=False):
                 out_path, size=size, actual=actual, source=str(COMMITTED_CORPUS)
             )
             return out_path
-        raise RuntimeError(
+        raise _NoCorpusSource(
             f"parquet not found and the committed corpus has only {available} "
             f"molecules (< {size}); set OEMMPA_BENCHMARK_PARQUET to the public "
             "SureChEMBL parquet to generate larger corpora"
         )
-    raise RuntimeError("no corpus source available")
+    raise _NoCorpusSource("no corpus source available")
+
+
+def _log(message):
+    """Report a cache decision on stderr, where the benchmark keeps its notes."""
+    print(f"[corpus] {message}", file=sys.stderr, flush=True)
 
 
 def _resolve_parquet(parquet):
@@ -123,7 +207,7 @@ def _write_from_parquet(parquet, size, out_path):
     finally:
         connection.close()
     lines = [f"{smiles} S{molecule_id}" for molecule_id, smiles in rows]
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _replace_text(out_path, "\n".join(lines) + "\n")
     return len(lines)
 
 
@@ -139,18 +223,16 @@ def _write_head(source_path, size, out_path):
                 selected.append(line.rstrip("\n"))
             if len(selected) >= size:
                 break
-    out_path.write_text("\n".join(selected) + "\n", encoding="utf-8")
+    _replace_text(out_path, "\n".join(selected) + "\n")
     return len(selected)
 
 
 def _write_provenance(out_path, *, size, actual, source):
     """Write a sidecar JSON recording how a corpus was generated.
 
-    Written to a temporary file in the same directory and moved into place with
-    ``os.replace``, so the sidecar is never observed half-written. This matters
-    more than it would for an ordinary cache file: ``ensure_corpus`` serves a
-    cached corpus *without* rewriting its sidecar, so a sidecar truncated by an
-    interrupted write would not heal - it would describe every later run.
+    The digest is what ties the record to the bytes: ``ensure_corpus`` serves a
+    cached corpus without rewriting its sidecar, so a sidecar naming a path is
+    only evidence for as long as the file it was written for is still there.
 
     :param out_path: Corpus file the sidecar is written beside.
     :param size: Requested molecule count.
@@ -161,6 +243,7 @@ def _write_provenance(out_path, *, size, actual, source):
         "requested_size": size,
         "actual_size": actual,
         "source": source,
+        "digest": _file_digest(out_path),
         "filters": {
             "mol_weight_min": MIN_MOL_WEIGHT,
             "mol_weight_max": MAX_MOL_WEIGHT,
@@ -168,7 +251,21 @@ def _write_provenance(out_path, *, size, actual, source):
             "order_by": "id",
         },
     }
-    sidecar = out_path.with_suffix(".provenance.json")
+    _replace_text(
+        out_path.with_suffix(".provenance.json"), json.dumps(provenance, indent=2) + "\n"
+    )
+
+
+def _replace_text(destination, text):
+    """Write ``text`` to ``destination`` through an atomic same-directory rename.
+
+    Neither a corpus nor its sidecar is rewritten once cached, so a file left
+    half-written by an interrupted run would not heal: it would be served, or
+    believed, by every later run. The rename makes the update all-or-nothing.
+
+    :param destination: Path to replace.
+    :param text: Complete new contents.
+    """
     # Same directory keeps the rename on one filesystem, which is what makes it
     # atomic; the dot prefix keeps a partial file from looking like a corpus.
     temporary = None
@@ -176,18 +273,33 @@ def _write_provenance(out_path, *, size, actual, source):
         with NamedTemporaryFile(
             "w",
             encoding="utf-8",
-            dir=str(sidecar.parent),
-            prefix=f".{sidecar.name}.",
+            dir=str(destination.parent),
+            prefix=f".{destination.name}.",
             suffix=".tmp",
             delete=False,
         ) as handle:
             temporary = Path(handle.name)
-            handle.write(json.dumps(provenance, indent=2) + "\n")
-        os.replace(temporary, sidecar)
+            handle.write(text)
+        os.replace(temporary, destination)
     finally:
         # A no-op once the replace succeeded; on failure it keeps the cache clean.
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _file_digest(path):
+    """Return an algorithm-tagged content digest of ``path``.
+
+    :param path: File to digest.
+    :returns: ``"blake2b:<hex>"`` over the file's bytes. The tag travels with the
+        value so a later change of algorithm reads as a mismatch rather than as
+        a silent agreement.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return f"blake2b:{digest.hexdigest()}"
 
 
 def _count_molecules(path):

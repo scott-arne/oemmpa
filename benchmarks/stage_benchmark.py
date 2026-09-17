@@ -38,7 +38,6 @@ from __future__ import annotations
 from collections import defaultdict
 import csv
 import importlib
-import json
 import os
 from pathlib import Path
 import platform
@@ -51,7 +50,7 @@ from time import perf_counter
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from benchmarks.corpus import ensure_corpus, _count_molecules
+    from benchmarks.corpus import ensure_corpus, read_provenance, _count_molecules
     from benchmarks.head_to_head import (
         DEFAULT_MMPDB_EXE,
         MMPDB_DEFAULT_MAX_HEAVIES,
@@ -67,7 +66,7 @@ if __package__ in (None, ""):
         read_smiles,
     )
 else:
-    from .corpus import ensure_corpus, _count_molecules
+    from .corpus import ensure_corpus, read_provenance, _count_molecules
     from .head_to_head import (
         DEFAULT_MMPDB_EXE,
         MMPDB_DEFAULT_MAX_HEAVIES,
@@ -780,36 +779,36 @@ def _corpus_provenance(path):
     A cached corpus is served without rewriting the sidecar, so reading it is
     how the run records the source that actually produced the file - and also why
     a damaged sidecar is not self-healing and would greet every later run.
+    ``read_provenance`` decides whether the sidecar still describes the bytes on
+    disk, so the benchmark and the cache agree on what "trustworthy" means.
 
-    An unreadable sidecar is reported, never raised. This runs from
-    ``build_meta``, after the entire sweep and before the CLI has written JSON,
-    HTML or CSV, so raising here would throw away hours of measurements over a
-    metadata file that describes them.
+    An unusable sidecar is reported, never raised. This runs from ``build_meta``,
+    after the entire sweep and before the CLI has written JSON, HTML or CSV, so
+    raising here would throw away hours of measurements over a metadata file that
+    describes them.
 
     :param path: Corpus SMILES path.
     :returns: ``source``, ``requested_size`` and ``actual_size``. ``source`` is
         ``None`` when no sidecar exists and ``PROVENANCE_UNAVAILABLE`` when one
-        exists but cannot be read, in which case ``error`` carries the reason.
+        exists but does not describe the corpus on disk, in which case ``error``
+        carries the reason.
     """
-    sidecar = Path(path).with_suffix(".provenance.json")
-    if not sidecar.exists():
-        return {"source": None, "requested_size": None, "actual_size": None}
-    try:
-        data = json.loads(sidecar.read_text(encoding="utf-8"))
-        provenance = {
-            "source": data.get("source"),
-            "requested_size": data.get("requested_size"),
-            "actual_size": data.get("actual_size"),
-        }
-    except Exception as exc:  # noqa: BLE001 - metadata must not cost the records
-        _log(f"corpus provenance unreadable for {sidecar}: {exc}")
+    data, reason = read_provenance(path)
+    if reason is not None:
+        _log(f"corpus provenance unusable for {path}: {reason}")
         return {
             "source": PROVENANCE_UNAVAILABLE,
             "requested_size": None,
             "actual_size": None,
-            "error": str(exc),
+            "error": reason,
         }
-    return provenance
+    if data is None:
+        return {"source": None, "requested_size": None, "actual_size": None}
+    return {
+        "source": data.get("source"),
+        "requested_size": data.get("requested_size"),
+        "actual_size": data.get("actual_size"),
+    }
 
 
 def build_meta(
