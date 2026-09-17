@@ -1095,3 +1095,97 @@ TEST(SeriesRankingEvidence, CandidatesBelowTheSupportLevelDoNotAppear) {
     }
     std::filesystem::remove(fixture.path);
 }
+
+TEST(SeriesRankingEvidence, IdBasedShorteningWithNoCandidateShowsOnlyShortenedQuery) {
+    // Id-based query shortens down to the floor with no candidates; evidence must
+    // parse without the reported relation and show only the shortened query rows.
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    std::uint64_t series_id = 0;
+    {
+        Analyzer analyzer;
+        add_para_series(analyzer, "C", "t", 3.0, 2.0, 1.0, 2.5);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+        for (const Series& entry : store.GetSeries()) {
+            if (entry.GetConstantSmiles() == "[*:1]c1ccc(cc1)C") {
+                series_id = entry.GetSeriesId();
+            }
+        }
+    }
+    ASSERT_NE(series_id, 0U);
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::HIGHER_IS_BETTER;
+    request.query_series_id = series_id;
+    request.support_ladder = {1U};
+    request.shorten = true;
+    request.min_query_length = 2;
+    request.include_evidence = true;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_TRUE(result.candidates.empty());
+    EXPECT_EQ(result.matched_series, 1U);
+    ASSERT_EQ(result.query_used.size(), 2U);
+    ASSERT_EQ(result.evidence.size(), 2U);
+    for (std::size_t i = 0; i < result.evidence.size(); ++i) {
+        const SubstituentRankingEvidence& row = result.evidence[i];
+        EXPECT_EQ(row.role, "query");
+        EXPECT_EQ(row.series_id, series_id);
+        EXPECT_EQ(row.position, i + 1);
+        EXPECT_EQ(row.variable_smiles, result.query_used[i]);
+    }
+    for (const std::string& dropped_smiles : result.dropped) {
+        for (const SubstituentRankingEvidence& row : result.evidence) {
+            EXPECT_NE(row.variable_smiles, dropped_smiles);
+        }
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRankingEvidence, ExplicitShorteningWithCandidateShowsQueryThenCandidate) {
+    // Explicit query shortens by dropping Cl, both series match, Br is reported;
+    // evidence must show query rows (never naming Cl) then candidate rows (Br).
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        add_para_series(analyzer, "C", "e1", 3.0, 2.0, 4.0, 3.5);
+        add_para_series(analyzer, "CC", "e2", 3.0, 2.0, 4.0, 3.5);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    request.support_ladder = {2U};
+    request.min_query_length = 2;
+    request.include_evidence = true;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.dropped, (std::vector<std::string>{"[*:1]Cl"}));
+    ASSERT_EQ(result.query_used.size(), 2U);
+    ASSERT_EQ(result.matched_series, 2U);
+    const std::size_t expected_rows = result.matched_series * (result.query_used.size() + 1);
+    ASSERT_EQ(result.evidence.size(), expected_rows);
+    for (const SubstituentRankingEvidence& row : result.evidence) {
+        if (row.role == "query") {
+            EXPECT_NE(std::find(result.query_used.begin(), result.query_used.end(),
+                row.variable_smiles), result.query_used.end());
+            EXPECT_NE(row.variable_smiles, "[*:1]Cl");
+        } else {
+            EXPECT_EQ(row.role, "candidate");
+            EXPECT_EQ(row.variable_smiles, "[*:1]Br");
+            EXPECT_TRUE(row.win);
+        }
+    }
+    for (std::size_t i = 0; i < result.evidence.size(); i += 3) {
+        const SubstituentRankingEvidence& first = result.evidence[i];
+        const SubstituentRankingEvidence& second = result.evidence[i + 1];
+        const SubstituentRankingEvidence& third = result.evidence[i + 2];
+        EXPECT_EQ(first.series_id, second.series_id);
+        EXPECT_EQ(first.series_id, third.series_id);
+        EXPECT_EQ(first.role, "query");
+        EXPECT_EQ(second.role, "query");
+        EXPECT_EQ(third.role, "candidate");
+    }
+    std::filesystem::remove(path);
+}
