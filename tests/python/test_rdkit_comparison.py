@@ -145,18 +145,29 @@ def test_importing_benchmark_does_not_mutate_meta_path():
 
 
 def test_run_oemmpa_uses_worktree_package_when_stale_package_is_imported(monkeypatch):
+    # Snapshot the package namespace; lazy facade imports resolve through sys.modules.
+    snapshot = {name: module for name, module in sys.modules.items() if name == "oemmpa" or name.startswith("oemmpa.")}
+
     stale = types.ModuleType("oemmpa")
     stale.__file__ = "/tmp/stale/oemmpa/__init__.py"
     monkeypatch.setitem(sys.modules, "oemmpa", stale)
 
-    from benchmarks.rdkit_compare import run_oemmpa
+    try:
+        from benchmarks.rdkit_compare import run_oemmpa
 
-    result = run_oemmpa(BENCHMARK_DATA)
+        result = run_oemmpa(BENCHMARK_DATA)
 
-    assert result["pair_count"] > 0
-    package_file = sys.modules["oemmpa"].__file__
-    assert package_file is not None
-    assert package_file.startswith(str(BENCHMARK_DATA.parents[2]))
+        assert result["pair_count"] > 0
+        package_file = sys.modules["oemmpa"].__file__
+        assert package_file is not None
+        assert package_file.startswith(str(BENCHMARK_DATA.parents[2]))
+    finally:
+        # Restore the package namespace to prevent submodule leaks.
+        for name in list(sys.modules.keys()):
+            if (name == "oemmpa" or name.startswith("oemmpa.")) and name not in snapshot:
+                del sys.modules[name]
+        for name, module in snapshot.items():
+            sys.modules[name] = module
 
 
 def test_run_rdkit_reports_unavailable_when_rdkit_import_fails(monkeypatch):
