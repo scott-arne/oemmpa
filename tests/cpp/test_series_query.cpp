@@ -1079,21 +1079,72 @@ TEST(SeriesRankingEvidence, LowerIsBetterListsChlorineAtPositionOne) {
 }
 
 TEST(SeriesRankingEvidence, CandidatesBelowTheSupportLevelDoNotAppear) {
-    // Ladder {2}: Br (support 5) is reported; the candidate rows name Br only, even
-    // though other members could exist below the level in other fixtures. Here the
-    // check is structural: every candidate row names a reported candidate.
-    const InterleavingStore fixture = MakeInterleavingStore();
-    DuckDBStore store(fixture.path.string());
+    // Ordering fixture has amino with support 1 and four candidates with support 2.
+    // Ladder {2, 1} stops at level 2 and reports only the four support-2 candidates;
+    // amino must have no evidence rows. This exercises the multi-candidate reported
+    // VALUES path and verifies candidate ordering and win-flag correctness.
+    const std::filesystem::path path = MakeOrderingStore();
+    DuckDBStore store(path.string());
     SubstituentRankingRequest request = HigherQuery();
-    request.support_ladder = {2U};
+    request.support_ladder = {2U, 1U};
     request.include_evidence = true;
     const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.support_level, 2U);
+    EXPECT_EQ(result.matched_series, 2U);
+    const std::vector<std::string> expected_smiles = {"[*:1]Br", "[*:1]I", "[*:1]CC", "[*:1]OC"};
+    std::vector<std::string> reported_smiles;
+    for (const SubstituentRanking& candidate : result.candidates) {
+        reported_smiles.push_back(candidate.variable_smiles);
+    }
+    EXPECT_EQ(reported_smiles, expected_smiles);
+
+    // Amino ([*:1]N) has support 1, is not reported, so must not appear in evidence.
+    for (const SubstituentRankingEvidence& row : result.evidence) {
+        EXPECT_NE(row.variable_smiles, "[*:1]N");
+    }
+
+    // Every candidate row must name a reported candidate that exists in that series.
     for (const SubstituentRankingEvidence& row : result.evidence) {
         if (row.role == "candidate") {
             EXPECT_NE(FindCandidate(result, row.variable_smiles), nullptr) << row.variable_smiles;
         }
     }
-    std::filesystem::remove(fixture.path);
+
+    // Total rows: 2 matched series * (3 query members + 4 reported candidates) = 14.
+    const std::size_t expected_total = result.matched_series * (result.query_used.size() + expected_smiles.size());
+    ASSERT_EQ(result.evidence.size(), expected_total);
+
+    // Per-series grouping: query rows (positions 1, 2, 3) then candidate rows (SMILES order).
+    for (std::size_t series_start = 0; series_start < result.evidence.size(); series_start += 7) {
+        const std::uint64_t series_id = result.evidence[series_start].series_id;
+        for (std::size_t i = 0; i < 3; ++i) {
+            const SubstituentRankingEvidence& query_row = result.evidence[series_start + i];
+            EXPECT_EQ(query_row.series_id, series_id);
+            EXPECT_EQ(query_row.role, "query");
+            EXPECT_EQ(query_row.position, i + 1);
+        }
+        for (std::size_t i = 3; i < 7; ++i) {
+            const SubstituentRankingEvidence& cand_row = result.evidence[series_start + i];
+            EXPECT_EQ(cand_row.series_id, series_id);
+            EXPECT_EQ(cand_row.role, "candidate");
+        }
+        EXPECT_LT(result.evidence[series_start + 3].variable_smiles, result.evidence[series_start + 4].variable_smiles);
+        EXPECT_LT(result.evidence[series_start + 4].variable_smiles, result.evidence[series_start + 5].variable_smiles);
+        EXPECT_LT(result.evidence[series_start + 5].variable_smiles, result.evidence[series_start + 6].variable_smiles);
+    }
+
+    // Win flag: candidate.value > best_query_value (3.0) for HIGHER_IS_BETTER.
+    // Series 1 (C#N): Br, I, CC, OC all 4.0 > 3.0, all win.
+    // Series 2 (C(F)(F)F): Br, I, CC 4.0 > 3.0 win; OC 2.0 < 3.0 no win.
+    unsigned int wins = 0;
+    for (const SubstituentRankingEvidence& row : result.evidence) {
+        if (row.role == "candidate" && row.win) {
+            EXPECT_GT(row.value, 3.0);
+            ++wins;
+        }
+    }
+    EXPECT_EQ(wins, 7U);   // 4 in series 1, 3 in series 2.
+    std::filesystem::remove(path);
 }
 
 TEST(SeriesRankingEvidence, IdBasedShorteningWithNoCandidateShowsOnlyShortenedQuery) {
