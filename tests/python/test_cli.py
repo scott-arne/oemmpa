@@ -245,20 +245,16 @@ def _write_rgroup_cli_inputs(tmp_path):
 
 def _assert_rgroup_store_summary(database):
     import oemmpa
-    # Open store to validate series counts, then close it before running CLI.
-    store = oemmpa.DuckDBStore(str(database))
-    expected_series_count = len(store.series())
-    expected_series_members = len(store.series().to_dicts())
-    del store  # Release the database lock
 
     result = _run_cli("list", str(database))
-
     rows = _tsv_rows(result.stdout)
-    # Validate series counts match what the store reports.
-    assert int(rows[5]["value"]) == expected_series_count
-    assert int(rows[6]["value"]) == expected_series_members
 
-    # Golden counts: 1 series (the phenol core with cut-rgroup filter), 2 member rows.
+    # Cross-check series counts by opening the store after the CLI.
+    store = oemmpa.DuckDBStore(str(database))
+    assert int(rows[5]["value"]) == len(store.series())
+    assert int(rows[6]["value"]) == len(store.series().to_dicts())
+
+    # Golden counts: 1 series (the [*:1]c1ccccc1 constant with cut-rgroup filter), 2 member rows.
     assert rows == [
         {"metric": "compounds", "value": "2"},
         {"metric": "rules", "value": "1"},

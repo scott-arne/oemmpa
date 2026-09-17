@@ -210,7 +210,15 @@ rules	3
 pairs	18
 rule_environments	18
 rule_environment_statistics	18
+series	1
+series_members	3
+series_source	fragmentation
 ```
+
+The three new metrics report matched molecular series: `series` counts distinct
+series (constant + cut pattern combinations), `series_members` counts
+`series_member` rows (compound memberships in those series), and `series_source`
+is the analysis method name or 'none' if the method produces no series.
 
 `list` is accepted as an alias for `summary`.
 

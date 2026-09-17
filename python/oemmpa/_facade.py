@@ -591,8 +591,9 @@ class Analyzer:
     def series(self):
         """Return the analysed matched molecular series.
 
-        One series per constant with at least two R-groups; empty for a method
-        that does not fragment (see :attr:`produces_series`).
+        One series per constant with at least two R-groups over at least two
+        distinct compounds; empty for a method that does not fragment
+        (see :attr:`produces_series`).
 
         :returns: :class:`SeriesQuery` over the raw series.
         :raises RuntimeError: If :meth:`analyze` has not run since the last

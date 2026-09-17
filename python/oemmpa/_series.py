@@ -25,15 +25,20 @@ SERIES_ROW_COLUMNS = (
 
 @dataclass(frozen=True)
 class SeriesSelectionOptions:
-    """Query-time bounds on stored series; ``0`` means unbounded.
+    """Query-time bounds on stored series.
+
+    Zero means unbounded for the three variable/constant/cut bounds;
+    ``min_series_length`` must be at least 1 (the engine treats 0 and 1 as
+    equivalent: a series with no surviving members after the member filter is
+    never returned).
 
     :param min_series_length: Minimum members a series keeps after the member
         filter; series shorter than this are dropped.
     :param max_variable_heavy_atoms: Drop members whose R-group has more heavy
-        atoms than this.
+        atoms than this (0 = unbounded).
     :param min_constant_heavy_atoms: Drop series whose constant has fewer heavy
-        atoms than this.
-    :param cut_count: Keep only series of this cut count.
+        atoms than this (0 = unbounded).
+    :param cut_count: Keep only series of this cut count (0 = any).
     :raises ValueError: If ``min_series_length`` is below one or any bound is
         negative.
     """

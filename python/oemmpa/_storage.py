@@ -328,7 +328,11 @@ class DuckDBStore:
 
         :param recount: When true, count rows directly from the tables.
         :returns: Mapping with compound, rule, pair, rule environment, series,
-            and statistics counts.
+            and statistics counts. ``series_members`` counts ``series_member``
+            ROWS (compound memberships), a different quantity from a series'
+            member count (distinct R-groups) and never comparable to it.
+            ``series_source`` is 'not-computed' (nothing saved yet), 'none'
+            (a method that produces no series) or the analysis method name.
         """
         raw_summary = self._raw_store.GetSummary(bool(recount))
         return {

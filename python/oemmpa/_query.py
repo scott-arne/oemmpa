@@ -516,7 +516,7 @@ class SeriesQuery:
         return text_collection_summary(self.__class__.__name__, len(self))
 
     def _repr_html_(self):
-        return html_collection_preview(self.__class__.__name__, self)
+        return html_collection_preview(self.__class__.__name__, self.to_dicts())
 
     def filter(self, constant=None, cut_count=None, min_length=None):
         """Return the series matching every given bound.
@@ -607,7 +607,11 @@ class AnalysisResult:
         return self._series_query
 
     def summary(self):
-        """Return a plain analysis summary."""
+        """Return a plain analysis summary.
+
+        ``series`` counts distinct series; see :class:`SeriesQuery` for the
+        row semantics.
+        """
         return {
             "method": self.analyzer.method,
             "molecules": len(self.molecule_smiles),
