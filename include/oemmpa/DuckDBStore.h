@@ -18,6 +18,7 @@
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Series.h"
+#include "oemmpa/SeriesQuery.h"
 #include "oemmpa/Transform.h"
 
 namespace duckdb {
@@ -261,6 +262,20 @@ public:
 
     /// \brief Return the number of stored series.
     std::uint64_t GetSeriesCount() const;
+
+    /// \brief Rank candidate next substituents for a query series (spec 7.3).
+    ///
+    /// The query is either a stored series (query_series_id) or explicit
+    /// R-groups with values; it is matched as a strict subsequence against
+    /// every stored series of the same cut count, and the candidates are the
+    /// other members of the matched series, scored by how often they beat the
+    /// query's best member. The request is taken by value so the GIL-releasing
+    /// Python wrapper works from a snapshot, as GetSeries does.
+    ///
+    /// \throws std::invalid_argument With SERIES_QUERY_INVALID_PREFIX for every
+    ///         request-validation failure of spec 7.1.
+    /// \throws StorageError For a database failure.
+    SubstituentRankingResult RankNextSubstituents(SubstituentRankingRequest request) const;
 
     /// \brief Seconds the last AppendBulk spent staging and appending series.
     ///

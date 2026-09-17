@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #include <cmath>
+#include <filesystem>
+#include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -8,6 +13,7 @@
 #include <duckdb.hpp>
 
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/DuckDBStore.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/Series.h"
 #include "oemmpa/SeriesQuery.h"
@@ -262,4 +268,569 @@ TEST(SeriesQueryDuckDB, LinkedLibrarySupportsEveryConstructTheQueriesUse) {
         statement->Execute(duckdb::Value::UBIGINT(7), duckdb::Value::UBIGINT(0));
     ASSERT_FALSE(result->HasError()) << "DuckDB " << version << ": " << result->GetError();
     EXPECT_EQ(result->Fetch()->GetValue(0, 0).GetValue<std::int64_t>(), 1);
+}
+
+namespace {
+
+std::filesystem::path TemporaryQueryDatabasePath() {
+    static unsigned int counter = 0;
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+        ("oemmpa_series_query_" + std::to_string(::getpid()) + "_" + std::to_string(counter++) + ".duckdb");
+    std::filesystem::remove(path);
+    return path;
+}
+
+// Five para-substituted cores, each realizing the members H, F, Cl and Br: the
+// interleaving fixture of spec 11.2. Values: H 3, F 2, Cl 1 in every series; Br
+// takes one value per series (above H, between H and F, between F and Cl, below
+// Cl, tied with H). Core 6 breaks the order (F 3 over H 2) and core 7 leaves Cl
+// without a value, so neither may match the query [H > F > Cl].
+struct InterleavingStore {
+    std::filesystem::path path;
+    std::vector<std::string> cores = {"C", "CC", "OC", "N", "C#N"};
+    std::vector<double> bromine_values = {4.0, 2.5, 1.5, 0.5, 3.0};
+};
+
+// The hydrogen parent is written ring first ("c1ccccc1" + core) so the ring
+// bonds to the core's FIRST atom exactly as in "Xc1ccc(" + core + ")cc1":
+// "c1ccccc1OC" is anisole like "Fc1ccc(OC)cc1", whereas "OCc1ccccc1" would be
+// benzyl alcohol and would never share the para constant "[*:1]c1ccc(cc1)OC".
+void add_para_series(Analyzer& analyzer, const std::string& core, const std::string& tag,
+                     double h, double f, double cl, double br, bool value_cl = true,
+                     bool add_cl = true) {
+    analyzer.AddMolecule("c1ccccc1" + core, tag + "-H");
+    analyzer.AddMolecule("Fc1ccc(" + core + ")cc1", tag + "-F");
+    if (add_cl) {
+        analyzer.AddMolecule("Clc1ccc(" + core + ")cc1", tag + "-Cl");
+    }
+    analyzer.AddMolecule("Brc1ccc(" + core + ")cc1", tag + "-Br");
+    analyzer.AddProperty(tag + "-H", "act", h);
+    analyzer.AddProperty(tag + "-F", "act", f);
+    if (add_cl && value_cl) {
+        analyzer.AddProperty(tag + "-Cl", "act", cl);
+    }
+    analyzer.AddProperty(tag + "-Br", "act", br);
+}
+
+// Every intended para constant must exist before a test reasons about matches.
+void ExpectParaSeries(const DuckDBStore& store, const std::vector<std::string>& cores) {
+    std::set<std::string> constants;
+    for (const Series& entry : store.GetSeries()) {
+        constants.insert(entry.GetConstantSmiles());
+    }
+    for (const std::string& core : cores) {
+        EXPECT_TRUE(constants.count("[*:1]c1ccc(cc1)" + core) == 1) << core;
+    }
+}
+
+InterleavingStore MakeInterleavingStore() {
+    InterleavingStore fixture;
+    fixture.path = TemporaryQueryDatabasePath();
+    Analyzer analyzer;
+    for (std::size_t i = 0; i < fixture.cores.size(); ++i) {
+        add_para_series(analyzer, fixture.cores[i], "s" + std::to_string(i + 1),
+                        3.0, 2.0, 1.0, fixture.bromine_values[i]);
+    }
+    add_para_series(analyzer, "OCC", "s6", 2.0, 3.0, 1.0, 2.5);
+    add_para_series(analyzer, "C(F)(F)F", "s7", 3.0, 2.0, 1.0, 1.5, false);
+    analyzer.Analyze();
+    DuckDBStore store(fixture.path.string());
+    analyzer.SaveTo(store);
+    return fixture;
+}
+
+SubstituentRankingRequest HigherQuery() {
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::HIGHER_IS_BETTER;
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    return request;
+}
+
+const SubstituentRanking* FindCandidate(const SubstituentRankingResult& result, const std::string& smiles) {
+    for (const SubstituentRanking& candidate : result.candidates) {
+        if (candidate.variable_smiles == smiles) {
+            return &candidate;
+        }
+    }
+    return nullptr;
+}
+
+std::string RejectionMessage(const DuckDBStore& store, const SubstituentRankingRequest& request) {
+    try {
+        store.RankNextSubstituents(request);
+    } catch (const std::invalid_argument& error) {
+        EXPECT_TRUE(starts_with_prefix(error.what())) << error.what();
+        return error.what();
+    }
+    ADD_FAILURE() << "expected the request to be rejected";
+    return "";
+}
+
+}  // namespace
+
+TEST(SeriesRanking, InterleavingFixtureCountsSupportAndStrictWins) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    ExpectParaSeries(store, {"C", "CC", "OC", "N", "C#N", "OCC", "C(F)(F)F"});
+    SubstituentRankingRequest request = HigherQuery();
+    request.support_ladder = {5U};
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.matched_series, 5U);
+    EXPECT_EQ(result.support_level, 5U);
+    EXPECT_EQ(result.query_used, (std::vector<std::string>{"[*:1][H]", "[*:1]F", "[*:1]Cl"}));
+    EXPECT_TRUE(result.dropped.empty());
+    ASSERT_EQ(result.candidates.size(), 1U);
+    const SubstituentRanking& bromine = result.candidates.front();
+    EXPECT_EQ(bromine.variable_smiles, "[*:1]Br");
+    EXPECT_EQ(bromine.heavy_atom_count, 1U);
+    EXPECT_EQ(bromine.support, 5U);
+    EXPECT_EQ(bromine.wins, 1U);   // Only Br 4 beats H 3; the tie at 3 is not a win.
+    EXPECT_DOUBLE_EQ(bromine.fraction, 0.2);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRanking, DefaultLadderFindsNothingAtTwentyTenOrFiveWithoutEnoughSupport) {
+    // Five matched series give Br support 5, which the default ladder reaches at
+    // its last level; a ladder that stops above 5 reports the last level tried.
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    EXPECT_EQ(store.RankNextSubstituents(request).support_level, 5U);
+    request.support_ladder = {20U, 10U};
+    request.shorten = false;
+    const SubstituentRankingResult empty = store.RankNextSubstituents(request);
+    EXPECT_TRUE(empty.candidates.empty());
+    EXPECT_EQ(empty.support_level, 10U);
+    EXPECT_EQ(empty.matched_series, 5U);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRanking, LowerIsBetterReversesTheQueryAndTheWinTest) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::LOWER_IS_BETTER;
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]Cl"};   // Given worst first on purpose.
+    request.query_values = {3.0, 2.0, 1.0};
+    request.support_ladder = {5U};
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.query_used, (std::vector<std::string>{"[*:1]Cl", "[*:1]F", "[*:1][H]"}));
+    EXPECT_EQ(result.matched_series, 5U);
+    ASSERT_EQ(result.candidates.size(), 1U);
+    EXPECT_EQ(result.candidates.front().support, 5U);
+    EXPECT_EQ(result.candidates.front().wins, 1U);   // Only Br 0.5 is below Cl 1.
+    EXPECT_DOUBLE_EQ(result.candidates.front().fraction, 0.2);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRanking, IdBasedQueryUsesMediansAndCountsReplicatesOnce) {
+    // Toluene core: H 3, F 2, Cl 1; bromine realized twice with values 1 and 3,
+    // so its median is 2 and it counts once for support.
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        add_para_series(analyzer, "C", "t", 3.0, 2.0, 1.0, 1.0);
+        analyzer.AddMolecule("Brc1ccc(C)cc1", "t-Br-dup");
+        analyzer.AddProperty("t-Br-dup", "act", 3.0);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    DuckDBStore store(path.string());
+    std::uint64_t series_id = 0;
+    for (const Series& entry : store.GetSeries()) {
+        if (entry.GetConstantSmiles() == "[*:1]c1ccc(cc1)C") {
+            series_id = entry.GetSeriesId();
+        }
+    }
+    ASSERT_NE(series_id, 0U);
+
+    SubstituentRankingRequest explicit_query = HigherQuery();
+    explicit_query.support_ladder = {1U};
+    const SubstituentRankingResult explicit_result = store.RankNextSubstituents(explicit_query);
+    EXPECT_EQ(explicit_result.matched_series, 1U);
+    const SubstituentRanking* bromine = FindCandidate(explicit_result, "[*:1]Br");
+    ASSERT_NE(bromine, nullptr);
+    EXPECT_EQ(bromine->support, 1U);
+    EXPECT_EQ(bromine->wins, 0U);   // Median 2 does not beat H 3.
+
+    // The same series as an id-based query: its four valued members become the
+    // query (Br median 2 sits between F 2 -- a tie!). The tie is rejected for ranking.
+    SubstituentRankingRequest by_id;
+    by_id.property_name = "act";
+    by_id.direction = PropertyDirection::HIGHER_IS_BETTER;
+    by_id.query_series_id = series_id;
+    by_id.shorten = false;   // Pin D11 on the full query; shortening is tested elsewhere.
+    const std::string tie = RejectionMessage(store, by_id);
+    EXPECT_NE(tie.find("tied"), std::string::npos) << tie;
+
+    // Removing the tie by re-valuing F makes the id-based query legal: the query
+    // is the whole series, so it matches only itself and offers no candidate.
+    store.AddMoleculeProperty(2, "act", 2.5);   // t-F is the second molecule added.
+    const SubstituentRankingResult own = store.RankNextSubstituents(by_id);
+    EXPECT_EQ(own.query_used, (std::vector<std::string>{"[*:1][H]", "[*:1]F", "[*:1]Br", "[*:1]Cl"}));
+    EXPECT_EQ(own.matched_series, 1U);
+    EXPECT_TRUE(own.candidates.empty());
+    EXPECT_TRUE(own.dropped.empty());
+    EXPECT_EQ(own.support_level, 5U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRanking, TwoCutQueriesMeetOnlyTwoCutSeries) {
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        analyzer.AddMolecule("c1ccccc1CCc1ccccc1", "ethane");
+        analyzer.AddMolecule("c1ccccc1CCCc1ccccc1", "propane");
+        analyzer.AddMolecule("c1ccccc1CCCCc1ccccc1", "butane");
+        analyzer.AddMolecule("c1ccccc1OCc1ccccc1", "ether");
+        analyzer.AddProperty("ethane", "act", 2.0);
+        analyzer.AddProperty("propane", "act", 3.0);
+        analyzer.AddProperty("butane", "act", 4.0);
+        analyzer.AddProperty("ether", "act", 1.0);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::HIGHER_IS_BETTER;
+    request.query_variable_smiles = {"[*:1]CCC[*:2]", "[*:1]CC[*:2]"};
+    request.query_values = {3.0, 2.0};
+    request.support_ladder = {1U};
+    request.min_query_length = 2;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.matched_series, 1U);
+    const SubstituentRanking* butane = FindCandidate(result, "[*:1]CCCC[*:2]");
+    ASSERT_NE(butane, nullptr);
+    EXPECT_EQ(butane->wins, 1U);
+    for (const SubstituentRanking& candidate : result.candidates) {
+        EXPECT_NE(candidate.variable_smiles.find("[*:2]"), std::string::npos);
+    }
+    request.selection.cut_count = 1;
+    const std::string conflict = RejectionMessage(store, request);
+    EXPECT_NE(conflict.find("cut_count"), std::string::npos) << conflict;
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRanking, LadderFixtureShortensByPostingCountUnderTheDefaultLadder) {
+    // The ladder fixture of spec 11.2: four cores carry H 3 > F 2 > Cl 1 with Br
+    // 2.5, so the candidate Br has support 4 and the default ladder 20/10/5 finds
+    // nothing. A fifth core carries H, F and Br but no Cl. Shortening drops the
+    // least-posted query member (Cl: four series against five for H and F), and
+    // the shortened query [H > F] matches all five cores, giving Br support 5.
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        const std::vector<std::string> cores = {"C", "CC", "OC", "N"};
+        for (std::size_t i = 0; i < cores.size(); ++i) {
+            add_para_series(analyzer, cores[i], "c" + std::to_string(i), 3.0, 2.0, 1.0, 2.5);
+        }
+        add_para_series(analyzer, "C#N", "n", 3.0, 2.0, 0.0, 2.5, /*value_cl=*/false, /*add_cl=*/false);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    DuckDBStore store(path.string());
+    ExpectParaSeries(store, {"C", "CC", "OC", "N", "C#N"});
+    SubstituentRankingRequest request = HigherQuery();   // Default ladder 20/10/5.
+    request.min_query_length = 2;
+    const SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.dropped, (std::vector<std::string>{"[*:1]Cl"}));
+    EXPECT_EQ(result.query_used, (std::vector<std::string>{"[*:1][H]", "[*:1]F"}));
+    EXPECT_EQ(result.matched_series, 5U);
+    EXPECT_EQ(result.support_level, 5U);
+    ASSERT_EQ(result.candidates.size(), 1U);   // Cl (support 4) stays below the level.
+    EXPECT_EQ(result.candidates.front().variable_smiles, "[*:1]Br");
+    EXPECT_EQ(result.candidates.front().support, 5U);
+    EXPECT_EQ(result.candidates.front().wins, 0U);
+
+    // With shortening disabled the result is empty, the level is the last one
+    // tried and the four matched series are reported.
+    request.shorten = false;
+    const SubstituentRankingResult unshortened = store.RankNextSubstituents(request);
+    EXPECT_TRUE(unshortened.candidates.empty());
+    EXPECT_EQ(unshortened.matched_series, 4U);
+    EXPECT_EQ(unshortened.support_level, 5U);
+    EXPECT_TRUE(unshortened.dropped.empty());
+
+    // A floor equal to the query length disables shortening as well.
+    request.shorten = true;
+    request.min_query_length = 3;
+    const SubstituentRankingResult floored = store.RankNextSubstituents(request);
+    EXPECT_TRUE(floored.dropped.empty());
+    EXPECT_EQ(floored.matched_series, 4U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRanking, RequestContractRejectsEveryDocumentedMistake) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+
+    SubstituentRankingRequest request = HigherQuery();
+    request.direction = PropertyDirection::UNSPECIFIED;
+    EXPECT_NE(RejectionMessage(store, request).find("direction"), std::string::npos);
+
+    request = HigherQuery();
+    request.property_name = "missing";
+    EXPECT_NE(RejectionMessage(store, request).find("missing"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_series_id = 1;   // Both sources.
+    EXPECT_NE(RejectionMessage(store, request).find("exactly one"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_variable_smiles.clear();
+    request.query_values.clear();   // Neither source.
+    EXPECT_NE(RejectionMessage(store, request).find("exactly one"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_values.pop_back();   // Unequal vectors.
+    EXPECT_NE(RejectionMessage(store, request).find("same length"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_variable_smiles = {"[*:1]F"};
+    request.query_values = {1.0};
+    EXPECT_NE(RejectionMessage(store, request).find("at least two"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_values = {3.0, std::nan(""), 1.0};
+    EXPECT_NE(RejectionMessage(store, request).find("finite"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_values = {3.0, 2.0, 2.0};   // Tied values.
+    EXPECT_NE(RejectionMessage(store, request).find("tied"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_variable_smiles = {"[*:1][H]", "[H][*:1]", "[*:1]Cl"};   // Duplicate after canonicalisation.
+    EXPECT_NE(RejectionMessage(store, request).find("duplicate"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]C[*:2]"};   // Mixed label sets.
+    EXPECT_NE(RejectionMessage(store, request).find("label"), std::string::npos);
+
+    request = HigherQuery();
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "CCO"};   // Unlabelled.
+    EXPECT_NE(RejectionMessage(store, request).find("attachment label"), std::string::npos);
+
+    request = HigherQuery();
+    request.support_ladder = {5U, 10U};
+    EXPECT_NE(RejectionMessage(store, request).find("support_ladder"), std::string::npos);
+
+    request = HigherQuery();
+    request.min_query_length = 1;
+    EXPECT_NE(RejectionMessage(store, request).find("min_query_length"), std::string::npos);
+
+    SubstituentRankingRequest by_id;
+    by_id.property_name = "act";
+    by_id.direction = PropertyDirection::HIGHER_IS_BETTER;
+    by_id.query_series_id = 999999;
+    EXPECT_NE(RejectionMessage(store, by_id).find("does not exist"), std::string::npos);
+
+    // An id-based query on a series with a single valued member is rejected: give
+    // exactly one member of series 7 a value for a second property.
+    std::uint64_t seventh = 0;
+    unsigned int one_member_molecule = 0;
+    for (const Series& entry : store.GetSeries()) {
+        if (entry.GetConstantSmiles() == "[*:1]c1ccc(cc1)C(F)(F)F") {
+            seventh = entry.GetSeriesId();
+            one_member_molecule = entry.GetMembers().front().GetMoleculeIds().front();
+        }
+    }
+    ASSERT_NE(seventh, 0U);
+    store.AddMoleculeProperty(one_member_molecule, "other", 1.0);
+    by_id.query_series_id = seventh;
+    by_id.property_name = "other";
+    EXPECT_NE(RejectionMessage(store, by_id).find("fewer than two"), std::string::npos);
+
+    // A store with the schema but no data rejects the property as not stored.
+    DuckDBStore empty;
+    empty.InitializeSchema();
+    request = HigherQuery();
+    EXPECT_NE(RejectionMessage(empty, request).find("property_name"), std::string::npos);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesRanking, UnknownRGroupNeverMatchesAndNonFiniteStoredValuesAreIgnored) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    // Iodine is not stored anywhere: with shortening disabled the query cannot match.
+    SubstituentRankingRequest request = HigherQuery();
+    request.query_variable_smiles.push_back("[*:1]I");
+    request.query_values.push_back(0.5);
+    request.shorten = false;
+    request.support_ladder = {1U};
+    const SubstituentRankingResult unknown = store.RankNextSubstituents(request);
+    EXPECT_EQ(unknown.matched_series, 0U);
+    EXPECT_EQ(unknown.support_level, 0U);
+    EXPECT_TRUE(unknown.candidates.empty());
+
+    // An infinite stored value is not a value: series 1 loses its Br member.
+    unsigned int s1_bromine = 0;
+    for (const Series& entry : store.GetSeries()) {
+        if (entry.GetConstantSmiles() == "[*:1]c1ccc(cc1)C") {
+            for (const SeriesMember& member : entry.GetMembers()) {
+                if (member.GetVariableSmiles() == "[*:1]Br") {
+                    s1_bromine = member.GetMoleculeIds().front();
+                }
+            }
+        }
+    }
+    ASSERT_NE(s1_bromine, 0U);
+    store.AddMoleculeProperty(s1_bromine, "act", std::numeric_limits<double>::infinity());
+    request = HigherQuery();
+    request.support_ladder = {1U};
+    const SubstituentRankingResult trimmed = store.RankNextSubstituents(request);
+    const SubstituentRanking* bromine = FindCandidate(trimmed, "[*:1]Br");
+    ASSERT_NE(bromine, nullptr);
+    EXPECT_EQ(bromine->support, 4U);
+    EXPECT_EQ(bromine->wins, 0U);   // The only win (Br 4 in series 1) is gone.
+    std::filesystem::remove(fixture.path);
+}
+
+namespace {
+
+// Two cores whose members are H (3), methoxy (2) and Cl (1); core C also carries an
+// unvalued Br member and both carry tert-butyl valued 4 (four heavy atoms), the
+// only candidate. Used by the selection-bound tests of spec 7.5.
+std::filesystem::path MakeSelectionStore() {
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    Analyzer analyzer;
+    for (const std::string& core : {std::string("C"), std::string("CC")}) {
+        const std::string tag = "sel-" + core;
+        analyzer.AddMolecule("c1ccccc1" + core, tag + "-H");
+        analyzer.AddMolecule("COc1ccc(" + core + ")cc1", tag + "-OMe");
+        analyzer.AddMolecule("Clc1ccc(" + core + ")cc1", tag + "-Cl");
+        analyzer.AddMolecule("CC(C)(C)c1ccc(" + core + ")cc1", tag + "-tBu");
+        analyzer.AddProperty(tag + "-H", "act", 3.0);
+        analyzer.AddProperty(tag + "-OMe", "act", 2.0);
+        analyzer.AddProperty(tag + "-Cl", "act", 1.0);
+        analyzer.AddProperty(tag + "-tBu", "act", 4.0);
+    }
+    analyzer.AddMolecule("Brc1ccc(C)cc1", "sel-C-Br");   // Member without a value.
+    analyzer.Analyze();
+    DuckDBStore store(path.string());
+    analyzer.SaveTo(store);
+    return path;
+}
+
+SubstituentRankingRequest MethoxyQuery() {
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::HIGHER_IS_BETTER;
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]OC", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    request.support_ladder = {1U};
+    return request;
+}
+
+}  // namespace
+
+TEST(SeriesRankingSelection, MaxVariableHeavyAtomsRemovesCandidatesButExemptsQueryMembers) {
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    ExpectParaSeries(store, {"C", "CC"});
+    SubstituentRankingRequest request = MethoxyQuery();
+    SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.matched_series, 2U);
+    const SubstituentRanking* tbu = FindCandidate(result, "[*:1]C(C)(C)C");
+    ASSERT_NE(tbu, nullptr);
+    EXPECT_EQ(tbu->heavy_atom_count, 4U);
+    EXPECT_EQ(tbu->support, 2U);
+    EXPECT_EQ(tbu->wins, 2U);
+
+    request.selection.max_variable_heavy_atoms = 1;   // Methoxy (2 heavies) is a query member: exempt.
+    result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.matched_series, 2U);
+    EXPECT_TRUE(result.candidates.empty());
+    EXPECT_EQ(result.support_level, 1U);   // The last (only) level tried, since series matched.
+
+    request.selection.max_variable_heavy_atoms = 4;
+    EXPECT_NE(FindCandidate(store.RankNextSubstituents(request), "[*:1]C(C)(C)C"), nullptr);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRankingSelection, MinSeriesLengthCountsValuedMembersBeforeTheMatchTest) {
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request = MethoxyQuery();
+    // Core C has five members but four valued (Br has no value); core CC has four,
+    // all valued. A floor of five admits neither; a floor of four admits both.
+    request.selection.min_series_length = 5;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 0U);
+    request.selection.min_series_length = 4;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    request.selection.min_series_length = 0;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRankingSelection, MinConstantHeavyAtomsAndMatchingCutCount) {
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request = MethoxyQuery();
+    request.selection.min_constant_heavy_atoms = 8;   // The toluene-based constant has 7.
+    SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.matched_series, 1U);
+    request.selection.min_constant_heavy_atoms = 0;
+    request.selection.cut_count = 1;   // Equal to the query's cut count: accepted.
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRankingSelection, MemberBoundIsAppliedBeforeTheLengthTest) {
+    // Spec 7.5 order: member filter, then length test. Core CC has four valued
+    // members (H, OMe, Cl, tBu); with the bound at one heavy atom tBu is removed
+    // first, so only three members (OMe exempt as a query member) reach the
+    // length test and a floor of four admits nothing, although the floor alone
+    // and the bound alone each admit both cores.
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    SubstituentRankingRequest request = MethoxyQuery();
+    request.selection.min_series_length = 4;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    request.selection.min_series_length = 2;
+    request.selection.max_variable_heavy_atoms = 1;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    request.selection.min_series_length = 4;
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 0U);
+    request.selection.min_series_length = 3;   // H, OMe (exempt), Cl survive: exactly the floor.
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesRankingUnknown, UnknownMemberIsDroppedFirstOrEmptiesTheResultAtTheFloor) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    // Length four with an R-group the store never saw: dropped first (posting count 0).
+    SubstituentRankingRequest request = HigherQuery();
+    request.query_variable_smiles.push_back("[*:1]I");
+    request.query_values.push_back(0.5);
+    request.support_ladder = {5U};
+    SubstituentRankingResult result = store.RankNextSubstituents(request);
+    EXPECT_EQ(result.dropped, (std::vector<std::string>{"[*:1]I"}));
+    EXPECT_EQ(result.matched_series, 5U);
+    ASSERT_EQ(result.candidates.size(), 1U);
+    EXPECT_EQ(result.candidates.front().support, 5U);
+
+    // Length three at the default floor: nothing can be dropped, nothing matches.
+    request = HigherQuery();
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]I"};
+    request.query_values = {3.0, 2.0, 0.5};
+    result = store.RankNextSubstituents(request);
+    EXPECT_TRUE(result.candidates.empty());
+    EXPECT_EQ(result.matched_series, 0U);
+    EXPECT_EQ(result.support_level, 0U);
+    EXPECT_TRUE(result.dropped.empty());
+
+    // The hydrogen member typed the other way round still matches.
+    request = HigherQuery();
+    request.query_variable_smiles = {"[H][*:1]", "[*:1]F", "[*:1]Cl"};
+    request.support_ladder = {5U};
+    EXPECT_EQ(store.RankNextSubstituents(request).matched_series, 5U);
+    std::filesystem::remove(fixture.path);
 }

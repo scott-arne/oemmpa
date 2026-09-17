@@ -22,6 +22,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -231,6 +232,340 @@ std::unique_ptr<duckdb::QueryResult> execute_prepared(
     }
     require_success(*result, sql);
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// Series queries (spec 7). Every SQL string below is built from program-chosen
+// pieces only (the direction and the number of query R-groups); every
+// user-supplied value is bound.
+// ---------------------------------------------------------------------------
+
+std::invalid_argument invalid_series_query(const std::string& message) {
+    return std::invalid_argument(std::string(SERIES_QUERY_INVALID_PREFIX) + message);
+}
+
+// One query R-group resolved against the store.
+struct QueryMember {
+    std::string variable_smiles;
+    std::uint64_t rule_smiles_id = 0;   // 0 when the store never saw the R-group; it then matches nothing.
+    double value = 0.0;
+};
+
+struct ResolvedQuery {
+    std::vector<QueryMember> members;
+    unsigned int cut_count = 0;
+};
+
+std::uint64_t require_property_name_id(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    const std::string& property_name
+) {
+    if (property_name.empty()) {
+        throw invalid_series_query("property_name must not be empty");
+    }
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
+        connection, "select id from property_name where name = ?", {duckdb::Value(property_name)});
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    throw invalid_series_query("property_name is not stored: " + property_name);
+}
+
+std::uint64_t rule_smiles_id_or_zero(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    const std::string& smiles
+) {
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
+        connection, "select id from rule_smiles where smiles = ?", {duckdb::Value(smiles)});
+    for (const auto& row : *result) {
+        return row.GetValue<std::uint64_t>(0);
+    }
+    return 0;
+}
+
+ResolvedQuery resolve_explicit_query(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    const std::vector<std::string>& smiles,
+    const std::vector<double>& values
+) {
+    if (smiles.size() != values.size()) {
+        throw invalid_series_query("query_variable_smiles and query_values must have the same length");
+    }
+    if (smiles.size() < 2) {
+        throw invalid_series_query("a query needs at least two R-groups");
+    }
+    for (const double value : values) {
+        if (!std::isfinite(value)) {
+            throw invalid_series_query("query_values must be finite");
+        }
+    }
+    ResolvedQuery query;
+    std::set<std::string> seen;
+    for (std::size_t i = 0; i < smiles.size(); ++i) {
+        const CanonicalQueryRGroup canonical = canonicalize_query_rgroup(smiles[i]);
+        if (i == 0) {
+            query.cut_count = canonical.cut_count;
+        } else if (canonical.cut_count != query.cut_count) {
+            throw invalid_series_query(
+                "query R-groups carry different attachment label sets: " + smiles[i]);
+        }
+        if (!seen.insert(canonical.variable_smiles).second) {
+            throw invalid_series_query(
+                "duplicate query R-group after canonicalisation: " + canonical.variable_smiles);
+        }
+        query.members.push_back({canonical.variable_smiles,
+                                 rule_smiles_id_or_zero(connection, canonical.variable_smiles),
+                                 values[i]});
+    }
+    return query;
+}
+
+ResolvedQuery resolve_series_query(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::uint64_t series_id,
+    std::uint64_t property_id,
+    const std::string& property_name
+) {
+    ResolvedQuery query;
+    bool found = false;
+    std::unique_ptr<duckdb::QueryResult> cut = execute_prepared(
+        connection, "select cut_count from series where id = ?", {duckdb::Value::UBIGINT(series_id)});
+    for (const auto& row : *cut) {
+        query.cut_count = row.GetValue<std::uint32_t>(0);
+        found = true;
+    }
+    if (!found) {
+        throw invalid_series_query("query_series_id does not exist: " + std::to_string(series_id));
+    }
+    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(
+        connection,
+        "select sm.rule_smiles_id, rs.smiles, median(cp.value) "
+        "from series_member sm "
+        "join rule_smiles rs on rs.id = sm.rule_smiles_id "
+        "join compound_property cp on cp.compound_id = sm.compound_id "
+        "where sm.series_id = ? and cp.property_name_id = ? and isfinite(cp.value) "
+        "group by sm.rule_smiles_id, rs.smiles "
+        "order by rs.smiles",
+        {duckdb::Value::UBIGINT(series_id), duckdb::Value::UBIGINT(property_id)});
+    for (const auto& row : *rows) {
+        query.members.push_back({row.GetValue<std::string>(1),
+                                 row.GetValue<std::uint64_t>(0),
+                                 row.GetValue<double>(2)});
+    }
+    if (query.members.size() < 2) {
+        throw invalid_series_query(
+            "query_series_id " + std::to_string(series_id) +
+            " has fewer than two members with values for " + property_name);
+    }
+    return query;
+}
+
+// Order a ranking query best first and refuse ties: the strict order between two
+// equal values is undefined, so the subsequence test would be meaningless.
+void order_best_first(std::vector<QueryMember>& members, PropertyDirection direction) {
+    std::stable_sort(members.begin(), members.end(),
+                     [direction](const QueryMember& a, const QueryMember& b) {
+                         return direction == PropertyDirection::HIGHER_IS_BETTER
+                             ? a.value > b.value : a.value < b.value;
+                     });
+    for (std::size_t i = 1; i < members.size(); ++i) {
+        if (members[i].value == members[i - 1].value) {
+            throw invalid_series_query(
+                "tied ranking query values: " + members[i - 1].variable_smiles +
+                " and " + members[i].variable_smiles);
+        }
+    }
+}
+
+// member_value: one median per (series, R-group) for the property. The restricted
+// form aggregates only the series the posting prefilter selected, which is what
+// keeps a query from aggregating every property value in the store; the global
+// form (posting counts for shortening) has no such restriction by definition.
+std::string member_value_cte(bool restricted_to_posting) {
+    return std::string("member_value as (")
+        + "select sm.series_id, sm.rule_smiles_id, median(cp.value) as value "
+        + "from series_member sm "
+        + (restricted_to_posting ? "join posting p on p.series_id = sm.series_id " : "")
+        + "join compound_property cp on cp.compound_id = sm.compound_id "
+        + "where cp.property_name_id = ? and isfinite(cp.value) "
+        + "group by sm.series_id, sm.rule_smiles_id)";
+}
+
+// query(rule_smiles_id, position): one bound row per query member, best first.
+std::string ranking_query_cte(std::size_t count) {
+    std::string sql = "query(rule_smiles_id, position) as (values ";
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += "(cast(? as ubigint), " + std::to_string(i + 1) + ")";
+    }
+    return sql + ")";
+}
+
+// posting: the R-group -> series inverted index read through
+// series_member_rule_smiles_idx. A series is a candidate only when it posts at
+// least `minimum` distinct query R-groups (all of them for ranking, min_overlap
+// for similarity); everything downstream aggregates these series alone.
+std::string posting_cte() {
+    return "posting as ("
+           "select sm.series_id from series_member sm "
+           "join query q on q.rule_smiles_id = sm.rule_smiles_id "
+           "group by sm.series_id having count(distinct sm.rule_smiles_id) >= ?)";
+}
+
+// The CTE chain shared by every ranking statement, in the order spec 7.5
+// prescribes: bounded applies the member filter (max_variable_heavy_atoms, with
+// the query's own members exempt) BEFORE anything counts members; eligible then
+// applies the length test on the VALUED members that survived it, the constant
+// floor and the cut count; matched keeps a series only when every query member
+// is valued in it and the values in query order are strictly monotone in the
+// direction (sorted and all distinct). Everything downstream reads bounded, so
+// an oversized member never contributes to a length, a support or a win.
+std::string ranking_ctes(std::size_t count, PropertyDirection direction) {
+    const char* order = direction == PropertyDirection::HIGHER_IS_BETTER ? "'DESC'" : "'ASC'";
+    return "with " + ranking_query_cte(count) + ", " + posting_cte() + ", " + member_value_cte(true) + ", "
+        "bounded as ("
+        "select mv.series_id, mv.rule_smiles_id, mv.value from member_value mv "
+        "join rule_smiles rs on rs.id = mv.rule_smiles_id "
+        "where (? = 0 or coalesce(rs.num_heavies, 0) <= ? "
+        "or mv.rule_smiles_id in (select rule_smiles_id from query))), "
+        "eligible as ("
+        "select b.series_id from bounded b "
+        "join series s on s.id = b.series_id "
+        "where s.cut_count = ? and (? = 0 or s.constant_num_heavies >= ?) "
+        "group by b.series_id having count(*) >= ?), "
+        "matched as ("
+        "select b.series_id from bounded b "
+        "join query q on q.rule_smiles_id = b.rule_smiles_id "
+        "join eligible e on e.series_id = b.series_id "
+        "group by b.series_id "
+        "having count(*) = ? "
+        "and list(b.value order by q.position) = list_sort(list(b.value), " + std::string(order) + ") "
+        "and len(list_distinct(list(b.value))) = count(*)), "
+        "best as ("
+        "select b.series_id, b.value as best_value from bounded b "
+        "join query q on q.rule_smiles_id = b.rule_smiles_id where q.position = 1) ";
+}
+
+// Bindings in the order the placeholders of ranking_ctes appear: the k query ids,
+// the posting minimum (k), the property id, the member bound twice, then the
+// eligible and matched bounds.
+duckdb::vector<duckdb::Value> ranking_cte_values(
+    std::uint64_t property_id,
+    const std::vector<QueryMember>& members,
+    unsigned int cut_count,
+    const SeriesSelection& selection
+) {
+    duckdb::vector<duckdb::Value> values;
+    for (const QueryMember& member : members) {
+        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+    }
+    values.push_back(duckdb::Value::UBIGINT(members.size()));
+    values.push_back(duckdb::Value::UBIGINT(property_id));
+    values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(cut_count));
+    values.push_back(duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(selection.min_series_length));
+    values.push_back(duckdb::Value::UBIGINT(members.size()));
+    return values;
+}
+
+struct CandidateRow {
+    std::uint64_t rule_smiles_id = 0;
+    std::string variable_smiles;
+    unsigned int heavy_atom_count = 0;
+    unsigned int support = 0;
+    unsigned int wins = 0;
+};
+
+struct RankingAttempt {
+    unsigned int matched = 0;
+    std::vector<CandidateRow> candidates;   // Ordered by SMILES; the caller sorts.
+};
+
+const char* win_comparison(PropertyDirection direction) {
+    return direction == PropertyDirection::HIGHER_IS_BETTER ? ">" : "<";
+}
+
+RankingAttempt run_ranking_attempt(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::uint64_t property_id,
+    const std::vector<QueryMember>& members,
+    unsigned int cut_count,
+    PropertyDirection direction,
+    const SeriesSelection& selection
+) {
+    RankingAttempt attempt;
+    const std::string ctes = ranking_ctes(members.size(), direction);
+    {
+        std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
+            connection, ctes + "select cast(count(*) as bigint) from matched",
+            ranking_cte_values(property_id, members, cut_count, selection));
+        for (const auto& row : *result) {
+            attempt.matched = static_cast<unsigned int>(row.GetValue<std::int64_t>(0));
+        }
+    }
+    // Candidates come from bounded, so the member bound already applied; query
+    // members are excluded here (their exemption in bounded is for the length test).
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
+        connection,
+        ctes +
+        "select rs.id, rs.smiles, coalesce(rs.num_heavies, 0), cast(count(*) as bigint), "
+        "cast(sum(case when mv.value " + std::string(win_comparison(direction)) +
+        " b.best_value then 1 else 0 end) as bigint) "
+        "from bounded mv "
+        "join matched m on m.series_id = mv.series_id "
+        "join best b on b.series_id = mv.series_id "
+        "join rule_smiles rs on rs.id = mv.rule_smiles_id "
+        "where mv.rule_smiles_id not in (select rule_smiles_id from query) "
+        "group by rs.id, rs.smiles, rs.num_heavies "
+        "order by rs.smiles",
+        ranking_cte_values(property_id, members, cut_count, selection));
+    for (const auto& row : *result) {
+        CandidateRow candidate;
+        candidate.rule_smiles_id = row.GetValue<std::uint64_t>(0);
+        candidate.variable_smiles = row.GetValue<std::string>(1);
+        candidate.heavy_atom_count = row.GetValue<std::uint32_t>(2);
+        candidate.support = static_cast<unsigned int>(row.GetValue<std::int64_t>(3));
+        candidate.wins = static_cast<unsigned int>(row.GetValue<std::int64_t>(4));
+        attempt.candidates.push_back(std::move(candidate));
+    }
+    return attempt;
+}
+
+// Distinct-series posting count of every query member for the property, over
+// every series of the store (no selection, any cut count); an unknown R-group
+// (id 0) joins nothing and counts 0.
+std::vector<unsigned int> posting_counts(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::uint64_t property_id,
+    const std::vector<QueryMember>& members
+) {
+    duckdb::vector<duckdb::Value> values;
+    for (const QueryMember& member : members) {
+        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+    }
+    values.push_back(duckdb::Value::UBIGINT(property_id));
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
+        connection,
+        "with " + ranking_query_cte(members.size()) + ", " + member_value_cte(false) + " "
+        "select q.rule_smiles_id, cast(count(distinct mv.series_id) as bigint) "
+        "from query q left join member_value mv on mv.rule_smiles_id = q.rule_smiles_id "
+        "group by q.rule_smiles_id",
+        std::move(values));
+    std::unordered_map<std::uint64_t, unsigned int> by_id;
+    for (const auto& row : *result) {
+        by_id[row.GetValue<std::uint64_t>(0)] = static_cast<unsigned int>(row.GetValue<std::int64_t>(1));
+    }
+    std::vector<unsigned int> counts;
+    for (const QueryMember& member : members) {
+        const auto found = by_id.find(member.rule_smiles_id);
+        counts.push_back(member.rule_smiles_id == 0 || found == by_id.end() ? 0U : found->second);
+    }
+    return counts;
 }
 
 // Name of the id-allocation sequence backing a table's primary key.
@@ -3401,6 +3736,93 @@ std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
 
 std::uint64_t DuckDBStore::GetSeriesCount() const {
     return GetRowCount("series");
+}
+
+SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingRequest request) const {
+    if (request.direction != PropertyDirection::HIGHER_IS_BETTER &&
+        request.direction != PropertyDirection::LOWER_IS_BETTER) {
+        throw invalid_series_query("direction must be HIGHER_IS_BETTER or LOWER_IS_BETTER");
+    }
+    validate_support_ladder(request.support_ladder);
+    if (request.min_query_length < 2) {
+        throw invalid_series_query("min_query_length must be at least 2");
+    }
+    const std::uint64_t property_id = require_property_name_id(connection_, request.property_name);
+    const bool has_id = request.query_series_id != 0;
+    const bool has_explicit = !request.query_variable_smiles.empty() || !request.query_values.empty();
+    if (has_id == has_explicit) {
+        throw invalid_series_query(
+            "exactly one of query_series_id and query_variable_smiles with query_values must be given");
+    }
+    ResolvedQuery query = has_id
+        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name)
+        : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
+    order_best_first(query.members, request.direction);
+    if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
+        throw invalid_series_query(
+            "selection.cut_count " + std::to_string(request.selection.cut_count) +
+            " does not match the query's cut count " + std::to_string(query.cut_count));
+    }
+
+    SubstituentRankingResult result;
+    std::vector<QueryMember> members = query.members;
+    while (true) {
+        const RankingAttempt attempt = run_ranking_attempt(
+            connection_, property_id, members, query.cut_count, request.direction, request.selection);
+        unsigned int level = 0;
+        std::vector<CandidateRow> reported;
+        for (const unsigned int ladder_level : request.support_ladder) {
+            for (const CandidateRow& candidate : attempt.candidates) {
+                if (candidate.support >= ladder_level) {
+                    reported.push_back(candidate);
+                }
+            }
+            if (!reported.empty()) {
+                level = ladder_level;
+                break;
+            }
+        }
+        const bool can_shorten = request.shorten && members.size() > request.min_query_length;
+        if (!reported.empty() || !can_shorten) {
+            result.matched_series = attempt.matched;
+            result.support_level = !reported.empty()
+                ? level
+                : (attempt.matched == 0 ? 0U : request.support_ladder.back());
+            for (const CandidateRow& candidate : reported) {
+                SubstituentRanking ranking;
+                ranking.variable_smiles = candidate.variable_smiles;
+                ranking.heavy_atom_count = candidate.heavy_atom_count;
+                ranking.wins = candidate.wins;
+                ranking.support = candidate.support;
+                ranking.fraction = static_cast<double>(candidate.wins) / static_cast<double>(candidate.support);
+                result.candidates.push_back(std::move(ranking));
+            }
+            std::stable_sort(result.candidates.begin(), result.candidates.end(),
+                [](const SubstituentRanking& a, const SubstituentRanking& b) {
+                    if (a.fraction != b.fraction) return a.fraction > b.fraction;
+                    if (a.support != b.support) return a.support > b.support;
+                    if (a.heavy_atom_count != b.heavy_atom_count) return a.heavy_atom_count < b.heavy_atom_count;
+                    return a.variable_smiles < b.variable_smiles;
+                });
+            break;
+        }
+        // Shorten: drop the member the store has posted in the fewest series;
+        // ties by SMILES so the choice is reproducible.
+        const std::vector<unsigned int> counts = posting_counts(connection_, property_id, members);
+        std::size_t drop = 0;
+        for (std::size_t i = 1; i < members.size(); ++i) {
+            if (counts[i] < counts[drop] ||
+                (counts[i] == counts[drop] && members[i].variable_smiles < members[drop].variable_smiles)) {
+                drop = i;
+            }
+        }
+        result.dropped.push_back(members[drop].variable_smiles);
+        members.erase(members.begin() + static_cast<std::ptrdiff_t>(drop));
+    }
+    for (const QueryMember& member : members) {
+        result.query_used.push_back(member.variable_smiles);
+    }
+    return result;
 }
 
 std::vector<MatchedPair> DuckDBStore::GetPairsForRuleEnvironment(
