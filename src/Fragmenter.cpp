@@ -989,56 +989,6 @@ std::map<unsigned int, unsigned int> RankAttachmentSites(const OEChem::OEMolBase
     return ranks;
 }
 
-/// \brief Put a relabelled cut molecule in an atom order the renderer can trust.
-///
-/// Deciding which dummy carries which label is only half of making a multi-cut
-/// fragmentation a function of its structure. OEChem's canonical ranking ignores
-/// map indices, so when two dummies are automorphic the SMILES writer settles
-/// which one it reaches first in input order, and one spelling emits
-/// `[*:1]CC[*:2]` where another emits `[*:2]CC[*:1]` for the very same labelled
-/// fragment. Encoding each label as an isotope on a scratch copy lets the
-/// canonical order see the labels, and replaying that order onto the real
-/// molecule leaves the writer only automorphisms of the labelled graph to break,
-/// which by definition render the same either way.
-///
-/// \param cut_mol Cut molecule, reordered in place. Atom indices are unchanged,
-///        so the caller's index bookkeeping survives.
-void OrderAtomsForLabelStableRendering(OEChem::OEMolBase& cut_mol) {
-    std::vector<OEChem::OEAtomBase*> atoms;
-    atoms.reserve(cut_mol.NumAtoms());
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = cut_mol.GetAtoms(); atom; ++atom) {
-        atoms.push_back(&*atom);
-    }
-
-    // A copy walks its source in traversal order, so the copy's nth atom is the
-    // nth entry above whatever index either molecule gives it.
-    OEChem::OEGraphMol scratch(cut_mol);
-    std::map<unsigned int, std::size_t> positions;
-    std::size_t position = 0;
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
-        positions[atom->GetIdx()] = position;
-        ++position;
-        if (IsAttachmentDummy(*atom)) {
-            atom->SetIsotope(atom->GetMapIdx());
-        }
-    }
-    OEChem::OECanonicalOrderAtoms(scratch);
-
-    std::vector<OEChem::OEAtomBase*> ordered;
-    ordered.reserve(atoms.size());
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
-        const auto entry = positions.find(atom->GetIdx());
-        if (entry == positions.end() || entry->second >= atoms.size()) {
-            return;
-        }
-        ordered.push_back(atoms[entry->second]);
-    }
-    if (ordered.size() != atoms.size()) {
-        return;
-    }
-    cut_mol.OrderAtoms(ordered);
-}
-
 /// \brief Move every attachment onto the label an ordering gave it.
 ///
 /// \param cut_mol Cut molecule, whose dummies are relabelled in place.
@@ -1121,7 +1071,7 @@ bool RenderCandidatePair(
 ) {
     OEChem::OEGraphMol scratch(cut_mol);
     ApplyAttachmentRelabelling(scratch, assignment);
-    OrderAtomsForLabelStableRendering(scratch);
+    order_atoms_for_label_stable_rendering(scratch);
     return RenderMultiCutPair(scratch, cut_count, rendered);
 }
 
@@ -1415,7 +1365,7 @@ bool RenderRelabelledMultiCutPair(
 ) {
     OEChem::OEGraphMol scratch(cut_mol);
     RelabelAttachmentsByCanonicalOrder(scratch, cut_count);
-    OrderAtomsForLabelStableRendering(scratch);
+    order_atoms_for_label_stable_rendering(scratch);
     return RenderMultiCutPair(scratch, cut_count, rendered);
 }
 
@@ -1652,7 +1602,7 @@ void AddFragmentationForCombination(
         // component keeps the labels the cut gave it, and the split below then
         // declines to emit a record for it.
         labels_are_arbitrary = RelabelAttachmentsByCanonicalOrder(cut_mol, cut_count);
-        OrderAtomsForLabelStableRendering(cut_mol);
+        order_atoms_for_label_stable_rendering(cut_mol);
     }
 
     const std::vector<ComponentRecord> baseline = SplitComponents(cut_mol, cut_count == 1);

@@ -245,6 +245,21 @@ void clear_fragmentation_invalidated_stereo(OEChem::OEMolBase& mol);
 ///         RDKit itself refuses to perceive; `mol` keeps its map indices.
 std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydrogens = false);
 
+/// \brief Reorder atoms so rendering a multi-cut fragment is stable under label permutation.
+///
+/// OEChem's canonical ranking ignores map indices, so when two attachment dummies
+/// are automorphic the SMILES writer settles which one it reaches first in input
+/// order, and one atom ordering emits `[*:1]CC[*:2]` where another emits
+/// `[*:2]CC[*:1]` for the same labelled fragment. This function encodes each
+/// dummy's map index as an isotope on a scratch copy, orders that copy canonically
+/// (so the isotope-encoded labels influence the order), then reorders the input
+/// molecule to match, leaving the SMILES writer only automorphisms of the labelled
+/// graph to break (which by definition render identically either way).
+///
+/// \param mol Molecule with attachment dummies (atomic number 0, map index > 0),
+///        reordered in place. Atom indices are unchanged.
+void order_atoms_for_label_stable_rendering(OEChem::OEMolBase& mol);
+
 /// \brief One atom's tetrahedral parity, read against an explicit neighbour order.
 ///
 /// OEChem stores tetrahedral parity relative to the atom's neighbour ordering, so

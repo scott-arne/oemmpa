@@ -824,6 +824,42 @@ std::string render_fragment_smiles(OEChem::OEMolBase& mol, bool explicit_hydroge
     return smiles;
 }
 
+void order_atoms_for_label_stable_rendering(OEChem::OEMolBase& mol) {
+    std::vector<OEChem::OEAtomBase*> atoms;
+    atoms.reserve(mol.NumAtoms());
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        atoms.push_back(&*atom);
+    }
+
+    // A copy walks its source in traversal order, so the copy's nth atom is the
+    // nth entry above whatever index either molecule gives it.
+    OEChem::OEGraphMol scratch(mol);
+    std::map<unsigned int, std::size_t> positions;
+    std::size_t position = 0;
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        positions[atom->GetIdx()] = position;
+        ++position;
+        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
+            atom->SetIsotope(atom->GetMapIdx());
+        }
+    }
+    OEChem::OECanonicalOrderAtoms(scratch);
+
+    std::vector<OEChem::OEAtomBase*> ordered;
+    ordered.reserve(atoms.size());
+    for (OESystem::OEIter<OEChem::OEAtomBase> atom = scratch.GetAtoms(); atom; ++atom) {
+        const auto entry = positions.find(atom->GetIdx());
+        if (entry == positions.end() || entry->second >= atoms.size()) {
+            return;
+        }
+        ordered.push_back(atoms[entry->second]);
+    }
+    if (ordered.size() != atoms.size()) {
+        return;
+    }
+    mol.OrderAtoms(ordered);
+}
+
 bool capture_tetrahedral_parity(OEChem::OEAtomBase& atom, TetrahedralParity& parity) {
     if (!atom.HasStereoSpecified(OEChem::OEAtomStereo::Tetrahedral)) {
         return false;

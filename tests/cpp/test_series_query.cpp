@@ -87,7 +87,40 @@ TEST(SeriesQueryCanonicalisation, HydrogenSentinelInAnySpelling) {
 TEST(SeriesQueryCanonicalisation, MultiCutLabelsAreCountedAndOrdered) {
     const CanonicalQueryRGroup linker = canonicalize_query_rgroup("[*:1]CC[*:2]");
     EXPECT_EQ(linker.cut_count, 2U);
+    // Symmetric linker: swapping labels reaches the same attachment correspondence.
     EXPECT_EQ(linker.variable_smiles, canonicalize_query_rgroup("[*:2]CC[*:1]").variable_smiles);
+}
+
+TEST(SeriesQueryCanonicalisation, AsymmetricLinkerPreservesAttachmentCorrespondence) {
+    // Different attachment correspondences must not collapse: [*:1] at oxygen vs carbon.
+    const std::string oxy_first = canonicalize_query_rgroup("[*:1]OCC[*:2]").variable_smiles;
+    const std::string carb_first = canonicalize_query_rgroup("[*:2]OCC[*:1]").variable_smiles;
+    EXPECT_NE(oxy_first, carb_first);
+    // Same correspondence, different spellings: the oxygen attachment is :1 in both.
+    EXPECT_EQ(oxy_first, canonicalize_query_rgroup("[*:2]CCO[*:1]").variable_smiles);
+}
+
+TEST(SeriesQueryCanonicalisation, MatchesStoredTwoCutMemberSpellings) {
+    // The fragmenter stores two-cut members through OrderAtomsForLabelStableRendering;
+    // query canonicalisation must reach the same strings.
+    Analyzer analyzer;
+    analyzer.AddMolecule("c1ccccc1CCc1ccccc1", "bibenzyl");
+    analyzer.AddMolecule("c1ccccc1OCc1ccccc1", "benzyl_phenyl_ether");
+    analyzer.Analyze();
+    std::vector<std::string> stored_members;
+    for (const Series& entry : analyzer.GetSeries()) {
+        if (entry.GetCutCount() == 2) {
+            for (const SeriesMember& member : entry.GetMembers()) {
+                stored_members.push_back(member.GetVariableSmiles());
+            }
+            break;
+        }
+    }
+    ASSERT_EQ(stored_members.size(), 2U);
+    // Different spellings of the same labelled fragment must reach the stored form.
+    for (const std::string& stored : stored_members) {
+        EXPECT_EQ(canonicalize_query_rgroup(stored).variable_smiles, stored);
+    }
 }
 
 TEST(SeriesQueryCanonicalisation, RejectsUnparsableUnlabelledGappedAndDisconnectedFragments) {
@@ -147,6 +180,13 @@ TEST(SeriesQueryMeasures, SpearmanAveragesTiedRanks) {
     RankCorrelation tied = spearman_correlation({1.0, 2.0, 2.0, 3.0}, {10.0, 20.0, 30.0, 40.0});
     ASSERT_TRUE(tied.defined);
     EXPECT_NEAR(tied.rho, 0.9486832980505138, 1e-12);
+    // Length mismatches are internal misuse, not query validation, so no prefix.
+    try {
+        spearman_correlation({1.0, 2.0}, {1.0});
+        FAIL() << "expected length mismatch rejection";
+    } catch (const std::invalid_argument& error) {
+        EXPECT_FALSE(starts_with_prefix(error.what())) << error.what();
+    }
     EXPECT_THROW(centred_rmsd({1.0, 2.0}, {1.0}), std::invalid_argument);
 }
 

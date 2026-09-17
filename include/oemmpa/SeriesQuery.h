@@ -143,12 +143,16 @@ void validate_support_ladder(const std::vector<unsigned int>& ladder);
 
 /// \brief Spearman correlation of two equally long vectors (Pearson of average ranks).
 ///
-/// \throws std::invalid_argument When the lengths differ or are zero.
+/// \throws std::invalid_argument When the lengths differ or are zero. Length
+///         mismatches are internal misuse, not request validation, so the
+///         message does NOT carry SERIES_QUERY_INVALID_PREFIX.
 RankCorrelation spearman_correlation(const std::vector<double>& x, const std::vector<double>& y);
 
 /// \brief Ehmki and Kramer's centred RMSD: the offset between the vectors is removed first.
 ///
-/// \throws std::invalid_argument When the lengths differ or are zero.
+/// \throws std::invalid_argument When the lengths differ or are zero. Length
+///         mismatches are internal misuse, not request validation, so the
+///         message does NOT carry SERIES_QUERY_INVALID_PREFIX.
 double centred_rmsd(const std::vector<double>& x, const std::vector<double>& y);
 
 }  // namespace OEMMPA

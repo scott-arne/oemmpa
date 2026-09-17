@@ -31,13 +31,12 @@ std::set<unsigned int> attachment_labels(const OEChem::OEMolBase& mol) {
     return labels;
 }
 
-// One labelled dummy atom whose only neighbour is one hydrogen atom, or that
-// carries exactly one implicit hydrogen and no neighbour, and nothing else in the
-// molecule: [*:1][H], [H][*:1] and [*H:1] qualify; [*:1].[H] does not (the
-// hydrogen is not bonded to the dummy) and is rejected by the component check.
+// One labelled dummy atom with exactly one hydrogen (explicit or implicit) and no
+// heavy neighbours, and nothing else in the molecule: [*:1][H], [H][*:1] and
+// [*H:1] qualify; [*:1].[H] does not (the hydrogen is not bonded) and is rejected
+// by the component check.
 bool is_hydrogen_rgroup(const OEChem::OEMolBase& mol) {
     const OEChem::OEAtomBase* dummy = nullptr;
-    unsigned int hydrogens = 0;
     unsigned int others = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
         if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
@@ -45,23 +44,14 @@ bool is_hydrogen_rgroup(const OEChem::OEMolBase& mol) {
                 return false;
             }
             dummy = atom;
-        } else if (atom->GetAtomicNum() == 1) {
-            ++hydrogens;
-        } else {
+        } else if (atom->GetAtomicNum() != 1) {
             ++others;
         }
     }
     if (dummy == nullptr || others != 0) {
         return false;
     }
-    if (hydrogens == 0) {
-        return dummy->GetDegree() == 0 && dummy->GetImplicitHCount() == 1;
-    }
-    if (hydrogens != 1 || dummy->GetImplicitHCount() != 0 || dummy->GetDegree() != 1) {
-        return false;
-    }
-    OESystem::OEIter<OEChem::OEAtomBase> neighbour = dummy->GetAtoms();
-    return neighbour && neighbour->GetAtomicNum() == 1;
+    return dummy->GetTotalHCount() == 1 && dummy->GetHvyDegree() == 0;
 }
 
 // A query R-group is one connected fragment; a dot-separated input is not.
@@ -109,10 +99,6 @@ CanonicalQueryRGroup canonicalize_query_rgroup(const std::string& smiles) {
     if (!is_single_fragment(mol)) {
         throw invalid_query("query R-group must be one connected fragment: " + smiles);
     }
-
-    // Materialize implicit hydrogens so [*H:1] becomes [*:1][H] for uniform handling.
-    OEChem::OEAddExplicitHydrogens(mol);
-
     const std::set<unsigned int> labels = attachment_labels(mol);
     if (labels.empty()) {
         throw invalid_query("query R-group carries no attachment label such as [*:1]: " + smiles);
@@ -128,20 +114,7 @@ CanonicalQueryRGroup canonicalize_query_rgroup(const std::string& smiles) {
     if (cut_count == 1 && is_hydrogen_rgroup(mol)) {
         return {kHydrogenVariableSmiles, 1U};
     }
-
-    // Renumber attachment labels in canonical atom order so different label
-    // assignments for the same structure become identical.
-    OEChem::OECanonicalOrderAtoms(mol);
-    std::vector<OEChem::OEAtomBase*> dummies;
-    for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
-            dummies.push_back(&*atom);
-        }
-    }
-    for (std::size_t i = 0; i < dummies.size(); ++i) {
-        dummies[i]->SetMapIdx(static_cast<unsigned int>(i + 1));
-    }
-
+    order_atoms_for_label_stable_rendering(mol);
     return {render_fragment_smiles(mol), cut_count};
 }
 
