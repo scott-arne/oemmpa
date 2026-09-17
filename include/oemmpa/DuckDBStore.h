@@ -277,6 +277,19 @@ public:
     /// \throws StorageError For a database failure.
     SubstituentRankingResult RankNextSubstituents(SubstituentRankingRequest request) const;
 
+    /// \brief Find stored series whose shared R-groups order like the query's (spec 7.4).
+    ///
+    /// Candidates come through the posting index (series that contain at
+    /// least min_overlap of the query's R-groups), then the distinct valued
+    /// overlap is checked and Spearman (average ranks) and the centred RMSD are
+    /// computed over the shared set. Direction is not an input. The request is
+    /// taken by value for the same reason as RankNextSubstituents.
+    ///
+    /// \throws std::invalid_argument With SERIES_QUERY_INVALID_PREFIX for the
+    ///         request-validation failures of spec 7.1.
+    /// \throws StorageError For a database failure.
+    SeriesSimilarityResult FindSimilarSeries(SeriesSimilarityRequest request) const;
+
     /// \brief Seconds the last AppendBulk spent staging and appending series.
     ///
     /// A benchmark diagnostic so the series share of a save can be measured

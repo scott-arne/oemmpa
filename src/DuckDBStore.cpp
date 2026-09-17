@@ -403,6 +403,20 @@ std::string ranking_query_cte(std::size_t count) {
     return sql + ")";
 }
 
+// query(rule_smiles_id, value): one bound row per query member. Similarity
+// compares values rather than positions, and it imposes no order on the query,
+// so the value travels into SQL where ranking sends a position.
+std::string similarity_query_cte(std::size_t count) {
+    std::string sql = "query(rule_smiles_id, value) as (values ";
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i > 0) {
+            sql += ", ";
+        }
+        sql += "(cast(? as ubigint), cast(? as double))";
+    }
+    return sql + ")";
+}
+
 // posting: the R-group -> series inverted index read through
 // series_member_rule_smiles_idx. A series is a candidate only when it posts at
 // least `minimum` distinct query R-groups (all of them for ranking, min_overlap
@@ -3921,6 +3935,144 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
     }
     for (const QueryMember& member : members) {
         result.query_used.push_back(member.variable_smiles);
+    }
+    return result;
+}
+
+SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest request) const {
+    if (request.min_overlap < 2) {
+        throw invalid_series_query("min_overlap must be at least 2");
+    }
+    const std::uint64_t property_id = require_property_name_id(connection_, request.property_name);
+    const bool has_id = request.query_series_id != 0;
+    const bool has_explicit = !request.query_variable_smiles.empty() || !request.query_values.empty();
+    if (has_id == has_explicit) {
+        throw invalid_series_query(
+            "exactly one of query_series_id and query_variable_smiles with query_values must be given");
+    }
+    // Deliberately no order_best_first: a similarity query is an unordered set of
+    // valued R-groups, so tied values and tied medians are legitimate input. The
+    // strict-order rule belongs to ranking alone, which applies it separately.
+    const ResolvedQuery query = has_id
+        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name)
+        : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
+    if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
+        throw invalid_series_query(
+            "selection.cut_count " + std::to_string(request.selection.cut_count) +
+            " does not match the query's cut count " + std::to_string(query.cut_count));
+    }
+
+    SeriesSimilarityResult result;
+    result.query_size = static_cast<unsigned int>(query.members.size());
+
+    // Bindings in placeholder order: the k (id, value) pairs, the posting minimum,
+    // the property id, then the eligible, shared and candidate bounds.
+    duckdb::vector<duckdb::Value> values;
+    for (const QueryMember& member : query.members) {
+        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+        values.push_back(duckdb::Value::DOUBLE(member.value));
+    }
+    values.push_back(duckdb::Value::UBIGINT(request.min_overlap));
+    values.push_back(duckdb::Value::UBIGINT(property_id));
+    values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(query.cut_count));
+    values.push_back(duckdb::Value::UINTEGER(request.selection.min_constant_heavy_atoms));
+    values.push_back(duckdb::Value::UINTEGER(request.selection.min_constant_heavy_atoms));
+    values.push_back(duckdb::Value::UBIGINT(request.query_series_id));
+    values.push_back(duckdb::Value::UINTEGER(request.selection.min_series_length));
+    values.push_back(duckdb::Value::UINTEGER(request.min_overlap));
+    // posting: the inverted-index prefilter (series posting at least min_overlap
+    // of the query's R-groups) ahead of any property aggregation; bounded: the
+    // member filter (spec 7.5 applies it first, to every member, no exemption in
+    // similarity); eligible: the length test on the valued members that survived
+    // it, the constant floor, the cut count and the exclusion of the query's own
+    // series; shared: the distinct surviving R-groups valued in both; candidate:
+    // the mandatory valued distinct-overlap test.
+    const std::string sql =
+        "with " + similarity_query_cte(query.members.size()) + ", " + posting_cte() + ", " +
+        member_value_cte(true) + ", "
+        "bounded as ("
+        "select mv.series_id, mv.rule_smiles_id, mv.value, rs.smiles as variable_smiles "
+        "from member_value mv join rule_smiles rs on rs.id = mv.rule_smiles_id "
+        "where (? = 0 or coalesce(rs.num_heavies, 0) <= ?)), "
+        "eligible as ("
+        "select b.series_id from bounded b "
+        "join series s on s.id = b.series_id "
+        "where s.cut_count = ? and (? = 0 or s.constant_num_heavies >= ?) and s.id <> ? "
+        "group by b.series_id having count(*) >= ?), "
+        "shared as ("
+        "select b.series_id, q.value as query_value, b.value as candidate_value, b.variable_smiles "
+        "from bounded b "
+        "join query q on q.rule_smiles_id = b.rule_smiles_id "
+        "join eligible e on e.series_id = b.series_id), "
+        "candidate as (select series_id from shared group by series_id having count(*) >= ?) "
+        "select sh.series_id, c.smiles, s.cut_count, sh.variable_smiles, sh.query_value, sh.candidate_value "
+        "from shared sh "
+        "join candidate cand on cand.series_id = sh.series_id "
+        "join series s on s.id = sh.series_id "
+        "join constant_smiles c on c.id = s.constant_id "
+        "order by sh.series_id, sh.variable_smiles";
+    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(connection_, sql, std::move(values));
+
+    struct Entry {
+        SeriesSimilarity match;
+        std::vector<SeriesSimilarityEvidence> shared;
+        std::vector<double> query_values;
+        std::vector<double> candidate_values;
+    };
+    std::vector<Entry> entries;
+    for (const auto& row : *rows) {
+        const std::uint64_t series_id = row.GetValue<std::uint64_t>(0);
+        if (entries.empty() || entries.back().match.series_id != series_id) {
+            Entry entry;
+            entry.match.series_id = series_id;
+            entry.match.constant_smiles = row.GetValue<std::string>(1);
+            entry.match.cut_count = row.GetValue<std::uint32_t>(2);
+            entries.push_back(std::move(entry));
+        }
+        Entry& entry = entries.back();
+        SeriesSimilarityEvidence evidence;
+        evidence.series_id = series_id;
+        evidence.variable_smiles = row.GetValue<std::string>(3);
+        evidence.query_value = row.GetValue<double>(4);
+        evidence.candidate_value = row.GetValue<double>(5);
+        entry.query_values.push_back(evidence.query_value);
+        entry.candidate_values.push_back(evidence.candidate_value);
+        entry.shared.push_back(std::move(evidence));
+    }
+    for (Entry& entry : entries) {
+        entry.match.overlap = static_cast<unsigned int>(entry.shared.size());
+        const RankCorrelation rank = spearman_correlation(entry.query_values, entry.candidate_values);
+        entry.match.has_spearman = rank.defined;
+        entry.match.spearman = rank.defined ? rank.rho : 0.0;
+        entry.match.centred_rmsd = centred_rmsd(entry.query_values, entry.candidate_values);
+    }
+    const SimilarityMeasure measure = request.measure;
+    std::stable_sort(entries.begin(), entries.end(), [measure](const Entry& a, const Entry& b) {
+        if (measure == SimilarityMeasure::SPEARMAN) {
+            if (a.match.has_spearman != b.match.has_spearman) {
+                return a.match.has_spearman;   // Undefined correlations sort last.
+            }
+            if (a.match.has_spearman && a.match.spearman != b.match.spearman) {
+                return a.match.spearman > b.match.spearman;
+            }
+        } else if (a.match.centred_rmsd != b.match.centred_rmsd) {
+            return a.match.centred_rmsd < b.match.centred_rmsd;
+        }
+        if (a.match.overlap != b.match.overlap) {
+            return a.match.overlap > b.match.overlap;
+        }
+        return a.match.series_id < b.match.series_id;
+    });
+    if (request.top != 0 && entries.size() > request.top) {
+        entries.resize(request.top);
+    }
+    for (Entry& entry : entries) {
+        result.matches.push_back(entry.match);
+        if (request.include_evidence) {
+            result.evidence.insert(result.evidence.end(), entry.shared.begin(), entry.shared.end());
+        }
     }
     return result;
 }

@@ -2,9 +2,11 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1239,4 +1241,265 @@ TEST(SeriesRankingEvidence, ExplicitShorteningWithCandidateShowsQueryThenCandida
         EXPECT_EQ(third.role, "candidate");
     }
     std::filesystem::remove(path);
+}
+
+namespace {
+
+// Similarity fixture of spec 11.2. Shared set {H, F, Cl}, query values (3, 2, 1).
+// Core A (3, 2, 1); B (4, 3, 2); C (1, 2, 3); D (2, 2, 2); E shares only H and F
+// and realizes F twice (values 2 and 2.5); a bibenzyl pair provides two-cut series.
+struct SimilarityStore {
+    std::filesystem::path path;
+    std::map<std::string, std::uint64_t> series_ids;   // core constant -> id
+};
+
+SimilarityStore MakeSimilarityStore() {
+    SimilarityStore fixture;
+    fixture.path = TemporaryQueryDatabasePath();
+    Analyzer analyzer;
+    add_para_series(analyzer, "C", "A", 3.0, 2.0, 1.0, 9.0);
+    add_para_series(analyzer, "CC", "B", 4.0, 3.0, 2.0, 9.0);
+    add_para_series(analyzer, "OC", "C", 1.0, 2.0, 3.0, 9.0);
+    add_para_series(analyzer, "N", "D", 2.0, 2.0, 2.0, 9.0);
+    analyzer.AddMolecule("N#Cc1ccccc1", "E-H");
+    analyzer.AddMolecule("Fc1ccc(C#N)cc1", "E-F");
+    analyzer.AddMolecule("Fc1ccc(C#N)cc1", "E-F-dup");
+    analyzer.AddProperty("E-H", "act", 3.0);
+    analyzer.AddProperty("E-F", "act", 2.0);
+    analyzer.AddProperty("E-F-dup", "act", 2.5);
+    analyzer.AddMolecule("c1ccccc1CCc1ccccc1", "L-ethane");
+    analyzer.AddMolecule("c1ccccc1CCCc1ccccc1", "L-propane");
+    analyzer.AddProperty("L-ethane", "act", 1.0);
+    analyzer.AddProperty("L-propane", "act", 2.0);
+    analyzer.Analyze();
+    DuckDBStore store(fixture.path.string());
+    analyzer.SaveTo(store);
+    ExpectParaSeries(store, {"C", "CC", "OC", "N", "C#N"});
+    for (const Series& entry : store.GetSeries()) {
+        fixture.series_ids[entry.GetConstantSmiles()] = entry.GetSeriesId();
+    }
+    return fixture;
+}
+
+SeriesSimilarityRequest SimilarityQuery() {
+    SeriesSimilarityRequest request;
+    request.property_name = "act";
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    return request;
+}
+
+const SeriesSimilarity* FindMatch(const SeriesSimilarityResult& result, std::uint64_t series_id) {
+    for (const SeriesSimilarity& match : result.matches) {
+        if (match.series_id == series_id) {
+            return &match;
+        }
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(SeriesSimilarity, MeasuresAndOrderMatchTheSpecFixture) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const std::uint64_t a = fixture.series_ids.at("[*:1]c1ccc(cc1)C");
+    const std::uint64_t b = fixture.series_ids.at("[*:1]c1ccc(cc1)CC");
+    const std::uint64_t c = fixture.series_ids.at("[*:1]c1ccc(cc1)OC");
+    const std::uint64_t d = fixture.series_ids.at("[*:1]c1ccc(cc1)N");
+    const std::uint64_t e = fixture.series_ids.at("[*:1]c1ccc(cc1)C#N");
+
+    const SeriesSimilarityResult result = store.FindSimilarSeries(SimilarityQuery());
+    EXPECT_EQ(result.query_size, 3U);
+    ASSERT_EQ(result.matches.size(), 4U);
+    EXPECT_EQ(FindMatch(result, e), nullptr);   // Overlap 2 (F counted once) stays below 3.
+    for (const SeriesSimilarity& match : result.matches) {
+        EXPECT_EQ(match.cut_count, 1U);
+        EXPECT_EQ(match.overlap, 3U);
+    }
+    // Spearman 1.0 twice (A and B, ties broken by series id), then -1.0, then undefined last.
+    const std::uint64_t first = std::min(a, b);
+    const std::uint64_t second = std::max(a, b);
+    EXPECT_EQ(result.matches[0].series_id, first);
+    EXPECT_EQ(result.matches[1].series_id, second);
+    EXPECT_EQ(result.matches[2].series_id, c);
+    EXPECT_EQ(result.matches[3].series_id, d);
+    EXPECT_TRUE(result.matches[0].has_spearman);
+    EXPECT_DOUBLE_EQ(result.matches[0].spearman, 1.0);
+    EXPECT_DOUBLE_EQ(result.matches[1].spearman, 1.0);
+    EXPECT_DOUBLE_EQ(FindMatch(result, a)->centred_rmsd, 0.0);
+    EXPECT_DOUBLE_EQ(FindMatch(result, b)->centred_rmsd, 0.0);   // Centring removes the offset.
+    EXPECT_DOUBLE_EQ(FindMatch(result, c)->spearman, -1.0);
+    EXPECT_NEAR(FindMatch(result, c)->centred_rmsd, std::sqrt(8.0 / 3.0), 1e-12);
+    EXPECT_FALSE(FindMatch(result, d)->has_spearman);
+    EXPECT_NEAR(FindMatch(result, d)->centred_rmsd, std::sqrt(2.0 / 3.0), 1e-12);
+    EXPECT_TRUE(result.evidence.empty());
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesSimilarity, CentredRmsdOrderTopAndEvidenceAfterTop) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const std::uint64_t a = fixture.series_ids.at("[*:1]c1ccc(cc1)C");
+    const std::uint64_t b = fixture.series_ids.at("[*:1]c1ccc(cc1)CC");
+    const std::uint64_t c = fixture.series_ids.at("[*:1]c1ccc(cc1)OC");
+    const std::uint64_t d = fixture.series_ids.at("[*:1]c1ccc(cc1)N");
+
+    SeriesSimilarityRequest request = SimilarityQuery();
+    request.measure = SimilarityMeasure::CENTRED_RMSD;
+    SeriesSimilarityResult result = store.FindSimilarSeries(request);
+    ASSERT_EQ(result.matches.size(), 4U);
+    EXPECT_EQ(result.matches[0].series_id, std::min(a, b));
+    EXPECT_EQ(result.matches[1].series_id, std::max(a, b));
+    EXPECT_EQ(result.matches[2].series_id, d);   // 0.816 before 1.633.
+    EXPECT_EQ(result.matches[3].series_id, c);
+
+    request.top = 2;
+    request.include_evidence = true;
+    result = store.FindSimilarSeries(request);
+    ASSERT_EQ(result.matches.size(), 2U);
+    ASSERT_EQ(result.evidence.size(), 6U);   // Evidence is collected after top.
+    EXPECT_EQ(result.evidence[0].series_id, std::min(a, b));
+    EXPECT_EQ(result.evidence[3].series_id, std::max(a, b));
+    EXPECT_EQ(result.evidence[0].variable_smiles, "[*:1]Cl");   // Ordered by SMILES within a series.
+    EXPECT_EQ(result.evidence[1].variable_smiles, "[*:1]F");
+    EXPECT_EQ(result.evidence[2].variable_smiles, "[*:1][H]");
+    EXPECT_DOUBLE_EQ(result.evidence[2].query_value, 3.0);
+    const SeriesSimilarityEvidence& b_hydrogen = result.evidence[std::min(a, b) == b ? 2 : 5];
+    EXPECT_DOUBLE_EQ(b_hydrogen.candidate_value, 4.0);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesSimilarity, IdBasedQueryExcludesItselfAndOverlapCountsDistinctRGroups) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const std::uint64_t a = fixture.series_ids.at("[*:1]c1ccc(cc1)C");
+    SeriesSimilarityRequest request;
+    request.property_name = "act";
+    request.query_series_id = a;   // Members H 3, F 2, Cl 1, Br 9: query_size 4.
+    const SeriesSimilarityResult result = store.FindSimilarSeries(request);
+    EXPECT_EQ(result.query_size, 4U);
+    EXPECT_EQ(FindMatch(result, a), nullptr);
+    ASSERT_EQ(result.matches.size(), 3U);
+    for (const SeriesSimilarity& match : result.matches) {
+        EXPECT_EQ(match.overlap, 4U);   // Br (9 everywhere) is shared too.
+    }
+    // A min_overlap above the query's valued size is not an error: empty result, query_size kept.
+    request.min_overlap = 5;
+    const SeriesSimilarityResult empty = store.FindSimilarSeries(request);
+    EXPECT_TRUE(empty.matches.empty());
+    EXPECT_EQ(empty.query_size, 4U);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesSimilarity, SelectionBoundsApplyBeforeTheOverlapTest) {
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    SeriesSimilarityRequest request;
+    request.property_name = "act";
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]OC", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    EXPECT_EQ(store.FindSimilarSeries(request).matches.size(), 2U);
+
+    request.selection.max_variable_heavy_atoms = 1;   // Methoxy leaves the shared set: overlap 2.
+    EXPECT_TRUE(store.FindSimilarSeries(request).matches.empty());
+    request.min_overlap = 2;
+    SeriesSimilarityResult trimmed = store.FindSimilarSeries(request);
+    ASSERT_EQ(trimmed.matches.size(), 2U);
+    EXPECT_EQ(trimmed.matches.front().overlap, 2U);
+
+    request = SeriesSimilarityRequest();
+    request.property_name = "act";
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]OC", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    request.selection.min_series_length = 5;   // Neither core has five VALUED members.
+    EXPECT_TRUE(store.FindSimilarSeries(request).matches.empty());
+    request.selection.min_series_length = 4;
+    EXPECT_EQ(store.FindSimilarSeries(request).matches.size(), 2U);
+
+    request.selection.min_series_length = 2;
+    request.selection.min_constant_heavy_atoms = 8;
+    EXPECT_EQ(store.FindSimilarSeries(request).matches.size(), 1U);
+
+    request.selection.min_constant_heavy_atoms = 0;
+    request.selection.cut_count = 2;
+    try {
+        store.FindSimilarSeries(request);
+        FAIL() << "cut_count conflict must be rejected";
+    } catch (const std::invalid_argument& error) {
+        EXPECT_TRUE(starts_with_prefix(error.what()));
+        EXPECT_NE(std::string(error.what()).find("cut_count"), std::string::npos);
+    }
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesSimilarity, MemberBoundIsAppliedBeforeTheLengthTest) {
+    // Spec 7.5 order for similarity: the member filter removes OMe (2 heavies) and
+    // tBu (4) from every core before the length test, leaving H and Cl. A floor of
+    // three then admits no candidate even at min_overlap 2; a floor of two admits
+    // both cores with overlap 2 (H and Cl shared).
+    const std::filesystem::path path = MakeSelectionStore();
+    DuckDBStore store(path.string());
+    SeriesSimilarityRequest request;
+    request.property_name = "act";
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]OC", "[*:1]Cl"};
+    request.query_values = {3.0, 2.0, 1.0};
+    request.min_overlap = 2;
+    request.selection.max_variable_heavy_atoms = 1;
+    request.selection.min_series_length = 3;
+    EXPECT_TRUE(store.FindSimilarSeries(request).matches.empty());
+    request.selection.min_series_length = 2;
+    const SeriesSimilarityResult bounded = store.FindSimilarSeries(request);
+    ASSERT_EQ(bounded.matches.size(), 2U);
+    EXPECT_EQ(bounded.matches.front().overlap, 2U);
+    request.selection.max_variable_heavy_atoms = 0;
+    request.selection.min_series_length = 3;   // Without the bound the floor is met by all four valued members.
+    EXPECT_EQ(store.FindSimilarSeries(request).matches.size(), 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(SeriesSimilarity, RequestContract) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const auto rejection = [&](const SeriesSimilarityRequest& request) {
+        try {
+            store.FindSimilarSeries(request);
+        } catch (const std::invalid_argument& error) {
+            EXPECT_TRUE(starts_with_prefix(error.what()));
+            return std::string(error.what());
+        }
+        ADD_FAILURE() << "expected rejection";
+        return std::string();
+    };
+    SeriesSimilarityRequest request = SimilarityQuery();
+    request.min_overlap = 1;
+    EXPECT_NE(rejection(request).find("min_overlap"), std::string::npos);
+
+    request = SimilarityQuery();
+    request.query_values = {3.0, 2.0, 2.0};   // Ties are allowed for similarity.
+    EXPECT_NO_THROW(store.FindSimilarSeries(request));
+
+    request = SimilarityQuery();
+    request.property_name = "nope";
+    EXPECT_NE(rejection(request).find("nope"), std::string::npos);
+
+    request = SimilarityQuery();
+    request.query_series_id = 1;
+    EXPECT_NE(rejection(request).find("exactly one"), std::string::npos);
+
+    request = SimilarityQuery();
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]C[*:2]"};
+    EXPECT_NE(rejection(request).find("label"), std::string::npos);
+
+    // A two-cut query meets two-cut series only.
+    request = SeriesSimilarityRequest();
+    request.property_name = "act";
+    request.query_variable_smiles = {"[*:1]CC[*:2]", "[*:1]CCC[*:2]"};
+    request.query_values = {1.0, 2.0};
+    request.min_overlap = 2;
+    const SeriesSimilarityResult linker = store.FindSimilarSeries(request);
+    for (const SeriesSimilarity& match : linker.matches) {
+        EXPECT_EQ(match.cut_count, 2U);
+    }
+    std::filesystem::remove(fixture.path);
 }
