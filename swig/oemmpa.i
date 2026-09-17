@@ -370,6 +370,13 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(TransformVector) std::vector<OEMMPA::Transform>;
 %template(TransformProductVector) std::vector<OEMMPA::TransformProduct>;
 %template(GeneratedProductVector) std::vector<OEMMPA::GeneratedProduct>;
+// A series and a member carry their contents from construction, so neither has a
+// default constructor and the sized vector constructor and resize cannot compile
+// for them; this is the SWIG library's opt-out for such an element type.
+%std_nodefconst_type(OEMMPA::SeriesMember);
+%std_nodefconst_type(OEMMPA::Series);
+%template(SeriesMemberVector) std::vector<OEMMPA::SeriesMember>;
+%template(SeriesVector) std::vector<OEMMPA::Series>;
 
 // ============================================================================
 // Version macros
@@ -381,13 +388,15 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 // GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
 // ============================================================================
-// These 6 methods are the ONLY wrappers that release the GIL.
+// These 8 methods are the ONLY wrappers that release the GIL.
 %threadallow OEMMPA::Analyzer::Analyze;
 %threadallow OEMMPA::Analyzer::GetPairs;
+%threadallow OEMMPA::Analyzer::GetSeries;
 %threadallow OEMMPA::Analyzer::GetTransforms;
 %threadallow OEMMPA::Analyzer::SaveTo;
 %threadallow OEMMPA::DuckDBStore::AddMoleculesFromSmilesFile;
 %threadallow OEMMPA::DuckDBStore::AddPropertiesFromCsvFile;
+%threadallow OEMMPA::DuckDBStore::GetSeries;
 
 // ============================================================================
 // Phase 1 public headers
@@ -486,6 +495,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/RingPerception.h"
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"
+%include "../include/oemmpa/Series.h"
 %include "../include/oemmpa/MemoryIndex.h"
 %include "../include/oemmpa/PairScoring.h"
 %include "../include/oemmpa/Statistics.h"
