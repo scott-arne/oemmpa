@@ -84,6 +84,14 @@ TEST(SeriesQueryCanonicalisation, HydrogenSentinelInAnySpelling) {
     EXPECT_EQ(canonicalize_query_rgroup("[*:1]O").variable_smiles, "[*:1]O");
 }
 
+TEST(SeriesQueryCanonicalisation, HydrogenSentinelRejectsMultipleHydrogens) {
+    // The sentinel is exactly one labelled dummy plus one hydrogen; more hydrogens are not normalised.
+    for (const char* bad : {"[*:1][H][H]", "[H][H][*:1]", "[*H2:1]"}) {
+        const CanonicalQueryRGroup canonical = canonicalize_query_rgroup(bad);
+        EXPECT_NE(canonical.variable_smiles, std::string(kHydrogenVariableSmiles)) << bad;
+    }
+}
+
 TEST(SeriesQueryCanonicalisation, MultiCutLabelsAreCountedAndOrdered) {
     const CanonicalQueryRGroup linker = canonicalize_query_rgroup("[*:1]CC[*:2]");
     EXPECT_EQ(linker.cut_count, 2U);
@@ -140,6 +148,31 @@ TEST(SeriesQueryCanonicalisation, RejectsUnparsableUnlabelledGappedAndDisconnect
     EXPECT_NE(canonicalize_query_rgroup("[*:1]").variable_smiles, std::string(kHydrogenVariableSmiles));
 }
 
+TEST(SeriesQueryCanonicalisation, RejectsDuplicateAndUnlabelledDummies) {
+    // Duplicate labels must be caught early, not silently ignored.
+    for (const char* duplicate : {"[*:1]C[*:1]", "[*:1]CC[*:1]"}) {
+        try {
+            canonicalize_query_rgroup(duplicate);
+            FAIL() << "expected rejection of duplicate label: " << duplicate;
+        } catch (const std::invalid_argument& error) {
+            EXPECT_TRUE(starts_with_prefix(error.what())) << error.what();
+            EXPECT_NE(std::string(error.what()).find("repeats"), std::string::npos) << error.what();
+            EXPECT_NE(std::string(error.what()).find(duplicate), std::string::npos) << error.what();
+        }
+    }
+    // Unlabelled dummies (map index 0) must be caught early.
+    for (const char* unlabelled : {"*C[*:1]", "[*:1]CC*"}) {
+        try {
+            canonicalize_query_rgroup(unlabelled);
+            FAIL() << "expected rejection of unlabelled dummy: " << unlabelled;
+        } catch (const std::invalid_argument& error) {
+            EXPECT_TRUE(starts_with_prefix(error.what())) << error.what();
+            EXPECT_NE(std::string(error.what()).find("unlabelled"), std::string::npos) << error.what();
+            EXPECT_NE(std::string(error.what()).find(unlabelled), std::string::npos) << error.what();
+        }
+    }
+}
+
 TEST(SeriesQueryLadder, AcceptsStrictlyDecreasingPositiveLaddersOnly) {
     EXPECT_NO_THROW(validate_support_ladder({20U, 10U, 5U}));
     EXPECT_NO_THROW(validate_support_ladder({1U}));
@@ -188,6 +221,17 @@ TEST(SeriesQueryMeasures, SpearmanAveragesTiedRanks) {
         EXPECT_FALSE(starts_with_prefix(error.what())) << error.what();
     }
     EXPECT_THROW(centred_rmsd({1.0, 2.0}, {1.0}), std::invalid_argument);
+}
+
+TEST(SeriesQueryMeasures, CentredRmsdDoesNotOverflowWithLargeValues) {
+    // Welford-style running mean prevents overflow when accumulating large values.
+    EXPECT_DOUBLE_EQ(centred_rmsd({1e308, 1e308}, {1e308, 1e308}), 0.0);
+    // Identical shapes with huge offset: the offset is removed, leaving zero.
+    EXPECT_DOUBLE_EQ(centred_rmsd({1e308, 1e308}, {-1e308, -1e308}), 0.0);
+    // Small-value fixtures still hold with the new implementation.
+    const std::vector<double> query = {3.0, 2.0, 1.0};
+    EXPECT_DOUBLE_EQ(centred_rmsd(query, {3.0, 2.0, 1.0}), 0.0);
+    EXPECT_DOUBLE_EQ(centred_rmsd(query, {4.0, 3.0, 2.0}), 0.0);
 }
 
 TEST(SeriesQueryDuckDB, LinkedLibrarySupportsEveryConstructTheQueriesUse) {

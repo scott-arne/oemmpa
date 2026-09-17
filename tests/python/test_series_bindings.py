@@ -6,7 +6,6 @@ import itertools
 import threading
 
 import pytest
-
 from oemmpa import _oemmpa
 
 
@@ -37,6 +36,8 @@ def _substituted_benzene_store():
 def test_binding_exposes_the_series_types_and_the_selection_defaults():
     for name in ("Series", "SeriesMember", "SeriesSelection", "SeriesVector", "SeriesMemberVector"):
         assert hasattr(_oemmpa, name), name
+    # Internal ordering helper must not leak into the binding.
+    assert not hasattr(_oemmpa, "order_atoms_for_label_stable_rendering")
     selection = _oemmpa.SeriesSelection()
     assert selection.min_series_length == 2
     assert selection.max_variable_heavy_atoms == 0

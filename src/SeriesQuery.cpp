@@ -21,37 +21,52 @@ std::invalid_argument invalid_query(const std::string& message) {
     return std::invalid_argument(std::string(SERIES_QUERY_INVALID_PREFIX) + message);
 }
 
-std::set<unsigned int> attachment_labels(const OEChem::OEMolBase& mol) {
-    std::set<unsigned int> labels;
+void validate_attachment_labels(const OEChem::OEMolBase& mol, const std::string& smiles,
+                                std::set<unsigned int>& labels) {
+    labels.clear();
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
-        if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
-            labels.insert(atom->GetMapIdx());
+        if (atom->GetAtomicNum() == 0) {
+            const unsigned int map_idx = atom->GetMapIdx();
+            if (map_idx == 0) {
+                throw invalid_query("query R-group has an unlabelled attachment atom: " + smiles);
+            }
+            if (!labels.insert(map_idx).second) {
+                throw invalid_query("query R-group repeats attachment label " +
+                                    std::to_string(map_idx) + ": " + smiles);
+            }
         }
     }
-    return labels;
 }
 
-// One labelled dummy atom with exactly one hydrogen (explicit or implicit) and no
-// heavy neighbours, and nothing else in the molecule: [*:1][H], [H][*:1] and
-// [*H:1] qualify; [*:1].[H] does not (the hydrogen is not bonded) and is rejected
-// by the component check.
+// One labelled dummy atom plus exactly one hydrogen and nothing else: either two
+// atoms (the dummy and one hydrogen bonded to it) or one atom (the dummy with
+// implicit hydrogen count 1). [*:1][H], [H][*:1] and [*H:1] qualify; [*:1][H][H]
+// does not (a second hydrogen in the molecule).
 bool is_hydrogen_rgroup(const OEChem::OEMolBase& mol) {
     const OEChem::OEAtomBase* dummy = nullptr;
-    unsigned int others = 0;
+    unsigned int total_atoms = 0;
     for (OESystem::OEIter<OEChem::OEAtomBase> atom = mol.GetAtoms(); atom; ++atom) {
+        ++total_atoms;
         if (atom->GetAtomicNum() == 0 && atom->GetMapIdx() > 0) {
             if (dummy != nullptr) {
                 return false;
             }
             dummy = atom;
-        } else if (atom->GetAtomicNum() != 1) {
-            ++others;
         }
     }
-    if (dummy == nullptr || others != 0) {
+    if (dummy == nullptr) {
         return false;
     }
-    return dummy->GetTotalHCount() == 1 && dummy->GetHvyDegree() == 0;
+    // Either one atom (the dummy) with implicit H count 1, or two atoms (dummy + H).
+    if (total_atoms == 1) {
+        // One atom: the dummy must have exactly 1 total H and no explicit bonds.
+        return dummy->GetTotalHCount() == 1 && dummy->GetExplicitDegree() == 0;
+    }
+    if (total_atoms == 2) {
+        // Two atoms: the dummy bonded to one hydrogen atom, no heavy neighbors.
+        return dummy->GetTotalHCount() == 1 && dummy->GetHvyDegree() == 0;
+    }
+    return false;
 }
 
 // A query R-group is one connected fragment; a dot-separated input is not.
@@ -99,7 +114,8 @@ CanonicalQueryRGroup canonicalize_query_rgroup(const std::string& smiles) {
     if (!is_single_fragment(mol)) {
         throw invalid_query("query R-group must be one connected fragment: " + smiles);
     }
-    const std::set<unsigned int> labels = attachment_labels(mol);
+    std::set<unsigned int> labels;
+    validate_attachment_labels(mol, smiles, labels);
     if (labels.empty()) {
         throw invalid_query("query R-group carries no attachment label such as [*:1]: " + smiles);
     }
@@ -136,9 +152,14 @@ RankCorrelation spearman_correlation(const std::vector<double>& x, const std::ve
     require_same_nonempty_length(x, y, "spearman_correlation");
     const std::vector<double> rx = average_ranks(x);
     const std::vector<double> ry = average_ranks(y);
-    const double n = static_cast<double>(rx.size());
-    const double mean_x = std::accumulate(rx.begin(), rx.end(), 0.0) / n;
-    const double mean_y = std::accumulate(ry.begin(), ry.end(), 0.0) / n;
+    // Welford-style running mean to avoid overflow with large rank values.
+    double mean_x = 0.0;
+    double mean_y = 0.0;
+    for (std::size_t i = 0; i < rx.size(); ++i) {
+        const double count = static_cast<double>(i + 1);
+        mean_x += (rx[i] - mean_x) / count;
+        mean_y += (ry[i] - mean_y) / count;
+    }
     double sxy = 0.0;
     double sxx = 0.0;
     double syy = 0.0;
@@ -160,9 +181,15 @@ RankCorrelation spearman_correlation(const std::vector<double>& x, const std::ve
 
 double centred_rmsd(const std::vector<double>& x, const std::vector<double>& y) {
     require_same_nonempty_length(x, y, "centred_rmsd");
+    // Welford-style running mean to avoid overflow with large values.
+    double mean_x = 0.0;
+    double mean_y = 0.0;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double count = static_cast<double>(i + 1);
+        mean_x += (x[i] - mean_x) / count;
+        mean_y += (y[i] - mean_y) / count;
+    }
     const double n = static_cast<double>(x.size());
-    const double mean_x = std::accumulate(x.begin(), x.end(), 0.0) / n;
-    const double mean_y = std::accumulate(y.begin(), y.end(), 0.0) / n;
     double sum = 0.0;
     for (std::size_t i = 0; i < x.size(); ++i) {
         const double d = (x[i] - mean_x) - (y[i] - mean_y);

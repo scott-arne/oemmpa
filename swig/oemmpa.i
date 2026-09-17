@@ -481,6 +481,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %ignore OEMMPA::capture_tetrahedral_parity;
 %ignore OEMMPA::assert_tetrahedral_parity;
 %ignore OEMMPA::clear_fragmentation_invalidated_stereo;
+// Internal ordering helper shared by the fragmenter and the query canonicalisation; not part of the binding.
+%ignore OEMMPA::order_atoms_for_label_stable_rendering;
 %include "../include/oemmpa/FragmentSmiles.h"
 // The ported ring perception, so a Python measurement can score OEMMPA's
 // symmetrized SSSR and bridgehead set against RDKit's Chem.GetSymmSSSR() and
