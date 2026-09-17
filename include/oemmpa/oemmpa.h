@@ -33,6 +33,7 @@
 #include "oemmpa/RingPerception.h"
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Series.h"
+#include "oemmpa/SeriesQuery.h"
 #include "oemmpa/Statistics.h"
 #include "oemmpa/Transform.h"
 #include "oemmpa/TransformApplication.h"

@@ -33,6 +33,7 @@ add_executable(oemmpa_tests
 
 if(OEMMPA_HAS_DUCKDB)
     target_sources(oemmpa_tests PRIVATE test_duckdb_store.cpp)
+    target_sources(oemmpa_tests PRIVATE test_series_query.cpp)
 endif()
 
 target_link_libraries(oemmpa_tests

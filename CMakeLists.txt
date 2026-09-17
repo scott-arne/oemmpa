@@ -120,6 +120,7 @@ set(OEMMPA_SOURCES
     src/Statistics.cpp
     src/MemoryIndex.cpp
     src/Series.cpp
+    src/SeriesQuery.cpp
     src/ThreadSupport.cpp
 )
 
