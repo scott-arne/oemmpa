@@ -1,0 +1,328 @@
+"""Time the series queries on a benchmark store built from the SureChEMBL corpus.
+
+The corpus carries no measured property, and a physical descriptor such as
+molecular weight orders the same R-groups identically in every series, so the
+property is a deterministic pseudo-random value derived from each compound id
+(``synthetic``, uniform on [0, 100), reproducible everywhere). The ranking
+queries are the three most frequent value orders of the four commonest R-groups
+among the stored series that contain all four with values (fewer than three
+distinct orders is an error, not a shorter run); the similarity queries are the
+three largest series, top 20. Each query runs once cold (discarded) and
+``repeats`` times warm; the median is reported against a one-second target.
+Results go to ``benchmarks/results/series_queries.json`` with the corpus
+provenance, the linked DuckDB version and the host recorded.
+
+Usage::
+
+    python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import statistics
+import sys
+from collections import Counter
+from pathlib import Path
+from time import perf_counter
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT / "python") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "python"))
+if str(REPO_ROOT / "benchmarks") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "benchmarks"))
+
+# The siblings below are reached as top-level modules because the block above
+# puts benchmarks/ on the path, which is what lets this run as a plain script and
+# the unit tests import it as ``series_queries``. mypy resolves this directory
+# only as the ``benchmarks`` package, so it cannot see those names.
+import oemmpa
+from corpus import ensure_corpus, read_provenance  # type: ignore[import-not-found]
+from stage_benchmark import (  # type: ignore[import-not-found]
+    _duckdb_python_version,
+    _git_revision,
+)
+
+PROPERTY = "synthetic"
+TARGET_SECONDS = 1.0
+DEFAULT_OUT = REPO_ROOT / "benchmarks" / "results" / "series_queries.json"
+
+
+def _log(message):
+    print(f"[series_queries] {message}", file=sys.stderr, flush=True)
+
+
+def synthetic_value(identifier):
+    """A reproducible pseudo-random value on [0, 100) derived from the compound id."""
+    digest = hashlib.blake2b(str(identifier).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") % 100000 / 1000.0
+
+
+def synthetic_values(smiles_path):
+    """Return ``{molecule id: synthetic value}`` for every parsable line of a whitespace SMILES file."""
+    values = {}
+    for line_number, line in enumerate(Path(smiles_path).read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split(None, 1)
+        identifier = parts[1].strip() if len(parts) > 1 else f"molecule_{line_number}"
+        values[identifier] = synthetic_value(identifier)
+    return values
+
+
+def open_store(store_path):
+    """Open the benchmark store for querying.
+
+    :param store_path: Path of a store already written by :func:`build_store`.
+    :returns: An :class:`oemmpa.DuckDBStore`.
+    """
+    return oemmpa.DuckDBStore(Path(store_path))
+
+
+def build_store(smiles_path, store_path, *, threads=1, force=False):
+    """Analyse the corpus with the synthetic property and save it; return the build report.
+
+    :param smiles_path: Whitespace ``SMILES id`` corpus.
+    :param store_path: Where the store is written.
+    :param threads: Analyzer worker threads (the persist itself is serial).
+    :param force: Replace an existing store instead of refusing it.
+    :returns: Mapping with the molecule, series and member-row counts, the build
+        seconds and the seconds the persist spent rewriting ``series.num_members``.
+    :raises FileExistsError: When ``store_path`` exists and ``force`` is false; nothing is touched.
+    """
+    store_path = Path(store_path)
+    if store_path.exists():
+        if not force:
+            raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
+        store_path.unlink()
+    analyzer = oemmpa.Analyzer()
+    analyzer.add_molecules_from_file(str(smiles_path))
+    values = synthetic_values(smiles_path)
+    for identifier, value in values.items():
+        analyzer.add_property(identifier, PROPERTY, value)
+    start = perf_counter()
+    analyzer.analyze(threads)
+    store = oemmpa.DuckDBStore(store_path)
+    store.save_analyzer(analyzer, max_variable_heavies=10)
+    elapsed = perf_counter() - start
+    summary = store.summary()
+    return {
+        "molecules": len(values),
+        "series": int(summary["series"]),
+        "series_members": int(summary["series_members"]),
+        "build_seconds": elapsed,
+        "series_count_refresh_seconds": store.series_count_refresh_seconds(),
+    }
+
+
+def commonest_rgroups(store, *, count=4):
+    """The R-groups that appear in the most single-cut series.
+
+    :param store: Open benchmark store.
+    :param count: How many R-groups to return, commonest first.
+    :returns: List of R-group SMILES.
+    """
+    tally = Counter()
+    for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
+        for member in series.GetMembers():
+            tally[str(member.GetVariableSmiles())] += 1
+    return [rgroup for rgroup, _ in tally.most_common(count)]
+
+
+def _member_values(store, series, property_name):
+    """The median stored value of each member of one series, keyed by R-group."""
+    values = {}
+    for member in series.GetMembers():
+        observed = []
+        for molecule_id in member.GetMoleculeIds():
+            try:
+                observed.append(store.get_molecule_property(int(molecule_id), property_name))
+            except RuntimeError:
+                continue
+        if observed:
+            values[str(member.GetVariableSmiles())] = statistics.median(observed)
+    return values
+
+
+def frequent_orders(store, rgroups, property_name, *, count=3):
+    """The ``count`` most frequent best-first orders of ``rgroups`` among series valued for all of them.
+
+    :param store: Open benchmark store.
+    :param rgroups: R-group SMILES the order is taken over.
+    :param property_name: Stored property the order is by, descending.
+    :param count: How many distinct orders to return, most frequent first.
+    :returns: List of ``{"rgroups", "values", "count"}`` mappings.
+    :raises RuntimeError: When fewer than ``count`` distinct orders exist; the workload never shrinks silently.
+    """
+    orders = Counter()
+    examples = {}
+    for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
+        values = _member_values(store, series, property_name)
+        if not all(rgroup in values for rgroup in rgroups):
+            continue
+        ordered = tuple(sorted(rgroups, key=lambda rgroup: -values[rgroup]))
+        if len({values[rgroup] for rgroup in rgroups}) < len(rgroups):
+            continue   # A tie cannot be a ranking query.
+        orders[ordered] += 1
+        examples.setdefault(ordered, {rgroup: values[rgroup] for rgroup in rgroups})
+    if len(orders) < count:
+        raise RuntimeError(
+            f"only {len(orders)} distinct orders of {rgroups} exist in the store; {count} are required "
+            f"(spec 11.4 asks for the {count} most frequent orders, spelled out as three)")
+    return [
+        {"rgroups": list(order), "values": examples[order], "count": frequency}
+        for order, frequency in orders.most_common(count)
+    ]
+
+
+def largest_series(store, *, count=3):
+    """The ``count`` single-cut series with the most members, largest first.
+
+    :param store: Open benchmark store.
+    :param count: How many series to return.
+    :returns: List of ``{"series_id", "constant", "num_members"}`` mappings.
+    """
+    ranked = sorted(store.series(oemmpa.SeriesSelectionOptions(cut_count=1)),
+                    key=lambda series: (-series.Size(), series.GetSeriesId()))
+    return [{"series_id": int(series.GetSeriesId()), "constant": str(series.GetConstantSmiles()),
+             "num_members": int(series.Size())} for series in ranked[:count]]
+
+
+def time_query(run, *, repeats):
+    """One discarded cold run, then ``repeats`` warm runs; returns (median seconds, runs, last result)."""
+    result = run()
+    runs = []
+    for _ in range(repeats):
+        start = perf_counter()
+        result = run()
+        runs.append(perf_counter() - start)
+    return statistics.median(runs), runs, result
+
+
+def _same_path(left, right):
+    """One file under two names: equal after resolution, or the same inode when both exist (hard links)."""
+    left, right = Path(left), Path(right)
+    if left.resolve(strict=False) == right.resolve(strict=False):
+        return True
+    return left.exists() and right.exists() and os.path.samefile(left, right)
+
+
+def _corpus_provenance(smiles):
+    """The corpus sidecar's provenance, or the reason it is unavailable, never an exception.
+
+    ``read_provenance`` answers ``(record, reason)`` and only a ``None`` reason
+    vouches for the bytes on disk, so an untrusted sidecar is recorded as the
+    reason it cannot be believed rather than as a source this run did not use.
+
+    :param smiles: Corpus path the measurement consumed.
+    :returns: A JSON-serialisable mapping, always with ``available``.
+    """
+    try:
+        record, reason = read_provenance(Path(smiles))
+    except Exception as exc:  # noqa: BLE001 - provenance never blocks a measurement
+        return {"available": False, "reason": str(exc)}
+    if reason is not None:
+        return {"available": False, "reason": reason}
+    return {"available": True, "provenance": record}
+
+
+def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, store_path=None,
+                               parquet=None, out_path=DEFAULT_OUT, force=False):
+    """Build the store, time both query kinds on it, and write the results bundle.
+
+    :param size: Corpus size requested from ``ensure_corpus`` when no
+        ``smiles_path`` is given.
+    :param repeats: Warm runs per query after one discarded cold run.
+    :param threads: Analyzer worker threads for the store build.
+    :param smiles_path: Corpus override; bypasses ``ensure_corpus``.
+    :param store_path: Where the store is built (default beside ``out_path``).
+    :param parquet: SureChEMBL parquet override for ``ensure_corpus``.
+    :param out_path: Results JSON path.
+    :param force: Replace an existing store at ``store_path``.
+    :returns: The bundle that was written.
+    :raises ValueError: When the store and the results would be the same file.
+    """
+    out_path = Path(out_path)
+    smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
+    store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
+    if _same_path(store_path, out_path):
+        raise ValueError(f"--store and --out must differ: {store_path}")
+    # The default store sits beside the output, so the results directory has to
+    # exist before the build rather than only before the JSON write; otherwise
+    # the first run of a fresh checkout loses the whole build to a missing
+    # directory it was always going to create.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _log(f"building the store for {smiles} at {store_path}")
+    build = build_store(smiles, store_path, threads=threads, force=force)
+    store = open_store(store_path)
+    rgroups = commonest_rgroups(store, count=4)
+    queries = []
+    for order in frequent_orders(store, rgroups, PROPERTY, count=3):
+        def run_rank(order=order):
+            return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=order["values"],
+                                                 support_ladder=(20, 10, 5))
+        median_seconds, runs, ranking = time_query(run_rank, repeats=repeats)
+        queries.append({
+            "kind": "rank", "query": order["rgroups"], "values": order["values"], "series_with_order": order["count"],
+            "direction": "higher", "ladder": [20, 10, 5], "median_seconds": median_seconds, "runs": runs,
+            "matched_series": ranking.matched_series, "support_level": ranking.support_level,
+            "dropped": list(ranking.dropped), "candidates": len(ranking),
+            "under_target": median_seconds < TARGET_SECONDS,
+        })
+    for entry in largest_series(store, count=3):
+        def run_similar(entry=entry):
+            return oemmpa.find_similar_series(store, PROPERTY, series_id=entry["series_id"], top=20)
+        median_seconds, runs, similar = time_query(run_similar, repeats=repeats)
+        queries.append({
+            "kind": "similar", "series_id": entry["series_id"], "constant": entry["constant"],
+            "num_members": entry["num_members"], "top": 20, "median_seconds": median_seconds, "runs": runs,
+            "query_size": similar.query_size, "matches": len(similar),
+            "under_target": median_seconds < TARGET_SECONDS,
+        })
+    bundle = {
+        "meta": {
+            "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
+            "repeats": repeats, "threads": threads, "commonest_rgroups": rgroups,
+            "corpus_provenance": _corpus_provenance(smiles),
+            "duckdb_library_version": oemmpa.duckdb_library_version(),
+            "duckdb_python_version": _duckdb_python_version(),
+            "git_revision": _git_revision(), "python": sys.version.split()[0],
+            "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
+        },
+        "store": build,
+        "target_seconds": TARGET_SECONDS,
+        "queries": queries,
+        "all_under_target": all(query["under_target"] for query in queries) if queries else False,
+    }
+    out_path.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _log(f"wrote {out_path}")
+    return bundle
+
+
+def main(argv=None):
+    """Parse the command line and run one measurement.
+
+    :param argv: Argument list, or ``None`` for ``sys.argv[1:]``.
+    :returns: The process exit status.
+    """
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--size", type=int, default=10000, help="Corpus size (built on demand through ensure_corpus).")
+    parser.add_argument("--repeats", type=int, default=5, help="Warm runs per query after one discarded cold run.")
+    parser.add_argument("--threads", type=int, default=1, help="Analyzer threads for the store build.")
+    parser.add_argument("--parquet", default=None, help="SureChEMBL parquet path override for ensure_corpus.")
+    parser.add_argument("--store", default=None, help="Where to build the store (default beside the output).")
+    parser.add_argument("--force", action="store_true", help="Replace an existing store at --store.")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Results JSON path.")
+    args = parser.parse_args(argv)
+    run_series_query_benchmark(size=args.size, repeats=args.repeats, threads=args.threads,
+                               parquet=args.parquet, store_path=args.store, out_path=args.out, force=args.force)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

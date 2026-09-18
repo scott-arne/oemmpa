@@ -188,6 +188,32 @@ molecules and properties were loaded, how many property rows were accepted or
 rejected, and how long loading took. Use `--property-columns` when the property
 file contains non-numeric columns such as input SMILES.
 
+## Series Queries
+
+`benchmarks/series_queries.py` times the two matched-molecular-series queries
+on a store built from the SureChEMBL corpus (`ensure_corpus`, see the
+prerequisites above). The corpus carries no assay data, and a physical
+descriptor such as molecular weight orders the same R-groups identically in
+every series, so the script loads a deterministic pseudo-random value derived
+from each compound id as the property `synthetic` (uniform on [0, 100),
+identical on every machine). Ranking queries are the three most frequent value
+orders of the four commonest R-groups among the stored series that contain all
+four with values, at the default ladder 20/10/5 (fewer than three distinct
+orders is an error, never a shorter run); similarity queries are the three
+largest series with `top=20`. Every query runs once cold (discarded) and
+`--repeats` times warm; the median is compared with the one-second target.
+
+```bash
+python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
+```
+
+An existing `--store` path is refused unless `--force` is given, and `--store`
+must differ from `--out`. The JSON records the corpus provenance sidecar, the
+linked DuckDB library version, the host, the store build (molecules, series,
+member rows, build seconds and the seconds spent rewriting
+`series.num_members`), the query definitions and timings, and
+`all_under_target`. Results live under the git-ignored `benchmarks/results/`.
+
 ## CLI Workflows
 
 ```bash
