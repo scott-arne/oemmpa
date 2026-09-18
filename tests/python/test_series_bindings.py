@@ -382,7 +382,7 @@ def test_concurrent_cold_readers_of_one_analyzer_agree():
     assert failures == []
 
 
-def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version():
+def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version(tmp_path):
     import oemmpa
 
     store = _oemmpa.DuckDBStore()
@@ -393,5 +393,10 @@ def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version():
     version = oemmpa.duckdb_library_version()
     assert version == _oemmpa.DuckDBStore.GetLibraryVersion()
     assert version.startswith("v") or version[0].isdigit()
-    facade = oemmpa.DuckDBStore()
+    facade = oemmpa.DuckDBStore(str(tmp_path / "facade.duckdb"))
     assert facade.series_count_refresh_seconds() == -1.0
+    facade.save_analyzer(_phenyl_raw_analyzer())
+    facade_seconds = facade.series_count_refresh_seconds()
+    assert facade_seconds > 0.0
+    # The facade reports the store's own measurement, not a figure of its own.
+    assert facade_seconds == facade.raw.GetLastSeriesCountRefreshSeconds()

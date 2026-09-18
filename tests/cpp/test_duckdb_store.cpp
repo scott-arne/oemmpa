@@ -4141,6 +4141,44 @@ TEST(DuckDBStoreSeriesSave, SeriesCountRefreshIsTimedSeparatelyFromTheAppend) {
     std::filesystem::remove(path);
 }
 
+TEST(DuckDBStoreSeriesSave, SeriesCountRefreshIsPublishedByBothEntryPoints) {
+    // Analyzer::SaveTo runs RefreshRuleEnvironmentStatistics and then
+    // RefreshDatasetCounts, so a save cannot show that the first entry point
+    // publishes anything: the second overwrites whatever it recorded. A store
+    // opened afresh on the saved database isolates that entry point.
+    Analyzer analyzer = MakePhenylAnalyzer();
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    {
+        DuckDBStore store(path.string());
+        // The database was refreshed by the save above, but by another store, so
+        // this one still reports the sentinel.
+        EXPECT_EQ(store.GetLastSeriesCountRefreshSeconds(), -1.0);
+        store.RefreshRuleEnvironmentStatistics();
+        EXPECT_GT(store.GetLastSeriesCountRefreshSeconds(), 0.0);
+
+        // Re-measuring rather than accumulating, proved as for the other entry
+        // point: the rewrite is a small share of this call, which recomputes the
+        // rule environment statistics as well, so after these twenty untimed
+        // calls an accumulating timer would report roughly twenty rewrites, far
+        // above the wall time of the single call bracketed below.
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            store.RefreshRuleEnvironmentStatistics();
+        }
+        const auto call_started = std::chrono::steady_clock::now();
+        store.RefreshRuleEnvironmentStatistics();
+        const double call_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - call_started).count();
+        const double remeasured = store.GetLastSeriesCountRefreshSeconds();
+        EXPECT_GT(remeasured, 0.0);
+        EXPECT_LE(remeasured, call_seconds);
+    }
+    std::filesystem::remove(path);
+}
+
 TEST(DuckDBStoreSeriesRead, StoredSeriesEqualTheirInMemoryTwinsExceptForTheRowId) {
     Analyzer analyzer = MakePhenylAnalyzer();
     DuckDBStore store;
