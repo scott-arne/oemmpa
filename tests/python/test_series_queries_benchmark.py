@@ -15,21 +15,43 @@ if str(BENCHMARKS) not in sys.path:
 
 import series_queries
 
+CORES = ["C", "CC", "OC", "N", "C#N", "OCC", "C(F)(F)F", "C(C)C", "CCC", "OCCC", "CCl", "C(=O)C"]
+
+
+def _write_smiles(path, cores, groups):
+    """Write one molecule per core and group as ``SMILES id``; the empty fragment is the plain ring."""
+    lines = []
+    for core in cores:
+        for fragment, name in groups.items():
+            smiles = f"c1ccccc1{core}" if fragment == "" else f"{fragment}c1ccc({core})cc1"
+            lines.append(f"{smiles} {core}-{name}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
 
 @pytest.fixture
 def tiny_smiles(tmp_path):
     # Twelve cores so the hash-derived values realize at least three distinct
     # orders of the four commonest R-groups; every core carries all six groups.
-    lines = []
-    cores = ["C", "CC", "OC", "N", "C#N", "OCC", "C(F)(F)F", "C(C)C", "CCC", "OCCC", "CCl", "C(=O)C"]
     groups = {"": "H", "C": "Me", "Cl": "Cl", "c1ccccc1": "Ph", "F": "F", "Br": "Br"}
-    for core in cores:
-        for fragment, name in groups.items():
-            smiles = f"c1ccccc1{core}" if fragment == "" else f"{fragment}c1ccc({core})cc1"
-            lines.append(f"{smiles} {core}-{name}")
-    path = tmp_path / "tiny.smi"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return path
+    return _write_smiles(tmp_path / "tiny.smi", CORES, groups)
+
+
+@pytest.fixture
+def three_group_smiles(tmp_path):
+    # With only three substituents the fourth commonest fragment is the aryl half of
+    # a cut, not a substituent, and it is a member only of series whose other members
+    # are aryl halves as well. No series can order all four, so the selection has to
+    # drop to three R-groups exactly as a diverse real corpus makes it.
+    return _write_smiles(tmp_path / "three.smi", CORES, {"": "H", "C": "Me", "Cl": "Cl"})
+
+
+@pytest.fixture
+def two_core_smiles(tmp_path):
+    # Two cores cannot show three different orders of anything, so every query set
+    # from four R-groups down to three fails and the selection must refuse outright.
+    groups = {"": "H", "C": "Me", "Cl": "Cl", "Br": "Br"}
+    return _write_smiles(tmp_path / "two.smi", CORES[:2], groups)
 
 
 def test_synthetic_values_are_deterministic_and_cover_every_molecule(tiny_smiles):
@@ -65,8 +87,49 @@ def test_build_store_and_query_selection(tiny_smiles, tmp_path):
     assert len({tuple(order["rgroups"]) for order in orders}) == 3
     with pytest.raises(RuntimeError, match="three"):
         series_queries.frequent_orders(store, commonest, "synthetic", count=30)
+    selected, selected_orders = series_queries.select_query_rgroups(store, "synthetic")
+    assert selected == commonest   # Four R-groups order here, so nothing is dropped.
+    assert [order["rgroups"] for order in selected_orders] == [order["rgroups"] for order in orders]
     largest = series_queries.largest_series(store, count=3)
     assert len(largest) == 3 and largest[0]["num_members"] >= largest[-1]["num_members"]
+
+
+def test_the_query_set_drops_to_three_rgroups_when_four_cannot_be_ordered(three_group_smiles, tmp_path):
+    series_queries.build_store(three_group_smiles, tmp_path / "three.duckdb", threads=1)
+    store = series_queries.open_store(tmp_path / "three.duckdb")
+    commonest = series_queries.commonest_rgroups(store, count=4)
+    assert len(commonest) == 4
+    with pytest.raises(RuntimeError, match="three"):
+        series_queries.frequent_orders(store, commonest, "synthetic", count=3)
+    selected, orders = series_queries.select_query_rgroups(store, "synthetic")
+    assert selected == commonest[:3]   # The least common member is the one dropped.
+    assert len(orders) == 3
+    assert all(order["rgroups"] and len(order["rgroups"]) == 3 for order in orders)
+    assert len({tuple(order["rgroups"]) for order in orders}) == 3
+    out = tmp_path / "three.json"
+    bundle = series_queries.run_series_query_benchmark(
+        size=36, repeats=1, threads=1, smiles_path=three_group_smiles,
+        store_path=tmp_path / "bench.duckdb", out_path=out)
+    meta = bundle["meta"]
+    assert meta["commonest_rgroups"] == commonest   # The set asked for is recorded beside the one used.
+    assert meta["query_rgroups"] == commonest[:3]
+    assert meta["query_size"] == 3
+    ranks = [query for query in bundle["queries"] if query["kind"] == "rank"]
+    assert len(ranks) == 3 and all(len(rank["query"]) == 3 for rank in ranks)
+
+
+def test_the_selection_refuses_when_even_three_rgroups_cannot_be_ordered(two_core_smiles, tmp_path):
+    series_queries.build_store(two_core_smiles, tmp_path / "two.duckdb", threads=1)
+    store = series_queries.open_store(tmp_path / "two.duckdb")
+    commonest = series_queries.commonest_rgroups(store, count=4)
+    with pytest.raises(RuntimeError, match="three") as raised:
+        series_queries.select_query_rgroups(store, "synthetic")
+    message = str(raised.value)
+    # Every set that was tried is named with the orders it produced, so the reader
+    # can tell a corpus too small to order anything from one merely too diverse.
+    assert str(commonest) in message
+    assert str(commonest[:3]) in message
+    assert message.count("gave 0") == 2
 
 
 def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
@@ -81,6 +144,7 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert meta["duckdb_library_version"] and meta["duckdb_python_version"]
     assert meta["hostname"] and meta["machine"] and meta["cpu_count"] >= 1
     assert "corpus_provenance" in meta   # Unavailable for an ad-hoc SMILES file, but always reported.
+    assert meta["query_rgroups"] == meta["commonest_rgroups"] and meta["query_size"] == 4
     assert bundle["target_seconds"] == 1.0
     assert {query["kind"] for query in bundle["queries"]} == {"rank", "similar"}
     assert sum(1 for query in bundle["queries"] if query["kind"] == "rank") == 3

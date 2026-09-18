@@ -5,9 +5,12 @@ molecular weight orders the same R-groups identically in every series, so the
 property is a deterministic pseudo-random value derived from each compound id
 (``synthetic``, uniform on [0, 100), reproducible everywhere). The ranking
 queries are the three most frequent value orders of the four commonest R-groups
-among the stored series that contain all four with values (fewer than three
-distinct orders is an error, not a shorter run); the similarity queries are the
-three largest series, top 20. Each query runs once cold (discarded) and
+among the stored series that contain all four with values. A diverse corpus can
+leave too few such series to show three different orders, so the query set then
+drops its least common member, down to three R-groups and no further; the set
+actually used is recorded as ``query_rgroups``, and three R-groups that still
+cannot be ordered are an error, not a shorter run. The similarity queries are
+the three largest series, top 20. Each query runs once cold (discarded) and
 ``repeats`` times warm; the median is reported against a one-second target.
 Results go to ``benchmarks/results/series_queries.json`` with the corpus
 provenance, the linked DuckDB version and the host recorded.
@@ -149,6 +152,42 @@ def _member_values(store, series, property_name):
     return values
 
 
+def _tally_orders(store, candidates, property_name):
+    """Tally the best-first orders of several R-group sets in one pass over the single-cut series.
+
+    Reading each series' member values is the whole cost of the scan, and
+    :func:`select_query_rgroups` asks the same question of nested subsets of one
+    R-group list, so every candidate is answered from the same read.
+
+    :param store: Open benchmark store.
+    :param candidates: R-group lists, each taken as one query set.
+    :param property_name: Stored property the order is by, descending.
+    :returns: ``(tallies, examples)``, both keyed by the tuple of each candidate set.
+    """
+    tallies = {tuple(candidate): Counter() for candidate in candidates}
+    examples = {tuple(candidate): {} for candidate in candidates}
+    for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
+        values = _member_values(store, series, property_name)
+        for candidate in candidates:
+            if not all(rgroup in values for rgroup in candidate):
+                continue
+            if len({values[rgroup] for rgroup in candidate}) < len(candidate):
+                continue   # A tie cannot be a ranking query.
+            key = tuple(candidate)
+            ordered = tuple(sorted(candidate, key=lambda rgroup: -values[rgroup]))
+            tallies[key][ordered] += 1
+            examples[key].setdefault(ordered, {rgroup: values[rgroup] for rgroup in candidate})
+    return tallies, examples
+
+
+def _most_frequent(tally, examples, count):
+    """The ``count`` most frequent orders of one tally as ``{"rgroups", "values", "count"}`` mappings."""
+    return [
+        {"rgroups": list(order), "values": examples[order], "count": frequency}
+        for order, frequency in tally.most_common(count)
+    ]
+
+
 def frequent_orders(store, rgroups, property_name, *, count=3):
     """The ``count`` most frequent best-first orders of ``rgroups`` among series valued for all of them.
 
@@ -159,25 +198,46 @@ def frequent_orders(store, rgroups, property_name, *, count=3):
     :returns: List of ``{"rgroups", "values", "count"}`` mappings.
     :raises RuntimeError: When fewer than ``count`` distinct orders exist; the workload never shrinks silently.
     """
-    orders = Counter()
-    examples = {}
-    for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
-        values = _member_values(store, series, property_name)
-        if not all(rgroup in values for rgroup in rgroups):
-            continue
-        ordered = tuple(sorted(rgroups, key=lambda rgroup: -values[rgroup]))
-        if len({values[rgroup] for rgroup in rgroups}) < len(rgroups):
-            continue   # A tie cannot be a ranking query.
-        orders[ordered] += 1
-        examples.setdefault(ordered, {rgroup: values[rgroup] for rgroup in rgroups})
-    if len(orders) < count:
+    tallies, examples = _tally_orders(store, [list(rgroups)], property_name)
+    key = tuple(rgroups)
+    if len(tallies[key]) < count:
         raise RuntimeError(
-            f"only {len(orders)} distinct orders of {rgroups} exist in the store; {count} are required "
+            f"only {len(tallies[key])} distinct orders of {rgroups} exist in the store; {count} are required "
             f"(spec 11.4 asks for the {count} most frequent orders, spelled out as three)")
-    return [
-        {"rgroups": list(order), "values": examples[order], "count": frequency}
-        for order, frequency in orders.most_common(count)
-    ]
+    return _most_frequent(tallies[key], examples[key], count)
+
+
+def select_query_rgroups(store, property_name, *, commonest=4, minimum=3, count=3):
+    """The ranking query set and its orders: the commonest R-groups, shortened only as far as ``minimum``.
+
+    Each of the commonest R-groups of a diverse corpus tends to be common in a
+    different part of it, so the series valued for all ``commonest`` of them can
+    be too few to show ``count`` different orders. Spec 11.4 answers that by
+    dropping the least common member, down to ``minimum`` R-groups and no
+    further: a set that still cannot be ordered is an error rather than a
+    shorter run whose timings would not compare with anything.
+
+    :param store: Open benchmark store.
+    :param property_name: Stored property the order is by, descending.
+    :param commonest: How many R-groups the query set starts with.
+    :param minimum: Fewest R-groups the set may be shortened to.
+    :param count: How many distinct orders the set has to show.
+    :returns: ``(rgroups, orders)`` for the longest set that shows ``count`` orders.
+    :raises RuntimeError: When no set down to ``minimum`` R-groups shows ``count`` orders.
+    """
+    rgroups = commonest_rgroups(store, count=commonest)
+    # The list is commonest first, so each prefix is the previous set with its
+    # least common member dropped.
+    candidates = [rgroups[:size] for size in range(len(rgroups), minimum - 1, -1)]
+    tallies, examples = _tally_orders(store, candidates, property_name)
+    for candidate in candidates:
+        key = tuple(candidate)
+        if len(tallies[key]) >= count:
+            return candidate, _most_frequent(tallies[key], examples[key], count)
+    tried = "; ".join(f"{candidate} gave {len(tallies[tuple(candidate)])}" for candidate in candidates)
+    raise RuntimeError(
+        f"no R-group set from {len(rgroups)} down to {minimum} members shows {count} distinct orders in "
+        f"the store (spec 11.4 requires three, and a shorter run is never the answer); sets tried: {tried}")
 
 
 def largest_series(store, *, count=3):
@@ -260,9 +320,10 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     _log(f"building the store for {smiles} at {store_path}")
     build = build_store(smiles, store_path, threads=threads, force=force)
     store = open_store(store_path)
-    rgroups = commonest_rgroups(store, count=4)
+    commonest = commonest_rgroups(store, count=4)
+    query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
     queries = []
-    for order in frequent_orders(store, rgroups, PROPERTY, count=3):
+    for order in orders:
         def run_rank(order=order):
             return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=order["values"],
                                                  support_ladder=(20, 10, 5))
@@ -287,7 +348,8 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     bundle = {
         "meta": {
             "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
-            "repeats": repeats, "threads": threads, "commonest_rgroups": rgroups,
+            "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
+            "query_rgroups": query_rgroups, "query_size": len(query_rgroups),
             "corpus_provenance": _corpus_provenance(smiles),
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "duckdb_python_version": _duckdb_python_version(),

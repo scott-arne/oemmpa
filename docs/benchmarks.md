@@ -198,10 +198,16 @@ every series, so the script loads a deterministic pseudo-random value derived
 from each compound id as the property `synthetic` (uniform on [0, 100),
 identical on every machine). Ranking queries are the three most frequent value
 orders of the four commonest R-groups among the stored series that contain all
-four with values, at the default ladder 20/10/5 (fewer than three distinct
-orders is an error, never a shorter run); similarity queries are the three
-largest series with `top=20`. Every query runs once cold (discarded) and
-`--repeats` times warm; the median is compared with the one-second target.
+four with values, at the default ladder 20/10/5. On a diverse corpus those four
+R-groups are each common in a different part of it, so too few series may carry
+all four to show three different orders; the query set then drops its least
+common member, down to three R-groups and no further, and three R-groups that
+still cannot be ordered are an error rather than a shorter run. The set used is
+recorded as `query_rgroups` (with `query_size`) beside the `commonest_rgroups`
+it was taken from, and each ranking result repeats it as `query`. Similarity
+queries are the three largest series with `top=20`. Every query runs once cold
+(discarded) and `--repeats` times warm; the median is compared with the
+one-second target.
 
 ```bash
 python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
