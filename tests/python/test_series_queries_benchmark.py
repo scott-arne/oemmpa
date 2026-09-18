@@ -13,6 +13,7 @@ BENCHMARKS = Path(__file__).resolve().parents[2] / "benchmarks"
 if str(BENCHMARKS) not in sys.path:
     sys.path.insert(0, str(BENCHMARKS))
 
+import corpus
 import series_queries
 
 CORES = ["C", "CC", "OC", "N", "C#N", "OCC", "C(F)(F)F", "C(C)C", "CCC", "OCCC", "CCl", "C(=O)C"]
@@ -246,6 +247,41 @@ def test_a_results_path_that_names_the_stores_write_ahead_log_is_refused(tiny_sm
     # --force would have unlinked both, so refusing has to come first.
     assert store.read_bytes() == b"a store mid-persist"
     assert wal.read_bytes() == b"the log that store needs"
+
+
+def test_a_results_path_that_names_the_resolved_corpus_source_is_refused(tmp_path, monkeypatch):
+    # Without --parquet the source is whatever the resolver finds, and that is the
+    # file a run would destroy; ``corpus`` is the module series_queries imported from.
+    source = tmp_path / "compounds.parquet"
+    source.write_bytes(b"the parquet the resolver would find")
+
+    def fail_loudly(*args, **kwargs):
+        raise AssertionError("ensure_corpus must not run once the output names an input")
+
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", source)
+    monkeypatch.setattr(series_queries, "ensure_corpus", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(size=72, repeats=1, threads=1, out_path=source, force=True)
+    assert source.read_bytes() == b"the parquet the resolver would find"
+    out = tmp_path / "out.json"
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, store_path=source, out_path=out, force=True)
+    # --force unlinks the store it is handed, so the refusal has to come first.
+    assert source.read_bytes() == b"the parquet the resolver would find"
+    assert not out.exists()
+
+
+def test_a_file_at_the_predictable_staging_name_is_not_clobbered(tiny_smiles, tmp_path):
+    out = tmp_path / "series_queries.json"
+    # The staging name a pid derives is guessable, so an input can be sitting at it.
+    decoy = tmp_path / f"{out.name}.{os.getpid()}.tmp"
+    decoy.write_bytes(b"an input parked at the staging name")
+    bundle = series_queries.run_series_query_benchmark(
+        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=tmp_path / "bench.duckdb", out_path=out)
+    assert decoy.read_bytes() == b"an input parked at the staging name"
+    assert json.loads(out.read_text()) == bundle
+    assert [path.name for path in tmp_path.glob("*.tmp")] == [decoy.name]
 
 
 def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):

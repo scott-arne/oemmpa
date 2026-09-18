@@ -29,6 +29,7 @@ import os
 import platform
 import statistics
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from time import perf_counter
@@ -44,7 +45,11 @@ if str(REPO_ROOT / "benchmarks") not in sys.path:
 # the unit tests import it as ``series_queries``. mypy resolves this directory
 # only as the ``benchmarks`` package, so it cannot see those names.
 import oemmpa
-from corpus import ensure_corpus, read_provenance  # type: ignore[import-not-found]
+from corpus import (  # type: ignore[import-not-found]
+    ensure_corpus,
+    read_provenance,
+    resolve_corpus_source,
+)
 from stage_benchmark import (  # type: ignore[import-not-found]
     _duckdb_python_version,
     _git_revision,
@@ -350,10 +355,14 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     # Resolved so the bundle names the store the way it names the corpus, whatever
     # directory the run was started from.
     store_path = store_path.resolve()
-    # Checked before the corpus is fetched so a run whose output names the parquet
-    # is refused without downloading anything, and again once ensure_corpus has
-    # named the file it actually used.
-    _ensure_distinct_paths(out_path, store_path, {"--parquet": parquet, "--smiles": smiles_path})
+    # ensure_corpus reads a source of its own when --parquet is omitted, so the guard
+    # asks it which file that would be rather than trusting the argument it was given.
+    # Checked before the fetch, so a run whose output names that source is refused
+    # without reading anything, and again once ensure_corpus has named the corpus it
+    # produced.
+    source = resolve_corpus_source(parquet) if smiles_path is None else None
+    _ensure_distinct_paths(out_path, store_path,
+                           {"--parquet": parquet, "--smiles": smiles_path, "the corpus source": source})
     smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
     _ensure_distinct_paths(out_path, store_path, {"the SMILES corpus": smiles})
     # The default store sits beside the output, so the results directory has to
@@ -408,9 +417,20 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     # Written to a sibling and renamed so a reader of the results path sees either
     # the previous bundle or the whole new one; a run interrupted mid-write cannot
     # leave truncated JSON under the name the results are read from.
-    staged = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
-    staged.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(staged, out_path)
+    # mkstemp creates that sibling exclusively, under a name it chooses, so staging
+    # can never truncate a file that was already there: a name derived from the
+    # output, such as "<out>.<pid>.tmp", is guessable and an input may be sitting at it.
+    handle, name = tempfile.mkstemp(dir=out_path.parent, prefix=out_path.name + ".", suffix=".tmp")
+    staged = Path(name)
+    replaced = False
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(bundle, indent=2, sort_keys=True) + "\n")
+        os.replace(staged, out_path)
+        replaced = True
+    finally:
+        if not replaced:
+            staged.unlink(missing_ok=True)
     _log(f"wrote {out_path}")
     return bundle
 

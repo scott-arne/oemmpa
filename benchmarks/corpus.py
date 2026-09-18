@@ -155,7 +155,7 @@ def _generate(size, out_path, parquet=None):
     :returns: ``out_path``.
     :raises _NoCorpusSource: If no source can satisfy ``size``.
     """
-    resolved = _resolve_parquet(parquet)
+    resolved = resolve_parquet_source(parquet)
     if resolved is not None:
         actual, digest = _write_from_parquet(resolved, size, out_path)
         _write_provenance(
@@ -189,15 +189,38 @@ def _log(message):
     print(f"[corpus] {message}", file=sys.stderr, flush=True)
 
 
-def _resolve_parquet(parquet):
+def resolve_parquet_source(parquet=None):
     """Return an existing parquet path, or ``None`` when unavailable.
 
+    Public because a caller has to be able to learn which file a generation would
+    read before it happens - a benchmark must not write its results over its own
+    source - and that answer has to come from the code the generation itself uses.
+
+    :param parquet: Explicit override, or ``None`` to resolve
+        ``OEMMPA_BENCHMARK_PARQUET`` and then the default location.
+    :returns: The parquet path, or ``None`` when it does not exist.
     :raises ValueError: If the path names the proprietary dataset.
     """
     path = Path(parquet) if parquet is not None else DEFAULT_PARQUET
     if PROPRIETARY_TOKEN in str(path):
         raise ValueError(f"refusing to sample the proprietary dataset: {path}")
     return path if path.exists() else None
+
+
+def resolve_corpus_source(parquet=None):
+    """Return the file a generation would read, or ``None`` when there is none.
+
+    The same precedence ``_generate`` applies: the resolved parquet first, then
+    the committed slice it falls back to offline.
+
+    :param parquet: Explicit parquet override, or ``None``.
+    :returns: The source path, or ``None`` when no source is reachable.
+    :raises ValueError: If the override names the proprietary dataset.
+    """
+    parquet_path = resolve_parquet_source(parquet)
+    if parquet_path is not None:
+        return parquet_path
+    return COMMITTED_CORPUS if COMMITTED_CORPUS.exists() else None
 
 
 def _write_from_parquet(parquet, size, out_path):
