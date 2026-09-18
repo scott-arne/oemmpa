@@ -282,6 +282,33 @@ def _same_path(left, right):
     return left.exists() and right.exists() and os.path.samefile(left, right)
 
 
+def _ensure_distinct_paths(out_path, store_path, inputs):
+    """Refuse, before anything is built, a run in which one path would destroy another.
+
+    The results file is truncated and ``--force`` unlinks the store, so any input
+    that is also one of those paths is gone before the measurement starts. The
+    write-ahead log is checked with them because DuckDB writes and replays
+    ``<store>.wal`` beside the store on its own: it is a path this run manages,
+    not one a caller may aim at.
+
+    :param out_path: Results JSON path, truncated once the bundle exists.
+    :param store_path: Store this run builds, and unlinks first when forced.
+    :param inputs: Mapping of description to path the run only reads; ``None``
+        values are the arguments that were not given.
+    :raises ValueError: When any two of those paths name one file.
+    """
+    wal_path = store_path.with_name(store_path.name + ".wal")
+    managed = {"--out": out_path, "--store": store_path, "the store's write-ahead log": wal_path}
+    pairs = [(label, path, input_label, Path(input_path))
+             for label, path in managed.items()
+             for input_label, input_path in inputs.items() if input_path is not None]
+    pairs.append(("--out", out_path, "--store", store_path))
+    pairs.append(("--out", out_path, "the store's write-ahead log", wal_path))
+    for label, path, other_label, other in pairs:
+        if _same_path(path, other):
+            raise ValueError(f"{label} must differ from {other_label}: {path} and {other} name one file")
+
+
 def _corpus_provenance(smiles):
     """The corpus sidecar's provenance, or the reason it is unavailable, never an exception.
 
@@ -315,16 +342,20 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     :param out_path: Results JSON path.
     :param force: Replace an existing store at ``store_path``.
     :returns: The bundle that was written.
-    :raises ValueError: When the store and the results would be the same file.
+    :raises ValueError: When the results, the store or the store's log would be
+        the same file as one another or as an input.
     """
     out_path = Path(out_path)
-    smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
     store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
     # Resolved so the bundle names the store the way it names the corpus, whatever
     # directory the run was started from.
     store_path = store_path.resolve()
-    if _same_path(store_path, out_path):
-        raise ValueError(f"--store and --out must differ: {store_path}")
+    # Checked before the corpus is fetched so a run whose output names the parquet
+    # is refused without downloading anything, and again once ensure_corpus has
+    # named the file it actually used.
+    _ensure_distinct_paths(out_path, store_path, {"--parquet": parquet, "--smiles": smiles_path})
+    smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
+    _ensure_distinct_paths(out_path, store_path, {"the SMILES corpus": smiles})
     # The default store sits beside the output, so the results directory has to
     # exist before the build rather than only before the JSON write; otherwise
     # the first run of a fresh checkout loses the whole build to a missing
@@ -374,7 +405,12 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
         "queries": queries,
         "all_under_target": all(query["under_target"] for query in queries) if queries else False,
     }
-    out_path.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # Written to a sibling and renamed so a reader of the results path sees either
+    # the previous bundle or the whole new one; a run interrupted mid-write cannot
+    # leave truncated JSON under the name the results are read from.
+    staged = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
+    staged.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(staged, out_path)
     _log(f"wrote {out_path}")
     return bundle
 

@@ -215,11 +215,14 @@ python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/re
 ```
 
 An existing `--store` path is refused unless `--force` is given, and `--store`
-must differ from `--out`. The JSON records the corpus provenance sidecar, the
-linked DuckDB library version, the host, the store build (molecules, series,
-member rows, build seconds -- parse, load the property, analyse and persist --
-and the seconds spent rewriting `series.num_members`), the query definitions and
-timings, and
+must differ from `--out`. A run is also refused before it builds anything when
+`--out` or `--store` names an input -- the corpus or the `--parquet` source --
+or when `--out` names the store's write-ahead log, because those files are
+truncated or, under `--force`, unlinked. The JSON records the corpus provenance
+sidecar, the linked DuckDB library version, the host, the store build
+(molecules, series, member rows, build seconds -- parse, load the property,
+analyse and persist -- and the seconds spent rewriting `series.num_members`),
+the query definitions and timings, and
 `all_under_target`. Results live under the git-ignored `benchmarks/results/`.
 
 ## CLI Workflows

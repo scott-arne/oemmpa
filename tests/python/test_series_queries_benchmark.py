@@ -194,6 +194,60 @@ def test_store_hard_linked_to_the_output_is_refused(tiny_smiles, tmp_path):
     assert out.read_text(encoding="utf-8") == "{}\n"
 
 
+def test_a_results_path_that_names_the_corpus_is_refused(tiny_smiles, tmp_path):
+    corpus = tiny_smiles.read_bytes()
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, out_path=tiny_smiles, force=True)
+    assert tiny_smiles.read_bytes() == corpus
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=tiny_smiles,
+            out_path=tmp_path / "out.json", force=True)
+    assert tiny_smiles.read_bytes() == corpus
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_results_path_hard_linked_to_the_corpus_is_refused(tiny_smiles, tmp_path):
+    corpus = tiny_smiles.read_bytes()
+    alias = tmp_path / "results-alias.json"
+    try:
+        os.link(tiny_smiles, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported here: {exc}")
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, out_path=alias, force=True)
+    assert tiny_smiles.read_bytes() == corpus
+
+
+def test_a_results_path_that_names_the_parquet_is_refused_before_the_corpus_is_fetched(tmp_path, monkeypatch):
+    parquet = tmp_path / "source.parquet"
+    parquet.write_bytes(b"not really a parquet")
+
+    def fail_loudly(*args, **kwargs):
+        raise AssertionError("ensure_corpus must not run once the output names an input")
+
+    monkeypatch.setattr(series_queries, "ensure_corpus", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, parquet=str(parquet), out_path=parquet, force=True)
+    assert parquet.read_bytes() == b"not really a parquet"
+
+
+def test_a_results_path_that_names_the_stores_write_ahead_log_is_refused(tiny_smiles, tmp_path):
+    store = tmp_path / "bench.duckdb"
+    store.write_bytes(b"a store mid-persist")
+    wal = tmp_path / "bench.duckdb.wal"
+    wal.write_bytes(b"the log that store needs")
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=store, out_path=wal, force=True)
+    # --force would have unlinked both, so refusing has to come first.
+    assert store.read_bytes() == b"a store mid-persist"
+    assert wal.read_bytes() == b"the log that store needs"
+
+
 def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):
     calls = {}
 
