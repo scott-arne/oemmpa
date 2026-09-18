@@ -98,29 +98,12 @@ class SeriesSelectionOptions:
 def series_rows(series):
     """Return one row per (member, compound) for an iterable of raw series.
 
+    Built in one crossing by the binding helper ``series_row_dicts``.
+
     :param series: Raw ``_oemmpa.Series`` objects.
     :returns: List of dictionaries in ``SERIES_ROW_COLUMNS`` order.
     """
-    rows = []
-    for entry in series:
-        for member in entry.GetMembers():
-            molecule_ids = list(member.GetMoleculeIds())
-            external_ids = list(member.GetExternalIds())
-            for molecule_id, external_id in zip(molecule_ids, external_ids, strict=True):
-                rows.append(
-                    {
-                        "series_id": int(entry.GetSeriesId()),
-                        "constant": str(entry.GetConstantSmiles()),
-                        "cut_count": int(entry.GetCutCount()),
-                        "constant_num_heavies": int(entry.GetConstantHeavyAtomCount()),
-                        "num_members": int(entry.Size()),
-                        "rgroup": str(member.GetVariableSmiles()),
-                        "rgroup_num_heavies": int(member.GetHeavyAtomCount()),
-                        "molecule_id": int(molecule_id),
-                        "compound_id": str(external_id),
-                    }
-                )
-    return rows
+    return _oemmpa.series_row_dicts(list(series))
 
 
 INVALID_QUERY_PREFIX = "invalid series query: "

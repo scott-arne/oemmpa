@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import _oemmpa  # type: ignore[attr-defined]
 from ._analytics import compute_transform_statistics
 from ._dataframe import (
     PAIR_SMILES_COLUMNS,
@@ -516,25 +517,12 @@ class SeriesQuery:
         return text_collection_summary(self.__class__.__name__, len(self))
 
     def _repr_html_(self):
-        # Use a generator to avoid materializing all rows for preview.
+        # One series per crossing: the preview stops after its row limit, so only
+        # the series it shows are ever converted, and no per-member tuple is
+        # materialised in Python.
         def row_generator():
             for entry in self._series:
-                members = entry.GetMembers()
-                for member in members:
-                    molecule_ids = list(member.GetMoleculeIds())
-                    external_ids = list(member.GetExternalIds())
-                    for molecule_id, external_id in zip(molecule_ids, external_ids, strict=True):
-                        yield {
-                            "series_id": int(entry.GetSeriesId()),
-                            "constant": str(entry.GetConstantSmiles()),
-                            "cut_count": int(entry.GetCutCount()),
-                            "constant_num_heavies": int(entry.GetConstantHeavyAtomCount()),
-                            "num_members": int(entry.Size()),
-                            "rgroup": str(member.GetVariableSmiles()),
-                            "rgroup_num_heavies": int(member.GetHeavyAtomCount()),
-                            "molecule_id": int(molecule_id),
-                            "compound_id": str(external_id),
-                        }
+                yield from _oemmpa.series_row_dicts([entry])
         return html_collection_preview(self.__class__.__name__, row_generator())
 
     def filter(self, constant=None, cut_count=None, min_length=None):

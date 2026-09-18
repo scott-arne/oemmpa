@@ -698,12 +698,84 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
     }
     return list;
 }
+
+// Byte-for-byte equivalent to the Python series_rows(): one dict per
+// (member, compound) in the order of the vector, of each series' members and of
+// their compound ids. Nine getter crossings per row is what this replaces, and
+// reading the C++ vectors directly also avoids the non-owning SWIG views that
+// GetMembers() and GetMoleculeIds() hand back. The vector arrives by copy from a
+// Python sequence, so callers pass only the series they need converted (the
+// notebook preview passes one at a time). Failure anywhere releases everything
+// built so far and returns NULL with the CPython error set, never a half-built
+// list: Py_DECREF of a list whose tail slots are still NULL is safe, because
+// list deallocation skips NULL items, which is why the slots are filled in order.
+static PyObject* series_row_dicts(const std::vector<OEMMPA::Series>& series) {
+    Py_ssize_t total = 0;
+    for (const OEMMPA::Series& entry : series) {
+        for (const OEMMPA::SeriesMember& member : entry.GetMembers()) {
+            total += static_cast<Py_ssize_t>(member.GetMoleculeIds().size());
+        }
+    }
+    PyObject* list = PyList_New(total);
+    if (list == NULL) {
+        return NULL;
+    }
+    // A member whose external ids are shorter than its molecule ids is
+    // malformed; this keeps the read in bounds and yields the empty string the
+    // Python row builder also produced. Held by const reference so neither arm
+    // of the ternary below copies.
+    const std::string missing_external_id;
+    Py_ssize_t index = 0;
+    for (const OEMMPA::Series& entry : series) {
+        for (const OEMMPA::SeriesMember& member : entry.GetMembers()) {
+            const std::vector<unsigned int>& ids = member.GetMoleculeIds();
+            const std::vector<std::string>& external_ids = member.GetExternalIds();
+            for (size_t i = 0; i < ids.size(); ++i) {
+                PyObject* row = PyDict_New();
+                if (row == NULL) {
+                    Py_DECREF(list);
+                    return NULL;
+                }
+                // Every value is built inside the chain so that a short-circuit
+                // on an earlier failure cannot strand an unowned new reference.
+                if (_oemmpa_dict_set_new(row, "series_id",
+                        PyLong_FromUnsignedLongLong(entry.GetSeriesId())) < 0
+                    || _oemmpa_dict_set_new(row, "constant",
+                        _oemmpa_str_object(entry.GetConstantSmiles())) < 0
+                    || _oemmpa_dict_set_new(row, "cut_count",
+                        PyLong_FromUnsignedLong(entry.GetCutCount())) < 0
+                    || _oemmpa_dict_set_new(row, "constant_num_heavies",
+                        PyLong_FromUnsignedLong(entry.GetConstantHeavyAtomCount())) < 0
+                    || _oemmpa_dict_set_new(row, "num_members",
+                        PyLong_FromSize_t(entry.Size())) < 0
+                    || _oemmpa_dict_set_new(row, "rgroup",
+                        _oemmpa_str_object(member.GetVariableSmiles())) < 0
+                    || _oemmpa_dict_set_new(row, "rgroup_num_heavies",
+                        PyLong_FromUnsignedLong(member.GetHeavyAtomCount())) < 0
+                    || _oemmpa_dict_set_new(row, "molecule_id",
+                        PyLong_FromUnsignedLong(ids[i])) < 0
+                    || _oemmpa_dict_set_new(row, "compound_id",
+                        _oemmpa_str_object(i < external_ids.size()
+                                           ? external_ids[i]
+                                           : missing_external_id)) < 0) {
+                    Py_DECREF(row);
+                    Py_DECREF(list);
+                    return NULL;
+                }
+                PyList_SetItem(list, index, row);  // steals the row reference
+                ++index;
+            }
+        }
+    }
+    return list;
+}
 %}
 
-// Expose only the public builder (SWIG passes the PyObject* return through).
+// Expose only the public builders (SWIG passes the PyObject* return through).
 // Transforms are intentionally not bulk-exported: with only two fields the
 // per-row getter count is too low to beat the C dict-building overhead.
 PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pairs);
+PyObject* series_row_dicts(const std::vector<OEMMPA::Series>& series);
 
 // ============================================================================
 // Module-level Python convenience code

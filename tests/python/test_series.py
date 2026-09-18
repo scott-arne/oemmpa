@@ -238,3 +238,60 @@ def test_series_query_preview_bounds_materialization():
     mol_ids_in_html = sum(1 for i in range(10) if f"mol_{i}" in html)
     assert mol_ids_in_html <= 6  # Limit (5) + 1 for "has more" detection.
     assert mol_ids_in_html < 10  # Not all rows materialized in preview.
+
+
+def _reference_rows(series):
+    rows = []
+    for entry in series:
+        for member in entry.GetMembers():
+            for molecule_id, external_id in zip(member.GetMoleculeIds(), member.GetExternalIds(), strict=True):
+                rows.append({
+                    "series_id": int(entry.GetSeriesId()), "constant": str(entry.GetConstantSmiles()),
+                    "cut_count": int(entry.GetCutCount()), "constant_num_heavies": int(entry.GetConstantHeavyAtomCount()),
+                    "num_members": int(entry.Size()), "rgroup": str(member.GetVariableSmiles()),
+                    "rgroup_num_heavies": int(member.GetHeavyAtomCount()), "molecule_id": int(molecule_id),
+                    "compound_id": str(external_id),
+                })
+    return rows
+
+
+def test_series_row_dicts_matches_the_per_member_reference():
+    from oemmpa import _oemmpa
+    from oemmpa._series import series_rows
+
+    analyzer = Analyzer()
+    for index, (left, right) in enumerate(__import__("itertools").combinations_with_replacement(
+            ["C", "O", "N", "F", "Cl", "CC"], 2)):
+        analyzer.add_molecule(f"{left}c1ccc({right})cc1", id=f"m{index}")
+    analyzer.add_molecule("Cc1ccc(C)cc1", id="dup")   # A member realized twice.
+    analyzer.analyze()
+    raw = list(analyzer.raw.GetSeries())
+    assert raw
+    assert _oemmpa.series_row_dicts(raw) == _reference_rows(raw)
+    assert series_rows(raw) == _reference_rows(raw)
+    assert _oemmpa.series_row_dicts([]) == []
+
+
+def test_series_preview_converts_only_the_series_it_shows(monkeypatch):
+    from oemmpa import _oemmpa
+
+    analyzer = Analyzer()
+    for i in range(12):
+        for group in ("C", "O", "N"):
+            analyzer.add_molecule(f"{group}c1ccc({'C' * (i + 1)})cc1", id=f"m{i}-{group}")
+    analyzer.analyze()
+    query = analyzer.series()
+    assert len(query) >= 12
+    converted = []
+    original = _oemmpa.series_row_dicts
+
+    def counting(series):
+        converted.append(len(series))
+        return original(series)
+
+    monkeypatch.setattr(_oemmpa, "series_row_dicts", counting)
+    html = query._repr_html_()
+    assert "SeriesQuery" in html
+    # The preview shows a bounded number of rows, so it must not convert every series.
+    assert sum(converted) < len(query)
+    assert all(count == 1 for count in converted)
