@@ -203,8 +203,9 @@ R-groups are each common in a different part of it, so too few series may carry
 all four to show three different orders; the query set then drops its least
 common member, down to three R-groups and no further, and three R-groups that
 still cannot be ordered are an error rather than a shorter run. The set used is
-recorded as `query_rgroups` (with `query_size`) beside the `commonest_rgroups`
-it was taken from, and each ranking result repeats it as `query`. Similarity
+recorded as `query_rgroups` (with `query_rgroup_count`) beside the
+`commonest_rgroups` it was taken from, and each ranking result repeats it as
+`query`. Similarity
 queries are the three largest series with `top=20`. Every query runs once cold
 (discarded) and `--repeats` times warm; the median is compared with the
 one-second target.
@@ -216,8 +217,9 @@ python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/re
 An existing `--store` path is refused unless `--force` is given, and `--store`
 must differ from `--out`. The JSON records the corpus provenance sidecar, the
 linked DuckDB library version, the host, the store build (molecules, series,
-member rows, build seconds and the seconds spent rewriting
-`series.num_members`), the query definitions and timings, and
+member rows, build seconds -- parse, load the property, analyse and persist --
+and the seconds spent rewriting `series.num_members`), the query definitions and
+timings, and
 `all_under_target`. Results live under the git-ignored `benchmarks/results/`.
 
 ## CLI Workflows

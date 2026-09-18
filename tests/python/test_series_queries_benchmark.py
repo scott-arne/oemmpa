@@ -85,9 +85,10 @@ def test_build_store_and_query_selection(tiny_smiles, tmp_path):
     assert len(orders) == 3
     assert all(len(order["rgroups"]) == 4 and order["count"] >= 1 for order in orders)
     assert len({tuple(order["rgroups"]) for order in orders}) == 3
-    with pytest.raises(RuntimeError, match="three"):
+    with pytest.raises(RuntimeError, match="30 distinct orders are required"):
         series_queries.frequent_orders(store, commonest, "synthetic", count=30)
-    selected, selected_orders = series_queries.select_query_rgroups(store, "synthetic")
+    asked, selected, selected_orders = series_queries.select_query_rgroups(store, "synthetic")
+    assert asked == commonest
     assert selected == commonest   # Four R-groups order here, so nothing is dropped.
     assert [order["rgroups"] for order in selected_orders] == [order["rgroups"] for order in orders]
     largest = series_queries.largest_series(store, count=3)
@@ -99,9 +100,10 @@ def test_the_query_set_drops_to_three_rgroups_when_four_cannot_be_ordered(three_
     store = series_queries.open_store(tmp_path / "three.duckdb")
     commonest = series_queries.commonest_rgroups(store, count=4)
     assert len(commonest) == 4
-    with pytest.raises(RuntimeError, match="three"):
+    with pytest.raises(RuntimeError, match="3 distinct orders are required"):
         series_queries.frequent_orders(store, commonest, "synthetic", count=3)
-    selected, orders = series_queries.select_query_rgroups(store, "synthetic")
+    asked, selected, orders = series_queries.select_query_rgroups(store, "synthetic")
+    assert asked == commonest
     assert selected == commonest[:3]   # The least common member is the one dropped.
     assert len(orders) == 3
     assert all(order["rgroups"] and len(order["rgroups"]) == 3 for order in orders)
@@ -113,7 +115,7 @@ def test_the_query_set_drops_to_three_rgroups_when_four_cannot_be_ordered(three_
     meta = bundle["meta"]
     assert meta["commonest_rgroups"] == commonest   # The set asked for is recorded beside the one used.
     assert meta["query_rgroups"] == commonest[:3]
-    assert meta["query_size"] == 3
+    assert meta["query_rgroup_count"] == 3
     ranks = [query for query in bundle["queries"] if query["kind"] == "rank"]
     assert len(ranks) == 3 and all(len(rank["query"]) == 3 for rank in ranks)
 
@@ -122,7 +124,7 @@ def test_the_selection_refuses_when_even_three_rgroups_cannot_be_ordered(two_cor
     series_queries.build_store(two_core_smiles, tmp_path / "two.duckdb", threads=1)
     store = series_queries.open_store(tmp_path / "two.duckdb")
     commonest = series_queries.commonest_rgroups(store, count=4)
-    with pytest.raises(RuntimeError, match="three") as raised:
+    with pytest.raises(RuntimeError, match="down to 3 members shows 3 distinct orders") as raised:
         series_queries.select_query_rgroups(store, "synthetic")
     message = str(raised.value)
     # Every set that was tried is named with the orders it produced, so the reader
@@ -143,8 +145,9 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert meta["property"] == "synthetic"
     assert meta["duckdb_library_version"] and meta["duckdb_python_version"]
     assert meta["hostname"] and meta["machine"] and meta["cpu_count"] >= 1
+    assert "processor" in meta   # Reported even where the platform leaves it blank.
     assert "corpus_provenance" in meta   # Unavailable for an ad-hoc SMILES file, but always reported.
-    assert meta["query_rgroups"] == meta["commonest_rgroups"] and meta["query_size"] == 4
+    assert meta["query_rgroups"] == meta["commonest_rgroups"] and meta["query_rgroup_count"] == 4
     assert bundle["target_seconds"] == 1.0
     assert {query["kind"] for query in bundle["queries"]} == {"rank", "similar"}
     assert sum(1 for query in bundle["queries"] if query["kind"] == "rank") == 3
@@ -172,7 +175,8 @@ def test_the_default_store_is_built_beside_a_results_directory_that_does_not_exi
         size=72, repeats=1, threads=1, smiles_path=tiny_smiles, out_path=out)
     assert out.exists()
     default_store = out.parent / "series_queries_n72.duckdb"
-    assert Path(bundle["meta"]["store"]) == default_store
+    assert Path(bundle["meta"]["store"]) == default_store.resolve()
+    assert Path(bundle["meta"]["store"]).is_absolute()   # Recorded like the corpus path.
     assert default_store.exists()
 
 
@@ -198,8 +202,12 @@ def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):
         return {"queries": []}
 
     monkeypatch.setattr(series_queries, "run_series_query_benchmark", fake_run)
-    series_queries.main(["--size", "300", "--repeats", "2", "--threads", "4", "--force",
-                         "--out", str(tmp_path / "o.json")])
+    status = series_queries.main(["--size", "300", "--repeats", "2", "--threads", "4", "--force",
+                                  "--store", str(tmp_path / "s.duckdb"), "--parquet", str(tmp_path / "c.parquet"),
+                                  "--out", str(tmp_path / "o.json")])
+    assert status == 0
     assert calls["size"] == 300 and calls["repeats"] == 2 and calls["threads"] == 4
     assert calls["force"] is True
+    assert calls["store_path"] == str(tmp_path / "s.duckdb")
+    assert calls["parquet"] == str(tmp_path / "c.parquet")
     assert calls["out_path"] == tmp_path / "o.json"

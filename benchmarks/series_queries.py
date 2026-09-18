@@ -95,20 +95,27 @@ def build_store(smiles_path, store_path, *, threads=1, force=False):
     :param threads: Analyzer worker threads (the persist itself is serial).
     :param force: Replace an existing store instead of refusing it.
     :returns: Mapping with the molecule, series and member-row counts, the build
-        seconds and the seconds the persist spent rewriting ``series.num_members``.
+        seconds (parse, load the property, analyse and persist) and the seconds
+        the persist spent rewriting ``series.num_members``.
     :raises FileExistsError: When ``store_path`` exists and ``force`` is false; nothing is touched.
     """
     store_path = Path(store_path)
-    if store_path.exists():
-        if not force:
-            raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
-        store_path.unlink()
+    if store_path.exists() and not force:
+        raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
+    if force:
+        store_path.unlink(missing_ok=True)
+        # A run killed during the persist leaves a write-ahead log beside the store,
+        # and DuckDB replays whatever log it finds into the database it opens, so the
+        # log has to go with the store it belongs to.
+        store_path.with_name(store_path.name + ".wal").unlink(missing_ok=True)
+    # Parsing and loading the property are part of building a store, so the clock
+    # starts before them rather than at the analysis that follows.
+    start = perf_counter()
     analyzer = oemmpa.Analyzer()
     analyzer.add_molecules_from_file(str(smiles_path))
     values = synthetic_values(smiles_path)
     for identifier, value in values.items():
         analyzer.add_property(identifier, PROPERTY, value)
-    start = perf_counter()
     analyzer.analyze(threads)
     store = oemmpa.DuckDBStore(store_path)
     store.save_analyzer(analyzer, max_variable_heavies=10)
@@ -202,8 +209,8 @@ def frequent_orders(store, rgroups, property_name, *, count=3):
     key = tuple(rgroups)
     if len(tallies[key]) < count:
         raise RuntimeError(
-            f"only {len(tallies[key])} distinct orders of {rgroups} exist in the store; {count} are required "
-            f"(spec 11.4 asks for the {count} most frequent orders, spelled out as three)")
+            f"only {len(tallies[key])} distinct orders of {rgroups} exist in the store; "
+            f"{count} distinct orders are required (spec 11.4 asks for the {count} most frequent orders)")
     return _most_frequent(tallies[key], examples[key], count)
 
 
@@ -222,22 +229,25 @@ def select_query_rgroups(store, property_name, *, commonest=4, minimum=3, count=
     :param commonest: How many R-groups the query set starts with.
     :param minimum: Fewest R-groups the set may be shortened to.
     :param count: How many distinct orders the set has to show.
-    :returns: ``(rgroups, orders)`` for the longest set that shows ``count`` orders.
+    :returns: ``(commonest, rgroups, orders)``: the R-groups the set was taken
+        from, the longest prefix of them that shows ``count`` orders, and those
+        orders. The first element is returned so a caller can report what was
+        asked for beside what was used without tallying the store again.
     :raises RuntimeError: When no set down to ``minimum`` R-groups shows ``count`` orders.
     """
-    rgroups = commonest_rgroups(store, count=commonest)
+    commonest_first = commonest_rgroups(store, count=commonest)
     # The list is commonest first, so each prefix is the previous set with its
     # least common member dropped.
-    candidates = [rgroups[:size] for size in range(len(rgroups), minimum - 1, -1)]
+    candidates = [commonest_first[:size] for size in range(len(commonest_first), minimum - 1, -1)]
     tallies, examples = _tally_orders(store, candidates, property_name)
     for candidate in candidates:
         key = tuple(candidate)
         if len(tallies[key]) >= count:
-            return candidate, _most_frequent(tallies[key], examples[key], count)
+            return commonest_first, candidate, _most_frequent(tallies[key], examples[key], count)
     tried = "; ".join(f"{candidate} gave {len(tallies[tuple(candidate)])}" for candidate in candidates)
     raise RuntimeError(
-        f"no R-group set from {len(rgroups)} down to {minimum} members shows {count} distinct orders in "
-        f"the store (spec 11.4 requires three, and a shorter run is never the answer); sets tried: {tried}")
+        f"no R-group set from {len(commonest_first)} down to {minimum} members shows {count} distinct "
+        f"orders in the store, and a shorter run is never the answer (spec 11.4); sets tried: {tried}")
 
 
 def largest_series(store, *, count=3):
@@ -310,6 +320,9 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     out_path = Path(out_path)
     smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
     store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
+    # Resolved so the bundle names the store the way it names the corpus, whatever
+    # directory the run was started from.
+    store_path = store_path.resolve()
     if _same_path(store_path, out_path):
         raise ValueError(f"--store and --out must differ: {store_path}")
     # The default store sits beside the output, so the results directory has to
@@ -320,8 +333,7 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     _log(f"building the store for {smiles} at {store_path}")
     build = build_store(smiles, store_path, threads=threads, force=force)
     store = open_store(store_path)
-    commonest = commonest_rgroups(store, count=4)
-    query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
+    commonest, query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
     queries = []
     for order in orders:
         def run_rank(order=order):
@@ -349,12 +361,13 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
         "meta": {
             "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
             "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
-            "query_rgroups": query_rgroups, "query_size": len(query_rgroups),
+            "query_rgroups": query_rgroups, "query_rgroup_count": len(query_rgroups),
             "corpus_provenance": _corpus_provenance(smiles),
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "duckdb_python_version": _duckdb_python_version(),
             "git_revision": _git_revision(), "python": sys.version.split()[0],
-            "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
+            "hostname": platform.node(), "machine": platform.machine(),
+            "processor": platform.processor() or None, "cpu_count": os.cpu_count() or 1,
         },
         "store": build,
         "target_seconds": TARGET_SECONDS,
