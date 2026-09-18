@@ -39,7 +39,9 @@ def _random_store(path, seed, cores, *, replicates):
         for rgroup in chosen:
             fragment = SUBSTITUENTS[rgroup]
             smiles = f"c1ccccc1{core}" if fragment == "" else f"{fragment}c1ccc({core})cc1"
-            copies = 2 if replicates and rng.random() < 0.3 else 1
+            # Odd replicate counts matter: with one or two measurements the median
+            # is the mean, so only a three-measurement member can tell them apart.
+            copies = rng.choice((1, 1, 2, 3)) if replicates else 1
             for _ in range(copies):
                 analyzer.add_molecule(smiles, id=f"m{index}")
                 if rng.random() > 0.2:
@@ -73,6 +75,24 @@ def _tie_store(path):
     analyzer = Analyzer()
     _add_core(analyzer, "C", "y", 3.0, 2.0, 1.0, 3.0)    # Matches; Br only equals the best query value.
     _add_core(analyzer, "CC", "x", 3.0, 2.0, 2.0, 5.0)   # F and Cl tie, so the order is not strict.
+    analyzer.analyze()
+    store = DuckDBStore(path)
+    store.save_analyzer(analyzer)
+    return store
+
+
+def _replicate_store(path):
+    """Return a store whose F member is measured three times, skewed away from its median."""
+    analyzer = Analyzer()
+    _add_core(analyzer, "CC", "z", 3.0, 2.0, 1.0, 4.0)   # Single measurements: the one matching series.
+    analyzer.add_molecule("c1ccccc1C", id="y-H")
+    analyzer.add_molecule("Clc1ccc(C)cc1", id="y-Cl")
+    analyzer.add_molecule("Brc1ccc(C)cc1", id="y-Br")
+    for suffix, value in (("H", 3.0), ("Cl", 1.5), ("Br", 0.5)):
+        analyzer.add_property(f"y-{suffix}", "act", value)
+    for index, value in enumerate((1.0, 1.2, 4.9)):   # Median 1.2, mean 7.1 / 3 = 2.3667.
+        analyzer.add_molecule("Fc1ccc(C)cc1", id=f"y-F{index}")
+        analyzer.add_property(f"y-F{index}", "act", value)
     analyzer.analyze()
     store = DuckDBStore(path)
     store.save_analyzer(analyzer)
@@ -164,6 +184,43 @@ def test_ties_break_matches_and_never_count_as_wins(tmp_path):
     assert scored == [("[*:1]Br", 1, 0)]
     assert expected["matched_series"] == actual.matched_series
     assert [(row["rgroup"], row["support"], row["wins"]) for row in expected["candidates"]] == scored
+
+
+SKEWED_CONSTANT = "[*:1]c1ccc(cc1)C"
+
+
+def test_medians_not_means_drive_ranking_and_similarity(tmp_path):
+    """Spec 7.2 aggregates replicate measurements with the median, and the two queries show it."""
+    store = _replicate_store(tmp_path / "replicates.duckdb")
+    oracle = SeriesOracle.from_store(store, "act")
+    query = [("[*:1][H]", 3.0), ("[*:1]F", 2.0), ("[*:1]Cl", 1.0)]
+    # The skewed series reads H 3.0, F 1.2, Cl 1.5 under medians, which is not
+    # strictly decreasing along the query order, so it does not match; under
+    # means it would read H 3.0, F 2.3667, Cl 1.5, match, and put its losing
+    # Br 0.5 beside the winning Br 4.0 of the single-measurement series.
+    actual = rank_next_substituents(store, "act", "higher", rgroups=query, support_ladder=(1,), min_query_length=2)
+    expected = oracle.rank(query, "higher", support_ladder=(1,), min_query_length=2)
+    scored = [(row["rgroup"], row["support"], row["wins"]) for row in actual.to_dicts()]
+    assert actual.matched_series == 1
+    assert scored == [("[*:1]Br", 1, 1)]
+    assert expected["matched_series"] == actual.matched_series
+    assert [(row["rgroup"], row["support"], row["wins"]) for row in expected["candidates"]] == scored
+    # Similarity over the same three R-groups, in SMILES order Cl, F, H: the
+    # query is (1.0, 2.0, 3.0) and the skewed series is (1.5, 1.2, 3.0) under
+    # medians, so its ranks are (2, 1, 3) and Spearman is 1 / 2. Centring the two
+    # against their means 2.0 and 1.9 leaves (-0.6, 0.7, -0.1), so the centred
+    # RMSD is sqrt(0.86 / 3) = 0.53541. Under means the series would read
+    # (1.5, 2.3667, 3.0): ranks (1, 2, 3), Spearman 1.0 and centred RMSD 0.21140.
+    matches = find_similar_series(store, "act", rgroups=query, min_overlap=3).to_dicts()
+    mirror = oracle.similar(query, min_overlap=3)
+    assert [row["series_id"] for row in matches] == [row["series_id"] for row in mirror]
+    skewed = next(row for row in matches if row["constant"] == SKEWED_CONSTANT)
+    assert skewed["overlap"] == 3
+    assert skewed["spearman"] == pytest.approx(0.5, abs=1e-9)
+    assert skewed["centred_rmsd"] == pytest.approx((0.86 / 3.0) ** 0.5, abs=1e-9)
+    theirs = next(row for row in mirror if row["constant"] == SKEWED_CONSTANT)
+    assert theirs["spearman"] == pytest.approx(skewed["spearman"], abs=1e-9)
+    assert theirs["centred_rmsd"] == pytest.approx(skewed["centred_rmsd"], abs=1e-9)
 
 
 @pytest.mark.parametrize("seed", [4, 5, 6])
