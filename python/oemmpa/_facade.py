@@ -539,9 +539,11 @@ class Analyzer:
 
         **Thread safety:** The underlying C++ analysis releases the Python GIL when
         ``threads`` is greater than 1, enabling concurrent execution across Python
-        threads. However, a single ``Analyzer`` instance is **not safe** to use from
-        multiple threads at once. For concurrent analysis jobs, create one ``Analyzer``
-        instance per thread.
+        threads. This method mutates the instance, as ``add_molecule`` and the other
+        loaders do, so it must **not** run concurrently with any other call on the
+        same ``Analyzer``. Once the analysis has finished, concurrent readers of that
+        instance are safe and serialize on its result cache. For concurrent analysis
+        jobs, create one ``Analyzer`` instance per thread.
         """
         if threads is None:
             self._raw_analyzer.Analyze()

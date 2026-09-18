@@ -9,6 +9,7 @@ import weakref
 
 import pytest
 from oemmpa import _oemmpa
+from oemmpa import oemmpa as _swig_proxy
 
 
 def _phenyl_raw_analyzer():
@@ -40,6 +41,10 @@ def test_binding_exposes_the_series_types_and_the_selection_defaults():
         assert hasattr(_oemmpa, name), name
     # Internal ordering helper must not leak into the binding.
     assert not hasattr(_oemmpa, "order_atoms_for_label_stable_rendering")
+    # Nor may the index's cache lock: a proxy for it would hand out a raw
+    # std::mutex, so both the proxy class and its raw constructor stay absent.
+    assert not hasattr(_swig_proxy, "CacheMutex")
+    assert not hasattr(_oemmpa, "new_CacheMutex")
     selection = _oemmpa.SeriesSelection()
     assert selection.min_series_length == 2
     assert selection.max_variable_heavy_atoms == 0

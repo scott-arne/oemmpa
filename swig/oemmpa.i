@@ -576,6 +576,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %}
 }
 %include "../include/oemmpa/SeriesQuery.h"
+// Internal holder for the index's cache lock; never part of the binding surface (it would hand out a raw std::mutex).
+%ignore OEMMPA::CacheMutex;
 %include "../include/oemmpa/MemoryIndex.h"
 %include "../include/oemmpa/PairScoring.h"
 %include "../include/oemmpa/Statistics.h"

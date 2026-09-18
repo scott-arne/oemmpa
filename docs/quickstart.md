@@ -596,9 +596,12 @@ with ThreadPoolExecutor(max_workers=4) as executor:
         all_pairs.extend(pairs)
 ```
 
-**Important:** Do not share a single `Analyzer` or `DuckDBStore` instance across
-threads. The GIL is released during analysis and storage operations, so concurrent
-access to the same instance will cause data races. Create one instance per thread.
+**Important:** The GIL is released during analysis and storage operations. Mutating an
+`Analyzer` (`add_molecule`, `add_molecules`, `analyze`) concurrently with any other call
+on the same instance is a data race, as is any concurrent use of one `DuckDBStore`; only
+reads of an already-analysed `Analyzer` (`pairs()`, `transforms()`, `series()`) are safe
+together, and those serialize on the instance's result cache. Create one instance per
+thread, which is also what gives parallel throughput.
 
 The `threads` parameter to `analyze()` parallelizes within a single analyzer. When
 `threads` is omitted (`None`, the default), the worker count is taken from the

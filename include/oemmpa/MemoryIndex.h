@@ -23,7 +23,8 @@ namespace OEMMPA {
 /// MemoryIndex's implicit move operations, which FragmentationMethod relies on
 /// when it swaps in a freshly built index. Copying or moving an index yields an
 /// instance with its own, unlocked mutex; the caches it protects move with the
-/// data, and no reader can hold the source's lock across a move under the
+/// data, and the assignment discards the destination's lock along with the
+/// caches it guarded, so no reader may be inside either index under the
 /// documented contract (no mutation concurrent with reads).
 class CacheMutex {
 public:
@@ -102,7 +103,13 @@ private:
     // the fill and every copy out of a cache happen under cache_mutex_. The
     // mutators (Clear, AddMolecule, InsertFragmentation) invalidate the caches
     // without locking: mutation concurrent with a read stays outside the
-    // contract, and locking the insertion path would tax every analysis.
+    // contract, and locking the insertion path would tax every analysis. One
+    // mutex couples both caches, so a cold GetPairs blocks GetSeries on the same
+    // instance; that is the accepted trade, and a caller wanting parallel
+    // throughput uses one instance per thread. GetSeries may hand out a
+    // reference only because the series cache is not options-keyed and so is
+    // never refilled by another reader -- making it options-keyed means
+    // switching it to copy-out, as GetPairs does.
     CacheMutex cache_mutex_;
     mutable bool pairs_cache_valid_ = false;
     mutable QueryOptions pairs_cache_options_;

@@ -1481,12 +1481,24 @@ TEST(AnalyzerConcurrency, ColdConcurrentReadersAgreeWithASequentialTwin) {
     // The reference comes from a separate, identical analyzer so the instance
     // under test starts with COLD caches: the readers race on the first fill.
     const Analyzer reference = MakeDisubstitutedAnalyzer();
-    QueryOptions options;
-    options.SetSymmetric(true);
-    const std::string pairs_digest = PairDigest(reference.GetPairs(options));
+    QueryOptions symmetric;
+    symmetric.SetSymmetric(true);
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    // Two option sets, because the pair cache holds a single slot keyed on the
+    // options: alternating them makes every other read a refill, which is what
+    // the copy-out under the lock has to survive.
+    const QueryOptions variants[] = {symmetric, asymmetric};
+    std::string pairs_digests[2];
+    std::size_t transform_counts[2] = {0, 0};
+    for (int variant = 0; variant < 2; ++variant) {
+        pairs_digests[variant] = PairDigest(reference.GetPairs(variants[variant]));
+        transform_counts[variant] = reference.GetTransforms(variants[variant]).size();
+    }
     const std::vector<Series> series = reference.GetSeries();
-    const std::size_t transforms = reference.GetTransforms(options).size();
     ASSERT_FALSE(series.empty());
+    ASSERT_NE(pairs_digests[0], pairs_digests[1])
+        << "the two option sets emit the same pairs, so no refill is exercised";
 
     const Analyzer shared = MakeDisubstitutedAnalyzer();
     constexpr unsigned int kReaders = 4;
@@ -1494,12 +1506,16 @@ TEST(AnalyzerConcurrency, ColdConcurrentReadersAgreeWithASequentialTwin) {
     std::atomic<unsigned int> mismatches{0};
     std::vector<std::thread> readers;
     for (unsigned int reader = 0; reader < kReaders; ++reader) {
-        readers.emplace_back([&]() {
+        readers.emplace_back([&, reader]() {
             barrier.Arrive();
             for (int round = 0; round < 10; ++round) {
-                if (PairDigest(shared.GetPairs(options)) != pairs_digest) ++mismatches;
+                // Neighbouring readers sit on opposite variants in the same
+                // round, so their refills overlap instead of lining up.
+                const int variant = (round + static_cast<int>(reader)) % 2;
+                const QueryOptions& options = variants[variant];
+                if (PairDigest(shared.GetPairs(options)) != pairs_digests[variant]) ++mismatches;
                 if (shared.GetSeries() != series) ++mismatches;
-                if (shared.GetTransforms(options).size() != transforms) ++mismatches;
+                if (shared.GetTransforms(options).size() != transform_counts[variant]) ++mismatches;
             }
         });
     }
