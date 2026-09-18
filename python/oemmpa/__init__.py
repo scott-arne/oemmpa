@@ -854,7 +854,13 @@ from ._query import (
     analyze,
     analyze_dataframe,
 )
-from ._series import SeriesSelectionOptions
+from ._series import (
+    SeriesSelectionOptions,
+    SeriesSimilarityCollection,
+    SubstituentRankingCollection,
+    find_similar_series,
+    rank_next_substituents,
+)
 from ._storage import DuckDBStore, duckdb_available
 from ._transform import (
     apply_pair_transform,
@@ -904,6 +910,8 @@ __all__ = [
     "Selection",
     "SeriesQuery",
     "SeriesSelectionOptions",
+    "SeriesSimilarityCollection",
+    "SubstituentRankingCollection",
     "TransformCollection",
     "TransformEffectModel",
     "TransformQuery",
@@ -926,6 +934,7 @@ __all__ = [
     "compute_transform_statistics",
     "duckdb_available",
     "find_query_environments",
+    "find_similar_series",
     "find_transform_environments",
     "generate_products",
     "generate_products_from_rule_environments",
@@ -935,6 +944,7 @@ __all__ = [
     "predict_query_property_delta",
     "predict_rule_environment_delta",
     "predict_transform_delta",
+    "rank_next_substituents",
     "read_rgroup_file",
     "rgroup_smiles_to_smarts",
     "rgroups_to_recursive_smarts",

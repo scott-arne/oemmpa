@@ -299,6 +299,24 @@ class DuckDBStore:
         """Return the number of stored series."""
         return int(self._raw_store.GetSeriesCount())
 
+    def rank_next_substituents(self, property_name, direction, **kwargs):
+        """Rank candidate next substituents; see :func:`oemmpa.rank_next_substituents`.
+
+        **Thread safety:** releases the GIL like :meth:`series`; use one store per thread.
+        """
+        from ._series import rank_next_substituents
+
+        return rank_next_substituents(self, property_name, direction, **kwargs)
+
+    def find_similar_series(self, property_name, **kwargs):
+        """Find similar stored series; see :func:`oemmpa.find_similar_series`.
+
+        **Thread safety:** releases the GIL like :meth:`series`; use one store per thread.
+        """
+        from ._series import find_similar_series
+
+        return find_similar_series(self, property_name, **kwargs)
+
     def table_names(self):
         """Return base table names from the backing store."""
         return list(self._raw_store.GetTableNames())

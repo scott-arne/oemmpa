@@ -18,6 +18,10 @@ RULE_ENVIRONMENT_SMILES_COLUMNS = (
     "to_smiles",
 )
 SERIES_SMILES_COLUMNS = ("constant", "rgroup")
+RANKING_SMILES_COLUMNS = ("rgroup",)
+RANKING_EVIDENCE_SMILES_COLUMNS = ("constant", "rgroup")
+SIMILARITY_SMILES_COLUMNS = ("constant",)
+SIMILARITY_EVIDENCE_SMILES_COLUMNS = ("rgroup",)
 TRANSFORM_SMIRKS_COLUMNS = ("transform",)
 
 # Aggregate statistic fields shared by transform and rule-environment
