@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import itertools
 import threading
 
@@ -261,3 +262,32 @@ def test_raw_validation_failures_carry_the_documented_prefix():
         store.FindSimilarSeries(similarity)
     assert str(missing.value).startswith("invalid series query: ")
     assert "absent" in str(missing.value)
+
+
+def test_result_vectors_survive_the_result_object():
+    # The store returns its result records by value, so reading a vector straight off
+    # the temporary is the natural spelling. A vector that stayed a view into the freed
+    # record would read as empty, which no caller can tell apart from "no candidates".
+    store = _interleaving_raw_store()
+    request = _oemmpa.SubstituentRankingRequest()
+    request.property_name = "act"
+    request.direction = _oemmpa.PropertyDirection_HIGHER_IS_BETTER
+    request.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    request.query_values = [3.0, 2.0, 1.0]
+    request.support_ladder = [5]
+    request.include_evidence = True
+    candidates = list(store.RankNextSubstituents(request).candidates)
+    evidence = list(store.RankNextSubstituents(request).evidence)
+    gc.collect()
+    assert len(candidates) == 1
+    assert candidates[0].variable_smiles == "[*:1]Br"
+    assert len(evidence) == 20
+
+    similarity = _oemmpa.SeriesSimilarityRequest()
+    similarity.property_name = "act"
+    similarity.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    similarity.query_values = [3.0, 2.0, 1.0]
+    matches = list(store.FindSimilarSeries(similarity).matches)
+    gc.collect()
+    assert len(matches) == 5
+    assert all(match.has_spearman for match in matches)

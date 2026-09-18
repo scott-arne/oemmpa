@@ -515,15 +515,27 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // The store validates its own support ladders, so Python never calls this one.
 %ignore OEMMPA::validate_support_ladder;
 // std::string members are natural by default, std::vector members are not: SWIG
-// wraps them as a pointer to the live member, which only accepts another wrapped
-// vector. A request is filled from Python, so its vectors take the natural form
-// and accept any sequence. The result records keep the default form, which reads
-// their vectors without copying them on every attribute access.
+// wraps them as a view onto the live member, which is wrong in both directions.
+// Writing one would only accept another wrapped vector, and reading one hands
+// Python a view whose lifetime is the record's: the store returns its results by
+// value, so `store.RankNextSubstituents(request).candidates` would outlive the
+// record it points into and read freed memory as an empty sequence, which no
+// caller can tell apart from "no candidates". Every vector member of these four
+// records is therefore natural: a write accepts any Python sequence, and a read
+// returns an independent copy that stays valid after the record is gone. The cost
+// is one copy per access, which the Python helpers pay once when they materialise
+// a result.
 %naturalvar OEMMPA::SubstituentRankingRequest::query_variable_smiles;
 %naturalvar OEMMPA::SubstituentRankingRequest::query_values;
 %naturalvar OEMMPA::SubstituentRankingRequest::support_ladder;
+%naturalvar OEMMPA::SubstituentRankingResult::query_used;
+%naturalvar OEMMPA::SubstituentRankingResult::dropped;
+%naturalvar OEMMPA::SubstituentRankingResult::candidates;
+%naturalvar OEMMPA::SubstituentRankingResult::evidence;
 %naturalvar OEMMPA::SeriesSimilarityRequest::query_variable_smiles;
 %naturalvar OEMMPA::SeriesSimilarityRequest::query_values;
+%naturalvar OEMMPA::SeriesSimilarityResult::matches;
+%naturalvar OEMMPA::SeriesSimilarityResult::evidence;
 %include "../include/oemmpa/SeriesQuery.h"
 %include "../include/oemmpa/MemoryIndex.h"
 %include "../include/oemmpa/PairScoring.h"
