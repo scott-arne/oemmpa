@@ -8,6 +8,7 @@
 #include "oemmpa/Series.h"
 #include "oemmpa/Transform.h"
 
+#include <mutex>
 #include <set>
 #include <string>
 #include <tuple>
@@ -15,6 +16,26 @@
 #include <vector>
 
 namespace OEMMPA {
+
+/// \brief A std::mutex that copies and moves as a no-op.
+///
+/// std::mutex is neither copyable nor movable, so a bare member would delete
+/// MemoryIndex's implicit move operations, which FragmentationMethod relies on
+/// when it swaps in a freshly built index. Copying or moving an index yields an
+/// instance with its own, unlocked mutex; the caches it protects move with the
+/// data, and no reader can hold the source's lock across a move under the
+/// documented contract (no mutation concurrent with reads).
+class CacheMutex {
+public:
+    CacheMutex() = default;
+    CacheMutex(const CacheMutex&) noexcept {}
+    CacheMutex(CacheMutex&&) noexcept {}
+    CacheMutex& operator=(const CacheMutex&) noexcept { return *this; }
+    CacheMutex& operator=(CacheMutex&&) noexcept { return *this; }
+    std::mutex& Get() const { return mutex_; }
+private:
+    mutable std::mutex mutex_;
+};
 
 class MemoryIndex {
 public:
@@ -76,17 +97,16 @@ private:
     // ComputeSeries; 1 == serial.
     unsigned int pair_thread_count_ = 1;
 
-    // Single-slot memoization of the most-recent GetPairs(options) result. mutable
-    // because it is written from the const query methods; invalidated by every
-    // mutator (Clear, AddMolecule, InsertFragmentation). Safe without locking under
-    // the per-thread-instance contract: an index is never queried concurrently and
-    // is only queried after analyze() has finished building it.
+    // Lazy single-slot caches, written from the const query methods. Readers of
+    // one index may run concurrently (the Python wrappers release the GIL), so
+    // the fill and every copy out of a cache happen under cache_mutex_. The
+    // mutators (Clear, AddMolecule, InsertFragmentation) invalidate the caches
+    // without locking: mutation concurrent with a read stays outside the
+    // contract, and locking the insertion path would tax every analysis.
+    CacheMutex cache_mutex_;
     mutable bool pairs_cache_valid_ = false;
     mutable QueryOptions pairs_cache_options_;
     mutable std::vector<MatchedPair> pairs_cache_;
-
-    // Series depend on the index contents alone (no options), so one slot is
-    // the whole cache; invalidated by the same mutators as the pair cache.
     mutable bool series_cache_valid_ = false;
     mutable std::vector<Series> series_cache_;
 };

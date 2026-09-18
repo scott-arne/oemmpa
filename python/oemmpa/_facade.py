@@ -555,9 +555,11 @@ class Analyzer:
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`PairCollection` of wrapped pair results.
 
-        **Thread safety:** This method releases the Python GIL when called on an
-        ``Analyzer`` configured with multiple threads. Do not call from multiple
-        threads on the same ``Analyzer`` instance; use one instance per thread.
+        **Thread safety:** This method releases the Python GIL. Concurrent calls
+        on one ``Analyzer`` instance are safe and serialize on the instance's
+        result cache; use one instance per thread when you need parallel
+        throughput. Do not mutate an instance (adding molecules, re-analysing)
+        while another thread reads it.
         """
         if options is None:
             raw_pairs = self._raw_analyzer.GetPairs()
@@ -576,9 +578,11 @@ class Analyzer:
         :param options: Optional raw ``QueryOptions`` instance.
         :returns: :class:`TransformCollection` of wrapped transform results.
 
-        **Thread safety:** This method releases the Python GIL when called on an
-        ``Analyzer`` configured with multiple threads. Do not call from multiple
-        threads on the same ``Analyzer`` instance; use one instance per thread.
+        **Thread safety:** This method releases the Python GIL. Concurrent calls
+        on one ``Analyzer`` instance are safe and serialize on the instance's
+        result cache; use one instance per thread when you need parallel
+        throughput. Do not mutate an instance (adding molecules, re-analysing)
+        while another thread reads it.
         """
         if options is None:
             raw_transforms = self._raw_analyzer.GetTransforms()
@@ -599,12 +603,11 @@ class Analyzer:
         :raises RuntimeError: If :meth:`analyze` has not run since the last
             mutation.
 
-        **Thread safety:** This method releases the Python GIL and fills a lazily
-        computed cache on its first call after :meth:`analyze`. Do not call from
-        multiple threads on the same ``Analyzer`` instance, and do not call it
-        concurrently with :meth:`oemmpa.DuckDBStore.save_analyzer`, which
-        enumerates the same series through the same cache; use one instance per
-        thread.
+        **Thread safety:** This method releases the Python GIL. Concurrent calls
+        on one ``Analyzer`` instance are safe and serialize on the instance's
+        result cache; use one instance per thread when you need parallel
+        throughput. Do not mutate an instance (adding molecules, re-analysing)
+        while another thread reads it.
         """
         from ._query import SeriesQuery
 

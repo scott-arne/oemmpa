@@ -15,8 +15,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <cstddef>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -1425,6 +1428,85 @@ TEST(AnalyzerBoundary, QueryOptionsAreTakenByValueAtTheAnalyzerBoundary) {
     const SaveToByValue save_to_pinned = &Analyzer::SaveTo;
     EXPECT_NE(save_to_pinned, nullptr);
 #endif
+}
+
+namespace {
+
+std::string PairDigest(const std::vector<MatchedPair>& pairs) {
+    std::string digest;
+    for (const MatchedPair& pair : pairs) {
+        digest += pair.GetConstantSmiles();
+        digest += '|';
+        digest += pair.GetTransformSmiles();
+        digest += '\n';
+    }
+    return digest;
+}
+
+Analyzer MakeDisubstitutedAnalyzer() {
+    Analyzer analyzer;
+    const char* groups[] = {"C", "O", "N", "F", "Cl", "CC", "OC", "Br"};
+    unsigned int index = 0;
+    for (const char* left : groups) {
+        for (const char* right : groups) {
+            analyzer.AddMolecule(std::string(left) + "c1ccc(" + right + ")cc1", "m" + std::to_string(index++));
+        }
+    }
+    analyzer.Analyze();
+    return analyzer;
+}
+
+// Releases every waiting thread at once, so the readers' first (cache-filling)
+// calls overlap rather than trickle in.
+class StartBarrier {
+public:
+    explicit StartBarrier(unsigned int count) : remaining_(count) {}
+    void Arrive() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (--remaining_ == 0) {
+            released_.notify_all();
+        } else {
+            released_.wait(lock, [this]() { return remaining_ == 0; });
+        }
+    }
+private:
+    std::mutex mutex_;
+    std::condition_variable released_;
+    unsigned int remaining_;
+};
+
+}  // namespace
+
+TEST(AnalyzerConcurrency, ColdConcurrentReadersAgreeWithASequentialTwin) {
+    // The reference comes from a separate, identical analyzer so the instance
+    // under test starts with COLD caches: the readers race on the first fill.
+    const Analyzer reference = MakeDisubstitutedAnalyzer();
+    QueryOptions options;
+    options.SetSymmetric(true);
+    const std::string pairs_digest = PairDigest(reference.GetPairs(options));
+    const std::vector<Series> series = reference.GetSeries();
+    const std::size_t transforms = reference.GetTransforms(options).size();
+    ASSERT_FALSE(series.empty());
+
+    const Analyzer shared = MakeDisubstitutedAnalyzer();
+    constexpr unsigned int kReaders = 4;
+    StartBarrier barrier(kReaders);
+    std::atomic<unsigned int> mismatches{0};
+    std::vector<std::thread> readers;
+    for (unsigned int reader = 0; reader < kReaders; ++reader) {
+        readers.emplace_back([&]() {
+            barrier.Arrive();
+            for (int round = 0; round < 10; ++round) {
+                if (PairDigest(shared.GetPairs(options)) != pairs_digest) ++mismatches;
+                if (shared.GetSeries() != series) ++mismatches;
+                if (shared.GetTransforms(options).size() != transforms) ++mismatches;
+            }
+        });
+    }
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    EXPECT_EQ(mismatches.load(), 0U);
 }
 
 }  // namespace test

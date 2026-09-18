@@ -343,3 +343,35 @@ def test_request_selection_views_keep_their_request_alive():
         live = request_type()
         live.selection.max_variable_heavy_atoms = 4
         assert live.selection.max_variable_heavy_atoms == 4, name
+
+
+def test_concurrent_cold_readers_of_one_analyzer_agree():
+    def build():
+        analyzer = _oemmpa.Analyzer()
+        groups = ["C", "O", "N", "F", "Cl", "CC", "OC", "Br"]
+        for index, (left, right) in enumerate(itertools.product(groups, groups)):
+            analyzer.AddMolecule(f"{left}c1ccc({right})cc1", f"m{index}")
+        analyzer.Analyze()
+        return analyzer
+
+    reference = build()
+    expected_series = [(s.GetConstantSmiles(), s.Size()) for s in reference.GetSeries()]
+    expected_pairs = len(reference.GetPairs())
+    shared = build()   # Cold caches: the threads race on the first fill.
+    barrier = threading.Barrier(4)
+    failures = []
+
+    def read():
+        barrier.wait()
+        for _ in range(10):
+            if [(s.GetConstantSmiles(), s.Size()) for s in shared.GetSeries()] != expected_series:
+                failures.append("series")
+            if len(shared.GetPairs()) != expected_pairs:
+                failures.append("pairs")
+
+    threads = [threading.Thread(target=read) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []

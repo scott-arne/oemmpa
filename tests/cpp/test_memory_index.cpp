@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 namespace OEMMPA {
@@ -778,6 +779,19 @@ TEST(MemoryIndexTest, RespelledMoleculeYieldsTheSameTransformsAgainstAPartner) {
     const std::vector<MatchedPair> respelled = PairsAgainstDimer(AIBN_RESPELLED_SMILES);
     EXPECT_EQ(respelled.size(), as_written.size());
     EXPECT_EQ(SortedTransformSmiles(respelled), SortedTransformSmiles(as_written));
+}
+
+TEST(MemoryIndexMoves, AnIndexStaysMovableAndAMovedIndexAnswersFromItsOwnCaches) {
+    // FragmentationMethod::Analyze assigns a freshly built index with std::move;
+    // the mutex must not delete that, and each instance must own its own lock.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    static_assert(std::is_move_constructible<MemoryIndex>::value, "MemoryIndex must stay move constructible");
+    static_assert(std::is_move_assignable<MemoryIndex>::value, "MemoryIndex must stay move assignable");
+    static_assert(std::is_copy_constructible<MemoryIndex>::value, "MemoryIndex keeps its implicit copy");
+    EXPECT_FALSE(analyzer.GetSeries().empty());
 }
 
 }  // namespace test

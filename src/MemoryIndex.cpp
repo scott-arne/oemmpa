@@ -15,6 +15,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <tuple>
@@ -1014,6 +1015,8 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
     return pairs;
 }
 
+// Call with cache_mutex_ held: this both reads and refills the pair cache, and
+// the returned reference is only stable while the caller still holds the lock.
 const std::vector<MatchedPair>& MemoryIndex::CachedPairs(const QueryOptions& options) const {
     if (!pairs_cache_valid_ || !query_options_equal(pairs_cache_options_, options)) {
         pairs_cache_ = ComputePairs(options);
@@ -1164,22 +1167,33 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
 }
 
 const std::vector<Series>& MemoryIndex::GetSeries() const {
+    std::lock_guard<std::mutex> lock(cache_mutex_.Get());
     if (!series_cache_valid_) {
         series_cache_ = ComputeSeries();
         series_cache_valid_ = true;
     }
+    // The slot is never replaced until the next mutation, so the reference
+    // stays valid after the lock is released.
     return series_cache_;
 }
 
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {
+    std::lock_guard<std::mutex> lock(cache_mutex_.Get());
+    // The return value is copy-initialized before the guard is destroyed, so the
+    // copy happens under the lock: another reader may refill the slot.
     return CachedPairs(options);
 }
 
 std::vector<Transform> MemoryIndex::GetTransforms(const QueryOptions& options) const {
-    // CachedPairs returns a reference into a cache that outlives this call, so
-    // one copy is unavoidable; build_transforms then moves out of it instead of
-    // copying three more times.
-    return build_transforms(std::vector<MatchedPair>(CachedPairs(options)));
+    // CachedPairs returns a reference into a cache another reader may refill, so
+    // one copy is unavoidable; take it under the lock and let build_transforms
+    // move out of it afterwards instead of copying three more times.
+    std::vector<MatchedPair> pairs;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_.Get());
+        pairs = CachedPairs(options);
+    }
+    return build_transforms(std::move(pairs));
 }
 
 }  // namespace OEMMPA
