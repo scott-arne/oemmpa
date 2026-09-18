@@ -1370,6 +1370,51 @@ TEST(SeriesSimilarity, CentredRmsdOrderTopAndEvidenceAfterTop) {
     std::filesystem::remove(fixture.path);
 }
 
+TEST(SeriesSimilarity, EvidenceIsOrderedBySeriesIdNotByMatchRank) {
+    // Spec 7.4 orders the evidence by series id then SMILES, independently of the
+    // rank the measure gave each series. On this fixture C (Spearman -1) outranks
+    // D (undefined) while carrying the HIGHER series id, so the two orders really
+    // do disagree and the evidence must follow the ids, not the ranking.
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const std::uint64_t a = fixture.series_ids.at("[*:1]c1ccc(cc1)C");
+    const std::uint64_t b = fixture.series_ids.at("[*:1]c1ccc(cc1)CC");
+    const std::uint64_t c = fixture.series_ids.at("[*:1]c1ccc(cc1)OC");
+    const std::uint64_t d = fixture.series_ids.at("[*:1]c1ccc(cc1)N");
+    // Without this the two orders would coincide and the test would prove nothing.
+    ASSERT_GT(c, d);
+
+    SeriesSimilarityRequest request = SimilarityQuery();   // Spearman, the default measure.
+    request.top = 0;
+    request.include_evidence = true;
+    const SeriesSimilarityResult result = store.FindSimilarSeries(request);
+    ASSERT_EQ(result.matches.size(), 4U);
+    EXPECT_EQ(result.matches[0].series_id, std::min(a, b));
+    EXPECT_EQ(result.matches[1].series_id, std::max(a, b));
+    EXPECT_EQ(result.matches[2].series_id, c);   // -1 still beats an undefined correlation.
+    EXPECT_EQ(result.matches[3].series_id, d);
+
+    ASSERT_EQ(result.evidence.size(), 12U);
+    const std::vector<std::string> shared = {"[*:1]Cl", "[*:1]F", "[*:1][H]"};
+    for (std::size_t i = 0; i < result.evidence.size(); ++i) {
+        if (i > 0) {
+            EXPECT_LE(result.evidence[i - 1].series_id, result.evidence[i].series_id) << i;
+        }
+        EXPECT_EQ(result.evidence[i].variable_smiles, shared[i % 3]) << i;
+    }
+    // The discriminating pair: C outranks D, so match order would put C's rows first.
+    const auto first_row_of = [&result](std::uint64_t series_id) {
+        for (std::size_t i = 0; i < result.evidence.size(); ++i) {
+            if (result.evidence[i].series_id == series_id) {
+                return i;
+            }
+        }
+        return result.evidence.size();
+    };
+    EXPECT_LT(first_row_of(d), first_row_of(c));
+    std::filesystem::remove(fixture.path);
+}
+
 TEST(SeriesSimilarity, IdBasedQueryExcludesItselfAndOverlapCountsDistinctRGroups) {
     const SimilarityStore fixture = MakeSimilarityStore();
     DuckDBStore store(fixture.path.string());
@@ -1498,6 +1543,9 @@ TEST(SeriesSimilarity, RequestContract) {
     request.query_values = {1.0, 2.0};
     request.min_overlap = 2;
     const SeriesSimilarityResult linker = store.FindSimilarSeries(request);
+    // The bibenzyl pair forms exactly one two-cut series carrying both linkers;
+    // pinning the count keeps the cut_count loop below from passing vacuously.
+    ASSERT_EQ(linker.matches.size(), 1U);
     for (const SeriesSimilarity& match : linker.matches) {
         EXPECT_EQ(match.cut_count, 2U);
     }

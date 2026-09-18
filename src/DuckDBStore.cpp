@@ -436,6 +436,8 @@ std::string posting_cte() {
 // is valued in it and the values in query order are strictly monotone in the
 // direction (sorted and all distinct). Everything downstream reads bounded, so
 // an oversized member never contributes to a length, a support or a win.
+// FindSimilarSeries spells out its own bounded and eligible on purpose (no query
+// exemption, self-exclusion, projected SMILES); keep the two in step.
 std::string ranking_ctes(std::size_t count, PropertyDirection direction) {
     const char* order = direction == PropertyDirection::HIGHER_IS_BETTER ? "'DESC'" : "'ASC'";
     return "with " + ranking_query_cte(count) + ", " + posting_cte() + ", " + member_value_cte(true) + ", "
@@ -3981,7 +3983,10 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     values.push_back(duckdb::Value::UINTEGER(request.selection.min_constant_heavy_atoms));
     values.push_back(duckdb::Value::UBIGINT(request.query_series_id));
     values.push_back(duckdb::Value::UINTEGER(request.selection.min_series_length));
-    values.push_back(duckdb::Value::UINTEGER(request.min_overlap));
+    // Same width as the posting minimum above: both compare min_overlap against a
+    // BIGINT count, so binding one as UBIGINT and the other as UINTEGER would only
+    // invite the two uses to drift apart.
+    values.push_back(duckdb::Value::UBIGINT(request.min_overlap));
     // posting: the inverted-index prefilter (series posting at least min_overlap
     // of the query's R-groups) ahead of any property aggregation; bounded: the
     // member filter (spec 7.5 applies it first, to every member, no exemption in
@@ -3992,10 +3997,14 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     const std::string sql =
         "with " + similarity_query_cte(query.members.size()) + ", " + posting_cte() + ", " +
         member_value_cte(true) + ", "
+        // Keep in step with ranking_ctes: this bounded has no query-member exemption
+        // and projects variable_smiles for the evidence rows.
         "bounded as ("
         "select mv.series_id, mv.rule_smiles_id, mv.value, rs.smiles as variable_smiles "
         "from member_value mv join rule_smiles rs on rs.id = mv.rule_smiles_id "
         "where (? = 0 or coalesce(rs.num_heavies, 0) <= ?)), "
+        // Keep in step with ranking_ctes: this eligible adds the s.id <> ? exclusion
+        // of the query's own series, which a ranking query cannot need.
         "eligible as ("
         "select b.series_id from bounded b "
         "join series s on s.id = b.series_id "
@@ -4074,6 +4083,18 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
             result.evidence.insert(result.evidence.end(), entry.shared.begin(), entry.shared.end());
         }
     }
+    // Spec 7.4 orders the evidence by series id then SMILES, not by the rank the
+    // measure gave each series, so a consumer can merge it against an id-sorted
+    // series table the way the ranking evidence is merged. The rows of one series
+    // already arrive SMILES-ordered from the statement; only the series blocks,
+    // appended above in match order, have to be put back into id order.
+    std::stable_sort(result.evidence.begin(), result.evidence.end(),
+        [](const SeriesSimilarityEvidence& a, const SeriesSimilarityEvidence& b) {
+            if (a.series_id != b.series_id) {
+                return a.series_id < b.series_id;
+            }
+            return a.variable_smiles < b.variable_smiles;
+        });
     return result;
 }
 
