@@ -26,13 +26,15 @@ def test_target_methods_release_gil():
     # Scan windows are the number of chars examined after a wrapper name. The
     # release check uses a wider window so it reaches the GIL macro inside larger
     # wrapper bodies; every absence assertion uses a tighter window so it cannot
-    # bleed into the following wrapper and read a neighbor's macro.
-    RELEASE_SCAN = 1500
+    # bleed into the following wrapper and read a neighbor's macro. The two query
+    # wrappers convert a request of ten fields before they release, which puts
+    # their macro ~1500 chars in, still far short of the next wrapper's.
+    RELEASE_SCAN = 1800
     GETTER_SCAN = 800
     def wrapper_releases(pattern, scan=RELEASE_SCAN):
         blocks = re.findall(pattern + r"[\s\S]{0," + str(scan) + r"}", text)
         return blocks and any(any(r in b for r in RELEASE) for b in blocks)
-    # Every one of the eight target methods must release the GIL. The two series reads
+    # Every one of the ten target methods must release the GIL. The two series reads
     # are named by their overload wrappers rather than by the bare method name: the
     # prefix "DuckDBStore_GetSeries" also matches the GIL-held GetSeriesCount wrapper,
     # so a bare prefix would pass on a build where only one of the three releases.
@@ -40,7 +42,8 @@ def test_target_methods_release_gil():
                  "Analyzer_GetTransforms", "Analyzer_SaveTo",
                  "DuckDBStore_AddMoleculesFromSmilesFile",
                  "DuckDBStore_AddPropertiesFromCsvFile",
-                 "DuckDBStore_GetSeries__SWIG_0", "DuckDBStore_GetSeries__SWIG_1"):
+                 "DuckDBStore_GetSeries__SWIG_0", "DuckDBStore_GetSeries__SWIG_1",
+                 "DuckDBStore_RankNextSubstituents", "DuckDBStore_FindSimilarSeries"):
         assert wrapper_releases(r"_wrap_" + name), f"{name} should release the GIL"
     # A sampled trivial getter must NOT release (proves selectivity, no churn).
     getter = re.findall(r"_wrap_Analyzer_GetMethodName[\s\S]{0," + str(GETTER_SCAN) + r"}", text)
@@ -55,11 +58,11 @@ def test_target_methods_release_gil():
         assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), \
             f"{name} should NOT release the GIL"
     # Total GIL macro count: must be low. Only the BEGIN macros are counted, one
-    # per releasing wrapper body, so the bound is the 8 targets times their
+    # per releasing wrapper body, so the bound is the 10 targets times their
     # overloads rather than a begin-and-end pair count.
     # Pin the observed count so a regression that goes broad will fail.
     macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
-    assert macro_count <= 24, f"Expected ≤24 GIL macros (8 targets), found {macro_count}"
+    assert macro_count <= 24, f"Expected ≤24 GIL macros (10 targets), found {macro_count}"
 
 
 @pytest.mark.skipif(not WRAP.exists(), reason="generated SWIG wrapper not built")
@@ -88,3 +91,24 @@ def test_series_selection_is_copied_before_the_gil_is_released():
     assert macro, "the defaulted overload should release the GIL"
     assert "SeriesSelection" not in after, \
         "the defaulted overload must not touch a Python-owned selection either"
+
+
+@pytest.mark.skipif(not WRAP.exists(), reason="generated SWIG wrapper not built")
+def test_query_requests_are_copied_before_the_gil_is_released():
+    # Same hazard as the selection: the request is a Python-owned aggregate whose
+    # vectors and bounds are writable, so the GIL-free query must run on a copy.
+    import re
+    text = WRAP.read_text()
+    for wrapper, record in (
+        ("DuckDBStore_RankNextSubstituents", "SubstituentRankingRequest"),
+        ("DuckDBStore_FindSimilarSeries", "SeriesSimilarityRequest"),
+    ):
+        source = _wrapper_source(text, wrapper)
+        before, macro, after = source.partition("SWIG_PYTHON_THREAD_BEGIN_ALLOW")
+        assert macro, f"{wrapper} should release the GIL"
+        assert re.search(r"OEMMPA::" + record + r" arg\d+ ;", before), \
+            f"{wrapper} must take the request by value"
+        assert re.search(r"arg\d+ = \*\w+;", before), \
+            f"{wrapper} must copy the request before the GIL is released"
+        assert record not in after, \
+            f"{wrapper} must not read the Python-owned request after releasing the GIL"

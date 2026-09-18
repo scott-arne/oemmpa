@@ -380,6 +380,13 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %std_nodefconst_type(OEMMPA::Series);
 %template(SeriesMemberVector) std::vector<OEMMPA::SeriesMember>;
 %template(SeriesVector) std::vector<OEMMPA::Series>;
+// The query records are plain aggregates with default constructors, so the
+// stock vector wrappers apply; std::vector<double> is new to this module.
+%template(DoubleVector) std::vector<double>;
+%template(SubstituentRankingVector) std::vector<OEMMPA::SubstituentRanking>;
+%template(SubstituentRankingEvidenceVector) std::vector<OEMMPA::SubstituentRankingEvidence>;
+%template(SeriesSimilarityVector) std::vector<OEMMPA::SeriesSimilarity>;
+%template(SeriesSimilarityEvidenceVector) std::vector<OEMMPA::SeriesSimilarityEvidence>;
 
 // ============================================================================
 // Version macros
@@ -391,7 +398,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 // GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
 // ============================================================================
-// These 8 methods are the ONLY wrappers that release the GIL.
+// These 10 methods are the ONLY wrappers that release the GIL.
 %threadallow OEMMPA::Analyzer::Analyze;
 %threadallow OEMMPA::Analyzer::GetPairs;
 %threadallow OEMMPA::Analyzer::GetSeries;
@@ -400,6 +407,10 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %threadallow OEMMPA::DuckDBStore::AddMoleculesFromSmilesFile;
 %threadallow OEMMPA::DuckDBStore::AddPropertiesFromCsvFile;
 %threadallow OEMMPA::DuckDBStore::GetSeries;
+// Both take their request by value so the wrapper copies it before releasing
+// the GIL (the plan 1 ruling for GetSeries(SeriesSelection)).
+%threadallow OEMMPA::DuckDBStore::RankNextSubstituents;
+%threadallow OEMMPA::DuckDBStore::FindSimilarSeries;
 
 // ============================================================================
 // Phase 1 public headers
@@ -501,6 +512,19 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"
 %include "../include/oemmpa/Series.h"
+// The store validates its own support ladders, so Python never calls this one.
+%ignore OEMMPA::validate_support_ladder;
+// std::string members are natural by default, std::vector members are not: SWIG
+// wraps them as a pointer to the live member, which only accepts another wrapped
+// vector. A request is filled from Python, so its vectors take the natural form
+// and accept any sequence. The result records keep the default form, which reads
+// their vectors without copying them on every attribute access.
+%naturalvar OEMMPA::SubstituentRankingRequest::query_variable_smiles;
+%naturalvar OEMMPA::SubstituentRankingRequest::query_values;
+%naturalvar OEMMPA::SubstituentRankingRequest::support_ladder;
+%naturalvar OEMMPA::SeriesSimilarityRequest::query_variable_smiles;
+%naturalvar OEMMPA::SeriesSimilarityRequest::query_values;
+%include "../include/oemmpa/SeriesQuery.h"
 %include "../include/oemmpa/MemoryIndex.h"
 %include "../include/oemmpa/PairScoring.h"
 %include "../include/oemmpa/Statistics.h"

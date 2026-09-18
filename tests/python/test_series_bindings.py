@@ -148,3 +148,116 @@ def test_raw_store_series_read_sees_one_coherent_selection_under_mutation():
         mutator.join(timeout=30)
     assert not mutator.is_alive()
     assert not incoherent, incoherent[:5]
+
+
+def _interleaving_raw_store():
+    """Five para-substituted cores realizing H, F, Cl and Br with the spec 11.2 values."""
+    analyzer = _oemmpa.Analyzer()
+    cores = ["C", "CC", "OC", "N", "C#N"]
+    bromine = [4.0, 2.5, 1.5, 0.5, 3.0]
+    for index, core in enumerate(cores):
+        tag = f"s{index + 1}"
+        # Ring first, so the ring bonds to the core's first atom as in the substituted forms.
+        analyzer.AddMolecule(f"c1ccccc1{core}", f"{tag}-H")
+        analyzer.AddMolecule(f"Fc1ccc({core})cc1", f"{tag}-F")
+        analyzer.AddMolecule(f"Clc1ccc({core})cc1", f"{tag}-Cl")
+        analyzer.AddMolecule(f"Brc1ccc({core})cc1", f"{tag}-Br")
+        analyzer.AddProperty(f"{tag}-H", "act", 3.0)
+        analyzer.AddProperty(f"{tag}-F", "act", 2.0)
+        analyzer.AddProperty(f"{tag}-Cl", "act", 1.0)
+        analyzer.AddProperty(f"{tag}-Br", "act", bromine[index])
+    analyzer.Analyze()
+    store = _oemmpa.DuckDBStore()
+    analyzer.SaveTo(store)
+    return store
+
+
+def test_binding_exposes_the_query_records_enums_and_vectors():
+    for name in (
+        "SubstituentRankingRequest", "SubstituentRanking", "SubstituentRankingEvidence",
+        "SubstituentRankingResult", "SeriesSimilarityRequest", "SeriesSimilarity",
+        "SeriesSimilarityEvidence", "SeriesSimilarityResult", "DoubleVector",
+        "SubstituentRankingVector", "SubstituentRankingEvidenceVector",
+        "SeriesSimilarityVector", "SeriesSimilarityEvidenceVector",
+        "PropertyDirection_UNSPECIFIED", "PropertyDirection_HIGHER_IS_BETTER",
+        "PropertyDirection_LOWER_IS_BETTER", "SimilarityMeasure_SPEARMAN",
+        "SimilarityMeasure_CENTRED_RMSD", "canonicalize_query_rgroup",
+        "spearman_correlation", "centred_rmsd",
+    ):
+        assert hasattr(_oemmpa, name), name
+    request = _oemmpa.SubstituentRankingRequest()
+    assert request.direction == _oemmpa.PropertyDirection_UNSPECIFIED
+    assert list(request.support_ladder) == [20, 10, 5]
+    assert request.shorten is True
+    assert request.min_query_length == 3
+    assert request.selection.min_series_length == 2
+    request.query_variable_smiles = ["[*:1]F", "[*:1]Cl"]
+    request.query_values = [2.0, 1.0]
+    request.support_ladder = [3, 1]
+    request.selection.max_variable_heavy_atoms = 4
+    assert list(request.query_values) == [2.0, 1.0]
+    assert list(request.support_ladder) == [3, 1]
+    assert request.selection.max_variable_heavy_atoms == 4
+    similarity = _oemmpa.SeriesSimilarityRequest()
+    assert similarity.min_overlap == 3
+    assert similarity.measure == _oemmpa.SimilarityMeasure_SPEARMAN
+    assert similarity.top == 0
+    assert _oemmpa.canonicalize_query_rgroup("C[*:1]").variable_smiles == "[*:1]C"
+    assert _oemmpa.spearman_correlation([3.0, 2.0, 1.0], [1.0, 2.0, 3.0]).rho == -1.0
+    assert _oemmpa.centred_rmsd([3.0, 2.0, 1.0], [4.0, 3.0, 2.0]) == 0.0
+
+
+def test_raw_store_ranks_and_finds_similar_series():
+    store = _interleaving_raw_store()
+    request = _oemmpa.SubstituentRankingRequest()
+    request.property_name = "act"
+    request.direction = _oemmpa.PropertyDirection_HIGHER_IS_BETTER
+    request.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    request.query_values = [3.0, 2.0, 1.0]
+    request.support_ladder = [5]
+    request.include_evidence = True
+    result = store.RankNextSubstituents(request)
+    assert list(result.query_used) == ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    assert list(result.dropped) == []
+    assert result.support_level == 5
+    assert result.matched_series == 5
+    candidates = list(result.candidates)
+    assert len(candidates) == 1
+    assert candidates[0].variable_smiles == "[*:1]Br"
+    assert (candidates[0].support, candidates[0].wins) == (5, 1)
+    assert candidates[0].fraction == 0.2
+    evidence = list(result.evidence)
+    assert len(evidence) == 20
+    assert evidence[0].role == "query" and evidence[0].position == 1
+    assert sum(1 for row in evidence if row.role == "candidate" and row.win) == 1
+
+    similarity = _oemmpa.SeriesSimilarityRequest()
+    similarity.property_name = "act"
+    similarity.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    similarity.query_values = [3.0, 2.0, 1.0]
+    found = store.FindSimilarSeries(similarity)
+    assert found.query_size == 3
+    matches = list(found.matches)
+    assert len(matches) == 5   # Every core orders H > F > Cl like the query.
+    assert all(match.has_spearman and match.spearman == 1.0 for match in matches)
+    assert all(match.centred_rmsd == 0.0 for match in matches)
+
+
+def test_raw_validation_failures_carry_the_documented_prefix():
+    store = _interleaving_raw_store()
+    request = _oemmpa.SubstituentRankingRequest()
+    request.property_name = "act"
+    request.query_variable_smiles = ["[*:1][H]", "[*:1]F"]
+    request.query_values = [3.0, 2.0]
+    with pytest.raises(RuntimeError) as unspecified:
+        store.RankNextSubstituents(request)   # Direction left UNSPECIFIED.
+    assert str(unspecified.value).startswith("invalid series query: ")
+    assert "direction" in str(unspecified.value)
+    similarity = _oemmpa.SeriesSimilarityRequest()
+    similarity.property_name = "absent"
+    similarity.query_variable_smiles = ["[*:1][H]", "[*:1]F"]
+    similarity.query_values = [3.0, 2.0]
+    with pytest.raises(RuntimeError) as missing:
+        store.FindSimilarSeries(similarity)
+    assert str(missing.value).startswith("invalid series query: ")
+    assert "absent" in str(missing.value)
