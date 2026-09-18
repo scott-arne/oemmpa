@@ -469,9 +469,10 @@ def _read_query_file(path):
     :param path: Query file path.
     :returns: List of ``(smiles, value)`` pairs in file order.
     :raises ValueError: If a line does not hold two columns or carries a
-        non-numeric value below the header.
+        non-numeric value below the single tolerated header line.
     """
     rgroups = []
+    header_skipped = False
     with _open_text_input(path) as handle:
         for line_number, line in enumerate(handle, start=1):
             stripped = line.strip()
@@ -483,8 +484,13 @@ def _read_query_file(path):
             try:
                 value = float(fields[1])
             except ValueError:
-                if line_number == 1 or not rgroups:
-                    continue   # A header line such as "rgroup value".
+                # Only the first non-blank, non-comment line may be a header such
+                # as "rgroup value". A later non-numeric value is a typo, and
+                # skipping it would silently run a shorter query than was asked
+                # for, so it has to be reported.
+                if not header_skipped and not rgroups:
+                    header_skipped = True
+                    continue
                 raise ValueError(f"{path}, line {line_number}: value is not a number: {fields[1]!r}") from None
             rgroups.append((fields[0], value))
     return rgroups
@@ -553,6 +559,24 @@ def _ensure_report_outputs_are_distinct(*paths):
         if any(_same_file(path, earlier) for earlier in seen):
             raise ValueError(f"report output paths must be distinct: {path}")
         seen.append(path)
+
+
+def _ensure_evidence_stream_is_not_shared(output_path, evidence_path):
+    """Refuse evidence on standard output while the report is written there too.
+
+    Two tables on one stream cannot be told apart by a reader, so the caller has
+    to send one of them to a file.
+
+    :param output_path: Report path, or ``None`` or ``"-"`` for standard output.
+    :param evidence_path: Evidence path, or ``None`` when no evidence is written.
+    :raises ValueError: If both tables would go to standard output.
+    """
+    if evidence_path is None or str(evidence_path) != "-":
+        return
+    if output_path is None or str(output_path) == "-":
+        raise ValueError(
+            "--evidence cannot share standard output with the report; give one of them a file path"
+        )
 
 
 def _ensure_query_file_is_not_a_report(query_file, *report_paths):
@@ -1238,7 +1262,9 @@ def _add_series_query_arguments(parser):
     parser.add_argument("--rgroup", action="append", default=None, metavar="SMILES=VALUE",
                         help="Query R-group with its value; repeat for every member.")
     parser.add_argument("--query-file", default=None, help="Two-column TSV of R-group SMILES and values.")
-    parser.add_argument("--evidence", default=None, help="Optional TSV path for the evidence rows.")
+    parser.add_argument("--evidence", default=None,
+                        help="Optional TSV path for the evidence rows, or '-' for standard output. "
+                             "Use .gz for gzip output.")
     parser.add_argument("--output", default=None,
                         help="Optional TSV output path, or '-' for standard output. Use .gz for gzip output.")
 
@@ -1247,6 +1273,8 @@ def _series(args):
     _ensure_report_output_is_not_database(args.database, args.output)
     store = _open_store_read_only(args.database)
     rows = store.series(_series_selection_from_args(args)).to_dicts()
+    # The selection carries no constant bound, so an exact constant is matched
+    # here rather than pushed down into the query.
     if args.constant is not None:
         rows = [row for row in rows if row["constant"] == args.constant]
     _write_tsv_output(rows, SERIES_CLI_COLUMNS, args.output)
@@ -1257,6 +1285,7 @@ def _series_rank(args):
     _ensure_report_output_is_not_database(args.database, args.output)
     _ensure_report_output_is_not_database(args.database, args.evidence)
     _ensure_report_outputs_are_distinct(args.output, args.evidence)
+    _ensure_evidence_stream_is_not_shared(args.output, args.evidence)
     _ensure_query_file_is_not_a_report(args.query_file, args.output, args.evidence)
     series_id, rgroups = _series_query_source(args)
     store = _open_store_read_only(args.database)
@@ -1280,6 +1309,7 @@ def _series_similar(args):
     _ensure_report_output_is_not_database(args.database, args.output)
     _ensure_report_output_is_not_database(args.database, args.evidence)
     _ensure_report_outputs_are_distinct(args.output, args.evidence)
+    _ensure_evidence_stream_is_not_shared(args.output, args.evidence)
     _ensure_query_file_is_not_a_report(args.query_file, args.output, args.evidence)
     series_id, rgroups = _series_query_source(args)
     store = _open_store_read_only(args.database)
@@ -1836,7 +1866,8 @@ def _build_parser():
     similar_parser.add_argument("--min-overlap", type=int, default=3, help="Minimum shared valued R-groups (at least 2).")
     similar_parser.add_argument("--measure", choices=["spearman", "crmsd"], default="spearman",
                                 help="Sort by Spearman (descending) or centred RMSD (ascending).")
-    similar_parser.add_argument("--top", type=int, default=None, help="Keep this many matches after sorting.")
+    similar_parser.add_argument("--top", type=int, default=None,
+                                help="Keep this many matches after sorting; 0 or omitted keeps every match.")
     _add_series_selection_arguments(similar_parser, with_cut_count=False)
     similar_parser.set_defaults(func=_series_similar)
 

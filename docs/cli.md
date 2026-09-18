@@ -315,8 +315,9 @@ Columns: `series_id`, `constant`, `cut_count`, `constant_num_heavies`,
 ordered by constant SMILES then cut count, members by R-group SMILES, and a
 member's compounds by their numeric compound id. `--min-length`,
 `--max-rgroup-heavies`, `--min-constant-heavies` and `--cut-count` are the
-selection bounds; zero or an omitted flag means unbounded, and `--min-length 0`
-is the same as `1`.
+selection bounds: an omitted `--min-length` means 2 and `--min-length 0` is the
+same as `1`, while zero or an omitted `--max-rgroup-heavies`,
+`--min-constant-heavies` or `--cut-count` means unbounded.
 
 `oemmpa series-rank` ranks candidate next substituents the way Matsy does:
 
@@ -328,9 +329,9 @@ oemmpa series-rank --database analysis.duckdb --property pIC50 --direction highe
 
 The query is a stored series (`--series-id`), repeated `--rgroup SMILES=VALUE`
 flags, or `--query-file` (a two-column TSV of R-group SMILES and value; blank
-and `#` lines are skipped and a header line is tolerated). Exactly one form is
-required. `--direction` says which end of the property scale is better. The
-output starts with one comment line reporting `query_used` (best first),
+and `#` lines are skipped and a single header line is tolerated). Exactly one
+form is required. `--direction` says which end of the property scale is better.
+The output starts with one comment line reporting `query_used` (best first),
 `dropped` (members removed by shortening), `support_level` and
 `matched_series`, then the rows `rgroup`, `rgroup_num_heavies`, `wins`,
 `support`, `fraction`, sorted by fraction, support, heavy atoms and SMILES.
@@ -363,7 +364,9 @@ Request-validation errors (an unknown property, tied ranking values, duplicate
 or unlabelled R-groups, a nonexistent series id, a `--min-overlap` below 2)
 exit with code 2 and the store's message; database failures exit with code 1.
 A `--query-file` that names the same file as `--output` or `--evidence` is
-refused before anything is read or written.
+refused before anything is read or written, and so is `--evidence -` while the
+report also goes to standard output, which would run the two tables together on
+one stream.
 
 ## Detail Reports
 

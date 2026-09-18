@@ -128,6 +128,36 @@ def test_series_rank_query_forms_and_direction(database, tmp_path):
     assert _tsv(shortened.stdout)[1] == []
 
 
+def test_series_rank_by_series_id_reports_candidates(tmp_path):
+    # A sixth core that realises only H, F and Cl: Br is no member of that query,
+    # so the five cores that do realise it can recommend it back unshortened.
+    analyzer = Analyzer()
+    for index, core in enumerate([*CORES, "CCC"]):
+        tag = f"t{index + 1}"
+        analyzer.add_molecule(f"c1ccccc1{core}", id=f"{tag}-H")
+        analyzer.add_molecule(f"Fc1ccc({core})cc1", id=f"{tag}-F")
+        analyzer.add_molecule(f"Clc1ccc({core})cc1", id=f"{tag}-Cl")
+        values = [("H", 3.0), ("F", 2.0), ("Cl", 1.0)]
+        if index < len(BROMINE):
+            analyzer.add_molecule(f"Brc1ccc({core})cc1", id=f"{tag}-Br")
+            values.append(("Br", BROMINE[index]))
+        for suffix, value in values:
+            analyzer.add_property(f"{tag}-{suffix}", "act", value)
+    analyzer.analyze()
+    path = tmp_path / "six-cores.duckdb"
+    DuckDBStore(path).save_analyzer(analyzer)
+    _, members = _tsv(_run_cli("series", "--database", str(path), "--constant", "[*:1]c1ccc(cc1)CCC").stdout)
+    assert [row["rgroup"] for row in members] == ["[*:1]Cl", "[*:1]F", "[*:1][H]"]
+    result = _run_cli("series-rank", "--database", str(path), "--property", "act", "--direction", "higher",
+                      "--series-id", members[0]["series_id"], "--support-ladder", "5")
+    assert _comment(result.stdout) == [
+        "# query_used=[*:1][H],[*:1]F,[*:1]Cl\tdropped=\tsupport_level=5\tmatched_series=6"
+    ]
+    assert _tsv(result.stdout)[1] == [
+        {"rgroup": "[*:1]Br", "rgroup_num_heavies": "1", "wins": "1", "support": "5", "fraction": "0.2"}
+    ]
+
+
 def test_series_rank_argument_errors_and_empty_results(database, tmp_path):
     both = _run_cli("series-rank", "--database", str(database), *RANK_ARGS, "--series-id", "1", check=False)
     assert both.returncode == 2 and "exactly one" in both.stderr
@@ -239,6 +269,49 @@ def test_query_file_hard_link_alias_is_refused(database, tmp_path, command, sink
     assert result.returncode == 2, result.stderr
     assert "--query-file must differ" in result.stderr
     assert query_file.read_text(encoding="utf-8") == original
+
+
+def test_query_file_tolerates_one_header_but_not_a_broken_value(database, tmp_path):
+    header = tmp_path / "header.tsv"
+    header.write_text("rgroup\tvalue\n[*:1][H]\t3\n[*:1]F\t2\n[*:1]Cl\t1\n", encoding="utf-8")
+    accepted = _run_cli("series-rank", "--database", str(database), "--property", "act", "--direction", "higher",
+                        "--query-file", str(header), "--support-ladder", "5")
+    assert _comment(accepted.stdout)[0].startswith("# query_used=[*:1][H],[*:1]F,[*:1]Cl")
+    # A typo in the first data row must not read as a second header line and
+    # silently run a two-member query instead.
+    first_row_typo = tmp_path / "first-row-typo.tsv"
+    first_row_typo.write_text("rgroup\tvalue\n[*:1][H]\tthree\n[*:1]F\t2\n[*:1]Cl\t1\n", encoding="utf-8")
+    broken = _run_cli("series-rank", "--database", str(database), "--property", "act", "--direction", "higher",
+                      "--query-file", str(first_row_typo), "--support-ladder", "5", check=False)
+    assert broken.returncode == 2, broken.stdout
+    assert "line 2: value is not a number: 'three'" in broken.stderr
+    later_typo = tmp_path / "later-typo.tsv"
+    later_typo.write_text("[*:1][H]\t3\n[*:1]F\ttwo\n[*:1]Cl\t1\n", encoding="utf-8")
+    rejected = _run_cli("series-rank", "--database", str(database), "--property", "act", "--direction", "higher",
+                        "--query-file", str(later_typo), "--support-ladder", "5", check=False)
+    assert rejected.returncode == 2, rejected.stdout
+    assert "line 2: value is not a number: 'two'" in rejected.stderr
+
+
+@pytest.mark.parametrize(
+    ("command", "query", "evidence_header"),
+    [
+        ("series-rank", RANK_QUERY, ["series_id", "constant", "role", "rgroup", "value", "position", "win"]),
+        ("series-similar", SIMILAR_QUERY, ["series_id", "rgroup", "query_value", "candidate_value"]),
+    ],
+)
+def test_evidence_may_not_share_standard_output_with_the_report(database, tmp_path, command, query, evidence_header):
+    implicit = _run_cli(command, "--database", str(database), *query, "--evidence", "-", check=False)
+    assert implicit.returncode == 2, implicit.stdout
+    assert "--evidence cannot share standard output with the report" in implicit.stderr
+    explicit = _run_cli(command, "--database", str(database), *query, "--output", "-", "--evidence", "-", check=False)
+    assert explicit.returncode == 2, explicit.stdout
+    assert "--evidence cannot share standard output with the report" in explicit.stderr
+    # With the report in a file, standard output carries the evidence alone.
+    report = tmp_path / "report.tsv"
+    accepted = _run_cli(command, "--database", str(database), *query, "--output", str(report), "--evidence", "-")
+    assert _tsv(accepted.stdout)[0] == evidence_header
+    assert report.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
