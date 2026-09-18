@@ -11,6 +11,11 @@ def duckdb_available():
     return hasattr(_oemmpa, "DuckDBStore")
 
 
+def duckdb_library_version():
+    """Return the version of the DuckDB library the extension links (the queries run on it)."""
+    return str(_oemmpa.DuckDBStore.GetLibraryVersion())
+
+
 def _require_duckdb_store_class():
     store_class = getattr(_oemmpa, "DuckDBStore", None)
     if store_class is None:
@@ -298,6 +303,10 @@ class DuckDBStore:
     def series_count(self):
         """Return the number of stored series."""
         return int(self._raw_store.GetSeriesCount())
+
+    def series_count_refresh_seconds(self):
+        """Seconds the last refresh spent rewriting ``series.num_members``; -1.0 before any refresh."""
+        return float(self._raw_store.GetLastSeriesCountRefreshSeconds())
 
     def rank_next_substituents(self, property_name, direction, **kwargs):
         """Rank candidate next substituents; see :func:`oemmpa.rank_next_substituents`.

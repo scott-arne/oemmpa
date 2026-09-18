@@ -298,6 +298,16 @@ public:
     /// and it is 0 when the last save carried no series.
     double GetLastSeriesAppendSeconds() const;
 
+    /// \brief Seconds the last RefreshDatasetCounts spent rewriting series.num_members.
+    ///
+    /// -1.0 until the first refresh, so "never refreshed" is distinguishable from
+    /// a fast refresh. Separate from GetLastSeriesAppendSeconds: the rewrite
+    /// runs after the save transaction, not inside the bulk append.
+    double GetLastSeriesCountRefreshSeconds() const;
+
+    /// \brief Version string of the DuckDB library this build links (not the Python wheel).
+    static std::string GetLibraryVersion();
+
     /// \brief Return base-table names in the main schema.
     std::vector<std::string> GetTableNames() const;
 
@@ -410,6 +420,13 @@ private:
     // GetLastSeriesAppendSeconds. Reset by every AppendBulk, so a save that
     // carried no series reports 0 rather than the previous save's figure.
     double last_series_append_seconds_ = 0.0;
+
+    // series.num_members rewrite share of the last count refresh, reported by
+    // GetLastSeriesCountRefreshSeconds. The sentinel is negative so a store
+    // that has never refreshed in this process - including one opened on a
+    // database another process already refreshed - cannot be mistaken for a
+    // refresh that took under a microsecond.
+    double last_series_count_refresh_seconds_ = -1.0;
 };
 
 }  // namespace OEMMPA

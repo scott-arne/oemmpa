@@ -861,7 +861,7 @@ from ._series import (
     find_similar_series,
     rank_next_substituents,
 )
-from ._storage import DuckDBStore, duckdb_available
+from ._storage import DuckDBStore, duckdb_available, duckdb_library_version
 from ._transform import (
     apply_pair_transform,
     apply_transform_smirks,
@@ -933,6 +933,7 @@ __all__ = [
     "compute_query_environments",
     "compute_transform_statistics",
     "duckdb_available",
+    "duckdb_library_version",
     "find_query_environments",
     "find_similar_series",
     "find_transform_environments",

@@ -380,3 +380,18 @@ def test_concurrent_cold_readers_of_one_analyzer_agree():
     for thread in threads:
         thread.join()
     assert failures == []
+
+
+def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version():
+    import oemmpa
+
+    store = _oemmpa.DuckDBStore()
+    assert store.GetLastSeriesCountRefreshSeconds() == -1.0
+    analyzer = _phenyl_raw_analyzer()
+    analyzer.SaveTo(store)
+    assert store.GetLastSeriesCountRefreshSeconds() >= 0.0
+    version = oemmpa.duckdb_library_version()
+    assert version == _oemmpa.DuckDBStore.GetLibraryVersion()
+    assert version.startswith("v") or version[0].isdigit()
+    facade = oemmpa.DuckDBStore()
+    assert facade.series_count_refresh_seconds() == -1.0

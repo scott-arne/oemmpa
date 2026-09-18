@@ -1355,7 +1355,14 @@ void stream_rule_environment_property_deltas(
     }
 }
 
-void refresh_dataset_counts(
+/// \brief Rewrite the dataset row and series.num_members.
+///
+/// \returns Seconds the series.num_members rewrite alone took. It is reported
+///          separately from the append timer because the rewrite scans
+///          series_member for every series and so dominates a refresh on a
+///          large store, which the dataset counters - single aggregates - do
+///          not; timing the whole helper would hide that.
+double refresh_dataset_counts(
     const std::unique_ptr<duckdb::Connection>& connection
 ) {
     const std::string insert_sql =
@@ -1395,11 +1402,14 @@ void refresh_dataset_counts(
         "update series set num_members = ("
         "select count(distinct sm.rule_smiles_id) from series_member sm "
         "where sm.series_id = series.id)";
+    const auto members_started = std::chrono::steady_clock::now();
     std::unique_ptr<duckdb::QueryResult> members_result = connection->Query(members_sql);
     if (!members_result) {
         throw StorageError("DuckDB query returned no result: " + members_sql);
     }
     require_success(*members_result, members_sql);
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - members_started).count();
 }
 
 // The series source is a stamp, not a count, so even a recounting summary reads
@@ -3587,7 +3597,7 @@ std::uint64_t DuckDBStore::GetRowCount(const std::string& table_name) const {
 void DuckDBStore::RefreshDatasetCounts() {
     Execute("begin transaction");
     try {
-        refresh_dataset_counts(connection_);
+        last_series_count_refresh_seconds_ = refresh_dataset_counts(connection_);
         Execute("commit");
     } catch (...) {
         try {
@@ -3602,7 +3612,7 @@ void DuckDBStore::RefreshRuleEnvironmentStatistics() {
     Execute("begin transaction");
     try {
         refresh_rule_environment_statistics(connection_, *database_);
-        refresh_dataset_counts(connection_);
+        last_series_count_refresh_seconds_ = refresh_dataset_counts(connection_);
         Execute("commit");
     } catch (...) {
         try {
@@ -4141,6 +4151,14 @@ std::vector<Transform> DuckDBStore::GetTransforms(const QueryOptions& options) c
 
 double DuckDBStore::GetLastSeriesAppendSeconds() const {
     return last_series_append_seconds_;
+}
+
+double DuckDBStore::GetLastSeriesCountRefreshSeconds() const {
+    return last_series_count_refresh_seconds_;
+}
+
+std::string DuckDBStore::GetLibraryVersion() {
+    return duckdb::DuckDB::LibraryVersion();
 }
 
 std::vector<std::string> DuckDBStore::GetTableNames() const {

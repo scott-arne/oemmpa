@@ -4084,6 +4084,31 @@ TEST(DuckDBStoreSeriesSave, ASeriesProducingSaveIsRefusedIntoAStoreHoldingOnlyAC
     std::filesystem::remove(path);
 }
 
+TEST(DuckDBStoreSeriesSave, SeriesCountRefreshIsTimedSeparatelyFromTheAppend) {
+    Analyzer analyzer = MakePhenylAnalyzer();
+    const std::filesystem::path path = TemporaryDatabasePath();
+    DuckDBStore store(path.string());
+    EXPECT_EQ(store.GetLastSeriesCountRefreshSeconds(), -1.0);   // Never refreshed yet.
+    analyzer.SaveTo(store);
+    const double refreshed = store.GetLastSeriesCountRefreshSeconds();
+    EXPECT_GE(refreshed, 0.0);      // A constant sentinel cannot pass this.
+    EXPECT_LT(refreshed, 60.0);
+    // A second refresh re-measures rather than accumulating: still a plausible single duration.
+    store.RefreshDatasetCounts();
+    EXPECT_GE(store.GetLastSeriesCountRefreshSeconds(), 0.0);
+    EXPECT_LT(store.GetLastSeriesCountRefreshSeconds(), 60.0);
+    // The refresh runs after the transaction, so it is not part of the append timer.
+    EXPECT_GE(store.GetLastSeriesAppendSeconds(), 0.0);
+    // The rewrite itself is unchanged: num_members still equals the distinct R-group count.
+    for (const Series& entry : store.GetSeries()) {
+        EXPECT_EQ(entry.Size(), entry.GetMembers().size());
+    }
+    // The linked library reports its own version, which is what the queries run on.
+    EXPECT_EQ(DuckDBStore::GetLibraryVersion(), std::string(duckdb::DuckDB::LibraryVersion()));
+    EXPECT_FALSE(DuckDBStore::GetLibraryVersion().empty());
+    std::filesystem::remove(path);
+}
+
 TEST(DuckDBStoreSeriesRead, StoredSeriesEqualTheirInMemoryTwinsExceptForTheRowId) {
     Analyzer analyzer = MakePhenylAnalyzer();
     DuckDBStore store;
