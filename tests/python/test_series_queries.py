@@ -143,6 +143,12 @@ def test_direction_and_rgroup_forms_are_coerced(store):
         ({"rgroups": QUERY, "support_ladder": (10, 0)}, "support_ladder"),
         ({"rgroups": QUERY, "support_ladder": (2.5,)}, "support_ladder"),
         ({"rgroups": QUERY, "min_query_length": 1}, "min_query_length"),
+        # The request fields are fixed-width, so a value too wide for the setter
+        # has to fail here; reaching the binding would raise OverflowError, which
+        # callers see as a runtime failure rather than a bad argument.
+        ({"series_id": 2**64}, "series_id must be at most 18446744073709551615"),
+        ({"rgroups": QUERY, "min_query_length": 2**32}, "min_query_length must be at most 4294967295"),
+        ({"rgroups": QUERY, "support_ladder": (2**32,)}, "support_ladder must be at most 4294967295"),
         # bool is an int subclass, so an unguarded membership test would read
         # True as HIGHER_IS_BETTER instead of rejecting a malformed request.
         ({"direction": True, "rgroups": QUERY}, "direction"),
@@ -168,6 +174,27 @@ def test_invalid_measure_is_rejected_before_the_store(measure):
     # SWIG setter, which raises TypeError rather than the contracted ValueError.
     with pytest.raises(ValueError, match="measure"):
         find_similar_series(_ExplodingStore(), "act", rgroups=QUERY, measure=measure)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"min_overlap": 2**32}, "min_overlap must be at most 4294967295"),
+        ({"top": 2**32}, "top must be at most 4294967295"),
+    ],
+)
+def test_oversized_similarity_arguments_are_rejected_before_the_store(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        find_similar_series(_ExplodingStore(), "act", rgroups=QUERY, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["min_series_length", "max_variable_heavy_atoms", "min_constant_heavy_atoms", "cut_count"],
+)
+def test_selection_bounds_wider_than_the_binding_field_are_rejected(field):
+    with pytest.raises(ValueError, match=f"{field} must be at most 4294967295"):
+        SeriesSelectionOptions(**{field: 2**32})
 
 
 def test_integer_enum_values_are_the_binding_constants(store):

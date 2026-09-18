@@ -21,6 +21,12 @@ from ._dataframe import (
 )
 from ._display import html_collection_preview, text_collection_summary
 
+# The request fields of the binding are fixed-width, so a wider Python integer
+# reaches the SWIG setter and raises OverflowError. Bounding the arguments here
+# keeps an oversized value an argument error like every other bad request.
+_UINT32_MAX = 2**32 - 1
+_UINT64_MAX = 2**64 - 1
+
 SERIES_ROW_COLUMNS = (
     "series_id",
     "constant",
@@ -50,7 +56,8 @@ class SeriesSelectionOptions:
     :param min_constant_heavy_atoms: Drop series whose constant has fewer heavy
         atoms than this (0 = unbounded).
     :param cut_count: Keep only series of this cut count (0 = any).
-    :raises ValueError: If any bound is negative or is not an integer.
+    :raises ValueError: If any bound is negative, is not an integer, or is wider
+        than the binding's 32-bit field.
     """
 
     min_series_length: int = 2
@@ -68,6 +75,8 @@ class SeriesSelectionOptions:
                 normalized = operator.index(value)
             except TypeError:
                 raise ValueError(f"{name} must be an integer") from None
+            if normalized > _UINT32_MAX:
+                raise ValueError(f"{name} must be at most {_UINT32_MAX}")
             object.__setattr__(self, name, normalized)
 
         if self.min_series_length < 0:
@@ -140,8 +149,8 @@ def _raw_store(store):
     return getattr(store, "raw", store)
 
 
-def _integer(name, value, minimum):
-    """Return ``value`` as an ``int`` at or above ``minimum``."""
+def _integer(name, value, minimum, maximum=None):
+    """Return ``value`` as an ``int`` in ``[minimum, maximum]``; ``None`` leaves it unbounded above."""
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer, not bool")
     try:
@@ -150,6 +159,8 @@ def _integer(name, value, minimum):
         raise ValueError(f"{name} must be an integer") from None
     if normalized < minimum:
         raise ValueError(f"{name} must be at least {minimum}")
+    if maximum is not None and normalized > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
     return normalized
 
 
@@ -203,7 +214,7 @@ def _query_source(series_id, rgroups):
     if (series_id is None) == (rgroups is None):
         raise ValueError("exactly one of series_id and rgroups is required")
     if series_id is not None:
-        return _integer("series_id", series_id, 1), [], []
+        return _integer("series_id", series_id, 1, _UINT64_MAX), [], []
     # Callers meet a uniform ValueError at this boundary, so the TypeError of a
     # non-iterable argument or entry must not escape as itself.
     try:
@@ -235,7 +246,7 @@ def _validated_ladder(support_ladder):
         levels = list(support_ladder)
     except (TypeError, ValueError, OverflowError):
         raise ValueError("support_ladder must be a sequence of positive integers") from None
-    ladder = [_integer("support_ladder", level, 1) for level in levels]
+    ladder = [_integer("support_ladder", level, 1, _UINT32_MAX) for level in levels]
     if not ladder:
         raise ValueError("support_ladder must not be empty")
     if any(later >= earlier for earlier, later in pairwise(ladder)):
@@ -552,7 +563,7 @@ def rank_next_substituents(store, property_name, direction, *, series_id=None, r
     request.query_values = values
     request.support_ladder = _validated_ladder(support_ladder)
     request.shorten = bool(shorten)
-    request.min_query_length = _integer("min_query_length", min_query_length, 2)
+    request.min_query_length = _integer("min_query_length", min_query_length, 2, _UINT32_MAX)
     request.selection = _raw_selection(selection)
     request.include_evidence = bool(evidence)
     return SubstituentRankingCollection.from_raw(_call_store(_raw_store(store).RankNextSubstituents, request))
@@ -584,9 +595,9 @@ def find_similar_series(store, property_name, *, series_id=None, rgroups=None, m
     request.query_series_id = query_series_id
     request.query_variable_smiles = smiles
     request.query_values = values
-    request.min_overlap = _integer("min_overlap", min_overlap, 2)
+    request.min_overlap = _integer("min_overlap", min_overlap, 2, _UINT32_MAX)
     request.measure = _measure_constant(measure)
-    request.top = 0 if top is None else _integer("top", top, 0)
+    request.top = 0 if top is None else _integer("top", top, 0, _UINT32_MAX)
     request.selection = _raw_selection(selection)
     request.include_evidence = bool(evidence)
     return SeriesSimilarityCollection.from_raw(_call_store(_raw_store(store).FindSimilarSeries, request))

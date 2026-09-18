@@ -219,6 +219,18 @@ SIMILAR_QUERY = ["--property", "act", "--rgroup", "[*:1][H]=3", "--rgroup", "[*:
         ("series-rank", RANK_QUERY, ["--support-ladder", "5,x"], "support-ladder"),
         ("series-rank", RANK_QUERY, ["--support-ladder", "5,10"], "support_ladder"),
         ("series-rank", RANK_QUERY, ["--min-query-length", "1"], "min_query_length"),
+        # Python integers are unbounded but the request fields are not, so an
+        # oversized option is an argument error, not a runtime failure.
+        ("series", [], ["--min-length", "4294967296"], "min_series_length must be at most 4294967295"),
+        ("series-rank", RANK_QUERY, ["--min-query-length", "4294967296"],
+         "min_query_length must be at most 4294967295"),
+        ("series-rank", RANK_QUERY, ["--support-ladder", "4294967296"],
+         "support_ladder must be at most 4294967295"),
+        ("series-rank", ["--property", "act", "--direction", "higher"],
+         ["--series-id", "18446744073709551616"], "series_id must be at most 18446744073709551615"),
+        ("series-similar", SIMILAR_QUERY, ["--min-overlap", "4294967296"],
+         "min_overlap must be at most 4294967295"),
+        ("series-similar", SIMILAR_QUERY, ["--top", "4294967296"], "top must be at most 4294967295"),
         ("series-rank", RANK_QUERY, ["--rgroup", "[*:1]Cl=1", "--query-file", "MISSING"], "exactly one"),
         ("series-similar", SIMILAR_QUERY, ["--series-id", "1"], "exactly one"),
         ("series-similar", ["--property", "act"], [], "exactly one"),
