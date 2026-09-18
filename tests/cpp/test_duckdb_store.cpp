@@ -4103,10 +4103,17 @@ TEST(DuckDBStoreSeriesSave, SeriesCountRefreshIsTimedSeparatelyFromTheAppend) {
         const double appended = store.GetLastSeriesAppendSeconds();
         EXPECT_GT(appended, 0.0);
 
-        // A second refresh re-measures rather than accumulating. Its own wall
-        // time is the upper bound - it covers the whole call, of which the
-        // rewrite is one statement - so a timer that added the two refreshes
-        // together would exceed it.
+        // Every refresh re-measures rather than accumulating. The rewrite is
+        // only a fifth or so of a whole refresh call, so two refreshes would not
+        // separate a re-measuring timer from an accumulating one; after these
+        // twenty untimed calls an accumulating timer would report roughly twenty
+        // rewrites, far above the wall time of the single call bracketed below.
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            store.RefreshDatasetCounts();
+        }
+
+        // The bracket: the call's own wall time is the upper bound, because it
+        // covers the whole call of which the rewrite is one statement.
         const auto call_started = std::chrono::steady_clock::now();
         store.RefreshDatasetCounts();
         const double call_seconds = std::chrono::duration<double>(
