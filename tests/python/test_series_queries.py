@@ -50,6 +50,17 @@ def store(tmp_path_factory):
     return store
 
 
+def _flat_store(path):
+    """Return a store whose second series ties every value (undefined Spearman)."""
+    flat = Analyzer()
+    _add_core(flat, "C", "q", 3.0, 2.0, 1.0, 9.0)
+    _add_core(flat, "N", "d", 2.0, 2.0, 2.0, 9.0)
+    flat.analyze()
+    flat_store = DuckDBStore(path)
+    flat_store.save_analyzer(flat)
+    return flat_store
+
+
 def _series_id(store, constant):
     for series in store.series():
         if series.GetConstantSmiles() == constant:
@@ -159,14 +170,68 @@ def test_evidence_collection_rows_and_filters(store):
     assert len(rows) == 20
     assert tuple(rows[0]) == RANKING_EVIDENCE_COLUMNS
     assert rows[0]["role"] == "query" and rows[0]["position"] == 1 and rows[0]["win"] is False
-    winners = ranking.evidence.filter(role="candidate")._filter(lambda row: row.win)
+    candidates = ranking.evidence.filter(role="candidate")
+    assert len(candidates) == 5
+    winners = candidates._filter(lambda row: row.win)
     assert len(winners) == 1 and winners.to_dicts()[0]["value"] == 4.0
     one_series = ranking.evidence.filter(series_id=rows[0]["series_id"])
     assert len(one_series) == 4
     kept = ranking.filter(min_support=5)
-    assert len(kept) == 1 and kept.query_used == ranking.query_used and len(kept.evidence) == 20
+    assert len(kept) == 1
+    # Every metadata field survives the filter, so dropping a _clone keyword fails here.
+    assert (kept.query_used, kept.dropped, kept.support_level, kept.matched_series) == (
+        ranking.query_used,
+        ranking.dropped,
+        ranking.support_level,
+        ranking.matched_series,
+    )
+    assert len(kept.evidence) == 20
     assert len(ranking.filter(min_fraction=0.5)) == 0
     assert len(ranking.filter(max_rgroup_heavies=0)) == 0
+
+
+def test_shortening_drops_the_unmatched_member_and_reports_it(store):
+    # The iodo member posts in no stored series, so it is the least common and
+    # goes first; the floor of three members stops the shortening there.
+    wide = {**QUERY, "[*:1]I": 0.5}
+    shortened = rank_next_substituents(store, "act", "higher", rgroups=wide, support_ladder=(5,))
+    assert shortened.dropped == ("[*:1]I",)
+    assert shortened.query_used == ("[*:1][H]", "[*:1]F", "[*:1]Cl")
+    assert shortened.support_level == 5
+    assert shortened.matched_series == 5
+    # A dropped query member is still a query member, so it is never a candidate.
+    assert [row["rgroup"] for row in shortened.to_dicts()] == ["[*:1]Br"]
+    # The only fixture with a non-empty `dropped`, so it is where filtering can
+    # prove that _clone carries that field too.
+    kept = shortened.filter(min_support=5)
+    assert (kept.dropped, kept.query_used) == (shortened.dropped, shortened.query_used)
+    unshortened = rank_next_substituents(store, "act", "higher", rgroups=wide, support_ladder=(5,), shorten=False)
+    assert unshortened.dropped == ()
+    assert unshortened.query_used == ("[*:1][H]", "[*:1]F", "[*:1]Cl", "[*:1]I")
+    assert len(unshortened) == 0
+    assert (unshortened.matched_series, unshortened.support_level) == (0, 0)
+
+
+def test_similarity_collection_filters_and_top(store, tmp_path):
+    similar = find_similar_series(store, "act", rgroups=QUERY, evidence=True)
+    assert len(similar.filter(min_overlap=4)) == 0
+    assert len(similar.filter(min_overlap=3)) == 5
+    assert len(similar.filter(max_centred_rmsd=0.0)) == 5
+    assert len(similar.evidence) == 15
+    assert len(similar.evidence.filter(series_id=similar[0].series_id)) == 3
+    two = similar.top(2)
+    assert len(two) == 2
+    assert two.query_size == similar.query_size
+    assert two.evidence is similar.evidence
+    # top() truncates the collection; the request's top=0 instead keeps every match.
+    assert len(similar.top(0)) == 0
+    assert len(find_similar_series(store, "act", rgroups=QUERY, top=0)) == 5
+
+    flat = find_similar_series(_flat_store(tmp_path / "flat-filters.duckdb"), "act", rgroups=QUERY)
+    assert [row["spearman"] is None for row in flat.to_dicts()] == [False, True]
+    defined = "[*:1]c1ccc(cc1)C"
+    assert [row["constant"] for row in flat.filter(min_spearman=-2.0).to_dicts()] == [defined]
+    assert [row["constant"] for row in flat.filter(max_centred_rmsd=0.0).to_dicts()] == [defined]
 
 
 def test_ranking_dataframes_carry_the_documented_columns(store):
@@ -211,12 +276,7 @@ def test_similarity_by_series_id_excludes_itself_and_reports_undefined_spearman(
     similar = find_similar_series(store, "act", series_id=first)
     assert similar.query_size == 4
     assert first not in [row["series_id"] for row in similar.to_dicts()]
-    flat = Analyzer()
-    _add_core(flat, "C", "q", 3.0, 2.0, 1.0, 9.0)
-    _add_core(flat, "N", "d", 2.0, 2.0, 2.0, 9.0)
-    flat.analyze()
-    flat_store = DuckDBStore(tmp_path / "flat.duckdb")
-    flat_store.save_analyzer(flat)
+    flat_store = _flat_store(tmp_path / "flat.duckdb")
     rows = find_similar_series(flat_store, "act", rgroups=QUERY).to_dicts()
     undefined = [row for row in rows if row["constant"] == "[*:1]c1ccc(cc1)N"]
     assert len(undefined) == 1

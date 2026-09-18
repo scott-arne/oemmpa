@@ -472,6 +472,9 @@ class SeriesSimilarityCollection(_RowCollection):
     def top(self, n):
         """Return the first ``n`` matches in the stored order.
 
+        ``n == 0`` returns an empty collection, unlike the ``top=0`` argument of
+        :func:`oemmpa.find_similar_series`, which keeps every match.
+
         :param n: Number of matches to keep.
         :returns: A new :class:`SeriesSimilarityCollection`.
         """
