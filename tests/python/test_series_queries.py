@@ -147,6 +147,12 @@ def test_direction_and_rgroup_forms_are_coerced(store):
         # True as HIGHER_IS_BETTER instead of rejecting a malformed request.
         ({"direction": True, "rgroups": QUERY}, "direction"),
         ({"direction": False, "rgroups": QUERY}, "direction"),
+        # A float equal to a constant would pass an equality test and then reach
+        # the SWIG setter, which raises TypeError instead of the contracted ValueError.
+        ({"direction": 1.0, "rgroups": QUERY}, "direction"),
+        ({"direction": 2.0, "rgroups": QUERY}, "direction"),
+        ({"direction": 3, "rgroups": QUERY}, "direction"),
+        ({"direction": None, "rgroups": QUERY}, "direction"),
     ],
 )
 def test_python_side_validation_raises_value_error_before_the_store(kwargs, match):
@@ -155,11 +161,21 @@ def test_python_side_validation_raises_value_error_before_the_store(kwargs, matc
         rank_next_substituents(_ExplodingStore(), "act", direction, **kwargs)
 
 
-@pytest.mark.parametrize("measure", [True, False])
-def test_boolean_measure_is_rejected_before_the_store(measure):
-    # Without the guard False reaches the engine as SPEARMAN and True as CENTRED_RMSD.
+@pytest.mark.parametrize("measure", [True, False, 0.0, 1.0, 2, None])
+def test_invalid_measure_is_rejected_before_the_store(measure):
+    # bool is an int subclass and a float compares equal to an int constant, so an
+    # unguarded equality test reads False as SPEARMAN and lets 1.0 through to the
+    # SWIG setter, which raises TypeError rather than the contracted ValueError.
     with pytest.raises(ValueError, match="measure"):
         find_similar_series(_ExplodingStore(), "act", rgroups=QUERY, measure=measure)
+
+
+def test_integer_enum_values_are_the_binding_constants(store):
+    # The SWIG constants are plain ints, so an equal int is the constant itself
+    # and normalising the input must not start rejecting it.
+    assert (_oemmpa.PropertyDirection_HIGHER_IS_BETTER, _oemmpa.SimilarityMeasure_CENTRED_RMSD) == (1, 1)
+    assert rank_next_substituents(store, "act", 1, rgroups=QUERY, support_ladder=(5,)).matched_series == 5
+    assert len(find_similar_series(store, "act", rgroups=QUERY, measure=1)) == 5
 
 
 @pytest.mark.parametrize(

@@ -160,12 +160,20 @@ def _direction_constant(direction):
         if key not in _DIRECTIONS:
             raise ValueError(f"direction must be 'higher' or 'lower', not {direction!r}")
         return _DIRECTIONS[key]
-    # bool is an int subclass, so the membership test below would read True as
+    # bool is an int subclass, so the comparison below would read True as
     # HIGHER_IS_BETTER and run a real query on a malformed request.
     if isinstance(direction, bool):
         raise ValueError(f"direction must be 'higher', 'lower' or a PropertyDirection constant, not {direction!r}")
-    if direction in (_oemmpa.PropertyDirection_HIGHER_IS_BETTER, _oemmpa.PropertyDirection_LOWER_IS_BETTER):
-        return direction
+    # The constants are plain ints, so a float equal to one would compare equal
+    # and then fail in the SWIG setter with a TypeError. Normalising first keeps
+    # the failure a ValueError and makes the returned value the constant itself.
+    try:
+        normalized = operator.index(direction)
+    except TypeError:
+        raise ValueError(f"direction must be 'higher', 'lower' or a PropertyDirection constant, not {direction!r}") from None
+    for constant in (_oemmpa.PropertyDirection_HIGHER_IS_BETTER, _oemmpa.PropertyDirection_LOWER_IS_BETTER):
+        if normalized == constant:
+            return constant
     raise ValueError("direction must be 'higher', 'lower' or a PropertyDirection constant other than UNSPECIFIED")
 
 
@@ -176,12 +184,17 @@ def _measure_constant(measure):
         if key not in _MEASURES:
             raise ValueError(f"measure must be 'spearman' or 'crmsd', not {measure!r}")
         return _MEASURES[key]
-    # As for the direction, a bool would otherwise pass the membership test:
+    # As for the direction, a bool would otherwise compare equal to a constant:
     # False reads as SPEARMAN and True as CENTRED_RMSD.
     if isinstance(measure, bool):
         raise ValueError(f"measure must be 'spearman', 'crmsd' or a SimilarityMeasure constant, not {measure!r}")
-    if measure in (_oemmpa.SimilarityMeasure_SPEARMAN, _oemmpa.SimilarityMeasure_CENTRED_RMSD):
-        return measure
+    try:
+        normalized = operator.index(measure)
+    except TypeError:
+        raise ValueError(f"measure must be 'spearman', 'crmsd' or a SimilarityMeasure constant, not {measure!r}") from None
+    for constant in (_oemmpa.SimilarityMeasure_SPEARMAN, _oemmpa.SimilarityMeasure_CENTRED_RMSD):
+        if normalized == constant:
+            return constant
     raise ValueError("measure must be 'spearman', 'crmsd' or a SimilarityMeasure constant")
 
 
