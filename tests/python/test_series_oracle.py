@@ -59,6 +59,38 @@ def _random_query(rng, size, *, distinct):
     return [(name, float(value)) for name, value in zip(names, values, strict=True)]
 
 
+def _add_core(analyzer, core, tag, h, f, cl, br):
+    analyzer.add_molecule(f"c1ccccc1{core}", id=f"{tag}-H")   # Ring first: same attachment as below.
+    analyzer.add_molecule(f"Fc1ccc({core})cc1", id=f"{tag}-F")
+    analyzer.add_molecule(f"Clc1ccc({core})cc1", id=f"{tag}-Cl")
+    analyzer.add_molecule(f"Brc1ccc({core})cc1", id=f"{tag}-Br")
+    for suffix, value in (("H", h), ("F", f), ("Cl", cl), ("Br", br)):
+        analyzer.add_property(f"{tag}-{suffix}", "act", value)
+
+
+def _tie_store(path):
+    """Return a store whose second series ties two of the query's values."""
+    analyzer = Analyzer()
+    _add_core(analyzer, "C", "y", 3.0, 2.0, 1.0, 3.0)    # Matches; Br only equals the best query value.
+    _add_core(analyzer, "CC", "x", 3.0, 2.0, 2.0, 5.0)   # F and Cl tie, so the order is not strict.
+    analyzer.analyze()
+    store = DuckDBStore(path)
+    store.save_analyzer(analyzer)
+    return store
+
+
+def _first_series(oracle, predicate):
+    """Lowest-id one-cut series whose valued members satisfy ``predicate``, else ``(None, None)``."""
+    # One cut only: an id-based query inherits its own series' cut count, while
+    # the oracle's queries default to one, so the two would compare different
+    # populations for a two-cut series.
+    for series_id in sorted(oracle.entries):
+        entry = oracle.entries[series_id]
+        if entry["cut_count"] == 1 and predicate(entry["values"]):
+            return series_id, entry
+    return None, None
+
+
 @pytest.mark.parametrize("seed", [1, 2, 3])
 @pytest.mark.parametrize("replicates", [False, True])
 def test_ranking_matches_the_oracle_on_random_stores(tmp_path, seed, replicates):
@@ -92,7 +124,43 @@ def test_ranking_matches_the_oracle_on_random_stores(tmp_path, seed, replicates)
             query_rows = [row for row in evidence if row["role"] == "query"]
             assert len(query_rows) == expected["matched_series"] * len(expected["query_used"])
             candidate_rows = [row for row in evidence if row["role"] == "candidate"]
-            assert {row["rgroup"] for row in candidate_rows} <= {row["rgroup"] for row in rows}
+            # Every reported candidate is evidenced, and exactly once per matched
+            # series that contains it, so the row count is the reported support.
+            assert {row["rgroup"] for row in candidate_rows} == {row["rgroup"] for row in rows}
+            assert len(candidate_rows) == sum(row["support"] for row in rows)
+    # An id-based query: the store reads the query out of the series itself, and
+    # spec 7.3 keeps every one of those members out of the candidates. Distinct
+    # medians are required because the store refuses a tied query order.
+    query_id, entry = _first_series(
+        oracle, lambda values: len(values) >= 3 and len(set(values.values())) == len(values))
+    assert query_id is not None, f"seed {seed} must hold a one-cut series with three distinctly valued members"
+    expected = oracle.rank(list(entry["values"].items()), "higher", support_ladder=(2,), min_query_length=2)
+    actual = rank_next_substituents(store, "act", "higher", series_id=query_id, support_ladder=(2,),
+                                    min_query_length=2)
+    assert actual.query_used == expected["query_used"], (seed, replicates, query_id)
+    assert actual.dropped == expected["dropped"]
+    assert actual.support_level == expected["support_level"]
+    assert actual.matched_series == expected["matched_series"]
+    assert [(row["rgroup"], row["support"], row["wins"]) for row in actual.to_dicts()] == [
+        (row["rgroup"], row["support"], row["wins"]) for row in expected["candidates"]
+    ]
+
+
+def test_ties_break_matches_and_never_count_as_wins(tmp_path):
+    """Spec 7.3 compares strictly: a tie is neither a match nor a win, in the store and in the oracle."""
+    store = _tie_store(tmp_path / "ties.duckdb")
+    oracle = SeriesOracle.from_store(store, "act")
+    query = [("[*:1][H]", 3.0), ("[*:1]F", 2.0), ("[*:1]Cl", 1.0)]
+    actual = rank_next_substituents(store, "act", "higher", rgroups=query, support_ladder=(1,), min_query_length=2)
+    expected = oracle.rank(query, "higher", support_ladder=(1,), min_query_length=2)
+    scored = [(row["rgroup"], row["support"], row["wins"]) for row in actual.to_dicts()]
+    # The tying series would add a second match and a winning Br (5.0 against the
+    # best query value 3.0) under non-strict comparisons, so one match with a
+    # scoreless Br pins both strictness rules at once.
+    assert actual.matched_series == 1
+    assert scored == [("[*:1]Br", 1, 0)]
+    assert expected["matched_series"] == actual.matched_series
+    assert [(row["rgroup"], row["support"], row["wins"]) for row in expected["candidates"]] == scored
 
 
 @pytest.mark.parametrize("seed", [4, 5, 6])
@@ -107,9 +175,13 @@ def test_similarity_matches_the_oracle_on_random_stores(tmp_path, seed):
             top = rng.choice([0, 2])
             selection = SeriesSelectionOptions(max_variable_heavy_atoms=rng.choice([0, 1, 4]))
             expected = oracle.similar(query, min_overlap=min_overlap, measure=measure, top=top, selection=selection)
-            actual = find_similar_series(store, "act", rgroups=query, min_overlap=min_overlap, measure=measure,
-                                         top=top, selection=selection, evidence=True).to_dicts()
+            result = find_similar_series(store, "act", rgroups=query, min_overlap=min_overlap, measure=measure,
+                                         top=top, selection=selection, evidence=True)
+            actual = result.to_dicts()
             assert [row["series_id"] for row in actual] == [row["series_id"] for row in expected], (measure, query)
+            # The random names are distinct strings and canonicalise to themselves,
+            # so every supplied R-group is a valued query member.
+            assert result.query_size == len(query)
             for got, want in zip(actual, expected, strict=True):
                 assert got["overlap"] == want["overlap"]
                 if want["spearman"] is None:
@@ -117,13 +189,27 @@ def test_similarity_matches_the_oracle_on_random_stores(tmp_path, seed):
                 else:
                     assert got["spearman"] == pytest.approx(want["spearman"])
                 assert got["centred_rmsd"] == pytest.approx(want["centred_rmsd"])
-    # An id-based query: the query series itself is excluded.
-    any_series = next(iter(oracle.entries))
-    entry = oracle.entries[any_series]
-    if len(entry["values"]) >= 2:
-        expected = oracle.similar(list(entry["values"].items()), min_overlap=2, exclude_series_id=any_series)
-        actual = find_similar_series(store, "act", series_id=any_series, min_overlap=2).to_dicts()
-        assert [row["series_id"] for row in actual] == [row["series_id"] for row in expected]
+            # The evidence is the shared set of the reported matches alone, in its
+            # own order (series id, then R-group SMILES) rather than in rank order.
+            shared = [
+                (match["series_id"], rgroup, query_value, candidate_value)
+                for match in sorted(expected, key=lambda match: match["series_id"])
+                for rgroup, query_value, candidate_value in match["shared"]
+            ]
+            evidence = result.evidence.to_dicts()
+            assert [(row["series_id"], row["rgroup"]) for row in evidence] == [
+                (series_id, rgroup) for series_id, rgroup, _, _ in shared
+            ]
+            for got, (_, _, query_value, candidate_value) in zip(evidence, shared, strict=True):
+                assert got["query_value"] == pytest.approx(query_value)
+                assert got["candidate_value"] == pytest.approx(candidate_value)
+    # An id-based query: the query series itself is excluded. The series is chosen
+    # deterministically, so the tail can never silently skip.
+    query_id, entry = _first_series(oracle, lambda values: len(values) >= 2)
+    assert query_id is not None, f"seed {seed} must hold a one-cut series with two valued members"
+    expected = oracle.similar(list(entry["values"].items()), min_overlap=2, exclude_series_id=query_id)
+    actual = find_similar_series(store, "act", series_id=query_id, min_overlap=2).to_dicts()
+    assert [row["series_id"] for row in actual] == [row["series_id"] for row in expected]
 
 
 def test_spearman_with_ties_agrees_with_scipy():

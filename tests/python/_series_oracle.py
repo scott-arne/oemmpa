@@ -180,6 +180,10 @@ class SeriesOracle:
             rows.append({
                 "series_id": series_id, "constant": entry["constant"], "cut_count": entry["cut_count"],
                 "overlap": len(shared), "spearman": spearman(x, y), "centred_rmsd": centred_rmsd(x, y),
+                # The evidence of spec 7.4 for this match, already in its own
+                # order (SMILES within the series), so a differential can compare
+                # the store's evidence rows without recomputing the shared set.
+                "shared": list(zip(shared, x, y, strict=True)),
             })
         if measure == "spearman":
             rows.sort(key=lambda row: (row["spearman"] is None, -(row["spearman"] or 0.0), -row["overlap"], row["series_id"]))
