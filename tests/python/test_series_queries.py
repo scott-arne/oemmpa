@@ -61,6 +61,26 @@ def _flat_store(path):
     return flat_store
 
 
+def _measure_store(path):
+    """Return a store whose three series rank differently under the two measures."""
+    analyzer = Analyzer()
+    _add_core(analyzer, "C", "m1", 1.0, 2.0, 3.0, 0.0)
+    _add_core(analyzer, "CC", "m2", 2.0, 3.0, 1.0, 0.0)
+    _add_core(analyzer, "OC", "m3", 9.0, 2.0, 1.0, 0.0)
+    analyzer.analyze()
+    measures = DuckDBStore(path)
+    measures.save_analyzer(analyzer)
+    return measures
+
+
+class _ExplodingStore:
+    """A store whose raw handle raises, so reaching the database fails the test."""
+
+    @property
+    def raw(self):
+        raise AssertionError("argument validation must reject the request before the store is used")
+
+
 def _series_id(store, constant):
     for series in store.series():
         if series.GetConstantSmiles() == constant:
@@ -108,16 +128,38 @@ def test_direction_and_rgroup_forms_are_coerced(store):
         ({"rgroups": {"[*:1]F": 1.0}}, "at least two"),
         ({"rgroups": {"[*:1]F": 1.0, "[*:1]Cl": math.nan}}, "finite"),
         ({"rgroups": [("[*:1]F", 1.0, 2.0), ("[*:1]Cl", 0.5)]}, "pairs"),
+        # Neither the argument nor its entries iterate into pairs.
+        ({"rgroups": 17}, r"rgroups.*pairs"),
+        ({"rgroups": [1, 2]}, r"rgroups.*pairs"),
+        # A string iterates over its characters, which must still read as the pairs failure.
+        ({"rgroups": "[*:1]F=1"}, r"rgroups.*pairs"),
+        # float() raises TypeError here and OverflowError on the huge integer.
+        ({"rgroups": {"[*:1]F": object(), "[*:1]Cl": 1.0}}, r"rgroups.*finite"),
+        ({"rgroups": {"[*:1]F": None, "[*:1]Cl": 1.0}}, r"rgroups.*finite"),
+        ({"rgroups": {"[*:1]F": 10**400, "[*:1]Cl": 1.0}}, r"rgroups.*finite"),
         ({"rgroups": QUERY, "support_ladder": ()}, "support_ladder"),
+        ({"rgroups": QUERY, "support_ladder": None}, "support_ladder"),
         ({"rgroups": QUERY, "support_ladder": (5, 10)}, "support_ladder"),
         ({"rgroups": QUERY, "support_ladder": (10, 0)}, "support_ladder"),
         ({"rgroups": QUERY, "support_ladder": (2.5,)}, "support_ladder"),
         ({"rgroups": QUERY, "min_query_length": 1}, "min_query_length"),
+        # bool is an int subclass, so an unguarded membership test would read
+        # True as HIGHER_IS_BETTER instead of rejecting a malformed request.
+        ({"direction": True, "rgroups": QUERY}, "direction"),
+        ({"direction": False, "rgroups": QUERY}, "direction"),
     ],
 )
-def test_python_side_validation_raises_value_error_before_the_store(store, kwargs, match):
+def test_python_side_validation_raises_value_error_before_the_store(kwargs, match):
+    direction = kwargs.pop("direction", "higher")
     with pytest.raises(ValueError, match=match):
-        rank_next_substituents(store, "act", "higher", **kwargs)
+        rank_next_substituents(_ExplodingStore(), "act", direction, **kwargs)
+
+
+@pytest.mark.parametrize("measure", [True, False])
+def test_boolean_measure_is_rejected_before_the_store(measure):
+    # Without the guard False reaches the engine as SPEARMAN and True as CENTRED_RMSD.
+    with pytest.raises(ValueError, match="measure"):
+        find_similar_series(_ExplodingStore(), "act", rgroups=QUERY, measure=measure)
 
 
 @pytest.mark.parametrize(
@@ -269,6 +311,27 @@ def test_find_similar_series_orders_and_exposes_metadata(store):
         find_similar_series(store, "act", rgroups=QUERY, min_overlap=1)
     with pytest.raises(ValueError, match="top"):
         find_similar_series(store, "act", rgroups=QUERY, top=-1)
+
+
+def test_similarity_measure_chooses_a_different_ordering(tmp_path):
+    # The query (H 3, F 2, Cl 1) centres to (1, 0, -1). The three candidates are
+    # C (1, 2, 3) -> (-1, 0, 1), CC (2, 3, 1) -> (0, 1, -1) and OC (9, 2, 1) -> (5, -2, -3),
+    # so the centred RMSD sqrt(mean(difference^2)) is sqrt(8/3), sqrt(2/3) and sqrt(8),
+    # while the rank correlations are -1, +0.5 and +1. Descending Spearman therefore
+    # gives OC, CC, C and ascending centred RMSD gives CC, C, OC: two different
+    # permutations, and neither is the series-id order, so neither a measure that
+    # is ignored nor a sort that falls back to the id can pass both assertions.
+    measures = _measure_store(tmp_path / "measures.duckdb")
+    methyl, ethyl, methoxy = "[*:1]c1ccc(cc1)C", "[*:1]c1ccc(cc1)CC", "[*:1]c1ccc(cc1)OC"
+    by_spearman = find_similar_series(measures, "act", rgroups=QUERY).to_dicts()
+    assert [row["constant"] for row in by_spearman] == [methoxy, ethyl, methyl]
+    assert [row["spearman"] for row in by_spearman] == [pytest.approx(value) for value in (1.0, 0.5, -1.0)]
+    assert [row["series_id"] for row in by_spearman] != sorted(row["series_id"] for row in by_spearman)
+    for measure in ("crmsd", "centred_rmsd", "centered_rmsd", "CENTRED_RMSD", _oemmpa.SimilarityMeasure_CENTRED_RMSD):
+        rows = find_similar_series(measures, "act", rgroups=QUERY, measure=measure).to_dicts()
+        assert [row["constant"] for row in rows] == [ethyl, methyl, methoxy], measure
+        expected = (math.sqrt(2.0 / 3.0), math.sqrt(8.0 / 3.0), math.sqrt(8.0))
+        assert [row["centred_rmsd"] for row in rows] == [pytest.approx(value) for value in expected]
 
 
 def test_similarity_by_series_id_excludes_itself_and_reports_undefined_spearman(store, tmp_path):

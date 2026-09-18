@@ -160,6 +160,10 @@ def _direction_constant(direction):
         if key not in _DIRECTIONS:
             raise ValueError(f"direction must be 'higher' or 'lower', not {direction!r}")
         return _DIRECTIONS[key]
+    # bool is an int subclass, so the membership test below would read True as
+    # HIGHER_IS_BETTER and run a real query on a malformed request.
+    if isinstance(direction, bool):
+        raise ValueError(f"direction must be 'higher', 'lower' or a PropertyDirection constant, not {direction!r}")
     if direction in (_oemmpa.PropertyDirection_HIGHER_IS_BETTER, _oemmpa.PropertyDirection_LOWER_IS_BETTER):
         return direction
     raise ValueError("direction must be 'higher', 'lower' or a PropertyDirection constant other than UNSPECIFIED")
@@ -172,6 +176,10 @@ def _measure_constant(measure):
         if key not in _MEASURES:
             raise ValueError(f"measure must be 'spearman' or 'crmsd', not {measure!r}")
         return _MEASURES[key]
+    # As for the direction, a bool would otherwise pass the membership test:
+    # False reads as SPEARMAN and True as CENTRED_RMSD.
+    if isinstance(measure, bool):
+        raise ValueError(f"measure must be 'spearman', 'crmsd' or a SimilarityMeasure constant, not {measure!r}")
     if measure in (_oemmpa.SimilarityMeasure_SPEARMAN, _oemmpa.SimilarityMeasure_CENTRED_RMSD):
         return measure
     raise ValueError("measure must be 'spearman', 'crmsd' or a SimilarityMeasure constant")
@@ -183,14 +191,24 @@ def _query_source(series_id, rgroups):
         raise ValueError("exactly one of series_id and rgroups is required")
     if series_id is not None:
         return _integer("series_id", series_id, 1), [], []
-    items = list(rgroups.items()) if isinstance(rgroups, Mapping) else [tuple(item) for item in rgroups]
+    # Callers meet a uniform ValueError at this boundary, so the TypeError of a
+    # non-iterable argument or entry must not escape as itself.
+    try:
+        items = list(rgroups.items()) if isinstance(rgroups, Mapping) else [tuple(item) for item in rgroups]
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("rgroups must be a mapping or a sequence of (smiles, value) pairs") from None
     smiles = []
     values = []
     for item in items:
         if len(item) != 2:
             raise ValueError("rgroups entries must be (smiles, value) pairs")
-        smiles.append(str(item[0]))
-        values.append(float(item[1]))
+        # float() raises TypeError for a non-number and OverflowError for an
+        # integer too large to represent; both are shape failures, not bugs.
+        try:
+            smiles.append(str(item[0]))
+            values.append(float(item[1]))
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("rgroups entries must pair a SMILES string with a finite value") from None
     if len(smiles) < 2:
         raise ValueError("rgroups needs at least two entries")
     if not all(math.isfinite(value) for value in values):
@@ -200,7 +218,11 @@ def _query_source(series_id, rgroups):
 
 def _validated_ladder(support_ladder):
     """Return the support ladder as a strictly decreasing list of positive ints."""
-    ladder = [_integer("support_ladder", level, 1) for level in support_ladder]
+    try:
+        levels = list(support_ladder)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("support_ladder must be a sequence of positive integers") from None
+    ladder = [_integer("support_ladder", level, 1) for level in levels]
     if not ladder:
         raise ValueError("support_ladder must not be empty")
     if any(later >= earlier for earlier, later in pairwise(ladder)):
