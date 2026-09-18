@@ -1,4 +1,5 @@
 import pathlib
+
 import pytest
 
 WRAP = pathlib.Path("build-debug/swig/oemmpaPYTHON_wrap.cxx")
@@ -51,12 +52,13 @@ def test_target_methods_release_gil():
     assert not any(any(r in b for r in RELEASE) for b in getter), \
         "trivial getter should stay GIL-held"
     # Exclusivity: sample other non-target wrappers and assert they do NOT release.
-    non_targets = ("Analyzer_GetFragmentationCount", "DuckDBStore_GetDatabasePath",
-                   "AnalysisMethod_GetMethodName", "Fragmenter_GetMaxCuts",
+    # Every name here must exist in the wrapper, otherwise the check is vacuous.
+    non_targets = ("Analyzer_GetStrippedNames", "DuckDBStore_GetRowCount",
+                   "AnalysisMethod_LastAnalyzeWorkerCount", "Fragmenter_GetMaxCuts",
                    "Analyzer_ProducesSeries", "DuckDBStore_GetSeriesCount")
     for name in non_targets:
-        assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), \
-            f"{name} should NOT release the GIL"
+        assert re.search(r"_wrap_" + name + r"\b", text), f"{name} is not a wrapper any more"
+        assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), f"{name} should NOT release the GIL"
     # Total GIL macro count: must be low. Only the BEGIN macros are counted, one
     # per releasing wrapper body, so the bound is the 10 targets times their
     # overloads rather than a begin-and-end pair count.
@@ -112,3 +114,18 @@ def test_query_requests_are_copied_before_the_gil_is_released():
             f"{wrapper} must copy the request before the GIL is released"
         assert record not in after, \
             f"{wrapper} must not read the Python-owned request after releasing the GIL"
+
+
+@pytest.mark.skipif(not WRAP.exists(), reason="generated SWIG wrapper not built")
+def test_query_options_are_copied_before_the_gil_is_released():
+    import re
+    text = WRAP.read_text()
+    for wrapper in ("Analyzer_GetPairs__SWIG_1", "Analyzer_GetTransforms__SWIG_1"):
+        source = _wrapper_source(text, wrapper)
+        before, macro, after = source.partition("SWIG_PYTHON_THREAD_BEGIN_ALLOW")
+        assert macro, f"{wrapper} should release the GIL"
+        assert re.search(r"OEMMPA::QueryOptions arg\d+ ;", before), \
+            f"{wrapper} must take the options by value"
+        assert re.search(r"arg\d+ = \*\w+;", before), \
+            f"{wrapper} must copy the options before the GIL is released"
+        assert "QueryOptions" not in after

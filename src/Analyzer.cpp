@@ -416,7 +416,7 @@ std::vector<MatchedPair> Analyzer::GetPairs() const {
     return GetPairs(QueryOptions());
 }
 
-std::vector<MatchedPair> Analyzer::GetPairs(const QueryOptions& options) const {
+std::vector<MatchedPair> Analyzer::GetPairs(QueryOptions options) const {
     RequireAnalyzed();
     return InjectProperties(method_->GetPairs(options));
 }
@@ -425,7 +425,7 @@ std::vector<Transform> Analyzer::GetTransforms() const {
     return GetTransforms(QueryOptions());
 }
 
-std::vector<Transform> Analyzer::GetTransforms(const QueryOptions& options) const {
+std::vector<Transform> Analyzer::GetTransforms(QueryOptions options) const {
     RequireAnalyzed();
     return build_transforms(GetPairs(options));
 }

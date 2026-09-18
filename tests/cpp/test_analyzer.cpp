@@ -1403,5 +1403,21 @@ TEST(ParallelAnalyzeTest, GetPairsAndTransformsIdenticalAcrossThreadCounts) {
     }
 }
 
+TEST(AnalyzerBoundary, QueryOptionsAreTakenByValueAtTheAnalyzerBoundary) {
+    // A temporary is accepted, and the by-value overload's member pointer exists.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    const std::vector<MatchedPair> by_temporary = analyzer.GetPairs(QueryOptions());
+    QueryOptions options;
+    const std::vector<MatchedPair> by_lvalue = analyzer.GetPairs(options);
+    EXPECT_EQ(by_temporary.size(), by_lvalue.size());
+    EXPECT_EQ(analyzer.GetTransforms(QueryOptions()).size(), analyzer.GetTransforms(options).size());
+    using ByValue = std::vector<MatchedPair> (Analyzer::*)(QueryOptions) const;
+    const ByValue pinned = &Analyzer::GetPairs;
+    EXPECT_NE(pinned, nullptr);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

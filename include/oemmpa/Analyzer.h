@@ -206,8 +206,12 @@ public:
 
     /// \brief Return analyzed matched pairs filtered by query options.
     ///
+    /// Taken by value: the Python wrapper releases the GIL around this call and
+    /// must not read a Python-owned options object through a reference while
+    /// another thread can change it.
+    ///
     /// Throws if Analyze() has not succeeded since the last mutation.
-    std::vector<MatchedPair> GetPairs(const QueryOptions& options) const;
+    std::vector<MatchedPair> GetPairs(QueryOptions options) const;
 
     /// \brief Return transforms grouped from pairs with default query options.
     ///
@@ -221,8 +225,12 @@ public:
     /// grouping). Callers that need both the pairs and the transforms for the
     /// same options should retain the returned vectors rather than re-querying.
     ///
+    /// Taken by value: the Python wrapper releases the GIL around this call and
+    /// must not read a Python-owned options object through a reference while
+    /// another thread can change it.
+    ///
     /// Throws if Analyze() has not succeeded since the last mutation.
-    std::vector<Transform> GetTransforms(const QueryOptions& options) const;
+    std::vector<Transform> GetTransforms(QueryOptions options) const;
 
     /// \brief Return the matched molecular series of the analysed index.
     ///
