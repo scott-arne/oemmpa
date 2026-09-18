@@ -296,6 +296,75 @@ smiles	transform	evidence_count
 No special flag is needed for this mode. If `--property` is omitted,
 `generate` writes the product-only report.
 
+## Matched Molecular Series
+
+Three commands read the series a store carries (schema 5; `oemmpa list` reports
+`series`, `series_members` and `series_source`). All three open the store
+read-only, write TSV to `--output` (or standard output), and refuse an output
+path that names the database.
+
+`oemmpa series` lists one row per (member, compound):
+
+```bash
+oemmpa series --database analysis.duckdb --min-length 3 --max-rgroup-heavies 12 \
+    --constant "[*:1]c1ccccc1" --output series.tsv
+```
+
+Columns: `series_id`, `constant`, `cut_count`, `constant_num_heavies`,
+`num_members`, `rgroup`, `rgroup_num_heavies`, `compound_id`. Series are
+ordered by constant SMILES then cut count, members by R-group SMILES, and a
+member's compounds by their numeric compound id. `--min-length`,
+`--max-rgroup-heavies`, `--min-constant-heavies` and `--cut-count` are the
+selection bounds; zero or an omitted flag means unbounded, and `--min-length 0`
+is the same as `1`.
+
+`oemmpa series-rank` ranks candidate next substituents the way Matsy does:
+
+```bash
+oemmpa series-rank --database analysis.duckdb --property pIC50 --direction higher \
+    --rgroup "[*:1][H]=6.1" --rgroup "[*:1]C=6.8" --rgroup "[*:1]Cl=7.4" \
+    --support-ladder 20,10,5 --evidence evidence.tsv --output ranked.tsv
+```
+
+The query is a stored series (`--series-id`), repeated `--rgroup SMILES=VALUE`
+flags, or `--query-file` (a two-column TSV of R-group SMILES and value; blank
+and `#` lines are skipped and a header line is tolerated). Exactly one form is
+required. `--direction` says which end of the property scale is better. The
+output starts with one comment line reporting `query_used` (best first),
+`dropped` (members removed by shortening), `support_level` and
+`matched_series`, then the rows `rgroup`, `rgroup_num_heavies`, `wins`,
+`support`, `fraction`, sorted by fraction, support, heavy atoms and SMILES.
+`--no-shorten` disables the query shortening and `--min-query-length` is its
+floor (at least 2). A member the shortening dropped is still a query member, so
+it is never reported as a candidate. `--evidence FILE` writes one row per query
+member and reported candidate of every matched series (`series_id`, `constant`,
+`role`, `rgroup`, `value`, `position`, `win`), ordered by series id, then role
+(query before candidate), then query position or R-group SMILES. An empty
+result is not an error: the comment line and the header are written and the
+exit code is 0.
+
+`oemmpa series-similar` finds stored series that order their shared R-groups
+like the query:
+
+```bash
+oemmpa series-similar --database analysis.duckdb --property pIC50 --series-id 42 \
+    --min-overlap 3 --measure spearman --top 20 --evidence shared.tsv
+```
+
+Rows: `series_id`, `constant`, `cut_count`, `overlap`, `spearman` (empty when
+undefined, which sorts last) and `centred_rmsd`. `--measure crmsd` sorts by the
+centred RMSD ascending instead; `--top` limits the rows after sorting; a
+`--series-id` query never lists itself. `--evidence FILE` writes one row per
+shared R-group of every reported series (`series_id`, `rgroup`, `query_value`,
+`candidate_value`), ordered by series id then R-group SMILES, so it is joined
+to the rows on `series_id` rather than by position.
+
+Request-validation errors (an unknown property, tied ranking values, duplicate
+or unlabelled R-groups, a nonexistent series id, a `--min-overlap` below 2)
+exit with code 2 and the store's message; database failures exit with code 1.
+A `--query-file` that names the same file as `--output` or `--evidence` is
+refused before anything is read or written.
+
 ## Detail Reports
 
 Persisted `predict` and persisted `generate` can also write rule-environment

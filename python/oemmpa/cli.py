@@ -4,6 +4,7 @@ import argparse
 from contextlib import contextmanager
 import csv
 import gzip
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -13,14 +14,23 @@ from oemmpa import (
     DuckDBStore,
     KRAMER_FIELDS,
     RuleEnvironmentPredictionResult,
+    SeriesSelectionOptions,
     _oemmpa,
     compute_transform_statistics,
+    find_similar_series,
     find_transform_environments,
     generate_products,
     generate_products_from_rule_environments,
     predict_transform_delta,
+    rank_next_substituents,
     read_rgroup_file,
     rgroups_to_recursive_smarts,
+)
+from oemmpa._series import (
+    RANKING_EVIDENCE_COLUMNS,
+    RANKING_ROW_COLUMNS,
+    SIMILARITY_EVIDENCE_COLUMNS,
+    SIMILARITY_ROW_COLUMNS,
 )
 
 
@@ -149,8 +159,34 @@ LIST_METRICS = [
     "series_source",
 ]
 
+SERIES_CLI_COLUMNS = [
+    "series_id",
+    "constant",
+    "cut_count",
+    "constant_num_heavies",
+    "num_members",
+    "rgroup",
+    "rgroup_num_heavies",
+    "compound_id",
+]
+
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
-INTEGER_COLUMNS = {"count", "evidence_count", "radius", "rule_environment_id"}
+INTEGER_COLUMNS = {
+    "count",
+    "evidence_count",
+    "radius",
+    "rule_environment_id",
+    "series_id",
+    "cut_count",
+    "constant_num_heavies",
+    "num_members",
+    "rgroup_num_heavies",
+    "wins",
+    "support",
+    "overlap",
+    "position",
+}
+BOOLEAN_COLUMNS = frozenset({"win"})
 
 
 def _add_input_arguments(
@@ -331,6 +367,10 @@ def _optional_nonnegative_int(value):
 def _format_value(value, column):
     if value is None:
         return ""
+    # bool is a subclass of int, so a flag column has to be caught before the
+    # numeric branches, which would print it as 1 or 0.
+    if column in BOOLEAN_COLUMNS and isinstance(value, bool):
+        return str(value)
     if column in INTEGER_COLUMNS and isinstance(value, int):
         return str(value)
     if isinstance(value, (float, int)):
@@ -389,6 +429,67 @@ def _write_tsv_output(rows, columns, output_path):
         _write_tsv(rows, columns, stream)
 
 
+def _write_tsv_output_with_comment(rows, columns, output_path, comment):
+    """Write a TSV report preceded by one ``#`` comment line of metadata.
+
+    :param rows: Report rows as dictionaries.
+    :param columns: Column names in output order.
+    :param output_path: Output path, ``"-"`` or ``None`` for standard output.
+    :param comment: Metadata text written after the ``#`` marker.
+    """
+    with _open_text_output(output_path) as stream:
+        stream.write(f"# {comment}\n")
+        _write_tsv(rows, columns, stream)
+
+
+def _parse_rgroup_options(values):
+    """Return the ``(smiles, value)`` pairs of repeated ``--rgroup SMILES=VALUE`` flags.
+
+    :param values: Raw flag values, or ``None`` when the flag was not given.
+    :returns: List of ``(smiles, value)`` pairs in flag order.
+    :raises ValueError: If an entry is not ``SMILES=VALUE`` with a numeric value.
+    """
+    rgroups = []
+    for item in values or ():
+        # An R-group SMILES cannot contain '=' at its end, so the last '=' is
+        # the separator and a bond '=' inside the SMILES stays with the SMILES.
+        smiles, separator, value = item.rpartition("=")
+        if not separator or not smiles:
+            raise ValueError(f"--rgroup expects SMILES=VALUE, got {item!r}")
+        try:
+            rgroups.append((smiles, float(value)))
+        except ValueError:
+            raise ValueError(f"--rgroup value is not a number: {item!r}") from None
+    return rgroups
+
+
+def _read_query_file(path):
+    """Read a two-column TSV of R-group SMILES and values; blank and ``#`` lines are skipped.
+
+    :param path: Query file path.
+    :returns: List of ``(smiles, value)`` pairs in file order.
+    :raises ValueError: If a line does not hold two columns or carries a
+        non-numeric value below the header.
+    """
+    rgroups = []
+    with _open_text_input(path) as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            fields = stripped.split("\t") if "\t" in stripped else stripped.split()
+            if len(fields) != 2:
+                raise ValueError(f"{path}, line {line_number}: expected two columns (rgroup, value)")
+            try:
+                value = float(fields[1])
+            except ValueError:
+                if line_number == 1 or not rgroups:
+                    continue   # A header line such as "rgroup value".
+                raise ValueError(f"{path}, line {line_number}: value is not a number: {fields[1]!r}") from None
+            rgroups.append((fields[0], value))
+    return rgroups
+
+
 def _read_rgroups_from_stream(stream, source_name):
     rgroups = []
     for line_number, line in enumerate(stream, start=1):
@@ -406,13 +507,31 @@ def _read_rgroups_from_stream(stream, source_name):
     return rgroups
 
 
+def _same_file(left, right):
+    """Whether two paths name one file: equal after resolution, or the same inode when both exist.
+
+    Resolution alone misses hard links (two names, one inode), so an existing
+    pair is also compared with ``os.path.samefile``. Neither check raises for a
+    missing path, so a not-yet-written report can be compared safely.
+
+    :param left: First path.
+    :param right: Second path.
+    :returns: Whether both paths name the same file.
+    """
+    left_path = Path(left).expanduser()
+    right_path = Path(right).expanduser()
+    if left_path.resolve(strict=False) == right_path.resolve(strict=False):
+        return True
+    if left_path.exists() and right_path.exists():
+        return os.path.samefile(left_path, right_path)
+    return False
+
+
 def _ensure_report_output_is_not_database(database_path, output_path):
     if output_path is None or str(output_path) == "-":
         return
 
-    database = Path(database_path).expanduser().resolve(strict=False)
-    output = Path(output_path).expanduser().resolve(strict=False)
-    if output == database:
+    if _same_file(database_path, output_path):
         raise ValueError(f"output path must differ from database: {output_path}")
 
 
@@ -427,14 +546,29 @@ def _detail_paths(prefix):
 
 
 def _ensure_report_outputs_are_distinct(*paths):
-    seen = set()
+    seen = []
     for path in paths:
-        if path is None:
+        if path is None or str(path) == "-":
             continue
-        resolved = Path(path).expanduser().resolve(strict=False)
-        if resolved in seen:
+        if any(_same_file(path, earlier) for earlier in seen):
             raise ValueError(f"report output paths must be distinct: {path}")
-        seen.add(resolved)
+        seen.append(path)
+
+
+def _ensure_query_file_is_not_a_report(query_file, *report_paths):
+    """Refuse a query file that a report path would overwrite once the results are written.
+
+    :param query_file: Query file path, or ``None`` when no query file is used.
+    :param report_paths: Report paths the command would write.
+    :raises ValueError: If a report path names the query file.
+    """
+    if query_file is None:
+        return
+    for path in report_paths:
+        if path is None or str(path) == "-":
+            continue
+        if _same_file(query_file, path):
+            raise ValueError(f"--query-file must differ from --output and --evidence: {query_file}")
 
 
 def _ensure_persisted_report_outputs(database_path, output_path, detail_prefix):
@@ -961,6 +1095,19 @@ def _open_store(path):
     return DuckDBStore(database_path)
 
 
+def _open_store_read_only(path):
+    """Open a store for the read commands: DuckDB read-only mode, no schema DDL, no writer lock.
+
+    :param path: DuckDB database path; it must already exist.
+    :returns: :class:`oemmpa.DuckDBStore` opened read-only.
+    :raises ValueError: If the database does not exist.
+    """
+    database_path = Path(path)
+    if not database_path.exists():
+        raise ValueError(f"missing database: {database_path}")
+    return DuckDBStore(database_path, read_only=True)
+
+
 def _build_store(args):
     output_path = Path(args.output)
     if output_path.is_dir():
@@ -1022,6 +1169,128 @@ def _list_store(args):
         for metric in LIST_METRICS
     ]
     _write_tsv_output(rows, LIST_COLUMNS, args.output)
+    return 0
+
+
+def _series_query_source(args):
+    """Return ``(series_id, rgroups)`` from exactly one of the three query flags.
+
+    :param args: Parsed arguments of ``series-rank`` or ``series-similar``.
+    :returns: The stored series id, or the parsed ``(smiles, value)`` pairs.
+    :raises ValueError: If none or more than one query flag was given.
+    """
+    sources = [
+        args.series_id is not None,
+        bool(args.rgroup),
+        args.query_file is not None,
+    ]
+    if sum(sources) != 1:
+        raise ValueError("exactly one of --series-id, --rgroup and --query-file is required")
+    if args.series_id is not None:
+        return args.series_id, None
+    if args.rgroup:
+        return None, _parse_rgroup_options(args.rgroup)
+    return None, _read_query_file(args.query_file)
+
+
+def _parse_support_ladder(text):
+    """Return the ``--support-ladder`` levels as a tuple of integers.
+
+    :param text: Comma-separated levels.
+    :returns: Tuple of levels in the given order.
+    :raises ValueError: If a level is not an integer.
+    """
+    try:
+        return tuple(int(level) for level in text.split(","))
+    except ValueError:
+        raise ValueError(f"--support-ladder expects comma-separated integers, got {text!r}") from None
+
+
+def _series_selection_from_args(args):
+    """Return the :class:`oemmpa.SeriesSelectionOptions` of the selection flags.
+
+    :param args: Parsed arguments carrying the selection bounds.
+    :returns: Selection options; an omitted bound stays unbounded.
+    """
+    return SeriesSelectionOptions(
+        min_series_length=2 if args.min_length is None else args.min_length,
+        max_variable_heavy_atoms=args.max_rgroup_heavies or 0,
+        min_constant_heavy_atoms=args.min_constant_heavies or 0,
+        cut_count=getattr(args, "cut_count", None) or 0,
+    )
+
+
+def _add_series_selection_arguments(parser, *, with_cut_count):
+    parser.add_argument("--min-length", type=int, default=None,
+                        help="Minimum members a series keeps after the member filter (default 2).")
+    parser.add_argument("--max-rgroup-heavies", type=int, default=None,
+                        help="Drop members whose R-group has more heavy atoms than this.")
+    parser.add_argument("--min-constant-heavies", type=int, default=None,
+                        help="Drop series whose constant has fewer heavy atoms than this.")
+    if with_cut_count:
+        parser.add_argument("--cut-count", type=int, default=None, help="Keep only series of this cut count.")
+
+
+def _add_series_query_arguments(parser):
+    parser.add_argument("--database", required=True, help="DuckDB database path.")
+    parser.add_argument("--property", required=True, help="Stored property name.")
+    parser.add_argument("--series-id", type=int, default=None, help="Stored series id to use as the query.")
+    parser.add_argument("--rgroup", action="append", default=None, metavar="SMILES=VALUE",
+                        help="Query R-group with its value; repeat for every member.")
+    parser.add_argument("--query-file", default=None, help="Two-column TSV of R-group SMILES and values.")
+    parser.add_argument("--evidence", default=None, help="Optional TSV path for the evidence rows.")
+    parser.add_argument("--output", default=None,
+                        help="Optional TSV output path, or '-' for standard output. Use .gz for gzip output.")
+
+
+def _series(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
+    store = _open_store_read_only(args.database)
+    rows = store.series(_series_selection_from_args(args)).to_dicts()
+    if args.constant is not None:
+        rows = [row for row in rows if row["constant"] == args.constant]
+    _write_tsv_output(rows, SERIES_CLI_COLUMNS, args.output)
+    return 0
+
+
+def _series_rank(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
+    _ensure_report_output_is_not_database(args.database, args.evidence)
+    _ensure_report_outputs_are_distinct(args.output, args.evidence)
+    _ensure_query_file_is_not_a_report(args.query_file, args.output, args.evidence)
+    series_id, rgroups = _series_query_source(args)
+    store = _open_store_read_only(args.database)
+    ranking = rank_next_substituents(
+        store, args.property, args.direction, series_id=series_id, rgroups=rgroups,
+        support_ladder=_parse_support_ladder(args.support_ladder), shorten=not args.no_shorten,
+        min_query_length=args.min_query_length, selection=_series_selection_from_args(args),
+        evidence=args.evidence is not None,
+    )
+    comment = (
+        f"query_used={','.join(ranking.query_used)}\tdropped={','.join(ranking.dropped)}"
+        f"\tsupport_level={ranking.support_level}\tmatched_series={ranking.matched_series}"
+    )
+    _write_tsv_output_with_comment(ranking.to_dicts(), list(RANKING_ROW_COLUMNS), args.output, comment)
+    if args.evidence is not None:
+        _write_tsv_output(ranking.evidence.to_dicts(), list(RANKING_EVIDENCE_COLUMNS), args.evidence)
+    return 0
+
+
+def _series_similar(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
+    _ensure_report_output_is_not_database(args.database, args.evidence)
+    _ensure_report_outputs_are_distinct(args.output, args.evidence)
+    _ensure_query_file_is_not_a_report(args.query_file, args.output, args.evidence)
+    series_id, rgroups = _series_query_source(args)
+    store = _open_store_read_only(args.database)
+    similar = find_similar_series(
+        store, args.property, series_id=series_id, rgroups=rgroups, min_overlap=args.min_overlap,
+        measure=args.measure, top=args.top, selection=_series_selection_from_args(args),
+        evidence=args.evidence is not None,
+    )
+    _write_tsv_output(similar.to_dicts(), list(SIMILARITY_ROW_COLUMNS), args.output)
+    if args.evidence is not None:
+        _write_tsv_output(similar.evidence.to_dicts(), list(SIMILARITY_EVIDENCE_COLUMNS), args.evidence)
     return 0
 
 
@@ -1538,6 +1807,38 @@ def _build_parser():
         ),
     )
     list_parser.set_defaults(func=_list_store)
+
+    series_parser = subparsers.add_parser(
+        "series", help="List the matched molecular series of a persistent DuckDB store.")
+    series_parser.add_argument("--database", required=True, help="DuckDB database path.")
+    _add_series_selection_arguments(series_parser, with_cut_count=True)
+    series_parser.add_argument("--constant", default=None, help="Keep only the series of this constant SMILES.")
+    series_parser.add_argument("--output", default=None,
+                               help="Optional TSV output path, or '-' for standard output. Use .gz for gzip output.")
+    series_parser.set_defaults(func=_series)
+
+    rank_parser = subparsers.add_parser(
+        "series-rank", help="Rank candidate next substituents for a query series (Matsy).")
+    _add_series_query_arguments(rank_parser)
+    rank_parser.add_argument("--direction", required=True, choices=["higher", "lower"],
+                             help="Which end of the property scale is better.")
+    rank_parser.add_argument("--support-ladder", default="20,10,5",
+                             help="Comma-separated, strictly decreasing support levels.")
+    rank_parser.add_argument("--no-shorten", action="store_true",
+                             help="Do not drop the least common query member when no candidate reaches the last level.")
+    rank_parser.add_argument("--min-query-length", type=int, default=3, help="Floor of the shortening (at least 2).")
+    _add_series_selection_arguments(rank_parser, with_cut_count=False)
+    rank_parser.set_defaults(func=_series_rank)
+
+    similar_parser = subparsers.add_parser(
+        "series-similar", help="Find stored series whose shared R-groups order like the query's.")
+    _add_series_query_arguments(similar_parser)
+    similar_parser.add_argument("--min-overlap", type=int, default=3, help="Minimum shared valued R-groups (at least 2).")
+    similar_parser.add_argument("--measure", choices=["spearman", "crmsd"], default="spearman",
+                                help="Sort by Spearman (descending) or centred RMSD (ascending).")
+    similar_parser.add_argument("--top", type=int, default=None, help="Keep this many matches after sorting.")
+    _add_series_selection_arguments(similar_parser, with_cut_count=False)
+    similar_parser.set_defaults(func=_series_similar)
 
     stats_parser = subparsers.add_parser(
         "refresh-stats",
