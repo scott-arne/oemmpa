@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import itertools
 import threading
+import weakref
 
 import pytest
 from oemmpa import _oemmpa
@@ -268,26 +269,77 @@ def test_result_vectors_survive_the_result_object():
     # The store returns its result records by value, so reading a vector straight off
     # the temporary is the natural spelling. A vector that stayed a view into the freed
     # record would read as empty, which no caller can tell apart from "no candidates".
+    # Every vector member of both result records is read off a temporary here, so the
+    # test guards all six: query_used, dropped, candidates and evidence of the ranking
+    # result, and matches and evidence of the similarity result.
     store = _interleaving_raw_store()
     request = _oemmpa.SubstituentRankingRequest()
     request.property_name = "act"
     request.direction = _oemmpa.PropertyDirection_HIGHER_IS_BETTER
-    request.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
-    request.query_values = [3.0, 2.0, 1.0]
+    # No series carries an iodine member, so shortening drops the weakest R-group.
+    request.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl", "[*:1]I"]
+    request.query_values = [3.0, 2.0, 1.0, 0.5]
     request.support_ladder = [5]
+    request.shorten = True
+    request.min_query_length = 3
     request.include_evidence = True
+    query_used = store.RankNextSubstituents(request).query_used
+    dropped = store.RankNextSubstituents(request).dropped
     candidates = list(store.RankNextSubstituents(request).candidates)
     evidence = list(store.RankNextSubstituents(request).evidence)
     gc.collect()
+    assert query_used == ("[*:1][H]", "[*:1]F", "[*:1]Cl")
+    assert dropped == ("[*:1]I",)
     assert len(candidates) == 1
     assert candidates[0].variable_smiles == "[*:1]Br"
     assert len(evidence) == 20
+    assert {row.variable_smiles for row in evidence} == {
+        "[*:1][H]", "[*:1]F", "[*:1]Cl", "[*:1]Br",
+    }
 
     similarity = _oemmpa.SeriesSimilarityRequest()
     similarity.property_name = "act"
     similarity.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
     similarity.query_values = [3.0, 2.0, 1.0]
+    similarity.include_evidence = True
     matches = list(store.FindSimilarSeries(similarity).matches)
+    rows = list(store.FindSimilarSeries(similarity).evidence)
     gc.collect()
     assert len(matches) == 5
     assert all(match.has_spearman for match in matches)
+    assert len(rows) == 15   # Five series, each sharing all three query R-groups.
+    assert {(row.variable_smiles, row.query_value) for row in rows} == {
+        ("[*:1][H]", 3.0), ("[*:1]F", 2.0), ("[*:1]Cl", 1.0),
+    }
+
+
+def test_request_selection_views_keep_their_request_alive():
+    # `request.selection` is a live view into the request's own memory, so it has to keep
+    # that request alive. A view whose request has been freed reads and writes whatever
+    # the allocator hands the next request, answering for a record it never saw.
+    for request_type in (_oemmpa.SubstituentRankingRequest, _oemmpa.SeriesSimilarityRequest):
+        name = request_type.__name__
+        request = request_type()
+        view = request.selection
+        pinned = weakref.ref(request)
+        del request
+        gc.collect()
+        assert pinned() is not None, name
+        assert view.max_variable_heavy_atoms == 0, name
+
+        stale = request_type().selection   # The request is a temporary: only the view is kept.
+        stale.max_variable_heavy_atoms = 4
+        gc.collect()
+        fresh = []
+        for _ in range(12):
+            other = request_type()
+            other.selection.max_variable_heavy_atoms = 99
+            fresh.append(other)
+        assert stale.max_variable_heavy_atoms == 4, name
+        stale.max_variable_heavy_atoms = 7
+        assert [other.selection.max_variable_heavy_atoms for other in fresh] == [99] * 12, name
+
+        # Mutating through the view still reaches the request the view came from.
+        live = request_type()
+        live.selection.max_variable_heavy_atoms = 4
+        assert live.selection.max_variable_heavy_atoms == 4, name

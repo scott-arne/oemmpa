@@ -536,6 +536,45 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %naturalvar OEMMPA::SeriesSimilarityRequest::query_values;
 %naturalvar OEMMPA::SeriesSimilarityResult::matches;
 %naturalvar OEMMPA::SeriesSimilarityResult::evidence;
+// `selection` stays a view onto the live member, so `request.selection.cut_count = 2`
+// still reaches the request, but SWIG's getter hands out a bare pointer into the parent
+// without retaining it: a view read off a temporary request, as in
+// `SubstituentRankingRequest().selection`, outlives the record it points into and then
+// reads and writes whatever the allocator gives the next request. These overrides keep
+// the generated getter and setter and only pin the parent to the view they hand back,
+// which is enough because the view is the only thing that can reach the freed record.
+%extend OEMMPA::SubstituentRankingRequest {
+%pythoncode %{
+    def _selection_view(self):
+        r"""Return the series bounds of this request as a live view.
+
+        :returns: The request's own :class:`SeriesSelection`; writes through it change
+            this request, which the view keeps alive for as long as it exists.
+        """
+        view = _oemmpa.SubstituentRankingRequest_selection_get(self)
+        view._owner = self
+        return view
+
+    selection = property(_selection_view, _oemmpa.SubstituentRankingRequest_selection_set,
+                         doc="Series bounds, a live view into this request (spec 7.5).")
+%}
+}
+%extend OEMMPA::SeriesSimilarityRequest {
+%pythoncode %{
+    def _selection_view(self):
+        r"""Return the series bounds of this request as a live view.
+
+        :returns: The request's own :class:`SeriesSelection`; writes through it change
+            this request, which the view keeps alive for as long as it exists.
+        """
+        view = _oemmpa.SeriesSimilarityRequest_selection_get(self)
+        view._owner = self
+        return view
+
+    selection = property(_selection_view, _oemmpa.SeriesSimilarityRequest_selection_set,
+                         doc="Series bounds, a live view into this request (spec 7.5).")
+%}
+}
 %include "../include/oemmpa/SeriesQuery.h"
 %include "../include/oemmpa/MemoryIndex.h"
 %include "../include/oemmpa/PairScoring.h"
