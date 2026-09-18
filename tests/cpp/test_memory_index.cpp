@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "concurrent_reader_support.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/MemoryIndex.h"
@@ -7,7 +8,9 @@
 #include "oemmpa/oemmpa.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <vector>
@@ -792,6 +795,124 @@ TEST(MemoryIndexMoves, AnIndexStaysMovableAndAMovedIndexAnswersFromItsOwnCaches)
     static_assert(std::is_move_assignable<MemoryIndex>::value, "MemoryIndex must stay move assignable");
     static_assert(std::is_copy_constructible<MemoryIndex>::value, "MemoryIndex keeps its implicit copy");
     EXPECT_FALSE(analyzer.GetSeries().empty());
+}
+
+namespace {
+
+// Every field that identifies a pair, so a torn read cannot hide behind an
+// unchanged count. Analyzer-level tests compare a cheaper digest; the index is
+// the layer that owns the cache, so it is checked on full content.
+std::string PairContentDigest(const std::vector<MatchedPair>& pairs) {
+    std::string digest;
+    for (const MatchedPair& pair : pairs) {
+        digest += pair.GetConstantSmiles();
+        digest += '|';
+        digest += pair.GetTransformSmiles();
+        digest += '|';
+        digest += std::to_string(pair.GetSourceMoleculeId());
+        digest += '>';
+        digest += std::to_string(pair.GetTargetMoleculeId());
+        digest += '|';
+        digest += pair.GetSourceVariableSmiles();
+        digest += '>';
+        digest += pair.GetTargetVariableSmiles();
+        digest += '|';
+        digest += std::to_string(pair.GetCutCount());
+        digest += '\n';
+    }
+    return digest;
+}
+
+// A transform is its SMILES plus the pairs it grouped, so the digest covers the
+// grouping build_transforms performs outside the cache lock as well as the
+// cached pairs it consumed.
+std::string TransformContentDigest(const std::vector<Transform>& transforms) {
+    std::string digest;
+    for (const Transform& transform : transforms) {
+        digest += transform.GetTransformSmiles();
+        digest += " x";
+        digest += std::to_string(transform.GetEvidenceCount());
+        digest += '\n';
+        digest += PairContentDigest(transform.GetPairs());
+    }
+    return digest;
+}
+
+// Two substituents on a benzene ring, so every constant bucket holds several
+// R-groups and the enumeration emits enough transforms for a torn read to show.
+MemoryIndex MakeDisubstitutedIndex() {
+    Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
+    MemoryIndex index;
+    const char* groups[] = {"C", "O", "N", "F", "Cl", "CC", "OC", "Br"};
+    unsigned int internal_id = 0;
+    for (const char* left : groups) {
+        for (const char* right : groups) {
+            const std::string smiles = std::string(left) + "c1ccc(" + right + ")cc1";
+            ++internal_id;
+            MoleculeRecord molecule = MakeMolecule(internal_id, smiles, "m" + std::to_string(internal_id));
+            index.AddMolecule(molecule);
+            for (const Fragmentation& fragmentation :
+                 fragmenter.Fragment(molecule.GetInternalId(), molecule.GetMol())) {
+                index.AddFragmentation(fragmentation);
+            }
+        }
+    }
+    return index;
+}
+
+}  // namespace
+
+// MemoryIndex::GetTransforms is a C++ entry point in its own right: Analyzer
+// groups transforms from its own GetPairs and never reaches it, so only
+// FragmentationMethod::GetTransforms exercises the index's copy-under-lock. This
+// test races that method directly, alternating two option sets so the readers
+// also thrash the single-slot pair cache the transform build consumes.
+TEST(MemoryIndexConcurrency, ColdConcurrentTransformReadersAgreeWithASequentialTwin) {
+    const MemoryIndex reference = MakeDisubstitutedIndex();
+    QueryOptions symmetric;
+    symmetric.SetSymmetric(true);
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    const QueryOptions variants[] = {symmetric, asymmetric};
+    std::string pair_digests[2];
+    std::string transform_digests[2];
+    for (int variant = 0; variant < 2; ++variant) {
+        pair_digests[variant] = PairContentDigest(reference.GetPairs(variants[variant]));
+        transform_digests[variant] =
+            TransformContentDigest(reference.GetTransforms(variants[variant]));
+    }
+    ASSERT_FALSE(transform_digests[0].empty()) << "no transforms at all, so the test proves nothing";
+    ASSERT_NE(transform_digests[0], transform_digests[1])
+        << "the two option sets emit the same transforms, so no refill is exercised";
+
+    // A second, identical index, so the readers race on the first cache fill.
+    const MemoryIndex shared = MakeDisubstitutedIndex();
+    constexpr unsigned int kReaders = 4;
+    StartBarrier barrier(kReaders);
+    std::atomic<unsigned int> mismatches{0};
+    std::vector<std::thread> readers;
+    for (unsigned int reader = 0; reader < kReaders; ++reader) {
+        readers.emplace_back([&, reader]() {
+            barrier.Arrive();
+            for (int round = 0; round < 10; ++round) {
+                // Neighbouring readers sit on opposite variants in the same
+                // round, so their refills overlap instead of lining up.
+                const int variant = (round + static_cast<int>(reader)) % 2;
+                const QueryOptions& options = variants[variant];
+                if (TransformContentDigest(shared.GetTransforms(options)) !=
+                    transform_digests[variant]) {
+                    ++mismatches;
+                }
+                if (PairContentDigest(shared.GetPairs(options)) != pair_digests[variant]) {
+                    ++mismatches;
+                }
+            }
+        });
+    }
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    EXPECT_EQ(mismatches.load(), 0U);
 }
 
 }  // namespace test

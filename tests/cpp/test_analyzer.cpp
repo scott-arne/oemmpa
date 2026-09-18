@@ -8,6 +8,7 @@
 #include "oemmpa/OEMedChemMethod.h"
 #include "oemmpa/Series.h"
 #include "oemmpa/WizePairZMethod.h"
+#include "concurrent_reader_support.h"
 #include "oemmpa/oemmpa.h"
 #include "ring_search_bound_guard.h"
 
@@ -15,11 +16,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <fstream>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -1455,25 +1454,6 @@ Analyzer MakeDisubstitutedAnalyzer() {
     analyzer.Analyze();
     return analyzer;
 }
-
-// Releases every waiting thread at once, so the readers' first (cache-filling)
-// calls overlap rather than trickle in.
-class StartBarrier {
-public:
-    explicit StartBarrier(unsigned int count) : remaining_(count) {}
-    void Arrive() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        if (--remaining_ == 0) {
-            released_.notify_all();
-        } else {
-            released_.wait(lock, [this]() { return remaining_ == 0; });
-        }
-    }
-private:
-    std::mutex mutex_;
-    std::condition_variable released_;
-    unsigned int remaining_;
-};
 
 }  // namespace
 
