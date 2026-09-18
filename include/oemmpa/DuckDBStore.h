@@ -298,11 +298,15 @@ public:
     /// and it is 0 when the last save carried no series.
     double GetLastSeriesAppendSeconds() const;
 
-    /// \brief Seconds the last RefreshDatasetCounts spent rewriting series.num_members.
+    /// \brief Seconds the last series-count refresh (either entry point) spent
+    ///        rewriting series.num_members.
     ///
-    /// -1.0 until the first refresh, so "never refreshed" is distinguishable from
-    /// a fast refresh. Separate from GetLastSeriesAppendSeconds: the rewrite
-    /// runs after the save transaction, not inside the bulk append.
+    /// RefreshDatasetCounts and RefreshRuleEnvironmentStatistics both run the
+    /// rewrite, so both record the figure; it is the most recent of the two, and
+    /// only a refresh whose transaction committed is recorded at all. -1.0 until
+    /// the first refresh, so "never refreshed" is distinguishable from a fast
+    /// refresh. Separate from GetLastSeriesAppendSeconds: the rewrite runs after
+    /// the save transaction, not inside the bulk append.
     double GetLastSeriesCountRefreshSeconds() const;
 
     /// \brief Version string of the DuckDB library this build links (not the Python wheel).

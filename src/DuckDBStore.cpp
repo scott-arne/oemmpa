@@ -3597,8 +3597,11 @@ std::uint64_t DuckDBStore::GetRowCount(const std::string& table_name) const {
 void DuckDBStore::RefreshDatasetCounts() {
     Execute("begin transaction");
     try {
-        last_series_count_refresh_seconds_ = refresh_dataset_counts(connection_);
+        const double seconds = refresh_dataset_counts(connection_);
         Execute("commit");
+        // Recorded only once the commit succeeds: a rewrite the transaction
+        // discarded never reached the database, so it must not report a duration.
+        last_series_count_refresh_seconds_ = seconds;
     } catch (...) {
         try {
             Execute("rollback");
@@ -3612,8 +3615,11 @@ void DuckDBStore::RefreshRuleEnvironmentStatistics() {
     Execute("begin transaction");
     try {
         refresh_rule_environment_statistics(connection_, *database_);
-        last_series_count_refresh_seconds_ = refresh_dataset_counts(connection_);
+        const double seconds = refresh_dataset_counts(connection_);
         Execute("commit");
+        // Recorded only once the commit succeeds, for the same reason as in
+        // RefreshDatasetCounts.
+        last_series_count_refresh_seconds_ = seconds;
     } catch (...) {
         try {
             Execute("rollback");

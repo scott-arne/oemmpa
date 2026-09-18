@@ -4087,25 +4087,50 @@ TEST(DuckDBStoreSeriesSave, ASeriesProducingSaveIsRefusedIntoAStoreHoldingOnlyAC
 TEST(DuckDBStoreSeriesSave, SeriesCountRefreshIsTimedSeparatelyFromTheAppend) {
     Analyzer analyzer = MakePhenylAnalyzer();
     const std::filesystem::path path = TemporaryDatabasePath();
-    DuckDBStore store(path.string());
-    EXPECT_EQ(store.GetLastSeriesCountRefreshSeconds(), -1.0);   // Never refreshed yet.
-    analyzer.SaveTo(store);
-    const double refreshed = store.GetLastSeriesCountRefreshSeconds();
-    EXPECT_GE(refreshed, 0.0);      // A constant sentinel cannot pass this.
-    EXPECT_LT(refreshed, 60.0);
-    // A second refresh re-measures rather than accumulating: still a plausible single duration.
-    store.RefreshDatasetCounts();
-    EXPECT_GE(store.GetLastSeriesCountRefreshSeconds(), 0.0);
-    EXPECT_LT(store.GetLastSeriesCountRefreshSeconds(), 60.0);
-    // The refresh runs after the transaction, so it is not part of the append timer.
-    EXPECT_GE(store.GetLastSeriesAppendSeconds(), 0.0);
-    // The rewrite itself is unchanged: num_members still equals the distinct R-group count.
-    for (const Series& entry : store.GetSeries()) {
-        EXPECT_EQ(entry.Size(), entry.GetMembers().size());
+    {
+        DuckDBStore store(path.string());
+        EXPECT_EQ(store.GetLastSeriesCountRefreshSeconds(), -1.0);   // Never refreshed yet.
+        analyzer.SaveTo(store);
+        // The rewrite scans series_member for every series, so on this fixture it
+        // costs about a millisecond against a nanosecond-resolution clock: a
+        // constant sentinel of either sign fails this, not just a negative one.
+        const double refreshed = store.GetLastSeriesCountRefreshSeconds();
+        EXPECT_GT(refreshed, 0.0);
+        EXPECT_LT(refreshed, 60.0);
+
+        // The refresh runs after the save transaction, so it is not part of the
+        // append timer: the second refresh below must leave this figure alone.
+        const double appended = store.GetLastSeriesAppendSeconds();
+        EXPECT_GT(appended, 0.0);
+
+        // A second refresh re-measures rather than accumulating. Its own wall
+        // time is the upper bound - it covers the whole call, of which the
+        // rewrite is one statement - so a timer that added the two refreshes
+        // together would exceed it.
+        const auto call_started = std::chrono::steady_clock::now();
+        store.RefreshDatasetCounts();
+        const double call_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - call_started).count();
+        const double remeasured = store.GetLastSeriesCountRefreshSeconds();
+        EXPECT_GT(remeasured, 0.0);
+        EXPECT_LE(remeasured, call_seconds);
+        EXPECT_DOUBLE_EQ(store.GetLastSeriesAppendSeconds(), appended);
+
+        // The linked library reports its own version, which is what the queries run on.
+        EXPECT_EQ(DuckDBStore::GetLibraryVersion(), std::string(duckdb::DuckDB::LibraryVersion()));
+        EXPECT_FALSE(DuckDBStore::GetLibraryVersion().empty());
     }
-    // The linked library reports its own version, which is what the queries run on.
-    EXPECT_EQ(DuckDBStore::GetLibraryVersion(), std::string(duckdb::DuckDB::LibraryVersion()));
-    EXPECT_FALSE(DuckDBStore::GetLibraryVersion().empty());
+    // The rewrite itself is unchanged: the persisted num_members is still the
+    // distinct R-group count of every series, read back from the database
+    // rather than from the in-memory Series (whose Size() is its member vector).
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select s.num_members from series s join constant_smiles c on c.id = s.constant_id "
+        "where c.smiles = '[*:1]c1ccccc1'"), 3U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series s where s.num_members <> "
+        "(select count(distinct rule_smiles_id) from series_member sm where sm.series_id = s.id)"), 0U);
     std::filesystem::remove(path);
 }
 

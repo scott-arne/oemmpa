@@ -389,7 +389,7 @@ def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version():
     assert store.GetLastSeriesCountRefreshSeconds() == -1.0
     analyzer = _phenyl_raw_analyzer()
     analyzer.SaveTo(store)
-    assert store.GetLastSeriesCountRefreshSeconds() >= 0.0
+    assert store.GetLastSeriesCountRefreshSeconds() > 0.0
     version = oemmpa.duckdb_library_version()
     assert version == _oemmpa.DuckDBStore.GetLibraryVersion()
     assert version.startswith("v") or version[0].isdigit()

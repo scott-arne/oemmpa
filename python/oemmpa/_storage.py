@@ -12,8 +12,15 @@ def duckdb_available():
 
 
 def duckdb_library_version():
-    """Return the version of the DuckDB library the extension links (the queries run on it)."""
-    return str(_oemmpa.DuckDBStore.GetLibraryVersion())
+    """Return the version of the DuckDB library the extension links.
+
+    The queries run on this library, so it is the version that matters, not that
+    of any DuckDB Python wheel the environment happens to hold.
+
+    :returns: The linked library's version string, for example ``v1.5.5``.
+    :raises RuntimeError: When this build has no DuckDB storage support.
+    """
+    return str(_require_duckdb_store_class().GetLibraryVersion())
 
 
 def _require_duckdb_store_class():
@@ -305,7 +312,11 @@ class DuckDBStore:
         return int(self._raw_store.GetSeriesCount())
 
     def series_count_refresh_seconds(self):
-        """Seconds the last refresh spent rewriting ``series.num_members``; -1.0 before any refresh."""
+        """Return the seconds the last refresh spent rewriting ``series.num_members``.
+
+        :returns: The measured seconds, or -1.0 when no refresh has run on this
+            store yet.
+        """
         return float(self._raw_store.GetLastSeriesCountRefreshSeconds())
 
     def rank_next_substituents(self, property_name, direction, **kwargs):
