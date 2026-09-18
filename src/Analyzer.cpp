@@ -444,7 +444,7 @@ void Analyzer::SaveTo(DuckDBStore& store) const {
     SaveTo(store, QueryOptions());
 }
 
-void Analyzer::SaveTo(DuckDBStore& store, const QueryOptions& options) const {
+void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
     RequireAnalyzed();
 
     store.InitializeSchema();

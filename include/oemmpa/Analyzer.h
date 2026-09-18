@@ -252,8 +252,12 @@ public:
 
     /// \brief Save staged molecules, properties, and analyzed pairs selected by query options.
     ///
+    /// Taken by value: the Python wrapper releases the GIL around this call and
+    /// must not read a Python-owned options object through a reference while
+    /// another thread can change it.
+    ///
     /// Throws if Analyze() has not succeeded since the last mutation.
-    void SaveTo(DuckDBStore& store, const QueryOptions& options) const;
+    void SaveTo(DuckDBStore& store, QueryOptions options) const;
 #endif
 
     /// \brief Reset molecules, properties, external IDs, internal ID sequence,

@@ -118,9 +118,12 @@ def test_query_requests_are_copied_before_the_gil_is_released():
 
 @pytest.mark.skipif(not WRAP.exists(), reason="generated SWIG wrapper not built")
 def test_query_options_are_copied_before_the_gil_is_released():
+    # Same hazard as the selection and requests: the options are a Python-owned
+    # aggregate whose bounds are writable, so the GIL-free call must run on a copy.
     import re
     text = WRAP.read_text()
-    for wrapper in ("Analyzer_GetPairs__SWIG_1", "Analyzer_GetTransforms__SWIG_1"):
+    for wrapper in ("Analyzer_GetPairs__SWIG_1", "Analyzer_GetTransforms__SWIG_1",
+                    "Analyzer_SaveTo__SWIG_1"):
         source = _wrapper_source(text, wrapper)
         before, macro, after = source.partition("SWIG_PYTHON_THREAD_BEGIN_ALLOW")
         assert macro, f"{wrapper} should release the GIL"
@@ -128,4 +131,5 @@ def test_query_options_are_copied_before_the_gil_is_released():
             f"{wrapper} must take the options by value"
         assert re.search(r"arg\d+ = \*\w+;", before), \
             f"{wrapper} must copy the options before the GIL is released"
-        assert "QueryOptions" not in after
+        assert "QueryOptions" not in after, \
+            f"{wrapper} must not read the Python-owned options after releasing the GIL"

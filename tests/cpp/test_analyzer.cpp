@@ -1414,9 +1414,17 @@ TEST(AnalyzerBoundary, QueryOptionsAreTakenByValueAtTheAnalyzerBoundary) {
     const std::vector<MatchedPair> by_lvalue = analyzer.GetPairs(options);
     EXPECT_EQ(by_temporary.size(), by_lvalue.size());
     EXPECT_EQ(analyzer.GetTransforms(QueryOptions()).size(), analyzer.GetTransforms(options).size());
-    using ByValue = std::vector<MatchedPair> (Analyzer::*)(QueryOptions) const;
-    const ByValue pinned = &Analyzer::GetPairs;
-    EXPECT_NE(pinned, nullptr);
+    using GetPairsByValue = std::vector<MatchedPair> (Analyzer::*)(QueryOptions) const;
+    const GetPairsByValue get_pairs_pinned = &Analyzer::GetPairs;
+    EXPECT_NE(get_pairs_pinned, nullptr);
+    using GetTransformsByValue = std::vector<Transform> (Analyzer::*)(QueryOptions) const;
+    const GetTransformsByValue get_transforms_pinned = &Analyzer::GetTransforms;
+    EXPECT_NE(get_transforms_pinned, nullptr);
+#if OEMMPA_HAS_DUCKDB
+    using SaveToByValue = void (Analyzer::*)(DuckDBStore&, QueryOptions) const;
+    const SaveToByValue save_to_pinned = &Analyzer::SaveTo;
+    EXPECT_NE(save_to_pinned, nullptr);
+#endif
 }
 
 }  // namespace test
