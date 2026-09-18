@@ -130,12 +130,15 @@ def test_ranking_matches_the_oracle_on_random_stores(tmp_path, seed, replicates)
             assert len(candidate_rows) == sum(row["support"] for row in rows)
     # An id-based query: the store reads the query out of the series itself, and
     # spec 7.3 keeps every one of those members out of the candidates. Distinct
-    # medians are required because the store refuses a tied query order.
+    # medians are required because the store refuses a tied query order, and the
+    # ladder is 1 because these queries are long: shortening runs until only
+    # excluded original members are left, so only a low threshold lets a genuine
+    # candidate be reported at all.
     query_id, entry = _first_series(
         oracle, lambda values: len(values) >= 3 and len(set(values.values())) == len(values))
     assert query_id is not None, f"seed {seed} must hold a one-cut series with three distinctly valued members"
-    expected = oracle.rank(list(entry["values"].items()), "higher", support_ladder=(2,), min_query_length=2)
-    actual = rank_next_substituents(store, "act", "higher", series_id=query_id, support_ladder=(2,),
+    expected = oracle.rank(list(entry["values"].items()), "higher", support_ladder=(1,), min_query_length=2)
+    actual = rank_next_substituents(store, "act", "higher", series_id=query_id, support_ladder=(1,),
                                     min_query_length=2)
     assert actual.query_used == expected["query_used"], (seed, replicates, query_id)
     assert actual.dropped == expected["dropped"]
