@@ -625,8 +625,26 @@ properties, and analyzed pairs in a local DuckDB database:
 from oemmpa import DuckDBStore
 
 store = DuckDBStore("analysis.duckdb")
-store.load_molecules_from_file("molecules.smi")
-store.load_properties_from_csv("properties.csv", id_column="id")
+store.save_analyzer(analyzer)
+```
+
+`save_analyzer()` writes the analyzer's molecules, properties, matched pairs
+and matched molecular series in one transaction. A series-producing analysis
+(the default `fragmentation` method) is only accepted by an empty store, so
+save into a new database file and rebuild it when the analysis changes instead
+of appending to it.
+
+Files can also be loaded straight into a store. Properties can be added to a
+store that already holds an analysis; molecules belong in a store no analysis
+is saved into, because molecules added after a save are not members of any
+stored series:
+
+```python
+store.load_properties_from_csv("more-properties.csv", id_column="id")
+
+loaded = DuckDBStore("loaded.duckdb")
+loaded.load_molecules_from_file("molecules.smi")
+loaded.load_properties_from_csv("properties.csv", id_column="id")
 ```
 
 The property CSV format uses one ID column and one or more numeric property
@@ -645,8 +663,6 @@ MMPDB.
 
 ```python
 from oemmpa import predict_rule_environment_delta
-
-store.save_analyzer(analyzer)
 
 rows = store.rule_environment_statistics("pIC50")
 rows = rows.filter(transform="[*:1]C>>[*:1]O", min_radius=1, min_pairs=1)
@@ -667,7 +683,8 @@ contributed to that environment's statistics.
 
 Every fragmentation analysis also enumerates matched molecular series: one
 constant with all the R-groups the set realizes at its attachment points.
-Saved stores keep them, and two queries use them with a stored property:
+The store saved above keeps them, and two queries use them with a stored
+property:
 
 ```python
 from oemmpa import DuckDBStore, find_similar_series, rank_next_substituents

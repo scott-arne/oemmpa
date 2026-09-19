@@ -1135,20 +1135,33 @@ for persisted analysis results and rule-environment statistics. Fragment-cache
 reuse remains deferred until a workflow requires queryable pre-pair
 fragmentation records.
 
+`save_analyzer()` writes the analyzer's molecules, properties, pairs and
+series in one transaction. A series-producing analysis (the default
+`fragmentation` method) is only accepted by an empty store, so save before
+anything else is written and rebuild the store instead of appending to it.
+Properties can still be loaded into a saved store afterwards; molecules belong
+in a store no analysis is saved into, because molecules added after a save are
+not members of any stored series.
+
 ```python
-store.load_molecules_from_file("molecules.smi")
-store.load_properties_from_csv("properties.csv", id_column="id")
 store.save_analyzer(analyzer)
 pairs = store.pairs()
 transforms = store.transforms()
 print(store.row_count("compound"))
 print(store.row_count("pair"))
+
+store.load_properties_from_csv("more-properties.csv", id_column="id")
+
+loaded = DuckDBStore("loaded.duckdb")
+loaded.load_molecules_from_file("molecules.smi")
+loaded.load_properties_from_csv("properties.csv", id_column="id")
 ```
 
 By default, `save_analyzer()` stores the MMPDB-compatible non-symmetric pair
 orientation. Use `index_mode="openeye-native"` to persist the symmetric
 OpenEye-native pair set, or pass raw `QueryOptions` when you need direct
-control over the stored pairs:
+control over the stored pairs. Each variant is another save, so it needs its
+own empty store:
 
 ```python
 from oemmpa import _oemmpa
@@ -1157,7 +1170,8 @@ options = _oemmpa.QueryOptions()
 options.SetSymmetric(True)
 options.SetMaxHeavyAtomChange(25)
 
-store.save_analyzer(analyzer, query_options=options)
+symmetric = DuckDBStore("symmetric.duckdb")
+symmetric.save_analyzer(analyzer, query_options=options)
 ```
 
 All four methods (`fragmentation`, `dmcss`, `oemedchem`, `wizepairz`) honor the

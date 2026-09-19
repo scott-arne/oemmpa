@@ -343,15 +343,25 @@ local DuckDB database. The table layout follows the main MMPDB matched-pair
 database model with compounds, properties, rules, environments, constants, and
 pairs. Raw fragmentations are not stored as stable database tables yet.
 
+`save_analyzer()` writes the analyzer's molecules, properties, pairs, and
+matched molecular series in one transaction, and a series-producing analysis
+(the default `fragmentation` method) is only accepted by an empty store, so
+rebuild the store instead of appending to it. The file loaders fill a store
+directly: properties can be added to a store that already holds an analysis,
+while molecules belong in a store no analysis is saved into.
+
 ```python
 from oemmpa import DuckDBStore
 
 store = DuckDBStore("analysis.duckdb")
-store.load_molecules_from_file("molecules.smi")
-store.load_properties_from_csv("properties.csv", id_column="id")
 store.save_analyzer(analyzer)
 pairs = store.pairs()
 print(store.row_count("compound"), store.row_count("pair"))
+print(store.row_count("series"))
+
+loaded = DuckDBStore("loaded.duckdb")
+loaded.load_molecules_from_file("molecules.smi")
+loaded.load_properties_from_csv("properties.csv", id_column="id")
 ```
 
 ## Benchmarks
