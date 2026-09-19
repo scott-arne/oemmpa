@@ -287,13 +287,13 @@ request.property_name = "pIC50";
 request.direction = OEMMPA::PropertyDirection::HIGHER_IS_BETTER;
 request.query_variable_smiles = {"[*:1][H]", "[*:1]C", "[*:1]Cl"};
 request.query_values = {6.1, 6.8, 7.4};
-OEMMPA::SubstituentRankingResult ranking = store.RankNextSubstituents(request);
+OEMMPA::SubstituentRankingResult ranking = saved.RankNextSubstituents(request);
 
 OEMMPA::SeriesSimilarityRequest similar;
 similar.property_name = "pIC50";
 similar.query_series_id = 42;
 similar.top = 20;
-OEMMPA::SeriesSimilarityResult matches = store.FindSimilarSeries(similar);
+OEMMPA::SeriesSimilarityResult matches = saved.FindSimilarSeries(similar);
 ```
 
 Both take their request by value, validate it (`std::invalid_argument`
