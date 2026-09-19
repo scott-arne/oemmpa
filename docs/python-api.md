@@ -887,6 +887,184 @@ print(products.to_dicts())
 print(matches[0].supporting_pairs()[0].to_dict())
 ```
 
+## Matched Molecular Series
+
+A matched molecular series is one constant (the part of a molecule that stays
+fixed) with every R-group the analysed set realizes at its attachment point,
+and the compounds that realize each R-group. The fragmentation method
+enumerates one series per (constant, cut count) with at least two distinct
+R-groups over at least two distinct compounds; a compound the constant caps to
+joins the one-cut series as its `[*:1][H]` member. Series are computed from the
+fragmentation records, not from the selected pairs, so the pair filters do not
+shape them and an R-group that never forms a pair is still a member. The MCS
+methods produce no series (`analyzer.produces_series` is `False` for them).
+
+```python
+analyzer = Analyzer()
+analyzer.add_molecules_from_file("molecules.smi")
+analyzer.add_property("cmpd-1", "pIC50", 6.1)
+analyzer.analyze()
+
+series = analyzer.series()                 # SeriesQuery over the in-memory series
+rows = series.filter(min_length=3).to_dicts()
+frame = series.to_dataframe()              # one row per (member, compound)
+```
+
+`SeriesQuery` rows carry `series_id` (0 in memory, the stored id after a
+read), `constant`, `cut_count`, `constant_num_heavies`, `num_members`,
+`rgroup`, `rgroup_num_heavies`, `molecule_id` and `compound_id`; `filter()`
+takes `constant`, `cut_count` and `min_length`.
+
+Saving an analysis persists its series (tables `series` and `series_member`;
+`dataset.series_source` records the method). A series-producing analysis can
+only be saved into an empty store, and direct pair writes are refused
+afterwards, because a stored series describes the whole analysed set. Series
+take no query options, so a save that bounds its pairs still stores every
+enumerated series. Read them back with `DuckDBStore.series(selection)`, where
+`SeriesSelectionOptions` holds the query-time bounds (`min_series_length`,
+`max_variable_heavy_atoms`, `min_constant_heavy_atoms`, `cut_count`; zero means
+unbounded and a minimum length of 0 equals 1). `DuckDBStore.series_count()`
+counts the stored series, and `DuckDBStore.series_count_refresh_seconds()`
+reports how long the last refresh spent rewriting `series.num_members` (-1.0
+until one has run). Molecules added to a store after the save are not members
+of any stored series.
+
+### Ranking next substituents
+
+`rank_next_substituents` implements the Matsy method. Given a property, a
+direction and a query series (a stored series id, or R-groups with values), it
+finds every stored series of the same cut count in which all query R-groups
+have values ordered exactly like the query (a strict subsequence match), and
+reports the other members of those series as candidates: `support` is the
+number of matched series containing the candidate, `wins` the number in which
+the candidate beats the query's best member, `fraction` their ratio.
+
+```python
+from oemmpa import DuckDBStore, rank_next_substituents
+
+store = DuckDBStore("analysis.duckdb")
+ranking = rank_next_substituents(
+    store, "pIC50", "higher",
+    rgroups={"[*:1][H]": 6.1, "[*:1]C": 6.8, "[*:1]Cl": 7.4},
+    support_ladder=(20, 10, 5), evidence=True,
+)
+print(ranking.query_used, ranking.dropped, ranking.support_level, ranking.matched_series)
+ranking.to_dataframe()             # rgroup, rgroup_num_heavies, wins, support, fraction
+ranking.evidence.to_dataframe()    # per matched series: query members and reported candidates
+```
+
+The full signature is
+`rank_next_substituents(store, property_name, direction, *, series_id=None, rgroups=None, support_ladder=(20, 10, 5), shorten=True, min_query_length=3, selection=None, evidence=False)`.
+Exactly one of
+`series_id` and `rgroups` is given; `rgroups` is a mapping of R-group SMILES to
+value or a sequence of `(smiles, value)` pairs.
+
+Defaults and rules: the ladder `(20, 10, 5)` reports the candidates of the
+first level that at least one candidate's support reaches; when none reaches
+the last level and `shorten` is true, the query member found in the fewest
+series is dropped (recorded in `dropped`) and the ladder is retried, never
+below `min_query_length` (default 3). A query R-group the store never saw
+cannot match and is dropped first. A candidate is never a member of the
+original query, not even one that shortening dropped, so a stored query series
+matches itself without recommending its own member back. `support_level` is the
+level that produced the candidates; an empty result reports the last level
+tried, or 0 when no series matched at all. Values of a member realized by
+several compounds are combined by their median; members without a finite value
+are ignored. Candidates are sorted by fraction, then support, then heavy atoms,
+then SMILES, while the evidence rows are ordered by series id, then role (query
+before candidate), then query position or R-group SMILES.
+
+`direction` is `"higher"` or `"lower"` — case-insensitive, and the
+`higher_is_better` spellings and dashes are accepted — or
+`_oemmpa.PropertyDirection_HIGHER_IS_BETTER` /
+`_oemmpa.PropertyDirection_LOWER_IS_BETTER`. Tied query values, duplicate or
+unlabelled R-groups, mixed attachment-label sets, an unknown property, a
+nonexistent series id and a selection `cut_count` different from the query's
+raise `ValueError` with the store's message.
+`store.rank_next_substituents(...)` is the same call as a method.
+
+### Series similarity
+
+`find_similar_series` compares the query with every stored series of the same
+cut count over the R-groups valued in both (at least `min_overlap`, default 3)
+and reports Spearman's rank correlation (average ranks; undefined when either
+side is constant, reported as `None` and sorted last) and the centred RMSD of
+the values (the offset between the two series removed first). Direction is not
+an input, and tied query values are allowed here.
+
+```python
+from oemmpa import find_similar_series
+
+similar = find_similar_series(store, "pIC50", series_id=42, top=20, evidence=True)
+similar.to_dataframe()             # series_id, constant, cut_count, overlap, spearman, centred_rmsd
+similar.evidence.to_dataframe()    # series_id, rgroup, query_value, candidate_value
+```
+
+The full signature is
+`find_similar_series(store, property_name, *, series_id=None, rgroups=None, min_overlap=3, measure="spearman", top=None, selection=None, evidence=False)`.
+`measure="crmsd"` (also `"centred_rmsd"` or
+`"centered_rmsd"`, or `_oemmpa.SimilarityMeasure_CENTRED_RMSD`) sorts by the
+centred RMSD ascending instead of `_oemmpa.SimilarityMeasure_SPEARMAN`
+descending, and both break ties by descending overlap then series id. `top`
+truncates the sorted output rather than the work, and `None` or 0 keeps every
+match; a stored query series never lists itself; a `min_overlap` above the
+number of valued query R-groups is not an error, it simply matches nothing. The
+evidence rows are ordered by series id then R-group SMILES rather than in match
+order, so consumers join them to the matches on `series_id`.
+`store.find_similar_series(...)` is the method form.
+
+### Series result collections
+
+Both helpers return list-like collections with `to_dicts()`,
+`to_dataframe(library, molecules)` and a `filter(...)` that keeps the query
+metadata. `SubstituentRankingCollection` carries the tuples `query_used` and
+`dropped` alongside `support_level`, `matched_series` and `evidence`;
+`SeriesSimilarityCollection` carries `query_size` and `evidence`, and its
+`top(n)` shortens a result in hand (`top(0)` is empty, unlike the helper's
+`top=0`, which keeps every match). Both result collections are exported at
+package scope; the two evidence collections,
+`oemmpa._series.RankingEvidenceCollection` and
+`oemmpa._series.SimilarityEvidenceCollection`, are importable from
+`oemmpa._series` only.
+
+Every argument failure the Python layer can see raises `ValueError` before the
+store is called: a missing or doubled query source, a non-numeric or non-finite
+value, entries that are not `(smiles, value)` pairs, a support ladder that is
+not strictly decreasing, a minimum below its floor, and a count, level, `top`,
+`min_overlap` or selection bound wider than the binding's 32-bit field or a
+series id wider than 64 bits. The store's own request validation (messages
+starting with `invalid series query:`) also becomes `ValueError`; every other
+`RuntimeError`, such as a database failure, passes through unchanged.
+
+### Raw bindings
+
+The typed records live on the binding module: `_oemmpa.SubstituentRankingRequest`,
+`_oemmpa.SubstituentRankingResult`, `_oemmpa.SeriesSimilarityRequest` and
+`_oemmpa.SeriesSimilarityResult`, consumed and produced by
+`_oemmpa.DuckDBStore.RankNextSubstituents` and
+`_oemmpa.DuckDBStore.FindSimilarSeries`. Both release the GIL and copy the
+request before doing so; one `DuckDBStore` instance is still not safe to use
+from several threads at once, so use one store instance per thread as for every
+other store call. Raw calls raise `RuntimeError` for every failure; the Python
+helpers above translate the request-validation cases into `ValueError`, that is
+the messages starting with `invalid series query:`, which the binding also
+exposes as `_oemmpa.cvar.SERIES_QUERY_INVALID_PREFIX`.
+
+Every vector member of these records is copy-on-access: assigning a Python
+sequence copies it into the record, and reading one returns a new tuple of
+copies, so a result's vectors outlive the result object but each read costs
+O(n) — bind one to a name instead of re-reading it. `request.selection` is the
+exception: it is a live view onto the request's own `_oemmpa.SeriesSelection`,
+and its getter keeps the request alive. The enum constants are
+`_oemmpa.PropertyDirection_HIGHER_IS_BETTER`,
+`_oemmpa.PropertyDirection_LOWER_IS_BETTER`,
+`_oemmpa.SimilarityMeasure_SPEARMAN` and
+`_oemmpa.SimilarityMeasure_CENTRED_RMSD`, and the reusable pieces
+`_oemmpa.canonicalize_query_rgroup`, `_oemmpa.spearman_correlation` and
+`_oemmpa.centred_rmsd` are exposed as free functions.
+`_oemmpa.series_row_dicts` builds the `SeriesQuery` rows in one binding
+crossing.
+
 ## CLI
 
 The `oemmpa` package provides the `oemmpa` console script and also supports
@@ -946,7 +1124,8 @@ database. It keeps large file loading close to the database while still
 returning familiar Python `LoadReport`, pair, and transformation objects. The
 table layout follows the main MMPDB matched-pair database, including
 `compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
-`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
+`environment_fingerprint`, `rule_environment`, `constant_smiles`, `pair`,
+`series` and `series_member`.
 Raw fragmentations are not exposed as a stable database table yet.
 
 The storage API does not expose raw fragment tables. `DuckDBStore` is intended

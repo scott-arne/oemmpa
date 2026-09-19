@@ -633,7 +633,9 @@ The property CSV format uses one ID column and one or more numeric property
 columns. Values of `*` or blank strings are treated as missing. Row-level
 failures are returned in `LoadReport`, just as they are for molecule loading.
 The database layout follows the main MMPDB matched-pair tables, including
-compounds, properties, rules, constants, and pairs.
+compounds, properties, rules, constants, and pairs. Schema 5 adds the matched
+molecular series (`series`, `series_member`) and the dataset columns
+`num_series`, `num_series_members` and `series_source`.
 
 When an analyzed dataset is saved to DuckDB, OEMMPA stores each transformation
 together with the local chemical environment around the attachment point. These
@@ -661,6 +663,32 @@ The prediction records which local environment was selected. Use
 `pairs_for_rule_environment()` when you want to inspect the matched pairs that
 contributed to that environment's statistics.
 
+## Matched Molecular Series
+
+Every fragmentation analysis also enumerates matched molecular series: one
+constant with all the R-groups the set realizes at its attachment point.
+Saved stores keep them, and two queries use them with a stored property:
+
+```python
+from oemmpa import DuckDBStore, find_similar_series, rank_next_substituents
+
+store = DuckDBStore("analysis.duckdb")
+print(store.series().filter(min_length=3).to_dicts()[:3])
+
+ranking = rank_next_substituents(
+    store, "pIC50", "higher", rgroups={"[*:1][H]": 6.1, "[*:1]C": 6.8, "[*:1]Cl": 7.4},
+)
+print(ranking.to_dicts())          # candidate next substituents with support, wins, fraction
+
+similar = find_similar_series(store, "pIC50", series_id=1, top=10)
+print(similar.to_dicts())          # series that order their shared R-groups like series 1
+```
+
+`oemmpa series`, `oemmpa series-rank` and `oemmpa series-similar` are the
+command-line forms. See the Matched Molecular Series section of
+[docs/python-api.md](python-api.md) for the full argument set and
+[docs/cli.md](cli.md) for the commands.
+
 ## Current Capabilities
 
 OEMMPA currently provides in-memory analysis and optional DuckDB storage.
@@ -681,9 +709,11 @@ The OEMedChem method currently handles native single-cut matched pairs and
 returns the same constant and variable fields as the other methods. OEMedChem
 deduplicates identical structures upstream, so a re-registered duplicate
 contributes no pairs under that method. DuckDB storage can save molecules,
-properties, and matched pairs; load SMILES and property files; refresh
-rule-environment property statistics; and read stored pairs and rule-environment
-statistics back into the usual result objects.
+properties, and matched pairs; persist matched molecular series and answer
+next-substituent ranking and series-similarity queries over them; load SMILES
+and property files; refresh rule-environment property statistics; and read
+stored pairs and rule-environment statistics back into the usual result
+objects.
 Transformation statistics, property-change predictions, product generation,
 cut R-group fragmentation workflows, and the command-line tools are available
 now. Separate fragment databases remain deferred until there is a concrete need

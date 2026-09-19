@@ -53,6 +53,13 @@ change site.
 
 `Transform` groups matched pairs by transform SMILES and tracks evidence count.
 
+`Series` and `SeriesMember` (`include/oemmpa/Series.h`) describe one matched
+molecular series: the constant SMILES, cut count and heavy-atom count, and
+members with their R-group SMILES, heavy-atom count, molecule ids and external
+ids. `SeriesSelection` holds the query-time bounds. `Analyzer::GetSeries()`
+returns the analysed series; `AnalysisMethod::ProducesSeries()` is true for the
+fragmentation method only.
+
 `LoadReport` stores accepted IDs and row-level `LoadError` records. It lets
 file-loading code report bad rows without stopping the entire load.
 
@@ -185,7 +192,8 @@ store.InitializeSchema();
 
 `InitializeSchema()` creates MMPDB-style tables: `dataset`,
 `compound`, `property_name`, `compound_property`, `rule_smiles`, `rule`,
-`environment_fingerprint`, `rule_environment`, `constant_smiles`, and `pair`.
+`environment_fingerprint`, `rule_environment`, `constant_smiles`, `pair`,
+`series`, and `series_member`.
 `AddMolecule()` persists molecule rows by internal ID and rejects duplicate
 external IDs. `AddMoleculesFromSmilesFile()` loads whitespace SMILES files
 directly into DuckDB and reports row-level errors through `LoadReport`.
@@ -250,6 +258,41 @@ property name, variable transformation, environment radius, SMARTS,
 pseudosmiles, and aggregate values. `GetPairsForRuleEnvironment()` returns the
 matched pairs that contributed to a selected rule environment.
 
+`Analyzer::SaveTo()` persists the analysed series into `series` and
+`series_member` and stamps `dataset.series_source`; a series-producing analysis
+saves only into an empty store, and `AddPair()`/`AddPairs()` are refused
+afterwards. Series take no query options, so a save that filters its pairs
+still stores every enumerated series. `GetSeries(SeriesSelection)` reads them
+back under the selection bounds, `GetSeriesCount()` counts them, and
+`GetLastSeriesCountRefreshSeconds()` reports the seconds the last refresh spent
+rewriting `series.num_members` (-1.0 until one has run). Two typed queries
+answer from the stored tables (`include/oemmpa/SeriesQuery.h`):
+
+```cpp
+OEMMPA::SubstituentRankingRequest request;
+request.property_name = "pIC50";
+request.direction = OEMMPA::PropertyDirection::HIGHER_IS_BETTER;
+request.query_variable_smiles = {"[*:1][H]", "[*:1]C", "[*:1]Cl"};
+request.query_values = {6.1, 6.8, 7.4};
+OEMMPA::SubstituentRankingResult ranking = store.RankNextSubstituents(request);
+
+OEMMPA::SeriesSimilarityRequest similar;
+similar.property_name = "pIC50";
+similar.query_series_id = 42;
+similar.top = 20;
+OEMMPA::SeriesSimilarityResult matches = store.FindSimilarSeries(similar);
+```
+
+Both take their request by value, validate it (`std::invalid_argument`
+prefixed with `SERIES_QUERY_INVALID_PREFIX`) and run prepared SQL over
+`series`, `series_member`, `rule_smiles`, `constant_smiles`, `compound_property`
+and `property_name`. `canonicalize_query_rgroup`, `spearman_correlation` and
+`centred_rmsd` are the reusable pieces.
+
+`DuckDBStore::GetLibraryVersion()` is a static accessor for the version string
+of the DuckDB library the build links, which is the version the queries run on
+rather than that of any DuckDB Python wheel.
+
 `ComputeQueryEnvironments()` computes the same local environment descriptors
 from an input SMILES string. Python uses this to match a query molecule or a
 query/reference molecule pair against stored rule environments. The C++ helper
@@ -296,6 +339,16 @@ large-dataset indexing before matched-pair generation.
 
 `ScoringOptions` is only configuration. `PairScoring::Select()` performs the
 actual selection over matched-pair candidates.
+
+`Analyzer::GetPairs(QueryOptions)`, `Analyzer::GetTransforms(QueryOptions)` and
+`Analyzer::SaveTo(DuckDBStore&, QueryOptions)` take their options by value since
+5.0.0; every existing call site compiles unchanged, but the mangled names
+change. The Python wrappers release the GIL around these calls, and a copy
+taken in the caller's thread cannot be rewritten underneath the running query.
+Concurrent readers of one analysed `Analyzer` are safe and serialize on the
+instance's result cache, so one instance per thread is what gives parallel
+throughput; mutating an instance while another thread reads it stays outside
+the contract.
 
 ## Python Use
 

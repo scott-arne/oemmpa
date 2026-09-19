@@ -23,8 +23,10 @@ explicit unimolecular SMIRKS and can also apply observed single-cut,
 single-atom transformations such as `C[*:1]>>O[*:1]`. Python helpers can
 summarize property changes using MMPDB-style statistic names, use those
 statistics for simple transform predictions, and attach predicted changes to
-generated products. Stored transformation refresh, rule-environment statistics,
-and broader multi-atom generation are planned for later work.
+generated products. Fragmentation analyses also enumerate matched molecular
+series, persisted with the store and queried for next-substituent ranking
+(Matsy) and series similarity. Stored transformation refresh, rule-environment
+statistics, and broader multi-atom generation are planned for later work.
 
 ## Quick Example
 
@@ -182,7 +184,8 @@ storage notes.
 - CMake >= 3.16.
 - SWIG >= 4.0.
 - Python >= 3.11.
-- DuckDB C++ library and headers for optional persistent-storage development.
+- DuckDB C++ library and headers, 1.5.4 or newer, for optional
+  persistent-storage development.
 
 Set `OPENEYE_ROOT` to the OpenEye C++ SDK directory containing `include/` and
 `lib/`:
@@ -425,6 +428,41 @@ vrzn bump patch
 vrzn bump minor
 vrzn set 1.0.0
 ```
+
+### Upgrading To 5.0.0
+
+5.0.0 moves the store to schema version 5. A database built with 4.x is
+refused when opened and must be rebuilt from source; there is no migration.
+Schema 5 adds the matched molecular series tables `series` and
+`series_member`, the dataset columns `num_series`, `num_series_members` and
+`series_source`, and populates `rule_smiles.num_heavies`, which 4.x left NULL.
+
+Behaviour changes to know about:
+
+- A series-producing analysis (the fragmentation method) can only be saved into
+  an empty store, and `AddPair`/`AddPairs` are refused afterwards, even when the
+  analysis produced no series; rebuild the store instead of appending to it.
+  Molecules and properties can still be added afterwards, but molecules added
+  after the save are not members of any stored series.
+- A variable fragment SMILES that OEChem cannot parse is rejected at save time
+  (the whole save rolls back) instead of being stored with a NULL heavy-atom
+  count.
+- Series enumeration requires a series to span at least two distinct
+  compounds; single-compound series are not stored.
+- `dataset.num_series_members` counts member rows (compound memberships),
+  while `series.num_members` counts distinct R-groups; the two are not
+  comparable.
+- Stored series are read back in the database's string order, which assumes
+  DuckDB's default binary collation.
+- `Analyzer::GetPairs(QueryOptions)`, `Analyzer::GetTransforms(QueryOptions)`
+  and `Analyzer::SaveTo(DuckDBStore&, QueryOptions)` take their options by
+  value (source-compatible; the mangled names change).
+
+New in 5.0.0: `Analyzer.series()`, `DuckDBStore.series()`,
+`DuckDBStore.series_count_refresh_seconds()`, `duckdb_library_version()`,
+`rank_next_substituents`, `find_similar_series`, the `series`, `series-rank`
+and `series-similar` commands, and the series metrics of `oemmpa list`. See
+[docs/python-api.md](docs/python-api.md) and [docs/cli.md](docs/cli.md).
 
 ### Upgrading To 4.0.0
 
