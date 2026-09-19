@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +74,29 @@ def test_build_store_refuses_an_existing_path_unless_forced(tiny_smiles, tmp_pat
     assert target.read_bytes() == b"not a store"
     report = series_queries.build_store(tiny_smiles, target, threads=1, force=True)
     assert report["molecules"] == 72
+
+
+def test_force_takes_the_write_ahead_log_with_the_store_it_replaces(tiny_smiles, tmp_path, monkeypatch):
+    # DuckDB replays whatever log it finds beside the database it opens, so the log a
+    # run killed mid-persist left behind has to be gone before the rebuilt store is
+    # opened. Looking once the build has finished proves nothing, because a clean
+    # close checkpoints and removes the log itself; the analyzer the build makes
+    # first is replaced with a probe so the assertion sees what --force left.
+    target = tmp_path / "existing.duckdb"
+    target.write_bytes(b"a store killed mid-persist")
+    wal = tmp_path / "existing.duckdb.wal"
+    wal.write_bytes(b"the log of the run that died")
+    seen = {}
+
+    def probe_then_stop():
+        seen["store"] = target.exists()
+        seen["wal"] = wal.exists()
+        raise RuntimeError("the build stops once the force cleanup is observed")
+
+    monkeypatch.setattr(series_queries, "oemmpa", SimpleNamespace(Analyzer=probe_then_stop))
+    with pytest.raises(RuntimeError, match="force cleanup"):
+        series_queries.build_store(tiny_smiles, target, threads=1, force=True)
+    assert seen == {"store": False, "wal": False}
 
 
 def test_build_store_and_query_selection(tiny_smiles, tmp_path):
@@ -277,11 +302,22 @@ def test_a_file_at_the_predictable_staging_name_is_not_clobbered(tiny_smiles, tm
     # The staging name a pid derives is guessable, so an input can be sitting at it.
     decoy = tmp_path / f"{out.name}.{os.getpid()}.tmp"
     decoy.write_bytes(b"an input parked at the staging name")
-    bundle = series_queries.run_series_query_benchmark(
-        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=tmp_path / "bench.duckdb", out_path=out)
+    # mkstemp stages owner-only whatever the umask is, so the mode the renamed
+    # bundle ends up with is the run's own doing and has to be pinned under a
+    # known umask rather than the one the caller happens to have.
+    previous_umask = os.umask(0o022)
+    try:
+        bundle = series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=tmp_path / "bench.duckdb",
+            out_path=out)
+    finally:
+        os.umask(previous_umask)
     assert decoy.read_bytes() == b"an input parked at the staging name"
     assert json.loads(out.read_text()) == bundle
     assert [path.name for path in tmp_path.glob("*.tmp")] == [decoy.name]
+    # A shared results file a second run turns owner-only is a results file nobody
+    # else can read, so the rename must publish it the way an ordinary write would.
+    assert stat.S_IMODE(out.stat().st_mode) == 0o644
 
 
 def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):

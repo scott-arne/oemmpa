@@ -107,11 +107,17 @@ def test_rank_next_substituents_returns_the_matsy_fixture(store):
 
 def test_direction_and_rgroup_forms_are_coerced(store):
     pairs = list(QUERY.items())
+    # ``query_used`` is ordered best first, so it shows which end of the scale the
+    # query actually ran under: descending value under higher, ascending under
+    # lower. Accepting a direction constant is not the same as honouring it.
     for direction in ("higher", "HIGHER", "higher_is_better", _oemmpa.PropertyDirection_HIGHER_IS_BETTER):
-        assert rank_next_substituents(store, "act", direction, rgroups=pairs, support_ladder=(5,)).matched_series == 5
-    lower = rank_next_substituents(store, "act", "lower", rgroups=QUERY, support_ladder=(5,))
-    assert lower.query_used == ("[*:1]Cl", "[*:1]F", "[*:1][H]")
-    assert lower.to_dicts()[0]["wins"] == 1
+        higher = rank_next_substituents(store, "act", direction, rgroups=pairs, support_ladder=(5,))
+        assert higher.matched_series == 5
+        assert higher.query_used == ("[*:1][H]", "[*:1]F", "[*:1]Cl")
+    for direction in ("lower", _oemmpa.PropertyDirection_LOWER_IS_BETTER):
+        lower = rank_next_substituents(store, "act", direction, rgroups=QUERY, support_ladder=(5,))
+        assert lower.query_used == ("[*:1]Cl", "[*:1]F", "[*:1][H]")
+        assert lower.to_dicts()[0]["wins"] == 1
     with pytest.raises(ValueError, match="direction"):
         rank_next_substituents(store, "act", "sideways", rgroups=QUERY)
     with pytest.raises(ValueError, match="direction"):
@@ -162,6 +168,10 @@ def test_direction_and_rgroup_forms_are_coerced(store):
     ],
 )
 def test_python_side_validation_raises_value_error_before_the_store(kwargs, match):
+    # The decorator built these dicts once at import, so popping the case apart has
+    # to happen on a copy or a second run of this module in one process sees a case
+    # the first run already emptied.
+    kwargs = dict(kwargs)
     direction = kwargs.pop("direction", "higher")
     with pytest.raises(ValueError, match=match):
         rank_next_substituents(_ExplodingStore(), "act", direction, **kwargs)
@@ -220,6 +230,8 @@ def test_integer_enum_values_are_the_binding_constants(store):
     ],
 )
 def test_store_validation_failures_become_value_errors_with_the_message(store, kwargs, match):
+    # As above: the case dicts belong to the decorator, so pop from a copy.
+    kwargs = dict(kwargs)
     property_name = kwargs.pop("property_name", "act")
     with pytest.raises(ValueError) as error:
         rank_next_substituents(store, property_name, "higher", **kwargs)

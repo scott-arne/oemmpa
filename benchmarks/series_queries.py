@@ -426,6 +426,10 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
             stream.write(json.dumps(bundle, indent=2, sort_keys=True) + "\n")
+        # mkstemp stages owner-only, and the rename carries that mode onto the
+        # results path, so a re-run would quietly make a shared results file
+        # unreadable to everyone but its owner.
+        os.chmod(staged, 0o644)
         os.replace(staged, out_path)
         replaced = True
     finally:
