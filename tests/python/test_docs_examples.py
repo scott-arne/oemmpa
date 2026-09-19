@@ -3,8 +3,9 @@
 README.md, docs/quickstart.md and docs/python-api.md all save an analyzer into
 a fresh store and only then load files into it. Schema 5 refuses a
 series-producing analysis into a store that already holds compounds, pairs or
-series, so that order is load-bearing: these tests pin it from both sides, so a
-document that returns to the old load-then-save order fails here.
+series, so that order is load-bearing: an example that returns to the old
+load-then-save order fails when it is run. These tests pin that order from both
+sides; they do not parse the documents.
 """
 
 from __future__ import annotations

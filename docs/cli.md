@@ -335,6 +335,8 @@ The output starts with one comment line reporting `query_used` (best first),
 `dropped` (members removed by shortening), `support_level` and
 `matched_series`, then the rows `rgroup`, `rgroup_num_heavies`, `wins`,
 `support`, `fraction`, sorted by fraction, support, heavy atoms and SMILES.
+`support_level` is the level that produced the candidates; an empty result
+reports the last level tried, or 0 when no series matched at all.
 `--no-shorten` disables the query shortening and `--min-query-length` is its
 floor (at least 2). A member the shortening dropped is still a query member, so
 it is never reported as a candidate. `--evidence FILE` writes one row per query

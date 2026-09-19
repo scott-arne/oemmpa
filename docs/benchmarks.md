@@ -207,7 +207,13 @@ recorded as `query_rgroups` (with `query_rgroup_count`) beside the
 `commonest_rgroups` it was taken from, and each ranking result repeats it as
 `query`. Similarity queries are the three largest series with `top=20`. Every
 query runs once cold (discarded) and `--repeats` times warm; the median is
-compared with the one-second target.
+compared with the one-second target. The recorded 10k ranking queries — the
+three commonest R-groups — match stored series but yield no candidates at that
+corpus size, so each median covers a single attempt of the support ladder and
+never runs the shortening loop, whose cost grows with its
+`query length - min_query_length + 1` attempts of two statement chains plus one
+posting scan each. The similarity queries are productive, so their medians do
+cover a full result.
 
 ```bash
 python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json

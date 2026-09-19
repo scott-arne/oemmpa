@@ -1255,13 +1255,18 @@ def _add_series_selection_arguments(parser, *, with_cut_count):
         parser.add_argument("--cut-count", type=int, default=None, help="Keep only series of this cut count.")
 
 
-def _add_series_query_arguments(parser):
+def _add_series_query_arguments(parser, *, with_candidate_exclusion):
+    # Only a ranking reports candidates, so only its query inputs carry the rule
+    # that the query's own members are excluded from them.
+    exclusion = (" Members of the original query, including any shortening drops, "
+                 "are never candidates." if with_candidate_exclusion else "")
     parser.add_argument("--database", required=True, help="DuckDB database path.")
     parser.add_argument("--property", required=True, help="Stored property name.")
     parser.add_argument("--series-id", type=int, default=None, help="Stored series id to use as the query.")
     parser.add_argument("--rgroup", action="append", default=None, metavar="SMILES=VALUE",
-                        help="Query R-group with its value; repeat for every member.")
-    parser.add_argument("--query-file", default=None, help="Two-column TSV of R-group SMILES and values.")
+                        help="Query R-group with its value; repeat for every member." + exclusion)
+    parser.add_argument("--query-file", default=None,
+                        help="Two-column TSV of R-group SMILES and values." + exclusion)
     parser.add_argument("--evidence", default=None,
                         help="Optional TSV path for the evidence rows, or '-' for standard output. "
                              "Use .gz for gzip output.")
@@ -1849,7 +1854,7 @@ def _build_parser():
 
     rank_parser = subparsers.add_parser(
         "series-rank", help="Rank candidate next substituents for a query series (Matsy).")
-    _add_series_query_arguments(rank_parser)
+    _add_series_query_arguments(rank_parser, with_candidate_exclusion=True)
     rank_parser.add_argument("--direction", required=True, choices=["higher", "lower"],
                              help="Which end of the property scale is better.")
     rank_parser.add_argument("--support-ladder", default="20,10,5",
@@ -1862,7 +1867,7 @@ def _build_parser():
 
     similar_parser = subparsers.add_parser(
         "series-similar", help="Find stored series whose shared R-groups order like the query's.")
-    _add_series_query_arguments(similar_parser)
+    _add_series_query_arguments(similar_parser, with_candidate_exclusion=False)
     similar_parser.add_argument("--min-overlap", type=int, default=3, help="Minimum shared valued R-groups (at least 2).")
     similar_parser.add_argument("--measure", choices=["spearman", "crmsd"], default="spearman",
                                 help="Sort by Spearman (descending) or centred RMSD (ascending).")
