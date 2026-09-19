@@ -666,7 +666,7 @@ contributed to that environment's statistics.
 ## Matched Molecular Series
 
 Every fragmentation analysis also enumerates matched molecular series: one
-constant with all the R-groups the set realizes at its attachment point.
+constant with all the R-groups the set realizes at its attachment points.
 Saved stores keep them, and two queries use them with a stored property:
 
 ```python

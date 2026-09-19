@@ -890,14 +890,15 @@ print(matches[0].supporting_pairs()[0].to_dict())
 ## Matched Molecular Series
 
 A matched molecular series is one constant (the part of a molecule that stays
-fixed) with every R-group the analysed set realizes at its attachment point,
-and the compounds that realize each R-group. The fragmentation method
-enumerates one series per (constant, cut count) with at least two distinct
-R-groups over at least two distinct compounds; a compound the constant caps to
-joins the one-cut series as its `[*:1][H]` member. Series are computed from the
-fragmentation records, not from the selected pairs, so the pair filters do not
-shape them and an R-group that never forms a pair is still a member. The MCS
-methods produce no series (`analyzer.produces_series` is `False` for them).
+fixed) with every R-group the analysed set realizes at the constant's
+attachment points, and the compounds that realize each R-group. The
+fragmentation method enumerates one series per (constant, cut count) with at
+least two distinct R-groups over at least two distinct compounds; a compound
+the constant caps to joins the one-cut series as its `[*:1][H]` member. Series
+are computed from the fragmentation records, not from the selected pairs, so
+the pair filters do not shape them and an R-group that never forms a pair is
+still a member. The MCS methods produce no series (`analyzer.produces_series`
+is `False` for them).
 
 ```python
 analyzer = Analyzer()
@@ -988,9 +989,10 @@ raise `ValueError` with the store's message.
 `find_similar_series` compares the query with every stored series of the same
 cut count over the R-groups valued in both (at least `min_overlap`, default 3)
 and reports Spearman's rank correlation (average ranks; undefined when either
-side is constant, reported as `None` and sorted last) and the centred RMSD of
-the values (the offset between the two series removed first). Direction is not
-an input, and tied query values are allowed here.
+side is constant, reported as `None` and, under the default measure, sorted
+last) and the centred RMSD of the values (the offset between the two series
+removed first). Direction is not an input, and tied query values are allowed
+here.
 
 ```python
 from oemmpa import find_similar_series
@@ -1030,9 +1032,9 @@ package scope; the two evidence collections,
 Every argument failure the Python layer can see raises `ValueError` before the
 store is called: a missing or doubled query source, a non-numeric or non-finite
 value, entries that are not `(smiles, value)` pairs, a support ladder that is
-not strictly decreasing, a minimum below its floor, and a count, level, `top`,
-`min_overlap` or selection bound wider than the binding's 32-bit field or a
-series id wider than 64 bits. The store's own request validation (messages
+not strictly decreasing, a minimum below its floor, and a query length, level,
+`top`, `min_overlap` or selection bound wider than the binding's 32-bit field
+or a series id wider than 64 bits. The store's own request validation (messages
 starting with `invalid series query:`) also becomes `ValueError`; every other
 `RuntimeError`, such as a database failure, passes through unchanged.
 
