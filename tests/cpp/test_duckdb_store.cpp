@@ -3792,6 +3792,51 @@ TEST(DuckDBStoreSeriesSave, ASecondSaveIsRejectedAndLeavesEveryTableByteEqual) {
     std::filesystem::remove(path);
 }
 
+// The order docs/cpp-core.md's walkthrough documents: the analysis owns the
+// store it is saved into, and the direct property loaders run against it only
+// afterwards. Loading first would populate the store and the series contract
+// would refuse the save.
+TEST(DuckDBStoreSeriesSave, DocumentedWalkthroughSavesTheAnalysisIntoAnEmptyStore) {
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "tol");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddProperty("tol", "pIC50", 6.0);
+    analyzer.AddProperty("phenol", "pIC50", 7.0);
+    analyzer.Analyze();
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    std::filesystem::remove(path);
+    {
+        // No InitializeSchema() call: SaveTo creates the schema itself, which is
+        // what lets the walkthrough hand it a store constructed one line earlier.
+        DuckDBStore saved(path.string());
+        analyzer.SaveTo(saved);
+
+        EXPECT_GT(saved.GetRowCount("compound"), 0U);
+        EXPECT_GT(saved.GetRowCount("pair"), 0U);
+        EXPECT_GT(saved.GetSeriesCount(), 0U);
+        EXPECT_EQ(saved.GetSeriesCount(), saved.GetRowCount("series"));
+        EXPECT_DOUBLE_EQ(saved.GetMoleculeProperty(1, "pIC50"), 6.0);
+
+        // Properties still reach a store a save has written, which is the one
+        // direct-loading call the documents place after the save.
+        EXPECT_NO_THROW(saved.AddMoleculeProperty(1, "logD", 2.1));
+        const std::filesystem::path properties_path = TemporarySmilesPath();
+        WriteTextFile(
+            properties_path,
+            "id,logP\n"
+            "tol,2.7\n"
+            "phenol,1.5\n"
+        );
+        const LoadReport report =
+            saved.AddPropertiesFromCsvFile(properties_path.string(), "id");
+        EXPECT_EQ(report.GetAcceptedIds(), std::vector<std::string>({"tol", "phenol"}));
+        EXPECT_EQ(report.GetRejectedCount(), 0U);
+        std::filesystem::remove(properties_path);
+    }
+    std::filesystem::remove(path);
+}
+
 TEST(DuckDBStoreSeriesSave, McsMethodSaveWritesNoSeriesRows) {
     Analyzer analyzer("dmcss");
     analyzer.AddMolecule("Cc1ccccc1", "toluene");

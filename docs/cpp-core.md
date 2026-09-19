@@ -186,7 +186,7 @@ that share a constant but have different variables.
 `OEMMPA_BUILD_DUCKDB=ON` and CMake finds DuckDB headers and `libduckdb`.
 
 ```cpp
-OEMMPA::DuckDBStore store("analysis.duckdb");
+OEMMPA::DuckDBStore store("loaded.duckdb");
 store.InitializeSchema();
 ```
 
@@ -232,15 +232,28 @@ OEMMPA::LoadReport property_report =
     store.AddPropertiesFromCsvFile("properties.csv", "id");
 ```
 
-For normal analyzer workflows, use `Analyzer::SaveTo()` after analysis:
+For normal analyzer workflows, use `Analyzer::SaveTo()` after analysis, and
+give the analysis a store of its own:
 
 ```cpp
 OEMMPA::Analyzer analyzer;
 analyzer.AddMolecule("Cc1ccccc1", "tol");
 analyzer.AddMolecule("Oc1ccccc1", "phenol");
+analyzer.AddProperty("tol", "pIC50", 6.0);
+analyzer.AddProperty("phenol", "pIC50", 7.0);
 analyzer.Analyze();
-analyzer.SaveTo(store);
+
+OEMMPA::DuckDBStore saved("analysis.duckdb");
+analyzer.SaveTo(saved);
 ```
+
+`SaveTo()` calls `InitializeSchema()` itself and writes the analyzer's
+molecules, properties, pairs and series in one transaction. A series-producing
+analysis (the default fragmentation method) is accepted only by an empty store,
+so rebuild the store instead of appending to it. The direct loaders above
+(`AddMolecule()`, `AddMoleculesFromSmilesFile()`, `AddMoleculeProperty()` and
+`AddPropertiesFromCsvFile()`) therefore fill a store no analysis is saved into;
+properties may still be added to a store a save has already written.
 
 `DuckDBStore` stores each matched molecular pair as a single `pair` row keyed by
 `(rule_id, constant_id, compound1_id, compound2_id)`. Per-radius rule environments
