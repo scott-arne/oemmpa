@@ -2,7 +2,7 @@
 #define OEMMPA_H
 
 // Version information
-#define OEMMPA_VERSION_MAJOR 4
+#define OEMMPA_VERSION_MAJOR 5
 #define OEMMPA_VERSION_MINOR 0
 #define OEMMPA_VERSION_PATCH 0
 

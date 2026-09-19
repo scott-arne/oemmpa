@@ -16,8 +16,8 @@ import warnings
 from importlib import metadata
 from pathlib import Path
 
-__version__ = "4.0.0"
-__version_info__ = (4, 0, 0)
+__version__ = "5.0.0"
+__version_info__ = (5, 0, 0)
 
 
 _OPENEYE_COMPAT_PRELOAD_PATHS: list[str] = []
