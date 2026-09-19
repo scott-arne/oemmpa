@@ -1551,3 +1551,23 @@ TEST(SeriesSimilarity, RequestContract) {
     }
     std::filesystem::remove(fixture.path);
 }
+
+TEST(SeriesSimilarity, RequestContractRejectsAnUnknownMeasure) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+
+    // The comparator treats everything that is not SPEARMAN as the centred RMSD, so a
+    // value outside the enum would silently sort by a measure the caller never chose.
+    SeriesSimilarityRequest request = SimilarityQuery();
+    request.measure = static_cast<OEMMPA::SimilarityMeasure>(2);
+    try {
+        store.FindSimilarSeries(request);
+        ADD_FAILURE() << "expected the request to be rejected";
+    } catch (const std::invalid_argument& error) {
+        EXPECT_TRUE(starts_with_prefix(error.what())) << error.what();
+        EXPECT_NE(std::string(error.what()).find("measure must be SPEARMAN or CENTRED_RMSD"),
+                  std::string::npos)
+            << error.what();
+    }
+    std::filesystem::remove(fixture.path);
+}

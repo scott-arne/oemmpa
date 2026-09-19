@@ -270,6 +270,25 @@ def test_raw_validation_failures_carry_the_documented_prefix():
     assert "absent" in str(missing.value)
 
 
+def test_raw_similarity_rejects_a_measure_outside_the_enum():
+    # The binding hands `measure` over as a plain integer, so a raw caller can set a
+    # value the enum never names; unrejected it would sort by the centred RMSD, which
+    # the CENTRED_RMSD leg below separates from a blanket rejection of the field.
+    store = _interleaving_raw_store()
+    similarity = _oemmpa.SeriesSimilarityRequest()
+    similarity.property_name = "act"
+    similarity.query_variable_smiles = ["[*:1][H]", "[*:1]F", "[*:1]Cl"]
+    similarity.query_values = [3.0, 2.0, 1.0]
+    similarity.measure = 2
+    with pytest.raises(RuntimeError) as unknown:
+        store.FindSimilarSeries(similarity)
+    assert str(unknown.value).startswith("invalid series query: ")
+    assert "measure must be SPEARMAN or CENTRED_RMSD" in str(unknown.value)
+
+    similarity.measure = _oemmpa.SimilarityMeasure_CENTRED_RMSD
+    assert store.FindSimilarSeries(similarity).query_size == 3
+
+
 def test_result_vectors_survive_the_result_object():
     # The store returns its result records by value, so reading a vector straight off
     # the temporary is the natural spelling. A vector that stayed a view into the freed

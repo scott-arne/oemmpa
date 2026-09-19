@@ -3958,6 +3958,13 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
 }
 
 SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest request) const {
+    // The binding hands the field over as a plain integer, so the enum's own type is no
+    // guarantee of range here, and the sort below reads anything but SPEARMAN as the
+    // centred RMSD rather than as the mistake it is.
+    if (request.measure != SimilarityMeasure::SPEARMAN &&
+        request.measure != SimilarityMeasure::CENTRED_RMSD) {
+        throw invalid_series_query("measure must be SPEARMAN or CENTRED_RMSD");
+    }
     if (request.min_overlap < 2) {
         throw invalid_series_query("min_overlap must be at least 2");
     }
