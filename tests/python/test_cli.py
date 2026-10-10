@@ -832,6 +832,70 @@ def test_cli_list_refuses_to_write_report_over_database(tmp_path):
     assert _tsv_rows(list_result.stdout) == EXPECTED_PERSISTED_SUMMARY
 
 
+def _run_cli_on_frozen_store(database, *args):
+    """Run the CLI while ``database`` is read-only on disk and assert it is unchanged.
+
+    A file without write permission cannot be opened read-write (writer lock,
+    schema DDL), so a command that succeeds here opened the store read-only.
+
+    :param database: Store path, made owner-read-only for the run only.
+    :param args: CLI arguments.
+    :returns: The completed process.
+    """
+    import hashlib
+    import stat
+
+    before = hashlib.blake2b(database.read_bytes()).hexdigest()
+    database.chmod(stat.S_IRUSR)
+    try:
+        result = _run_cli(*args, check=False)
+    finally:
+        database.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    assert result.returncode == 0, result.stderr
+    assert hashlib.blake2b(database.read_bytes()).hexdigest() == before
+    return result
+
+
+@pytest.mark.parametrize("recount", [False, True], ids=["cached", "recount"])
+def test_cli_list_opens_the_store_read_only(tmp_path, recount):
+    database = _build_cli_store(tmp_path)
+
+    result = _run_cli_on_frozen_store(
+        database, "list", str(database), *(["--recount"] if recount else [])
+    )
+
+    assert _tsv_rows(result.stdout) == EXPECTED_PERSISTED_SUMMARY
+
+
+@pytest.mark.parametrize(
+    ("command", "options"),
+    [
+        ("predict", ("--property", "pIC50", "--transform", "[*:1]C>>[*:1]O")),
+        ("generate", ("--source", "Cc1ccccc1", "--property", "pIC50")),
+        ("generate", ("--source", "Cc1ccccc1")),
+    ],
+    ids=["predict", "generate", "generate-no-property"],
+)
+def test_cli_persisted_reports_open_the_store_read_only(tmp_path, command, options):
+    database = _build_cli_store(tmp_path)
+    # The detail reports read the supporting pairs, so they cover that reader too.
+    details = () if "--property" not in options else ("--details-prefix", str(tmp_path / "details"))
+
+    result = _run_cli_on_frozen_store(database, command, str(database), *options, *details)
+
+    assert _tsv_rows(result.stdout)
+
+
+def test_cli_list_reports_a_missing_database(tmp_path):
+    missing = tmp_path / "absent.oemmpa.duckdb"
+
+    result = _run_cli("list", str(missing), check=False)
+
+    assert result.returncode == 2
+    assert f"oemmpa: error: missing database: {missing}" in result.stderr
+    assert not missing.exists()
+
+
 def test_cli_build_refuses_to_overwrite_without_force(tmp_path):
     database = _build_cli_store(tmp_path)
 
@@ -1542,7 +1606,7 @@ def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
         recount=False,
         output=output,
     )
-    monkeypatch.setattr(cli_module, "_open_store", lambda _path: FakeStore())
+    monkeypatch.setattr(cli_module, "_open_store_read_only", lambda _path: FakeStore())
 
     assert cli_module._list_store(args) == 0
 

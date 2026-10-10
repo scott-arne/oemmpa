@@ -1112,13 +1112,6 @@ def _build_query_options(args):
     return options
 
 
-def _open_store(path):
-    database_path = Path(path)
-    if not database_path.exists():
-        raise ValueError(f"missing database: {database_path}")
-    return DuckDBStore(database_path)
-
-
 def _open_store_read_only(path):
     """Open a store for the read commands: DuckDB read-only mode, no schema DDL, no writer lock.
 
@@ -1183,7 +1176,7 @@ def _rgroup2smarts(args):
 
 def _list_store(args):
     _ensure_report_output_is_not_database(args.database, args.output)
-    store = _open_store(args.database)
+    store = _open_store_read_only(args.database)
     summary = store.summary(recount=args.recount)
     rows = [
         {
@@ -1468,7 +1461,7 @@ def _predict_stateless(args):
 
 
 def _find_persisted_matches(args):
-    store = _open_store(args.database)
+    store = _open_store_read_only(args.database)
     matches = find_transform_environments(
         store,
         transform=getattr(args, "transform", None),
@@ -1617,7 +1610,7 @@ def _generate_no_properties(args):
         _reject_persisted_fragmentation_options(args, "generate")
         _reject_persisted_method_options(args, "generate")
         _ensure_report_output_is_not_database(args.database, args.output)
-        transforms = _open_store(args.database).transforms()
+        transforms = _open_store_read_only(args.database).transforms()
     else:
         _require_smiles_input(args, "generate")
         analyzer = _build_analyzer(args, load_properties=False)
