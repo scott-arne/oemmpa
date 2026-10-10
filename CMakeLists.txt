@@ -95,8 +95,9 @@ if(OEMMPA_BUILD_DUCKDB AND DuckDB_FOUND)
         message(WARNING
             "Could not determine the version of DuckDB at ${DuckDB_LIBRARY}: no "
             "DuckDBConfigVersion.cmake declaring one was found beside it or under "
-            "DUCKDB_ROOT. OEMMPA requires DuckDB ${OEMMPA_DUCKDB_MIN_VERSION} or "
-            "newer; continuing without the configure-time check.")
+            "a DUCKDB_ROOT that contains it. OEMMPA requires DuckDB "
+            "${OEMMPA_DUCKDB_MIN_VERSION} or newer; continuing without the "
+            "configure-time check.")
     else()
         message(STATUS "DuckDB ${DuckDB_VERSION} found (${DuckDB_LIBRARY}); "
             "DuckDB-backed storage is enabled")
