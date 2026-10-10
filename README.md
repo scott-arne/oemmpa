@@ -19,8 +19,9 @@ threshold, and environment radius 1–5 with default 4). The WizePairZ
 environment SMIRKS is a descriptive, searchable annotation in the paper's
 `.`-joined form (stored in the dedicated `environment_smirks` table), not a
 directly-applicable transform. Transform generation can apply chemically
-explicit unimolecular SMIRKS and can also apply observed single-cut,
-single-atom transformations such as `C[*:1]>>O[*:1]`. Python helpers can
+explicit unimolecular SMIRKS and can also apply observed transformations whose
+changing group is connected and has one, two, or three attachment points,
+multi-atom groups included, such as `C[*:1]>>O[*:1]`. Python helpers can
 summarize property changes using MMPDB-style statistic names, use those
 statistics for simple transform predictions, and attach predicted changes to
 generated products. Fragmentation analyses also enumerate matched molecular
@@ -59,8 +60,8 @@ products = apply_transform_smirks(
 print(products)
 ```
 
-Observed single-cut, single-atom transforms from analyzer results can be
-applied directly:
+Observed transforms from analyzer results with a connected changing group can
+be applied directly:
 
 ```python
 for pair in analyzer.pairs():
@@ -210,6 +211,10 @@ Homebrew or `DUCKDB_ROOT` location. Published wheels enable DuckDB storage: the
 CI wheel jobs provision the official libduckdb C++ release bundle and build with
 `OEMMPA_BUILD_DUCKDB=ON`. Ad-hoc local CMake/scikit-build builds leave DuckDB
 disabled unless `OEMMPA_BUILD_DUCKDB=ON` is provided and DuckDB is discoverable.
+With `OEMMPA_BUILD_DUCKDB=ON`, a DuckDB older than 1.5.4 fails configuration
+(upgrade DuckDB, or configure with `-DOEMMPA_BUILD_DUCKDB=OFF`), and a DuckDB
+whose version cannot be determined only warns (the flat libduckdb bundle ships
+no `DuckDBConfigVersion.cmake`).
 Release builds use the matching preset:
 
 ```bash
