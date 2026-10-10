@@ -266,6 +266,17 @@ def select_query_rgroups(store, property_name, *, commonest=4, minimum=3, count=
         f"orders in the store, and a shorter run is never the answer (spec 11.4); sets tried: {tried}")
 
 
+def check_shortening_length(length, min_query_length=SHORTENING_MIN_QUERY_LENGTH):
+    """Refuse a shortening query length that leaves shortening no member to drop.
+
+    :param length: Members in the shortening query.
+    :param min_query_length: Floor of the shortening.
+    :raises ValueError: When ``length`` does not exceed ``min_query_length``.
+    """
+    if length <= min_query_length:
+        raise ValueError(f"length {length} must be longer than min_query_length {min_query_length}")
+
+
 def select_shortening_query(store, property_name, *, length=SHORTENING_LENGTH,
                             min_query_length=SHORTENING_MIN_QUERY_LENGTH, max_series=SHORTENING_MAX_SERIES):
     """The first stored series whose own members make a ranking query that shortens.
@@ -291,8 +302,7 @@ def select_shortening_query(store, property_name, *, length=SHORTENING_LENGTH,
     :raises RuntimeError: When none of the series tried shortens; the message
         names how many were tried.
     """
-    if length <= min_query_length:
-        raise ValueError(f"length {length} must be longer than min_query_length {min_query_length}")
+    check_shortening_length(length, min_query_length)
     valued = []
     for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
         values = _member_values(store, series, property_name)
@@ -417,11 +427,15 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     :param shortening_length: Members of the ranking query that has to shorten
         (see :func:`select_shortening_query`).
     :returns: The bundle that was written.
-    :raises ValueError: When the results, the store or the store's log would be
-        the same file as one another or as an input.
+    :raises ValueError: When ``shortening_length`` does not exceed the
+        shortening floor, or the results, the store or the store's log would be
+        the same file as one another or as an input; both before anything is built.
     :raises RuntimeError: When no shortening query is found, or the timed run of
         the one selected drops nothing; no bundle is written then.
     """
+    # Checked first: the selection would refuse the length too, but only after the
+    # build, which takes minutes at 10k.
+    check_shortening_length(shortening_length)
     out_path = Path(out_path)
     store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
     # Resolved so the bundle names the store the way it names the corpus, whatever
@@ -553,6 +567,11 @@ def main(argv=None):
                         help=f"Members of the ranking query that has to shorten (default {SHORTENING_LENGTH}; "
                              f"more than {SHORTENING_MIN_QUERY_LENGTH}).")
     args = parser.parse_args(argv)
+    try:
+        check_shortening_length(args.shortening_length)
+    except ValueError:
+        parser.error(f"--shortening-length must be longer than min_query_length {SHORTENING_MIN_QUERY_LENGTH}, "
+                     f"got {args.shortening_length}")
     run_series_query_benchmark(size=args.size, repeats=args.repeats, threads=args.threads,
                                parquet=args.parquet, store_path=args.store, out_path=args.out, force=args.force,
                                shortening_length=args.shortening_length)

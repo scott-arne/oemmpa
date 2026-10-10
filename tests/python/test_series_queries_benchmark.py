@@ -213,6 +213,35 @@ def test_the_shortening_selection_names_the_count_tried_when_no_series_shortens(
         series_queries.select_shortening_query(store, "synthetic", max_series=2)
 
 
+@pytest.mark.parametrize("smiles_given", [False, True], ids=["corpus", "smiles"])
+def test_a_shortening_length_that_cannot_shorten_is_refused_before_the_build(tiny_smiles, tmp_path, monkeypatch,
+                                                                            smiles_given):
+    # The build takes minutes at 10k, so a query length no longer than
+    # min_query_length has to be refused before the corpus or the store is touched.
+    def fail_loudly(*args, **kwargs):
+        raise AssertionError("nothing may be built for a shortening length that cannot shorten")
+
+    monkeypatch.setattr(series_queries, "ensure_corpus", fail_loudly)
+    monkeypatch.setattr(series_queries, "build_store", fail_loudly)
+    out = tmp_path / "results" / "out.json"
+    with pytest.raises(ValueError, match="longer than min_query_length 3"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles if smiles_given else None,
+            store_path=tmp_path / "bench.duckdb", out_path=out, shortening_length=3)
+    assert not out.parent.exists()
+
+
+def test_the_cli_rejects_a_shortening_length_that_cannot_shorten(tmp_path, monkeypatch, capsys):
+    def fail_loudly(**kwargs):
+        raise AssertionError("the run must not start for a shortening length that cannot shorten")
+
+    monkeypatch.setattr(series_queries, "run_series_query_benchmark", fail_loudly)
+    with pytest.raises(SystemExit) as raised:
+        series_queries.main(["--out", str(tmp_path / "o.json"), "--shortening-length", "3"])
+    assert raised.value.code == 2
+    assert "--shortening-length" in capsys.readouterr().err
+
+
 def test_the_run_fails_closed_when_the_timed_shortening_query_drops_nothing(tiny_smiles, tmp_path, monkeypatch):
     # A query no longer than min_query_length cannot shorten, so the timed run of
     # this doctored selection drops nothing and no bundle may be written.
