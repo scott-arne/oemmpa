@@ -1237,8 +1237,7 @@ calls raise errors immediately.
 
 ## Deferred APIs
 
-OEMMPA does not yet expose broader OEMedChem-specific analyses, a separate
-fragment database, or a fully designed command-line reporting workflow for
-transform and prediction output. A separate fragment database should be added
-only when users need queryable fragment rows for reuse, explainability, or
-large-dataset indexing before matched-pair generation.
+OEMMPA does not yet expose broader OEMedChem-specific analyses or a separate
+fragment database. A separate fragment database should be added only when
+users need queryable fragment rows for reuse, explainability, or large-dataset
+indexing before matched-pair generation.

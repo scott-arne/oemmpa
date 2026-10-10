@@ -328,10 +328,9 @@ database in `compound`, `rule_smiles`,
 intermediate analysis result and are not exposed as a stable DuckDB table yet.
 Cut R-group workflows are implemented in the Python layer by converting
 one-wildcard R-group SMILES to SMARTS and reusing `SmartsFragmentationStrategy`.
-Database-backed transformation queries, a separate fragment database, and
-production analytics remain later work. Fragment storage should be reopened
-when a workflow needs queryable fragment rows for reuse, explainability, or
-large-dataset indexing before matched-pair generation.
+A separate fragment database remains later work. Fragment storage should be
+reopened when a workflow needs queryable fragment rows for reuse,
+explainability, or large-dataset indexing before matched-pair generation.
 
 ## Querying And Scoring
 
@@ -391,5 +390,5 @@ workflow helpers are available on top of the common result objects. File-based
 CLI commands are available for transform and prediction workflows. Input-SMILES
 environment matching, SMARTS-filtered rule selection, and reference-based
 property prediction are available through the Python API. A separate fragment
-database, disconnected multi-cut product generation, and C++ analytics APIs
-remain later work.
+database, disconnected multi-cut product generation, and C++ counterparts of
+the Python transform-statistics and prediction helpers remain later work.

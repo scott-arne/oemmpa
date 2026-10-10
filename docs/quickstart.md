@@ -735,4 +735,6 @@ Transformation statistics, property-change predictions, product generation,
 cut R-group fragmentation workflows, and the command-line tools are available
 now. Separate fragment databases remain deferred until there is a concrete need
 to query fragment rows before pair generation. Input-SMILES environment
-matching and multi-atom product generation are planned for later work.
+matching (see Querying Stored Rule Environments above) and product generation
+for connected multi-atom changing groups are available as well; disconnected
+multi-cut product generation is planned for later work.
