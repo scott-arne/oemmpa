@@ -1047,10 +1047,10 @@ The typed records live on the binding module: `_oemmpa.SubstituentRankingRequest
 `_oemmpa.DuckDBStore.FindSimilarSeries`. Both release the GIL and copy the
 request before doing so; one `DuckDBStore` instance is still not safe to use
 from several threads at once, so use one store per thread, as for every other
-store call (see DuckDB Storage). Raw calls raise `RuntimeError` for every failure; the Python
-helpers above translate the request-validation cases into `ValueError`, that is
-the messages starting with `invalid series query:`, which the binding also
-exposes as `_oemmpa.cvar.SERIES_QUERY_INVALID_PREFIX`.
+store call (see DuckDB Storage). Raw calls raise `RuntimeError` for every
+failure; the Python helpers above translate the request-validation cases into
+`ValueError`, that is the messages starting with `invalid series query:`, which
+the binding also exposes as `_oemmpa.cvar.SERIES_QUERY_INVALID_PREFIX`.
 
 Every vector member of these records is copy-on-access: assigning a Python
 sequence copies it into the record, and reading one returns a new tuple of
