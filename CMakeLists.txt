@@ -79,6 +79,28 @@ if(OEMMPA_BUILD_DUCKDB)
 endif()
 
 if(OEMMPA_BUILD_DUCKDB AND DuckDB_FOUND)
+    # The floor is checked here, not requested from find_package: a version on
+    # the QUIET find above would turn an old DuckDB into "not found" and build
+    # without storage instead of failing.
+    include(DuckDBVersion)
+    oemmpa_classify_duckdb_version("${DuckDB_VERSION}" OEMMPA_DUCKDB_VERSION_STATUS)
+    if(OEMMPA_DUCKDB_VERSION_STATUS STREQUAL "BELOW")
+        message(FATAL_ERROR
+            "DuckDB ${DuckDB_VERSION} is older than the ${OEMMPA_DUCKDB_MIN_VERSION} "
+            "OEMMPA requires (version read from ${DuckDB_VERSION_FILE}; library "
+            "${DuckDB_LIBRARY}). Upgrade DuckDB to ${OEMMPA_DUCKDB_MIN_VERSION} or "
+            "newer, or configure with -DOEMMPA_BUILD_DUCKDB=OFF to build without "
+            "DuckDB-backed storage.")
+    elseif(OEMMPA_DUCKDB_VERSION_STATUS STREQUAL "UNKNOWN")
+        message(WARNING
+            "Could not determine the version of DuckDB at ${DuckDB_LIBRARY}: no "
+            "DuckDBConfigVersion.cmake declaring one was found beside it or under "
+            "DUCKDB_ROOT. OEMMPA requires DuckDB ${OEMMPA_DUCKDB_MIN_VERSION} or "
+            "newer; continuing without the configure-time check.")
+    else()
+        message(STATUS "DuckDB ${DuckDB_VERSION} found (${DuckDB_LIBRARY}); "
+            "DuckDB-backed storage is enabled")
+    endif()
     set(OEMMPA_HAS_DUCKDB TRUE)
 else()
     set(OEMMPA_HAS_DUCKDB FALSE)

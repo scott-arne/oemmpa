@@ -65,3 +65,12 @@ add_test(NAME WizePairZPrefilterParity
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/prefilter_parity.cmake
 )
+
+# Pure CMake: the DuckDB version parser and the configure-time floor, run on
+# temporary version files whether or not this build found DuckDB.
+add_test(NAME DuckDBVersionFloor
+    COMMAND ${CMAKE_COMMAND}
+        -DMODULE=${PROJECT_SOURCE_DIR}/cmake/DuckDBVersion.cmake
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/duckdb_version_floor
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/duckdb_version_floor.cmake
+)
