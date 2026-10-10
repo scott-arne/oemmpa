@@ -1,18 +1,18 @@
 """Small command-line workflows built on the Python OEMMPA facade."""
 
 import argparse
-from contextlib import contextmanager
 import csv
 import gzip
 import os
-from pathlib import Path
 import sys
 import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 
 from oemmpa import (
+    KRAMER_FIELDS,
     Analyzer,
     DuckDBStore,
-    KRAMER_FIELDS,
     RuleEnvironmentPredictionResult,
     SeriesSelectionOptions,
     _oemmpa,
@@ -32,7 +32,6 @@ from oemmpa._series import (
     SIMILARITY_EVIDENCE_COLUMNS,
     SIMILARITY_ROW_COLUMNS,
 )
-
 
 STAT_COLUMNS = [
     "transform",
@@ -1129,9 +1128,8 @@ def _build_store(args):
     output_path = Path(args.output)
     if output_path.is_dir():
         raise ValueError(f"output path is a directory: {output_path}")
-    if output_path.exists():
-        if not args.force:
-            raise ValueError(f"output already exists: {output_path}")
+    if output_path.exists() and not args.force:
+        raise ValueError(f"output already exists: {output_path}")
 
     with tempfile.TemporaryDirectory(
         prefix=f".{output_path.name}.",

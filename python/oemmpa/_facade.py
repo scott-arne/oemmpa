@@ -5,15 +5,14 @@ from typing import ClassVar
 
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import LoadReport, load_dataframe_rows
-from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._results import (
     PairCollection,
     PairResult,
     TransformCollection,
     TransformResult,
 )
+from ._rgroup import read_rgroup_file, rgroups_to_recursive_smarts
 from ._smiles_file import iter_smiles_file
-
 
 _UINT_MAX = 2**32 - 1
 
@@ -82,7 +81,7 @@ class Analyzer:
             try:
                 molecule, molecule_id = self._coerce_molecule_row(row)
                 accepted_id = self.add_molecule(molecule, id=molecule_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - one bad row is recorded, never aborts the load
                 report.record_rejected(row_number, exc)
             else:
                 report.record_accepted(accepted_id, self.stripped_names(accepted_id))
@@ -110,7 +109,7 @@ class Analyzer:
                 continue
             try:
                 accepted_id = self.add_molecule(row.smiles, id=row.molecule_id)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - one bad row is recorded, never aborts the load
                 report.record_rejected(row.row_number, exc)
             else:
                 report.record_accepted(accepted_id, self.stripped_names(accepted_id))
@@ -291,7 +290,7 @@ class Analyzer:
         if value is None:
             return None
         if isinstance(value, bool):
-            raise ValueError(f"{name} must be an integer")
+            raise ValueError(f"{name} must be an integer")  # noqa: TRY004 - ValueError is the public contract
         try:
             coerced = operator.index(value)
         except TypeError as exc:
