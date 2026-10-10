@@ -1253,7 +1253,8 @@ def _add_series_query_arguments(parser, *, with_candidate_exclusion):
                  "are never candidates." if with_candidate_exclusion else "")
     parser.add_argument("--database", required=True, help="DuckDB database path.")
     parser.add_argument("--property", required=True, help="Stored property name.")
-    parser.add_argument("--series-id", type=int, default=None, help="Stored series id to use as the query.")
+    parser.add_argument("--series-id", type=int, default=None,
+                        help="Stored series id to use as the query." + exclusion)
     parser.add_argument("--rgroup", action="append", default=None, metavar="SMILES=VALUE",
                         help="Query R-group with its value; repeat for every member." + exclusion)
     parser.add_argument("--query-file", default=None,

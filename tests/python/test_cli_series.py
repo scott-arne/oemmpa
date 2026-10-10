@@ -396,3 +396,13 @@ def test_read_commands_coexist_with_another_read_only_handle(database):
         del holder
     assert result.returncode == 0
     assert _tsv(result.stdout)[1]
+
+
+def test_rank_help_states_the_candidate_exclusion_on_every_query_option():
+    # Only a ranking reports candidates, so series-similar carries no exclusion clause.
+    clause = "Members of the original query, including any shortening drops, are never candidates."
+    rank_help = " ".join(_run_cli("series-rank", "--help").stdout.split())
+    similar_help = " ".join(_run_cli("series-similar", "--help").stdout.split())
+    assert f"Stored series id to use as the query. {clause}" in rank_help
+    assert rank_help.count(clause) == 3
+    assert clause not in similar_help
