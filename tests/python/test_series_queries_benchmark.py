@@ -160,6 +160,79 @@ def test_the_selection_refuses_when_even_three_rgroups_cannot_be_ordered(two_cor
     assert message.count("gave 0") == 2
 
 
+def _store_ordered_by_substituent(tmp_path):
+    """Six cores carrying the same eight substituents, valued by the substituent alone.
+
+    Every series of substituents (and of the aryl halves carrying them) then
+    orders them identically, so a six-member query from one of them matches all
+    six and its two other members reach support 6 at once: no run ever
+    shortens. The series of cores tie and are skipped. No core has a cuttable
+    bond of its own, which would add smaller series of other halves that a
+    query could match alone.
+    """
+    import oemmpa
+
+    cores = ["C", "CC", "N", "C#N", "CCC", "C=C"]
+    groups = ["", "F", "Cl", "Br", "I", "O", "S", "O=C"]
+    analyzer = oemmpa.Analyzer()
+    for core in cores:
+        for index, fragment in enumerate(groups):
+            identifier = f"{core}-{index}"
+            smiles = f"c1ccccc1{core}" if fragment == "" else f"{fragment}c1ccc({core})cc1"
+            analyzer.add_molecule(smiles, id=identifier)
+            analyzer.add_property(identifier, "synthetic", float(index))
+    analyzer.analyze()
+    path = tmp_path / "ordered.duckdb"
+    oemmpa.DuckDBStore(path).save_analyzer(analyzer, max_variable_heavies=10)
+    return series_queries.open_store(path)
+
+
+def test_the_shortening_selection_finds_a_query_that_drops_members(tiny_smiles, tmp_path):
+    series_queries.build_store(tiny_smiles, tmp_path / "tiny.duckdb", threads=1)
+    store = series_queries.open_store(tmp_path / "tiny.duckdb")
+    selected = series_queries.select_shortening_query(store, "synthetic")
+    assert selected["query_length"] == 6
+    assert len(selected["rgroups"]) == 6 and set(selected["values"]) == set(selected["rgroups"])
+    assert len(set(selected["values"].values())) == 6   # Strictly ordered, as a ranking query must be.
+    assert selected["dropped"] and set(selected["dropped"]) <= set(selected["rgroups"])
+    # The walk starts at the series with the most valued members.
+    sizes = {int(series.GetSeriesId()): len(series_queries._member_values(store, series, "synthetic"))
+             for series in store.series(series_queries.oemmpa.SeriesSelectionOptions(cut_count=1))}
+    assert sizes[selected["series_id"]] == max(sizes.values())
+    assert series_queries.select_shortening_query(store, "synthetic") == selected   # Deterministic.
+    with pytest.raises(ValueError, match="longer than min_query_length"):
+        series_queries.select_shortening_query(store, "synthetic", length=3)
+
+
+def test_the_shortening_selection_names_the_count_tried_when_no_series_shortens(tmp_path):
+    store = _store_ordered_by_substituent(tmp_path)
+    with pytest.raises(RuntimeError, match=r"tried \d+ series") as raised:
+        series_queries.select_shortening_query(store, "synthetic")
+    assert "tried 0 series" not in str(raised.value)
+    with pytest.raises(RuntimeError, match="tried 2 series"):
+        series_queries.select_shortening_query(store, "synthetic", max_series=2)
+
+
+def test_the_run_fails_closed_when_the_timed_shortening_query_drops_nothing(tiny_smiles, tmp_path, monkeypatch):
+    # A query no longer than min_query_length cannot shorten, so the timed run of
+    # this doctored selection drops nothing and no bundle may be written.
+    select = series_queries.select_shortening_query
+
+    def three_member_selection(store, property_name, **kwargs):
+        selected = select(store, property_name, **kwargs)
+        kept = selected["rgroups"][:3]
+        return {**selected, "rgroups": kept, "values": {rgroup: selected["values"][rgroup] for rgroup in kept},
+                "query_length": 3}
+
+    monkeypatch.setattr(series_queries, "select_shortening_query", three_member_selection)
+    out = tmp_path / "out.json"
+    with pytest.raises(RuntimeError, match="dropped nothing"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=tmp_path / "bench.duckdb",
+            out_path=out)
+    assert not out.exists()
+
+
 def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     out = tmp_path / "series_queries.json"
     bundle = series_queries.run_series_query_benchmark(
@@ -174,10 +247,17 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert "processor" in meta   # Reported even where the platform leaves it blank.
     assert "corpus_provenance" in meta   # Unavailable for an ad-hoc SMILES file, but always reported.
     assert meta["query_rgroups"] == meta["commonest_rgroups"] and meta["query_rgroup_count"] == 4
+    assert meta["shortening_length"] == 6
     assert bundle["target_seconds"] == 1.0
-    assert {query["kind"] for query in bundle["queries"]} == {"rank", "similar"}
+    assert {query["kind"] for query in bundle["queries"]} == {"rank", "rank-shorten", "similar"}
     assert sum(1 for query in bundle["queries"] if query["kind"] == "rank") == 3
     assert sum(1 for query in bundle["queries"] if query["kind"] == "similar") == 3
+    [shortening] = [query for query in bundle["queries"] if query["kind"] == "rank-shorten"]
+    assert shortening["query_length"] == 6 and len(shortening["query"]) == 6
+    assert set(shortening["values"]) == set(shortening["query"])
+    assert shortening["dropped"] and shortening["attempts"] == len(shortening["dropped"]) + 1
+    assert shortening["ladder"] == [20, 10, 5] and shortening["min_query_length"] == 3
+    assert {"series_id", "candidates", "support_level", "matched_series"} <= set(shortening)
     for query in bundle["queries"]:
         assert query["median_seconds"] >= 0
         assert len(query["runs"]) == 1
@@ -187,7 +267,7 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert all("matched_series" in rank and "candidates" in rank for rank in ranks)
     similars = [query for query in bundle["queries"] if query["kind"] == "similar"]
     assert all(similar["top"] == 20 and "matches" in similar for similar in similars)
-    assert isinstance(bundle["all_under_target"], bool)
+    assert bundle["all_under_target"] == all(query["under_target"] for query in bundle["queries"])
     with pytest.raises(ValueError, match="differ"):
         series_queries.run_series_query_benchmark(
             size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=out, out_path=out, force=True)
@@ -330,10 +410,13 @@ def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):
     monkeypatch.setattr(series_queries, "run_series_query_benchmark", fake_run)
     status = series_queries.main(["--size", "300", "--repeats", "2", "--threads", "4", "--force",
                                   "--store", str(tmp_path / "s.duckdb"), "--parquet", str(tmp_path / "c.parquet"),
-                                  "--out", str(tmp_path / "o.json")])
+                                  "--out", str(tmp_path / "o.json"), "--shortening-length", "7"])
     assert status == 0
     assert calls["size"] == 300 and calls["repeats"] == 2 and calls["threads"] == 4
+    assert calls["shortening_length"] == 7
     assert calls["force"] is True
     assert calls["store_path"] == str(tmp_path / "s.duckdb")
     assert calls["parquet"] == str(tmp_path / "c.parquet")
     assert calls["out_path"] == tmp_path / "o.json"
+    series_queries.main(["--out", str(tmp_path / "o.json")])
+    assert calls["shortening_length"] == 6

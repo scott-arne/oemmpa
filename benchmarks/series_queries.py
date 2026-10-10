@@ -9,9 +9,13 @@ among the stored series that contain all four with values. A diverse corpus can
 leave too few such series to show three different orders, so the query set then
 drops its least common member, down to three R-groups and no further; the set
 actually used is recorded as ``query_rgroups``, and three R-groups that still
-cannot be ordered are an error, not a shorter run. The similarity queries are
-the three largest series, top 20. Each query runs once cold (discarded) and
-``repeats`` times warm; the median is reported against a one-second target.
+cannot be ordered are an error, not a shorter run. Those queries find no
+candidates on the 10k corpus without being able to shorten, so a fourth ranking
+query is taken from a stored series' own members (``--shortening-length`` of
+them, default 6) and kept only when its run drops at least one member, which
+times the shortening loop. The similarity queries are the three largest series,
+top 20. Each query runs once cold (discarded) and ``repeats`` times warm; the
+median is reported against a one-second target.
 Results go to ``benchmarks/results/series_queries.json`` with the corpus
 provenance, the linked DuckDB version and the host recorded.
 
@@ -58,6 +62,13 @@ from stage_benchmark import (  # type: ignore[import-not-found]
 PROPERTY = "synthetic"
 TARGET_SECONDS = 1.0
 DEFAULT_OUT = REPO_ROOT / "benchmarks" / "results" / "series_queries.json"
+SUPPORT_LADDER = (20, 10, 5)
+SHORTENING_LENGTH = 6
+SHORTENING_MIN_QUERY_LENGTH = 3
+# Bounds the search for a shortening query: each candidate costs a full ranking
+# run, and a store where 25 series in a row find candidates at once is a store
+# this workload cannot measure, not one to scan to the end.
+SHORTENING_MAX_SERIES = 25
 
 
 def _log(message):
@@ -255,6 +266,62 @@ def select_query_rgroups(store, property_name, *, commonest=4, minimum=3, count=
         f"orders in the store, and a shorter run is never the answer (spec 11.4); sets tried: {tried}")
 
 
+def select_shortening_query(store, property_name, *, length=SHORTENING_LENGTH,
+                            min_query_length=SHORTENING_MIN_QUERY_LENGTH, max_series=SHORTENING_MAX_SERIES):
+    """The first stored series whose own members make a ranking query that shortens.
+
+    The single-cut series are walked by the number of members valued for
+    ``property_name``, most first, then by series id. Each series with at least
+    ``length`` valued members offers its first ``length`` of them in member
+    order, with their values in that series; a series whose offered values tie
+    is skipped, since a ranking query needs strictly ordered values. The query
+    runs at the default ladder with shortening on, and the first one that drops
+    a member is returned. The run here only selects the query and is not timed.
+
+    :param store: Open benchmark store.
+    :param property_name: Stored property the query is valued by, higher is better.
+    :param length: Members in the query; it must exceed ``min_query_length`` so
+        that shortening has a member to drop.
+    :param min_query_length: Floor of the shortening.
+    :param max_series: Most series whose query is run before giving up.
+    :returns: Mapping with ``series_id``, ``constant``, ``rgroups`` (member
+        order), ``values`` (R-group to value), ``query_length`` and the
+        ``dropped`` R-groups of the selecting run.
+    :raises ValueError: When ``length`` does not exceed ``min_query_length``.
+    :raises RuntimeError: When none of the series tried shortens; the message
+        names how many were tried.
+    """
+    if length <= min_query_length:
+        raise ValueError(f"length {length} must be longer than min_query_length {min_query_length}")
+    valued = []
+    for series in store.series(oemmpa.SeriesSelectionOptions(cut_count=1)):
+        values = _member_values(store, series, property_name)
+        if len(values) >= length:
+            valued.append((int(series.GetSeriesId()), str(series.GetConstantSmiles()), values))
+    valued.sort(key=lambda entry: (-len(entry[2]), entry[0]))
+    tried = 0
+    skipped_ties = 0
+    for series_id, constant, values in valued:
+        rgroups = list(values)[:length]
+        query = {rgroup: values[rgroup] for rgroup in rgroups}
+        if len(set(query.values())) < length:
+            skipped_ties += 1
+            continue
+        ranking = oemmpa.rank_next_substituents(store, property_name, "higher", rgroups=query,
+                                                support_ladder=SUPPORT_LADDER, shorten=True,
+                                                min_query_length=min_query_length)
+        tried += 1
+        if ranking.dropped:
+            return {"series_id": series_id, "constant": constant, "rgroups": rgroups, "values": query,
+                    "query_length": length, "dropped": list(ranking.dropped)}
+        if tried >= max_series:
+            break
+    raise RuntimeError(
+        f"no ranking query of {length} members from a stored series shortened: tried {tried} series "
+        f"(at most {max_series}) of the {len(valued)} with {length} or more valued members, "
+        f"skipping {skipped_ties} whose values tie; each found candidates without dropping a member")
+
+
 def largest_series(store, *, count=3):
     """The ``count`` single-cut series with the most members, largest first.
 
@@ -334,7 +401,8 @@ def _corpus_provenance(smiles):
 
 
 def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, store_path=None,
-                               parquet=None, out_path=DEFAULT_OUT, force=False):
+                               parquet=None, out_path=DEFAULT_OUT, force=False,
+                               shortening_length=SHORTENING_LENGTH):
     """Build the store, time both query kinds on it, and write the results bundle.
 
     :param size: Corpus size requested from ``ensure_corpus`` when no
@@ -346,9 +414,13 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     :param parquet: SureChEMBL parquet override for ``ensure_corpus``.
     :param out_path: Results JSON path.
     :param force: Replace an existing store at ``store_path``.
+    :param shortening_length: Members of the ranking query that has to shorten
+        (see :func:`select_shortening_query`).
     :returns: The bundle that was written.
     :raises ValueError: When the results, the store or the store's log would be
         the same file as one another or as an input.
+    :raises RuntimeError: When no shortening query is found, or the timed run of
+        the one selected drops nothing; no bundle is written then.
     """
     out_path = Path(out_path)
     store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
@@ -374,19 +446,42 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     build = build_store(smiles, store_path, threads=threads, force=force)
     store = open_store(store_path)
     commonest, query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
+    shortening = select_shortening_query(store, PROPERTY, length=shortening_length)
     queries = []
     for order in orders:
         def run_rank(order=order):
             return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=order["values"],
-                                                 support_ladder=(20, 10, 5))
+                                                 support_ladder=SUPPORT_LADDER)
         median_seconds, runs, ranking = time_query(run_rank, repeats=repeats)
         queries.append({
             "kind": "rank", "query": order["rgroups"], "values": order["values"], "series_with_order": order["count"],
-            "direction": "higher", "ladder": [20, 10, 5], "median_seconds": median_seconds, "runs": runs,
+            "direction": "higher", "ladder": list(SUPPORT_LADDER), "median_seconds": median_seconds, "runs": runs,
             "matched_series": ranking.matched_series, "support_level": ranking.support_level,
             "dropped": list(ranking.dropped), "candidates": len(ranking),
             "under_target": median_seconds < TARGET_SECONDS,
         })
+
+    def run_shortening():
+        return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=shortening["values"],
+                                             support_ladder=SUPPORT_LADDER, shorten=True,
+                                             min_query_length=SHORTENING_MIN_QUERY_LENGTH)
+    median_seconds, runs, ranking = time_query(run_shortening, repeats=repeats)
+    # The workload exists to time the shortening loop; a median of a run that
+    # never shortened would be reported as that measurement and mean nothing.
+    if not ranking.dropped:
+        raise RuntimeError(
+            f"the shortening query from series {shortening['series_id']} dropped nothing when timed, "
+            "so its median would not cover the shortening loop")
+    queries.append({
+        "kind": "rank-shorten", "series_id": shortening["series_id"], "constant": shortening["constant"],
+        "query": shortening["rgroups"], "values": shortening["values"],
+        "query_length": shortening["query_length"], "direction": "higher", "ladder": list(SUPPORT_LADDER),
+        "min_query_length": SHORTENING_MIN_QUERY_LENGTH, "dropped": list(ranking.dropped),
+        "attempts": len(ranking.dropped) + 1, "query_used": list(ranking.query_used),
+        "matched_series": ranking.matched_series, "candidates": len(ranking),
+        "support_level": ranking.support_level, "median_seconds": median_seconds, "runs": runs,
+        "under_target": median_seconds < TARGET_SECONDS,
+    })
     for entry in largest_series(store, count=3):
         def run_similar(entry=entry):
             return oemmpa.find_similar_series(store, PROPERTY, series_id=entry["series_id"], top=20)
@@ -402,6 +497,7 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
             "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
             "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
             "query_rgroups": query_rgroups, "query_rgroup_count": len(query_rgroups),
+            "shortening_length": shortening_length,
             "corpus_provenance": _corpus_provenance(smiles),
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "duckdb_python_version": _duckdb_python_version(),
@@ -453,9 +549,13 @@ def main(argv=None):
     parser.add_argument("--store", default=None, help="Where to build the store (default beside the output).")
     parser.add_argument("--force", action="store_true", help="Replace an existing store at --store.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Results JSON path.")
+    parser.add_argument("--shortening-length", type=int, default=SHORTENING_LENGTH,
+                        help=f"Members of the ranking query that has to shorten (default {SHORTENING_LENGTH}; "
+                             f"more than {SHORTENING_MIN_QUERY_LENGTH}).")
     args = parser.parse_args(argv)
     run_series_query_benchmark(size=args.size, repeats=args.repeats, threads=args.threads,
-                               parquet=args.parquet, store_path=args.store, out_path=args.out, force=args.force)
+                               parquet=args.parquet, store_path=args.store, out_path=args.out, force=args.force,
+                               shortening_length=args.shortening_length)
     return 0
 
 

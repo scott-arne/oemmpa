@@ -205,15 +205,31 @@ common member, down to three R-groups and no further, and three R-groups that
 still cannot be ordered are an error rather than a shorter run. The set used is
 recorded as `query_rgroups` (with `query_rgroup_count`) beside the
 `commonest_rgroups` it was taken from, and each ranking result repeats it as
-`query`. Similarity queries are the three largest series with `top=20`. Every
-query runs once cold (discarded) and `--repeats` times warm; the median is
-compared with the one-second target. The recorded 10k ranking queries — the
-three commonest R-groups — match stored series but yield no candidates at that
-corpus size, so each median covers a single attempt of the support ladder and
-never runs the shortening loop, whose cost grows with its
-`query length - min_query_length + 1` attempts of two statement chains plus one
-posting scan each. The similarity queries are productive, so their medians do
+`query`. Similarity queries are the three largest series with `top=20`.
+
+The recorded 10k ranking queries — the three commonest R-groups — match stored
+series but yield no candidates at that corpus size, and a three-member query is
+already at `min_query_length`, so each of their medians covers a single attempt
+of the support ladder. A fourth ranking query, recorded with `kind`
+`rank-shorten`, times the shortening loop. It is selected before anything is
+timed: the stored single-cut series are walked by their number of members valued
+for `synthetic`, most first, then by series id; each offers its first
+`--shortening-length` members (default 6) with their values in that series,
+skipping a series whose offered values tie; and the query runs at the default
+ladder with `shorten=True` and `min_query_length=3`. The first series whose run
+drops at least one member supplies the query, and a run that finds none in 25
+series fails, naming how many it tried. The record carries the source
+`series_id` and `constant`, the query R-groups and values, `query_length`,
+`dropped`, `attempts` (dropped plus one, at most
+`query length - min_query_length + 1`, each two statement chains plus one
+posting scan), `query_used`, `matched_series`, `candidates` and
+`support_level`, and the run fails rather than report a median when the timed
+run drops nothing. The similarity queries are productive, so their medians do
 cover a full result.
+
+Every query runs once cold (discarded) and `--repeats` times warm; the median is
+compared with the one-second target, and every query counts toward
+`all_under_target`.
 
 ```bash
 python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
