@@ -32,12 +32,6 @@ class Desalter;
 
 namespace OEMMPA {
 
-/// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
-///
-/// The physical schema follows MMPDB's final database model: compounds,
-/// normalized property names, rules, rule environments, constants, and pairs.
-/// Raw fragmentations remain an analysis-stage artifact until OEMMPA has a
-/// dedicated fragment-index persistence stage.
 struct PairHash {
     std::size_t operator()(const std::pair<std::uint64_t, std::uint64_t>& key) const {
         return std::hash<std::uint64_t>()(key.first) * 1000003u ^
@@ -67,6 +61,22 @@ struct PairIdentityHash {
     }
 };
 
+/// \brief Persistent DuckDB storage boundary for normalized MMPA tables.
+///
+/// The physical schema follows MMPDB's final database model: compounds,
+/// normalized property names, rules, rule environments, constants, pairs, and
+/// matched molecular series. Raw fragmentations remain an analysis-stage
+/// artifact until OEMMPA has a dedicated fragment-index persistence stage.
+///
+/// Thread safety: one instance is not safe to use from several threads at
+/// once, readers included, because every member function shares the
+/// instance's single DuckDB connection. That covers the methods the Python
+/// binding runs with the GIL released (AddMoleculesFromSmilesFile,
+/// AddPropertiesFromCsvFile, GetSeries, RankNextSubstituents and
+/// FindSimilarSeries, the DuckDBStore methods swig/oemmpa.i opts into GIL
+/// release) and Analyzer::SaveTo, which writes through the store it is given.
+/// Use one store per thread; several read-only stores may open the same
+/// database file at once.
 class DuckDBStore {
     friend class Analyzer;
 

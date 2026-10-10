@@ -1046,8 +1046,8 @@ The typed records live on the binding module: `_oemmpa.SubstituentRankingRequest
 `_oemmpa.DuckDBStore.RankNextSubstituents` and
 `_oemmpa.DuckDBStore.FindSimilarSeries`. Both release the GIL and copy the
 request before doing so; one `DuckDBStore` instance is still not safe to use
-from several threads at once, so use one store instance per thread as for every
-other store call. Raw calls raise `RuntimeError` for every failure; the Python
+from several threads at once, so use one store per thread, as for every other
+store call (see DuckDB Storage). Raw calls raise `RuntimeError` for every failure; the Python
 helpers above translate the request-validation cases into `ValueError`, that is
 the messages starting with `invalid series query:`, which the binding also
 exposes as `_oemmpa.cvar.SERIES_QUERY_INVALID_PREFIX`.
@@ -1134,6 +1134,13 @@ The storage API does not expose raw fragment tables. `DuckDBStore` is intended
 for persisted analysis results and rule-environment statistics. Fragment-cache
 reuse remains deferred until a workflow requires queryable pre-pair
 fragmentation records.
+
+One `DuckDBStore` instance is not safe to use from several threads at once,
+readers included: every call shares the instance's single DuckDB connection,
+including the calls that release the GIL (`save_analyzer()`, the two file
+loaders, `series()`, `rank_next_substituents()` and `find_similar_series()`).
+Use one store per thread; `DuckDBStore(path, read_only=True)` lets several
+readers open the same database file at once.
 
 `save_analyzer()` writes the analyzer's molecules, properties, pairs and
 series in one transaction. A series-producing analysis (the default

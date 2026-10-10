@@ -93,9 +93,12 @@ def _apply_variable_fragment_filters(
 class DuckDBStore:
     """Pythonic wrapper around the optional raw C++ ``DuckDBStore``.
 
-    The backing schema follows MMPDB's final database model: ``compound``,
-    normalized property tables, ``rule_smiles``, ``rule``,
-    ``rule_environment``, ``constant_smiles``, and ``pair``.
+    The backing schema follows MMPDB's final database model. Schema
+    initialization creates ``dataset``, ``compound``, ``property_name``,
+    ``compound_property``, ``rule_smiles``, ``rule``,
+    ``environment_fingerprint``, ``rule_environment``, ``environment_smirks``,
+    ``rule_environment_statistics``, ``constant_smiles``,
+    ``constant_environment``, ``pair``, ``series`` and ``series_member``.
 
     :param path: Optional DuckDB database path. When omitted, an in-memory
         database is opened.
