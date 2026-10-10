@@ -222,7 +222,9 @@ is one of three values: `not-computed` when no analyzer save has reached the
 store yet, `none` when the saved method produces no series, or the name of the
 saved method.
 
-`list` is accepted as an alias for `summary`.
+`list` is accepted as an alias for `summary`. Both open the store read-only, so
+they fail on a DuckDB file that OEMMPA did not create rather than adding the
+OEMMPA schema to it.
 
 Use `--output summary.tsv` to write a report file, `--output summary.tsv.gz`
 for gzip-compressed TSV, or `--output -` to write TSV to standard output
@@ -247,7 +249,8 @@ Selection options include `--aggregation`, `--min-pairs`, `--score`, and
 
 Persisted `predict` uses the fragmentation settings that were applied when the
 store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
-with stateless `predict`.
+with stateless `predict`. Persisted `predict` opens the store read-only, so it
+fails on a DuckDB file that OEMMPA did not create.
 
 Use `--output prediction.tsv` to write a report file, `--output
 prediction.tsv.gz` for gzip-compressed TSV, or `--output -` to write TSV to
@@ -273,7 +276,9 @@ Selection options include `--transform`, `--aggregation`, `--min-pairs`,
 
 Persisted `generate` uses the fragmentation settings that were applied when the
 store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
-with stateless `generate`.
+with stateless `generate`. Persisted `generate`, with or without `--property`,
+opens the store read-only, so it fails on a DuckDB file that OEMMPA did not
+create.
 
 Use `--output generated.tsv` to write a report file, `--output
 generated.tsv.gz` for gzip-compressed TSV, or `--output -` to write TSV to
