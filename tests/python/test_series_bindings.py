@@ -448,9 +448,10 @@ def test_series_member_keeps_its_one_python_constructor_and_no_raw_label_vector(
 
 
 def test_the_store_label_spelling_helpers_stay_out_of_the_binding():
-    # The store's writer and reader share these two C++ functions so the
-    # spellings cannot drift; they are not part of the Python surface, so
-    # neither is a binding name.
+    # The store's writer and reader, and the binding's GetEnumerationLabelNames
+    # and series_row_dicts, share these two C++ functions' spellings so they
+    # cannot drift; they are not part of the Python surface, so neither is a
+    # binding name.
     for name in ("enumeration_label_name", "parse_enumeration_label"):
         assert not hasattr(_oemmpa, name)
         assert not hasattr(_swig_proxy, name)

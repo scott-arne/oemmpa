@@ -532,8 +532,9 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
         return names;
     }
 }
-// The store's label spellings serve its writer and its reader; they are not
-// part of the Python surface, so neither is a binding name.
+// The store's label spellings are shared by its writer, its reader and this
+// binding's GetEnumerationLabelNames and series_row_dicts; they are not part of
+// the Python surface, so neither is a binding name.
 %ignore OEMMPA::enumeration_label_name;
 %ignore OEMMPA::parse_enumeration_label;
 %include "../include/oemmpa/Series.h"
@@ -728,7 +729,7 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
 // (member, compound) in the order of the vector, of each series' members and of
 // their compound ids. Each row also carries the compound's enumeration label in
 // the store's spelling, the value the store's series_member.enumeration_label
-// holds. Nine getter crossings per row is what this replaces, and
+// holds. Ten getter crossings per row is what this replaces, and
 // reading the C++ vectors directly also avoids the non-owning SWIG views that
 // GetMembers() and GetMoleculeIds() hand back. The vector arrives by copy from a
 // Python sequence, so callers pass only the series they need converted (the

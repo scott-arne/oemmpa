@@ -280,6 +280,12 @@ def test_series_row_dicts_matches_the_per_member_reference():
     assert _oemmpa.series_row_dicts(raw) == _reference_rows(raw)
     assert series_rows(raw) == _reference_rows(raw)
     assert _oemmpa.series_row_dicts([]) == []
+    # Every label above is "none", so the label column is also compared on a
+    # labelled view whose guessed rows carry both up-enumeration labels.
+    labelled = list(_created_stereocentre_analyzer().raw.GetSeries(True))
+    reference = _reference_rows(labelled)
+    assert {row["enumeration_label"] for row in reference} == {"none", "constant-up", "variable-up"}
+    assert _oemmpa.series_row_dicts(labelled) == reference
 
 
 def test_series_preview_converts_only_the_series_it_shows(monkeypatch):
@@ -389,9 +395,6 @@ def test_analyzer_series_flag_follows_the_method():
 def test_store_fragment_options_parse_into_a_dict(tmp_path):
     import json
 
-    pytest.importorskip("rdkit")   # cut_rgroups converts through RDKit.
-    from oemmpa._rgroup import rgroups_to_recursive_smarts
-
     store = oemmpa.DuckDBStore(str(tmp_path / "default.duckdb"))
     store.save_analyzer(_phenyl_analyzer())
     assert store.fragment_options() == {
@@ -403,16 +406,6 @@ def test_store_fragment_options_parse_into_a_dict(tmp_path):
     raw = store.raw.GetFragmentOptions()
     assert json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")) == raw
 
-    converted = Analyzer().configure_fragmentation(cut_rgroups=["*O"]).set_ring_perception_policy("strict")
-    converted.add_molecule("Oc1ccccc1", id="phenol")
-    converted.add_molecule("Cc1ccccc1", id="toluene")
-    converted.analyze()
-    converted_store = oemmpa.DuckDBStore(str(tmp_path / "converted.duckdb"))
-    converted_store.save_analyzer(converted)
-    recorded = converted_store.fragment_options()
-    assert recorded["cut_smarts"] == [rgroups_to_recursive_smarts(["*O"])]
-    assert recorded["ring_perception"] == "strict"
-
     for series, expected in ((None, {}), (True, 3)):
         mcs = Analyzer(method="dmcss", series=series)
         mcs.add_molecule("Cc1ccccc1", id="toluene")
@@ -423,6 +416,19 @@ def test_store_fragment_options_parse_into_a_dict(tmp_path):
         options = mcs_store.fragment_options()
         assert (options if series is None else options["max_cuts"]) == expected
     assert mcs_store.summary()["series_source"] == "dmcss+fragmentation"
+
+    pytest.importorskip("rdkit")   # cut_rgroups converts through RDKit.
+    from oemmpa._rgroup import rgroups_to_recursive_smarts
+
+    converted = Analyzer().configure_fragmentation(cut_rgroups=["*O"]).set_ring_perception_policy("strict")
+    converted.add_molecule("Oc1ccccc1", id="phenol")
+    converted.add_molecule("Cc1ccccc1", id="toluene")
+    converted.analyze()
+    converted_store = oemmpa.DuckDBStore(str(tmp_path / "converted.duckdb"))
+    converted_store.save_analyzer(converted)
+    recorded = converted_store.fragment_options()
+    assert recorded["cut_smarts"] == [rgroups_to_recursive_smarts(["*O"])]
+    assert recorded["ring_perception"] == "strict"
 
 
 @pytest.mark.skipif(not oemmpa.duckdb_available(), reason="DuckDB storage required")

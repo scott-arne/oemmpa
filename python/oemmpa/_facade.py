@@ -634,7 +634,11 @@ class Analyzer:
 
     @property
     def produces_series(self):
-        """Whether this analysis enumerates series: always for the fragmentation method, and for an MCS method with series enumeration on."""
+        """Whether this analysis enumerates series.
+
+        Always for the fragmentation method, and for an MCS method with series
+        enumeration on.
+        """
         return bool(self._raw_analyzer.ProducesSeries())
 
     def set_series_enumeration(self, enabled):
