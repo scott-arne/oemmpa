@@ -19,6 +19,7 @@
 #include <set>
 #include <thread>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -726,7 +727,15 @@ void add_contribution(
     unsigned int molecule_id,
     Fragmentation::EnumerationLabel label
 ) {
-    // Relies on Fragmentation::EnumerationLabel's declaration order: None < ConstantUp < VariableUp.
+    // std::min compares the enumerators' underlying values, so reordering the
+    // enum must fail to compile here rather than silently break baseline-wins.
+    using LabelValue = std::underlying_type_t<Fragmentation::EnumerationLabel>;
+    static_assert(
+        static_cast<LabelValue>(Fragmentation::EnumerationLabel::None) <
+                static_cast<LabelValue>(Fragmentation::EnumerationLabel::ConstantUp) &&
+            static_cast<LabelValue>(Fragmentation::EnumerationLabel::ConstantUp) <
+                static_cast<LabelValue>(Fragmentation::EnumerationLabel::VariableUp),
+        "add_contribution needs None < ConstantUp < VariableUp");
     Fragmentation::EnumerationLabel& held = compounds.emplace(molecule_id, label).first->second;
     held = std::min(held, label);
 }

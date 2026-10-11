@@ -52,8 +52,8 @@ public:
     /// \brief Whether at least one compound is an observed one.
     ///
     /// False only for a member every compound of which is a guess: such a
-    /// member exists in the labelled view alone and never counts toward a
-    /// series' length.
+    /// member exists in the labelled view alone, where Series::Size() counts
+    /// it, but it never counts toward a series' formation or its stored length.
     bool HasBaselineCompound() const;
 
     bool operator==(const SeriesMember& other) const;

@@ -96,6 +96,7 @@ private:
     std::vector<MatchedPair> ComputePairs(const QueryOptions& options) const;
     const std::vector<MatchedPair>& CachedPairs(const QueryOptions& options) const;
 
+    // Returns the labelled view; GetSeries derives the baseline view from it.
     std::vector<Series> ComputeSeries() const;
 
     using FragmentationKey = std::tuple<unsigned int, std::string, std::string, unsigned int>;

@@ -492,8 +492,21 @@ TEST(SeriesLabelledView, BothViewsAreFilledTogetherAndInvalidatedByEveryMutator)
     MemoryIndex index = MakePhenylIndex();
     EXPECT_EQ(index.GetSeries(true), index.GetSeries(false));   // No guess yet: the views agree.
 
-    index.AddMolecule(MakeMolecule(4, "Nc1ccccc1", "aniline"));
-    Fragmentation guessed(4, "[*:1]c1ccccc1", "[*:1]N", 1);
+    // AddMolecule alone, with both views filled: a second benzene is a second
+    // bucket-level hydrogen source, so it joins the hydrogen member of both
+    // views without any bucket changing.
+    index.AddMolecule(MakeMolecule(4, "c1ccccc1", "benzene-again"));
+    index.AddMolecule(MakeMolecule(5, "Nc1ccccc1", "aniline"));
+    const SeriesMember hydrogen("[*:1][H]", 0, {1, 4}, {"benzene", "benzene-again"});
+    ASSERT_EQ(index.GetSeries(true).size(), 1U);
+    ASSERT_EQ(index.GetSeries(false).size(), 1U);
+    ASSERT_EQ(index.GetSeries(true)[0].Size(), 3U);
+    ASSERT_EQ(index.GetSeries(false)[0].Size(), 3U);
+    EXPECT_EQ(index.GetSeries(true)[0].GetMembers()[2], hydrogen);
+    EXPECT_EQ(index.GetSeries(false)[0].GetMembers()[2], hydrogen);
+
+    // AddFragmentation alone, with both views filled again.
+    Fragmentation guessed(5, "[*:1]c1ccccc1", "[*:1]N", 1);
     guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
     index.AddFragmentation(guessed);
     ASSERT_EQ(index.GetSeries(true).size(), 1U);
