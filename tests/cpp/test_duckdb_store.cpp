@@ -4808,6 +4808,27 @@ TEST(DuckDBStoreMcsSeries, TheEmptyStoreRuleAndThePairRefusalFollowTheFlag) {
             1, 2, "toluene", "phenol", "Cc1ccccc1", "Oc1ccccc1", "[*:1]c1ccccc1", "[*:1]C", "[*:1]O", 1, 0, 0);
         EXPECT_THROW(store.AddPairs(std::vector<MatchedPair>{direct}), StorageError);
     }
+    // The stamp alone refuses them: an opted-in analysis of one compound leaves
+    // the store without a series row or a pair, so only 'dmcss+fragmentation'
+    // says an enumeration owns it.
+    {
+        DuckDBStore store;
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.AddMolecule("Cc1ccccc1", "toluene");
+        opted.Analyze();
+        opted.SaveTo(store);
+        ASSERT_EQ(store.GetRowCount("series"), 0U);
+        ASSERT_EQ(store.GetRowCount("pair"), 0U);
+        // A molecule cannot make a series wrong, so it is still accepted and
+        // gives the refused pair a second endpoint that really exists.
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "chlorobenzene"));
+        const MatchedPair direct(
+            1, 100, "toluene", "chlorobenzene", "Cc1ccccc1", "Clc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1]C", "[*:1]Cl", 1, 0, 0);
+        EXPECT_THROW(store.AddPairs(std::vector<MatchedPair>{direct}), StorageError);
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "dmcss+fragmentation");
+    }
     // The refusal is the analyzer's own, not only AppendBulk's series contract:
     // an opted-in analysis of one compound has no series row and no pair to
     // write, which AppendBulk alone accepts, yet saving it would stamp the

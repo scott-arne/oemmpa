@@ -1958,8 +1958,23 @@ TEST(AnalyzerSeriesEnumeration, FragmentationSettersNeedTheFlagOnAnMcsMethod) {
     EXPECT_NO_THROW(analyzer.SetFragmentationMaxCuts(1));
     EXPECT_NO_THROW(analyzer.SetFragmentationMaxUpEnumerations(5));
     EXPECT_NO_THROW(analyzer.ClearFragmentationMaxHeavyAtoms());
-    // A value the fragmenter refuses is refused here too.
+    // A value the fragmenter refuses is refused here too, and so is a cut
+    // SMARTS that does not connect its two atoms.
     EXPECT_THROW(analyzer.SetFragmentationMinCuts(2), FragmentationError);
+    EXPECT_THROW(analyzer.SetFragmentationCutSmarts("[C:1].[O:2]"), InvalidQueryError);
+    // No refusal reached the settings: the pass they configure gives exactly
+    // the series of a twin that made only the accepted calls.
+    Analyzer twin("dmcss");
+    twin.SetSeriesEnumeration(true);
+    twin.SetFragmentationMaxCuts(1);
+    twin.SetFragmentationMaxUpEnumerations(5);
+    twin.ClearFragmentationMaxHeavyAtoms();
+    AddMolecules(twin, McsSeriesMolecules());
+    twin.Analyze();
+    ASSERT_FALSE(twin.GetSeries().empty());
+    AddMolecules(analyzer, McsSeriesMolecules());
+    analyzer.Analyze();
+    EXPECT_EQ(analyzer.GetSeries(true), twin.GetSeries(true));
     analyzer.SetSeriesEnumeration(false);
     EXPECT_THROW(analyzer.SetFragmentationMaxCuts(2), InvalidQueryError);
     // Ring perception was never fragmentation-only.
@@ -2016,6 +2031,25 @@ TEST(AnalyzerSeriesEnumeration, ClearDiscardsTheAuxiliaryPassButKeepsTheFlagAndT
             }
         }
     }
+}
+
+TEST(AnalyzerSeriesEnumeration, AFailedAuxiliaryPassLeavesNoAnalysis) {
+    // Cutting a methyl off isopentane creates a stereocentre the auxiliary
+    // pass up-enumerates, which a cap of 0 refuses. The MCS pass before it has
+    // already succeeded, and its pairs must not be served as an analysis.
+    Analyzer analyzer("dmcss");
+    analyzer.SetSeriesEnumeration(true);
+    analyzer.SetFragmentationMaxUpEnumerations(0);
+    analyzer.AddMolecule("CC(C)CC", "isopentane");
+    analyzer.AddMolecule("CC(O)CC", "butan-2-ol");
+    EXPECT_THROW(analyzer.Analyze(), FragmentationError);
+    EXPECT_THROW(analyzer.GetSeries(), AnalysisStateError);
+    EXPECT_THROW(analyzer.GetPairs(), AnalysisStateError);
+    // Without the auxiliary pass the same molecules analyse, so the failure
+    // was the pass's alone.
+    analyzer.SetSeriesEnumeration(false);
+    analyzer.Analyze();
+    EXPECT_FALSE(analyzer.GetPairs().empty());
 }
 
 }  // namespace test

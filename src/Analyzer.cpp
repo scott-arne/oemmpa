@@ -529,9 +529,10 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
 
         // 'fragmentation' for the fragmentation method, '<method>+fragmentation'
         // for an MCS analysis whose series came from the auxiliary pass, 'none'
-        // otherwise. Stamped after the rows, because AppendBulk reads it to
-        // refuse direct pair writes into a store an enumeration owns and this
-        // save's own pairs are not such a write.
+        // otherwise, so a store with zero series rows says whether they were
+        // computed and empty or never offered. Stamped after the rows, because
+        // AppendBulk reads it to refuse direct pair writes into a store an
+        // enumeration owns and this save's own pairs are not such a write.
         const std::string series_source = method_->ProducesSeries()
             ? method_name_
             : (series_enumeration_ ? method_name_ + "+fragmentation" : std::string("none"));
