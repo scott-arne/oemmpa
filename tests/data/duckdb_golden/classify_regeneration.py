@@ -234,9 +234,9 @@ SEAMS_RATIONALE = {
 }
 
 SEAMS_DATASET_NOTE = (
-    "dataset.num_series_variant_members is new and dataset.fragment_options is "
-    "now filled. Counted 0 because the golden dump projects only analysis_method "
-    "from the dataset table; both are pinned by the C++ and Python unit tests."
+    "dataset.num_series_variant_members is new. Counted 0 because the golden dump "
+    "projects only analysis_method from the dataset table; the column is pinned "
+    "by the C++ unit tests."
 )
 
 
@@ -843,19 +843,25 @@ def read_table(directory: Path, table: str, *, side: str) -> list[Row]:
     no lines is a real answer and is read as such.
 
     The single exception is a table schema 5 introduced, which by construction
-    has no file on the old side. There the absence must be genuine: an existing
-    old-side file is refused even when it is empty, because empty is what a
-    dump that ran and failed also leaves behind, and treating it as "the table
-    did not exist" would book every new row as ``n``.
+    has no file on the ``OLD`` side. There the absence must be genuine: an
+    existing old-side file is refused even when it is empty, because empty is
+    what a dump that ran and failed also leaves behind, and treating it as "the
+    table did not exist" would book every new row as ``n``.
+
+    The ``SEAMS_OLD`` side has no such exception. The golden before a seams
+    regeneration already holds the schema-5 tables, so every table must exist
+    there, exactly as on the ``NEW`` side.
 
     :param directory: Golden directory.
     :param table: Table name, without the ``.tsv`` suffix.
-    :param side: ``OLD`` for the snapshot taken before the regeneration,
-        ``NEW`` for the directory the regeneration wrote.
+    :param side: ``OLD`` for the snapshot taken before the schema-5
+        regeneration, ``SEAMS_OLD`` for the snapshot taken before a seams
+        regeneration, ``NEW`` for the directory the regeneration wrote.
     :returns: One tuple per line, in file order.
-    :raises SystemExit: If the file is missing on the new side, missing on the
-        old side for a table that predates schema 5, or present on the old side
-        for a table schema 5 introduced.
+    :raises SystemExit: If the file is missing on the ``NEW`` or the
+        ``SEAMS_OLD`` side, missing on the ``OLD`` side for a table that
+        predates schema 5, or present on the ``OLD`` side for a table schema 5
+        introduced.
     """
     path = directory / f"{table}.tsv"
     if side == OLD and table in SCHEMA5_TABLES:
@@ -1179,31 +1185,77 @@ def render_example(row: Row | None) -> str:
     return " | ".join("<empty>" if cell == "" else cell for cell in row)
 
 
-def write_manifest(report: dict[str, TableReport], out_path: Path) -> None:
-    """Write the five-column manifest.
+def _write_bucket_manifest(
+    report: dict[str, TableReport],
+    out_path: Path,
+    buckets: tuple[str, ...],
+    rationale: dict[str, str],
+    *,
+    empty_rationale: dict[str, str] | None = None,
+    dataset_note: str | None = None,
+) -> None:
+    """Write a five-column manifest, one row per table and bucket.
+
+    Both regeneration modes write through this one function so their manifests
+    cannot drift apart in layout.
 
     :param report: Per-table ``(counts, examples)``.
     :param out_path: File to write.
+    :param buckets: The buckets listed for every table, in manifest order.
+    :param rationale: The rationale of each bucket of a changed table.
+    :param empty_rationale: Replaces ``rationale`` for a bucket that books
+        nothing in a changed table.
+    :param dataset_note: Rationale of the ``s`` row written after the buckets
+        of ``dataset.tsv``, or ``None`` to write no such row.
     """
+    overrides = empty_rationale or {}
     lines = ["file\tbucket\tcount\texample_row\trationale"]
     for table in TABLES:
         counts, examples = report[table]
         unchanged = sum(counts.values()) == 0
-        for bucket in BUCKETS:
+        for bucket in buckets:
             count = counts.get(bucket, 0)
             if unchanged:
-                rationale = NO_CHANGE
-            elif bucket == "g" and count == 0:
-                rationale = EMPTY_G
+                text = NO_CHANGE
+            elif count == 0 and bucket in overrides:
+                text = overrides[bucket]
             else:
-                rationale = RATIONALE[bucket]
+                text = rationale[bucket]
             lines.append(
                 f"{table}.tsv\t{bucket}\t{count}\t"
-                f"{render_example(examples.get(bucket))}\t{rationale}"
+                f"{render_example(examples.get(bucket))}\t{text}"
             )
-        if table == "dataset":
-            lines.append(f"dataset.tsv\ts\t0\t\t{STAMP}")
+        if table == "dataset" and dataset_note is not None:
+            lines.append(f"dataset.tsv\ts\t0\t\t{dataset_note}")
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_manifest(report: dict[str, TableReport], out_path: Path) -> None:
+    """Write the five-column manifest of the schema-5 regeneration.
+
+    :param report: Per-table ``(counts, examples)`` from :func:`classify`.
+    :param out_path: File to write.
+    """
+    _write_bucket_manifest(
+        report,
+        out_path,
+        BUCKETS,
+        RATIONALE,
+        empty_rationale={"g": EMPTY_G},
+        dataset_note=STAMP,
+    )
+
+
+def _check_spec() -> None:
+    """Refuse to classify when the column spec and the dumped tables disagree.
+
+    :raises SystemExit: If ``SPEC`` and ``_duckdb_dump.TABLES`` name different tables.
+    """
+    if set(SPEC) != set(TABLES):
+        raise SystemExit(
+            "column spec and _duckdb_dump.TABLES disagree: "
+            f"{sorted(set(SPEC) ^ set(TABLES))}"
+        )
 
 
 def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
@@ -1214,11 +1266,7 @@ def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     :returns: Per-table ``(counts, examples)``.
     :raises SystemExit: If any removed pair row would be booked bucket ``a``.
     """
-    if set(SPEC) != set(TABLES):
-        raise SystemExit(
-            "column spec and _duckdb_dump.TABLES disagree: "
-            f"{sorted(set(SPEC) ^ set(TABLES))}"
-        )
+    _check_spec()
     before_pairs = read_table(old_dir, "pair", side=OLD)
     after_pairs = read_table(new_dir, "pair", side=NEW)
     records = build_record_truth(read_table(old_dir, "compound", side=OLD))
@@ -1260,11 +1308,7 @@ def classify_seams(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     :returns: Per-table ``(counts, examples)``.
     :raises SystemExit: If any table is missing on either side.
     """
-    if set(SPEC) != set(TABLES):
-        raise SystemExit(
-            "column spec and _duckdb_dump.TABLES disagree: "
-            f"{sorted(set(SPEC) ^ set(TABLES))}"
-        )
+    _check_spec()
     old_series = {(row[0], row[1]) for row in read_table(old_dir, "series", side=SEAMS_OLD)}
     report: dict[str, TableReport] = {}
     for table in TABLES:
@@ -1283,19 +1327,9 @@ def write_seams_manifest(report: dict[str, TableReport], out_path: Path) -> None
     :param report: Per-table ``(counts, examples)`` from :func:`classify_seams`.
     :param out_path: File to write.
     """
-    lines = ["file\tbucket\tcount\texample_row\trationale"]
-    for table in TABLES:
-        counts, examples = report[table]
-        unchanged = sum(counts.values()) == 0
-        for bucket in SEAMS_BUCKETS:
-            rationale = NO_CHANGE if unchanged else SEAMS_RATIONALE[bucket]
-            lines.append(
-                f"{table}.tsv\t{bucket}\t{counts.get(bucket, 0)}\t"
-                f"{render_example(examples.get(bucket))}\t{rationale}"
-            )
-        if table == "dataset":
-            lines.append(f"dataset.tsv\ts\t0\t\t{SEAMS_DATASET_NOTE}")
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _write_bucket_manifest(
+        report, out_path, SEAMS_BUCKETS, SEAMS_RATIONALE, dataset_note=SEAMS_DATASET_NOTE
+    )
 
 
 def main() -> None:

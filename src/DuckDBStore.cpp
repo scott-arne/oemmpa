@@ -383,9 +383,10 @@ void order_best_first(std::vector<QueryMember>& members, PropertyDirection direc
 // form aggregates only the series the posting prefilter selected, which is what
 // keeps a query from aggregating every property value in the store; the global
 // form (posting counts for shortening) has no such restriction by definition.
-// Ranking and similarity read the observed rows only;
-// selection.include_up_enumerated is honoured by GetSeries and reaches the
-// queries through the profile query that replaces these pieces.
+// Today ranking and similarity read the observed rows only, and
+// selection.include_up_enumerated is honoured by GetSeries alone. Plan 2's
+// shared profile query, which is to replace these pieces, will carry the flag
+// to ranking and similarity.
 std::string member_value_cte(bool restricted_to_posting) {
     return std::string("member_value as (")
         + "select sm.series_id, sm.rule_smiles_id, median(cp.value) as value "

@@ -138,8 +138,9 @@ struct SeriesSelection {
 /// \brief The store's spelling of an enumeration label.
 ///
 /// "none", "constant-up" or "variable-up": the values the series_member check
-/// constraint admits. The store's writer and reader and the binding's row
-/// helper all spell labels through this one function.
+/// constraint admits. The store's writer spells labels through this function
+/// and its reader parses them back through parse_enumeration_label, so the two
+/// cannot drift apart.
 const char* enumeration_label_name(Fragmentation::EnumerationLabel label);
 
 /// \brief Inverse of enumeration_label_name.

@@ -2,7 +2,7 @@ file	bucket	count	example_row	rationale
 dataset.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
 dataset.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
 dataset.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
-dataset.tsv	s	0		dataset.num_series_variant_members is new and dataset.fragment_options is now filled. Counted 0 because the golden dump projects only analysis_method from the dataset table; both are pinned by the C++ and Python unit tests.
+dataset.tsv	s	0		dataset.num_series_variant_members is new. Counted 0 because the golden dump projects only analysis_method from the dataset table; the column is pinned by the C++ unit tests.
 compound.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
 compound.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
 compound.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
