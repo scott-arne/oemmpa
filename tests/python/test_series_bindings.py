@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import gc
 import itertools
+import json
+import sys
 import threading
 import weakref
+from pathlib import Path
 
 import pytest
 from oemmpa import _oemmpa
 from oemmpa import oemmpa as _swig_proxy
+
+# tests/python is not a package, and site-packages ships an unrelated ``tests``
+# package that wins the dotted lookup, so the shared fixture is imported the way
+# test_series_oracle.py imports _series_oracle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _series_fixture import CREATED_STEREOCENTRE
 
 
 def _phenyl_raw_analyzer():
@@ -445,3 +454,72 @@ def test_the_store_label_spelling_helpers_stay_out_of_the_binding():
     for name in ("enumeration_label_name", "parse_enumeration_label"):
         assert not hasattr(_oemmpa, name)
         assert not hasattr(_swig_proxy, name)
+
+
+def _created_stereocentre_raw_analyzer():
+    analyzer = _oemmpa.Analyzer()
+    for smiles, name in CREATED_STEREOCENTRE:
+        analyzer.AddMolecule(smiles, name)
+    analyzer.Analyze()
+    return analyzer
+
+
+def test_series_members_report_labels_as_the_store_spellings():
+    analyzer = _created_stereocentre_raw_analyzer()
+    names = set()
+    for series in analyzer.GetSeries(True):
+        for member in series.GetMembers():
+            labels = list(member.GetEnumerationLabelNames())
+            assert len(labels) == len(member.GetMoleculeIds())
+            assert member.HasBaselineCompound() == ("none" in labels)
+            names.update(labels)
+    assert names == {"none", "constant-up", "variable-up"}
+    baseline = {name for series in analyzer.GetSeries() for member in series.GetMembers()
+                for name in member.GetEnumerationLabelNames()}
+    assert baseline == {"none"}
+
+
+def test_selection_carries_the_include_flag_and_the_store_reads_guessed_rows_with_it():
+    selection = _oemmpa.SeriesSelection()
+    assert selection.include_up_enumerated is False
+    selection.include_up_enumerated = True
+    assert selection.include_up_enumerated is True
+    request = _oemmpa.SubstituentRankingRequest()
+    request.selection.include_up_enumerated = True
+    assert request.selection.include_up_enumerated is True   # The live view reaches the request.
+    analyzer = _created_stereocentre_raw_analyzer()
+    store = _oemmpa.DuckDBStore()
+    analyzer.SaveTo(store)
+    observed = _oemmpa.series_row_dicts(list(store.GetSeries()))
+    labelled = _oemmpa.series_row_dicts(list(store.GetSeries(selection)))
+    assert {row["enumeration_label"] for row in observed} == {"none"}
+    assert {row["enumeration_label"] for row in labelled} == {"none", "constant-up", "variable-up"}
+
+    def without_ids(rows):
+        return [{key: value for key, value in row.items() if key != "series_id"} for row in rows]
+
+    # The store reads back exactly the analyzer's labelled view, row ids aside.
+    assert without_ids(labelled) == without_ids(_oemmpa.series_row_dicts(list(analyzer.GetSeries(True))))
+
+
+def test_raw_analyzer_and_store_expose_the_series_flag_the_guessed_row_count_and_fragment_options():
+    mcs = _oemmpa.Analyzer("dmcss")
+    assert mcs.GetSeriesEnumeration() is False
+    mcs.SetSeriesEnumeration(True)
+    assert mcs.GetSeriesEnumeration() is True
+    assert mcs.ProducesSeries() is True
+    with pytest.raises(RuntimeError, match="always enumerates series"):
+        _oemmpa.Analyzer().SetSeriesEnumeration(False)
+    store = _oemmpa.DuckDBStore()
+    _created_stereocentre_raw_analyzer().SaveTo(store)
+    summary = store.GetSummary()
+    assert summary.GetNumSeriesVariantMembers() > 0
+    assert store.GetSummary(True).GetNumSeriesVariantMembers() == summary.GetNumSeriesVariantMembers()
+    assert json.loads(store.GetFragmentOptions())["max_cuts"] == 3
+    # The proxy module is where SWIG would put a wrapped class or function, so it
+    # is the module that can show a leak; the package copies selected proxy names
+    # onto _oemmpa, which is checked too.
+    for name in ("FragmentationSettings", "fragment_options_json", "make_fragmenter",
+                 "capture_fragmentation_settings", "default_fragmentation_settings"):
+        assert not hasattr(_swig_proxy, name), name
+        assert not hasattr(_oemmpa, name), name

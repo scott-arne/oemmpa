@@ -513,10 +513,25 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/Fragmenter.h"
 // A member's enumeration labels are an enum class per compound, and this module
 // has no vector wrapper for that type: the accessor and the constructor that
-// takes the labels would surface in Python as opaque pointers. Same placement
-// rule as the ignores above: before the %include.
+// takes the labels would surface in Python as opaque pointers. Python reads the
+// labels as the store's spellings instead, through GetEnumerationLabelNames below
+// and the enumeration_label column of series_row_dicts. Same placement rule as
+// the ignores above: before the %include.
 %ignore OEMMPA::SeriesMember::GetEnumerationLabels;
 %ignore OEMMPA::SeriesMember::SeriesMember(std::string, unsigned int, std::vector<unsigned int>, std::vector<std::string>, std::vector<Fragmentation::EnumerationLabel>);
+%extend OEMMPA::SeriesMember {
+    /// \brief The compounds' enumeration labels, as the store spells them.
+    ///
+    /// "none", "constant-up" or "variable-up", parallel to GetMoleculeIds().
+    std::vector<std::string> GetEnumerationLabelNames() const {
+        std::vector<std::string> names;
+        names.reserve($self->GetEnumerationLabels().size());
+        for (const OEMMPA::Fragmentation::EnumerationLabel label : $self->GetEnumerationLabels()) {
+            names.push_back(OEMMPA::enumeration_label_name(label));
+        }
+        return names;
+    }
+}
 // The store's label spellings serve its writer and its reader; they are not
 // part of the Python surface, so neither is a binding name.
 %ignore OEMMPA::enumeration_label_name;
@@ -711,7 +726,9 @@ static PyObject* matched_pair_dicts(const std::vector<OEMMPA::MatchedPair>& pair
 
 // Byte-for-byte equivalent to the Python series_rows(): one dict per
 // (member, compound) in the order of the vector, of each series' members and of
-// their compound ids. Nine getter crossings per row is what this replaces, and
+// their compound ids. Each row also carries the compound's enumeration label in
+// the store's spelling, the value the store's series_member.enumeration_label
+// holds. Nine getter crossings per row is what this replaces, and
 // reading the C++ vectors directly also avoids the non-owning SWIG views that
 // GetMembers() and GetMoleculeIds() hand back. The vector arrives by copy from a
 // Python sequence, so callers pass only the series they need converted (the
@@ -740,6 +757,8 @@ static PyObject* series_row_dicts(const std::vector<OEMMPA::Series>& series) {
         for (const OEMMPA::SeriesMember& member : entry.GetMembers()) {
             const std::vector<unsigned int>& ids = member.GetMoleculeIds();
             const std::vector<std::string>& external_ids = member.GetExternalIds();
+            const std::vector<OEMMPA::Fragmentation::EnumerationLabel>& labels =
+                member.GetEnumerationLabels();
             for (size_t i = 0; i < ids.size(); ++i) {
                 PyObject* row = PyDict_New();
                 if (row == NULL) {
@@ -767,7 +786,11 @@ static PyObject* series_row_dicts(const std::vector<OEMMPA::Series>& series) {
                     || _oemmpa_dict_set_new(row, "compound_id",
                         _oemmpa_str_object(i < external_ids.size()
                                            ? external_ids[i]
-                                           : missing_external_id)) < 0) {
+                                           : missing_external_id)) < 0
+                    || _oemmpa_dict_set_new(row, "enumeration_label",
+                        PyUnicode_FromString(OEMMPA::enumeration_label_name(
+                            i < labels.size() ? labels[i]
+                                              : OEMMPA::Fragmentation::EnumerationLabel::None))) < 0) {
                     Py_DECREF(row);
                     Py_DECREF(list);
                     return NULL;

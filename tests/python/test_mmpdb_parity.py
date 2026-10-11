@@ -620,6 +620,14 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
     summary = store.summary(recount=True)
 
     assert observed_counts == OEMMPA_PHASE9_OBSERVED_COUNTS
+    # Counted from the analyzer's own labelled view, never from the store the
+    # summary below is read from.
+    guessed_compounds = sum(
+        label != "none"
+        for series in analyzer.raw.GetSeries(True)
+        for member in series.GetMembers()
+        for label in member.GetEnumerationLabelNames()
+    )
     assert summary == {
         "compounds": observed_counts["compound"],
         "rules": observed_counts["rule"],
@@ -630,6 +638,7 @@ def test_oemmpa_phase9_storage_uses_environment_pair_rows_for_mmpdb_fixture():
         ],
         "series": 10,
         "series_members": 36,
+        "series_variant_members": guessed_compounds,
         "series_source": "fragmentation",
     }
     assert {

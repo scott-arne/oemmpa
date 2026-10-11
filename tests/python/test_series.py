@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import oemmpa
 import pytest
 
 from oemmpa import Analyzer, SeriesQuery, SeriesSelectionOptions
 from oemmpa._series import SERIES_ROW_COLUMNS
+
+# tests/python is not a package, and site-packages ships an unrelated ``tests``
+# package that wins the dotted lookup, so the shared fixture is imported the way
+# test_series_oracle.py imports _series_oracle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _series_fixture import CREATED_STEREOCENTRE
 
 
 def _phenyl_analyzer():
@@ -56,7 +65,7 @@ def test_series_query_dataframe_has_the_documented_columns():
     assert isinstance(frame, pandas.DataFrame)
     assert list(frame.columns) == [
         "series_id", "constant", "cut_count", "constant_num_heavies", "num_members",
-        "rgroup", "rgroup_num_heavies", "molecule_id", "compound_id",
+        "rgroup", "rgroup_num_heavies", "molecule_id", "compound_id", "enumeration_label",
     ]
 
 
@@ -244,13 +253,14 @@ def _reference_rows(series):
     rows = []
     for entry in series:
         for member in entry.GetMembers():
-            for molecule_id, external_id in zip(member.GetMoleculeIds(), member.GetExternalIds(), strict=True):
+            for molecule_id, external_id, label in zip(member.GetMoleculeIds(), member.GetExternalIds(),
+                                                       member.GetEnumerationLabelNames(), strict=True):
                 rows.append({
                     "series_id": int(entry.GetSeriesId()), "constant": str(entry.GetConstantSmiles()),
                     "cut_count": int(entry.GetCutCount()), "constant_num_heavies": int(entry.GetConstantHeavyAtomCount()),
                     "num_members": int(entry.Size()), "rgroup": str(member.GetVariableSmiles()),
                     "rgroup_num_heavies": int(member.GetHeavyAtomCount()), "molecule_id": int(molecule_id),
-                    "compound_id": str(external_id),
+                    "compound_id": str(external_id), "enumeration_label": str(label),
                 })
     return rows
 
@@ -295,3 +305,137 @@ def test_series_preview_converts_only_the_series_it_shows(monkeypatch):
     # The preview shows a bounded number of rows, so it must not convert every series.
     assert sum(converted) < len(query)
     assert all(count == 1 for count in converted)
+
+
+def _created_stereocentre_analyzer(**kwargs):
+    analyzer = Analyzer(**kwargs)
+    for smiles, name in CREATED_STEREOCENTRE:
+        analyzer.add_molecule(smiles, id=name)
+    analyzer.analyze()
+    return analyzer
+
+
+def _without(rows, column):
+    return [{key: value for key, value in row.items() if key != column} for row in rows]
+
+
+def test_series_rows_carry_the_enumeration_label_column():
+    rows = _phenyl_rows(_phenyl_analyzer().series().to_dicts())
+    assert SERIES_ROW_COLUMNS[-1] == "enumeration_label"
+    assert {row["enumeration_label"] for row in rows} == {"none"}
+
+
+def test_analyzer_series_includes_guessed_rows_only_when_asked():
+    analyzer = _created_stereocentre_analyzer()
+    observed = analyzer.series().to_dicts()
+    labelled = analyzer.series(include_up_enumerated=True).to_dicts()
+    assert {row["enumeration_label"] for row in observed} == {"none"}
+    guessed = [row for row in labelled if row["enumeration_label"] != "none"]
+    assert guessed
+    assert {row["compound_id"] for row in guessed} == {"iso"}
+    # The observed rows are the same in both views; num_members differs where a
+    # member only guesses realize joins a series.
+    assert _without([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
+        _without(observed, "num_members")
+    with pytest.raises(ValueError, match="include_up_enumerated"):
+        analyzer.series(include_up_enumerated=1)
+
+
+@pytest.mark.skipif(not oemmpa.duckdb_available(), reason="DuckDB storage required")
+def test_store_series_reads_guessed_rows_under_the_selection_flag(tmp_path):
+    store = oemmpa.DuckDBStore(str(tmp_path / "labelled.duckdb"))
+    store.save_analyzer(_created_stereocentre_analyzer())
+    observed = store.series().to_dicts()
+    labelled = store.series(SeriesSelectionOptions(include_up_enumerated=True)).to_dicts()
+    assert {row["enumeration_label"] for row in observed} == {"none"}
+    summary = store.summary()
+    assert summary["series_members"] == len(observed)
+    assert len(labelled) - len(observed) == summary["series_variant_members"]
+
+
+def test_selection_options_carry_the_include_flag():
+    assert SeriesSelectionOptions().include_up_enumerated is False
+    assert SeriesSelectionOptions().to_raw().include_up_enumerated is False
+    assert SeriesSelectionOptions(include_up_enumerated=True).to_raw().include_up_enumerated is True
+    with pytest.raises(ValueError, match="include_up_enumerated must be a bool"):
+        SeriesSelectionOptions(include_up_enumerated=1)
+
+
+def test_analyzer_series_flag_follows_the_method():
+    assert Analyzer().produces_series is True
+    assert Analyzer(series=True).produces_series is True
+    with pytest.raises(ValueError, match="always enumerates series"):
+        Analyzer(series=False)
+    with pytest.raises(ValueError, match="must be True or False"):
+        Analyzer(method="dmcss", series="yes")
+    assert Analyzer(method="dmcss", series=False).produces_series is False
+    mcs = Analyzer(method="dmcss")
+    assert mcs.produces_series is False
+    with pytest.raises(ValueError, match="fragmentation controls require the fragmentation method"):
+        mcs.configure_fragmentation(max_cuts=1)
+    assert mcs.set_series_enumeration(True) is mcs
+    assert mcs.produces_series is True
+    mcs.configure_fragmentation(max_cuts=1)   # Accepted while the flag is on: it configures the auxiliary pass.
+    for smiles, name in (("Cc1ccccc1", "toluene"), ("Oc1ccccc1", "phenol"), ("c1ccccc1", "benzene"),
+                         ("Cc1ccc(C)cc1", "p-xylene"), ("Cc1cccc(C)c1", "m-xylene")):
+        mcs.add_molecule(smiles, id=name)
+    mcs.analyze()
+    series = mcs.series()
+    assert len(series) > 0
+    assert all(entry.GetCutCount() == 1 for entry in series)
+
+
+@pytest.mark.skipif(not oemmpa.duckdb_available(), reason="DuckDB storage required")
+def test_store_fragment_options_parse_into_a_dict(tmp_path):
+    import json
+
+    pytest.importorskip("rdkit")   # cut_rgroups converts through RDKit.
+    from oemmpa._rgroup import rgroups_to_recursive_smarts
+
+    store = oemmpa.DuckDBStore(str(tmp_path / "default.duckdb"))
+    store.save_analyzer(_phenyl_analyzer())
+    assert store.fragment_options() == {
+        "cut_smarts": None, "max_cut_bonds": 20, "max_cuts": 3, "max_heavy_atoms": None,
+        "max_rotatable_bonds": None, "max_up_enumerations": 1000, "min_cuts": 1,
+        "ring_perception": "consulted",
+        "rotatable_smarts": "[!$([NH]!@C(=O))&!D1&!$(*#*)]-&!@[!$([NH]!@C(=O))&!D1&!$(*#*)]",
+    }
+    raw = store.raw.GetFragmentOptions()
+    assert json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":")) == raw
+
+    converted = Analyzer().configure_fragmentation(cut_rgroups=["*O"]).set_ring_perception_policy("strict")
+    converted.add_molecule("Oc1ccccc1", id="phenol")
+    converted.add_molecule("Cc1ccccc1", id="toluene")
+    converted.analyze()
+    converted_store = oemmpa.DuckDBStore(str(tmp_path / "converted.duckdb"))
+    converted_store.save_analyzer(converted)
+    recorded = converted_store.fragment_options()
+    assert recorded["cut_smarts"] == [rgroups_to_recursive_smarts(["*O"])]
+    assert recorded["ring_perception"] == "strict"
+
+    for series, expected in ((None, {}), (True, 3)):
+        mcs = Analyzer(method="dmcss", series=series)
+        mcs.add_molecule("Cc1ccccc1", id="toluene")
+        mcs.add_molecule("Oc1ccccc1", id="phenol")
+        mcs.analyze()
+        mcs_store = oemmpa.DuckDBStore(str(tmp_path / f"mcs-{series}.duckdb"))
+        mcs_store.save_analyzer(mcs)
+        options = mcs_store.fragment_options()
+        assert (options if series is None else options["max_cuts"]) == expected
+    assert mcs_store.summary()["series_source"] == "dmcss+fragmentation"
+
+
+@pytest.mark.skipif(not oemmpa.duckdb_available(), reason="DuckDB storage required")
+def test_summary_reports_guessed_rows_beside_the_observed_ones(tmp_path):
+    store = oemmpa.DuckDBStore(str(tmp_path / "labelled.duckdb"))
+    store.save_analyzer(_created_stereocentre_analyzer())
+    summary = store.summary()
+    assert list(summary) == [
+        "compounds", "rules", "pairs", "rule_environments", "rule_environment_statistics",
+        "series", "series_members", "series_variant_members", "series_source",
+    ]
+    assert summary["series_variant_members"] > 0
+    assert store.summary(recount=True)["series_variant_members"] == summary["series_variant_members"]
+    plain = oemmpa.DuckDBStore(str(tmp_path / "plain.duckdb"))
+    plain.save_analyzer(_phenyl_analyzer())
+    assert plain.summary()["series_variant_members"] == 0

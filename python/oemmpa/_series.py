@@ -37,6 +37,7 @@ SERIES_ROW_COLUMNS = (
     "rgroup_num_heavies",
     "molecule_id",
     "compound_id",
+    "enumeration_label",
 )
 
 
@@ -56,14 +57,20 @@ class SeriesSelectionOptions:
     :param min_constant_heavy_atoms: Drop series whose constant has fewer heavy
         atoms than this (0 = unbounded).
     :param cut_count: Keep only series of this cut count (0 = any).
+    :param include_up_enumerated: Read the up-enumerated rows too: guessed
+        stereo variants (``enumeration_label`` ``constant-up`` or
+        ``variable-up``) that attached to a series the observed compounds
+        formed. ``False`` reads exactly the observed rows.
     :raises ValueError: If any bound is negative, is not an integer, or is wider
-        than the binding's 32-bit field.
+        than the binding's 32-bit field, or ``include_up_enumerated`` is not a
+        bool.
     """
 
     min_series_length: int = 2
     max_variable_heavy_atoms: int = 0
     min_constant_heavy_atoms: int = 0
     cut_count: int = 0
+    include_up_enumerated: bool = False
 
     def __post_init__(self):
         # Validate and normalize all fields to integral values.
@@ -84,6 +91,8 @@ class SeriesSelectionOptions:
         for name in ("max_variable_heavy_atoms", "min_constant_heavy_atoms", "cut_count"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be zero (unbounded) or positive")
+        if not isinstance(self.include_up_enumerated, bool):
+            raise ValueError("include_up_enumerated must be a bool")  # noqa: TRY004 - ValueError is the public contract
 
     def to_raw(self):
         """Return the equivalent ``_oemmpa.SeriesSelection``."""
@@ -92,6 +101,7 @@ class SeriesSelectionOptions:
         raw.max_variable_heavy_atoms = self.max_variable_heavy_atoms
         raw.min_constant_heavy_atoms = self.min_constant_heavy_atoms
         raw.cut_count = self.cut_count
+        raw.include_up_enumerated = self.include_up_enumerated
         return raw
 
 

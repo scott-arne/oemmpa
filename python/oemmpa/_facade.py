@@ -22,16 +22,24 @@ class Analyzer:
 
     :param method: Analysis method to use. Supported values are
         ``"fragmentation"``, ``"dmcss"``, ``"oemedchem"``, and ``"wizepairz"``.
-    :raises ValueError: If ``method`` is unsupported.
+    :param series: Whether the analysis enumerates matched molecular series.
+        ``None`` keeps the method's default: on for ``"fragmentation"``, off
+        for the MCS methods. ``True`` is accepted for every method;
+        ``False`` raises for ``"fragmentation"``. See
+        :meth:`set_series_enumeration`.
+    :raises ValueError: If ``method`` is unsupported or ``series`` is not
+        accepted for it.
     """
 
-    def __init__(self, method="fragmentation"):
+    def __init__(self, method="fragmentation", series=None):
         try:
             self._raw_analyzer = _oemmpa.Analyzer(str(method))
         except RuntimeError as exc:
             if "analysis method" in str(exc):
                 raise ValueError(str(exc)) from exc
             raise
+        if series is not None:
+            self.set_series_enumeration(series)
         self._used_external_ids = set()
         self._next_generated_id = 1
         self._internal_id_by_external = {}
@@ -194,8 +202,8 @@ class Analyzer:
         :param clear_max_rotatable_bonds: Clear the maximum-rotatable-bond
             guard when true.
         :returns: ``self`` for chaining.
-        :raises ValueError: If the analyzer is not using the fragmentation
-            method or a supplied option is invalid.
+        :raises ValueError: If the analyzer uses an MCS method without series
+            enumeration, or a supplied option is invalid.
         """
         min_cuts = self._coerce_fragmentation_uint("min_cuts", min_cuts)
         max_cuts = self._coerce_fragmentation_uint("max_cuts", max_cuts)
@@ -410,7 +418,8 @@ class Analyzer:
         :param max_up_enumerations: Attempted up-enumerations permitted beyond the
             baseline record of one role assignment.
         :returns: ``self`` for chaining.
-        :raises ValueError: If the analyzer is not using the fragmentation method.
+        :raises ValueError: If the analyzer uses an MCS method without series
+            enumeration, or a supplied option is invalid.
         """
         try:
             value = self._coerce_fragmentation_uint("max_up_enumerations", max_up_enumerations)
@@ -593,14 +602,19 @@ class Analyzer:
             TransformResult(transform) for transform in raw_transforms
         )
 
-    def series(self):
+    def series(self, include_up_enumerated=False):
         """Return the analysed matched molecular series.
 
         One series per constant with at least two R-groups over at least two
-        distinct compounds; empty for a method that does not fragment
-        (see :attr:`produces_series`).
+        distinct observed compounds; empty for an analysis that does not
+        enumerate series (see :attr:`produces_series`).
 
+        :param include_up_enumerated: Add the up-enumerated rows: guessed stereo
+            variants that attached to a series the observed compounds formed,
+            each row's ``enumeration_label`` saying which guess produced it.
+            The same series exist either way.
         :returns: :class:`SeriesQuery` over the raw series.
+        :raises ValueError: If ``include_up_enumerated`` is not a bool.
         :raises RuntimeError: If :meth:`analyze` has not run since the last
             mutation.
 
@@ -612,12 +626,43 @@ class Analyzer:
         """
         from ._query import SeriesQuery
 
+        if not isinstance(include_up_enumerated, bool):
+            raise ValueError("include_up_enumerated must be a bool")  # noqa: TRY004 - ValueError is the public contract
+        if include_up_enumerated:
+            return SeriesQuery(self._raw_analyzer.GetSeries(True))
         return SeriesQuery(self._raw_analyzer.GetSeries())
 
     @property
     def produces_series(self):
-        """Whether the configured method enumerates series."""
+        """Whether this analysis enumerates series: always for the fragmentation method, and for an MCS method with series enumeration on."""
         return bool(self._raw_analyzer.ProducesSeries())
+
+    def set_series_enumeration(self, enabled):
+        """Choose whether this analysis enumerates matched molecular series.
+
+        The fragmentation method always does, so ``True`` is accepted with no
+        effect and ``False`` raises. For an MCS method (``"dmcss"``,
+        ``"oemedchem"``, ``"wizepairz"``) it is off by default; ``True`` makes
+        :meth:`analyze` also run an auxiliary fragmentation pass over the same
+        molecules with this analyzer's fragmentation settings, so
+        :meth:`series` and a saved store carry series while the pairs still
+        come from the MCS method. While it is on, :meth:`configure_fragmentation`
+        and :meth:`set_fragmentation_max_up_enumerations` configure that pass.
+        Changing the flag marks the analysis stale until the next
+        :meth:`analyze`.
+
+        :param enabled: ``True`` or ``False``.
+        :returns: ``self`` for chaining.
+        :raises ValueError: If ``enabled`` is not a bool, or is ``False`` for
+            the fragmentation method.
+        """
+        if not isinstance(enabled, bool):
+            raise ValueError("series enumeration must be True or False")  # noqa: TRY004 - ValueError is the public contract
+        try:
+            self._raw_analyzer.SetSeriesEnumeration(enabled)
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
     def _coerce_or_generate_id(self, id):
         if id is not None:

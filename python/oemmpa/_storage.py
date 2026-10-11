@@ -1,5 +1,7 @@
 """Python helpers for optional DuckDB-backed storage."""
 
+import json
+
 from . import _oemmpa  # type: ignore[attr-defined]
 from ._loading import load_report_from_raw
 from ._rule_environment import wrap_rule_environment_statistics
@@ -299,6 +301,8 @@ class DuckDBStore:
 
         :param selection: Optional :class:`SeriesSelectionOptions` or raw
             ``_oemmpa.SeriesSelection``.
+            ``SeriesSelectionOptions(include_up_enumerated=True)`` also reads
+            the guessed rows.
         :returns: Wrapped series collection.
         """
         from ._query import SeriesQuery
@@ -321,6 +325,21 @@ class DuckDBStore:
             store yet.
         """
         return float(self._raw_store.GetLastSeriesCountRefreshSeconds())
+
+    def fragment_options(self):
+        """Return the fragmentation settings saved with the stored analysis.
+
+        :returns: The ``dataset.fragment_options`` record as a dict with the keys
+            ``cut_smarts`` (list of SMARTS, or ``None`` for the default cut
+            rule), ``max_cut_bonds``, ``max_cuts``, ``max_heavy_atoms`` and
+            ``max_rotatable_bonds`` (``None`` when unset),
+            ``max_up_enumerations``, ``min_cuts``, ``ring_perception``
+            (``"consulted"`` or ``"strict"``) and ``rotatable_smarts``; an empty
+            dict when the store records none (an MCS analysis saved without
+            series, or no save yet).
+        """
+        raw = str(self._raw_store.GetFragmentOptions())
+        return json.loads(raw) if raw else {}
 
     def rank_next_substituents(self, property_name, direction, **kwargs):
         """Rank candidate next substituents; see :func:`oemmpa.rank_next_substituents`.
@@ -372,11 +391,14 @@ class DuckDBStore:
 
         :param recount: When true, count rows directly from the tables.
         :returns: Mapping with compound, rule, pair, rule environment, series,
-            and statistics counts. ``series_members`` counts ``series_member``
-            ROWS (compound memberships), a different quantity from a series'
-            member count (distinct R-groups) and never comparable to it.
-            ``series_source`` is 'not-computed' (nothing saved yet), 'none'
-            (a method that produces no series) or the analysis method name.
+            and statistics counts. ``series_members`` counts observed
+            ``series_member`` rows and ``series_variant_members`` the
+            up-enumerated ones. Both count ROWS (compound memberships), a
+            different quantity from a series' member count (distinct R-groups)
+            and never comparable to it. ``series_source`` is 'not-computed'
+            (nothing saved yet), 'none' (an analysis that produces no series),
+            the analysis method name, or ``<method>+fragmentation`` (an MCS
+            analysis saved with series enumeration).
         """
         raw_summary = self._raw_store.GetSummary(bool(recount))
         return {
@@ -389,6 +411,7 @@ class DuckDBStore:
             ),
             "series": int(raw_summary.GetNumSeries()),
             "series_members": int(raw_summary.GetNumSeriesMembers()),
+            "series_variant_members": int(raw_summary.GetNumSeriesVariantMembers()),
             "series_source": str(raw_summary.GetSeriesSource()),
         }
 

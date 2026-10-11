@@ -39,7 +39,10 @@ def test_target_methods_release_gil():
     # are named by their overload wrappers rather than by the bare method name: the
     # prefix "DuckDBStore_GetSeries" also matches the GIL-held GetSeriesCount wrapper,
     # so a bare prefix would pass on a build where only one of the three releases.
-    for name in ("Analyzer_Analyze", "Analyzer_GetPairs", "Analyzer_GetSeries",
+    # The analyzer's series read has two overloads (the baseline view and the
+    # chosen view), named like the store's.
+    for name in ("Analyzer_Analyze", "Analyzer_GetPairs",
+                 "Analyzer_GetSeries__SWIG_0", "Analyzer_GetSeries__SWIG_1",
                  "Analyzer_GetTransforms", "Analyzer_SaveTo",
                  "DuckDBStore_AddMoleculesFromSmilesFile",
                  "DuckDBStore_AddPropertiesFromCsvFile",
@@ -59,10 +62,10 @@ def test_target_methods_release_gil():
     for name in non_targets:
         assert re.search(r"_wrap_" + name + r"\b", text), f"{name} is not a wrapper any more"
         assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), f"{name} should NOT release the GIL"
-    # Total GIL macro count: must be low. Only the BEGIN macros are counted, one
-    # per releasing wrapper body, so the bound is the 10 targets times their
-    # overloads rather than a begin-and-end pair count.
-    # Pin the observed count so a regression that goes broad will fail.
+    # Total GIL macro count: 5 mentions in SWIG's runtime header (four definitions
+    # and one #if !defined guard) plus one BEGIN per releasing wrapper body, 19
+    # bodies across the 10 targets' overloads. Pin the observed count so a
+    # regression that goes broad will fail.
     macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
     assert macro_count <= 24, f"Expected ≤24 GIL macros (10 targets), found {macro_count}"
 
