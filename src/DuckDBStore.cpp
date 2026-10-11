@@ -2575,6 +2575,17 @@ void DuckDBStore::SetAnalysisMethod(const std::string& method_name) {
 }
 
 void DuckDBStore::SetSeriesSource(const std::string& source) {
+    // An enumeration's stamp is kept, as SetAnalysisMethod keeps the method:
+    // one method name can now save with or without series, and a store whose
+    // enumeration wrote no series row has only this stamp to say an
+    // enumeration owns it, so a later save must not relabel it. Re-stamping the
+    // same value is idempotent; 'not-computed' and 'none' stay open.
+    const std::string current = read_series_source(connection_);
+    if (current != "not-computed" && current != "none" && current != source) {
+        throw StorageError(
+            "DuckDB store holds series enumerated by '" + current +
+            "' but this save records '" + source + "'; rebuild the store");
+    }
     const std::string sql = "update dataset set series_source = ? where id = 1";
     duckdb::vector<duckdb::Value> values = {duckdb::Value(source)};
     execute_prepared(connection_, sql, std::move(values));

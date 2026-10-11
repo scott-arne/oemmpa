@@ -4847,5 +4847,95 @@ TEST(DuckDBStoreMcsSeries, TheEmptyStoreRuleAndThePairRefusalFollowTheFlag) {
     }
 }
 
+TEST(DuckDBStoreMcsSeries, APlainSaveOfTheSameMethodCannotEraseAnEnumerationsStamp) {
+    // An opted-in save that wrote no series row and no pair leaves the stamp as
+    // the only record that an enumeration owns the store. A plain save of the
+    // same method produces no series, so the empty-store rule, the
+    // single-method rule and AppendBulk's guards all let it through; only the
+    // stamp itself can refuse to be overwritten.
+    const auto expect_still_owned = [](DuckDBStore& store, std::uint64_t compounds) {
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "dmcss+fragmentation");
+        EXPECT_EQ(store.GetFragmentOptions(), DEFAULT_FRAGMENT_OPTIONS_JSON);
+        EXPECT_EQ(store.GetRowCount("compound"), compounds);
+        const MatchedPair direct(
+            100, 101, "chlorobenzene", "bromobenzene", "Clc1ccccc1", "Brc1ccccc1",
+            "[*:1]c1ccccc1", "[*:1]Cl", "[*:1]Br", 1, 0, 0);
+        EXPECT_THROW(store.AddPairs(std::vector<MatchedPair>{direct}), StorageError);
+    };
+    const auto add_pair_endpoints = [](DuckDBStore& store) {
+        // Molecules cannot make a series wrong, so they are still accepted, and
+        // they give the refused pair two endpoints that really exist.
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "chlorobenzene"));
+        store.AddMolecule(MoleculeRecord::FromSmiles(101, "Brc1ccccc1", "bromobenzene"));
+    };
+    // A plain save with no molecules after an opted-in one-compound save.
+    {
+        DuckDBStore store;
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.AddMolecule("Cc1ccccc1", "toluene");
+        opted.Analyze();
+        opted.SaveTo(store);
+        add_pair_endpoints(store);
+        Analyzer plain("dmcss");
+        plain.Analyze();
+        EXPECT_THROW(plain.SaveTo(store), StorageError);
+        expect_still_owned(store, 3U);
+    }
+    // A plain one-molecule save. Its compound takes internal id 1, which an
+    // opted-in save of one compound already holds, so the opted-in save here
+    // has none: otherwise the duplicate id would refuse the save first.
+    {
+        DuckDBStore store;
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.Analyze();
+        opted.SaveTo(store);
+        add_pair_endpoints(store);
+        Analyzer plain("dmcss");
+        plain.AddMolecule("Cc1ccccc1", "toluene");
+        plain.Analyze();
+        EXPECT_THROW(plain.SaveTo(store), StorageError);
+        expect_still_owned(store, 2U);
+    }
+}
+
+TEST(DuckDBStoreMcsSeries, AnOptedInMcsSavePersistsTheLabelledView) {
+    // The fragmenter up-enumerates the stereocentre the cut creates in
+    // isopentane, so the labelled view holds guessed rows the baseline view
+    // lacks, and an opted-in save must persist them as a fragmentation save does.
+    const Analyzer reference = MakeCreatedStereocentreAnalyzer();   // tests/cpp/series_fixture_support.h
+    const std::vector<Series> labelled = reference.GetSeries(true);
+    std::uint64_t variant_rows = 0;
+    for (const Series& entry : labelled) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
+                variant_rows += label == Fragmentation::EnumerationLabel::None ? 0U : 1U;
+            }
+        }
+    }
+    ASSERT_GT(variant_rows, 0U);
+
+    Analyzer opted("dmcss");
+    opted.SetSeriesEnumeration(true);
+    for (const auto& molecule : CreatedStereocentreMolecules()) {
+        opted.AddMolecule(molecule.first, molecule.second);
+    }
+    opted.Analyze();
+    DuckDBStore store;
+    opted.SaveTo(store);
+    for (const bool recount : {false, true}) {
+        EXPECT_EQ(store.GetSummary(recount).GetNumSeriesVariantMembers(), variant_rows) << recount;
+    }
+    SeriesSelection include;
+    include.include_up_enumerated = true;
+    const std::vector<Series> stored = store.GetSeries(include);
+    ASSERT_EQ(stored.size(), labelled.size());
+    for (std::size_t i = 0; i < labelled.size(); ++i) {
+        EXPECT_EQ(stored[i].GetConstantSmiles(), labelled[i].GetConstantSmiles());
+        EXPECT_EQ(stored[i].GetMembers(), labelled[i].GetMembers()) << labelled[i].GetConstantSmiles();
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

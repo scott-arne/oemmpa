@@ -12,6 +12,7 @@
 #endif
 #include "oemmpa/WizePairZMethod.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <limits>
@@ -433,6 +434,11 @@ void Analyzer::RunAnalysis(unsigned int threads) {
 }
 
 unsigned int Analyzer::LastAnalyzeWorkerCount() const {
+    // The auxiliary pass runs after the method's, never beside it, so the most
+    // workers alive at once is the larger of the two counts.
+    if (series_method_) {
+        return std::max(method_->LastAnalyzeWorkerCount(), series_method_->LastAnalyzeWorkerCount());
+    }
     return method_->LastAnalyzeWorkerCount();
 }
 

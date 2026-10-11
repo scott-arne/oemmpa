@@ -198,6 +198,9 @@ public:
     void Analyze(unsigned int threads);
 
     /// \brief Return the number of workers the last Analyze() spawned (1 for serial path).
+    ///
+    /// With series enumeration on an MCS method, it is the larger of the two
+    /// passes' counts, because the auxiliary pass runs after the MCS pass.
     unsigned int LastAnalyzeWorkerCount() const;
 
     /// \brief Return all analyzed matched pairs with default query options.

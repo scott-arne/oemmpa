@@ -395,7 +395,8 @@ private:
     // MCS analysis with series enumeration), does not ('none'), or whether no
     // analyzer save ran at all (the column's default, 'not-computed'). Written
     // by Analyzer::SaveTo next to the analysis method, inside its transaction,
-    // so a store with zero series always says why.
+    // so a store with zero series always says why. An enumeration's stamp is
+    // kept: a later save that records a different source throws StorageError.
     void SetSeriesSource(const std::string& source);
 
     // Record the fragmentation settings of the analysis being saved; written

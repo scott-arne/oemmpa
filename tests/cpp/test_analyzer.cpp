@@ -2052,5 +2052,52 @@ TEST(AnalyzerSeriesEnumeration, AFailedAuxiliaryPassLeavesNoAnalysis) {
     EXPECT_FALSE(analyzer.GetPairs().empty());
 }
 
+TEST(AnalyzerSeriesEnumeration, AnMcsMethodCarriesTheLabelledView) {
+    // The achiral fixture of AnMcsMethodEnumeratesThroughTheAuxiliaryPassOnlyWhenAsked
+    // has identical views, so it cannot tell them apart. Here the cut creates
+    // a stereocentre in isopentane that the fragmenter up-enumerates, so the
+    // labelled view holds guessed rows the baseline view lacks.
+    const Analyzer reference = MakeCreatedStereocentreAnalyzer();   // tests/cpp/series_fixture_support.h
+    const std::vector<Series> baseline = reference.GetSeries();
+    const std::vector<Series> labelled = reference.GetSeries(true);
+    std::size_t variant_rows = 0;
+    for (const Series& entry : labelled) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
+                variant_rows += label == Fragmentation::EnumerationLabel::None ? 0U : 1U;
+            }
+        }
+    }
+    ASSERT_GT(variant_rows, 0U);
+
+    Analyzer opted("dmcss");
+    opted.SetSeriesEnumeration(true);
+    AddMolecules(opted, CreatedStereocentreMolecules());
+    opted.Analyze();
+    EXPECT_EQ(opted.GetSeries(), baseline);
+    EXPECT_EQ(opted.GetSeries(true), labelled);
+}
+
+TEST(AnalyzerSeriesEnumeration, LastAnalyzeWorkerCountCoversTheAuxiliaryPass) {
+    if (std::thread::hardware_concurrency() < 2) {
+        GTEST_SKIP() << "requires >= 2 hardware threads to exercise the parallel path";
+    }
+    // OEMedChem's pass is always serial, so a count above 1 can only come from
+    // the auxiliary fragmentation pass that runs after it.
+    Analyzer fragmentation;
+    AddMolecules(fragmentation, McsSeriesMolecules());
+    fragmentation.Analyze(4);
+    ASSERT_GT(fragmentation.LastAnalyzeWorkerCount(), 1U);
+    Analyzer plain("oemedchem");
+    AddMolecules(plain, McsSeriesMolecules());
+    plain.Analyze(4);
+    EXPECT_EQ(plain.LastAnalyzeWorkerCount(), 1U);
+    Analyzer opted("oemedchem");
+    opted.SetSeriesEnumeration(true);
+    AddMolecules(opted, McsSeriesMolecules());
+    opted.Analyze(4);
+    EXPECT_EQ(opted.LastAnalyzeWorkerCount(), fragmentation.LastAnalyzeWorkerCount());
+}
+
 }  // namespace test
 }  // namespace OEMMPA
