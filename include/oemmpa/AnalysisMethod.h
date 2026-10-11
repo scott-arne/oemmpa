@@ -31,7 +31,10 @@ public:
     /// Only a method that fragments molecules has series to report; the MCS
     /// methods build pairs without a fragment index and return none. Use
     /// ProducesSeries() to tell "none found" from "not produced".
-    virtual std::vector<Series> GetSeries() const { return {}; }
+    virtual std::vector<Series> GetSeries() const { return GetSeries(false); }
+
+    /// \brief The series in the chosen view (see MemoryIndex::GetSeries(bool)).
+    virtual std::vector<Series> GetSeries(bool /*include_up_enumerated*/) const { return {}; }
     virtual bool ProducesSeries() const { return false; }
 
     /// \brief Choose how a molecule RDKit's ring perception would refuse is treated.

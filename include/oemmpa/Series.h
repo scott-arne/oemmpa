@@ -1,6 +1,8 @@
 #ifndef OEMMPA_SERIES_H
 #define OEMMPA_SERIES_H
 
+#include "oemmpa/Fragmentation.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -14,9 +16,14 @@ namespace OEMMPA {
 /// structures under different external ids), so a member lists every one of
 /// them. Molecule ids are the index's internal ids for an in-memory series and
 /// the store's compound ids for a series read back from a store; they are
-/// sorted ascending and the external ids are parallel to them.
+/// sorted ascending and the external ids and enumeration labels are parallel
+/// to them. A compound's label is None when the enumeration observed it and
+/// ConstantUp or VariableUp when it is a guessed stereo variant that attached
+/// to a series the observed compounds formed; only the labelled view of a
+/// series carries guessed compounds.
 class SeriesMember {
 public:
+    /// Every compound is an observed (label None) compound.
     SeriesMember(
         std::string variable_smiles,
         unsigned int heavy_atom_count,
@@ -24,10 +31,30 @@ public:
         std::vector<std::string> external_ids
     );
 
+    /// \brief A member whose compounds carry the label that produced them.
+    ///
+    /// \param enumeration_labels One label per molecule id, parallel to it.
+    /// \throws InvalidQueryError When the labels do not parallel the molecule ids.
+    SeriesMember(
+        std::string variable_smiles,
+        unsigned int heavy_atom_count,
+        std::vector<unsigned int> molecule_ids,
+        std::vector<std::string> external_ids,
+        std::vector<Fragmentation::EnumerationLabel> enumeration_labels
+    );
+
     const std::string& GetVariableSmiles() const;
     unsigned int GetHeavyAtomCount() const;
     const std::vector<unsigned int>& GetMoleculeIds() const;
     const std::vector<std::string>& GetExternalIds() const;
+    const std::vector<Fragmentation::EnumerationLabel>& GetEnumerationLabels() const;
+
+    /// \brief Whether at least one compound is an observed one.
+    ///
+    /// False only for a member every compound of which is a guess: such a
+    /// member exists in the labelled view alone and never counts toward a
+    /// series' length.
+    bool HasBaselineCompound() const;
 
     bool operator==(const SeriesMember& other) const;
     bool operator!=(const SeriesMember& other) const;
@@ -37,6 +64,7 @@ private:
     unsigned int heavy_atom_count_ = 0;
     std::vector<unsigned int> molecule_ids_;
     std::vector<std::string> external_ids_;
+    std::vector<Fragmentation::EnumerationLabel> enumeration_labels_;
 };
 
 /// \brief A matched molecular series: every R-group seen under one constant.

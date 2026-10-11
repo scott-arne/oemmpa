@@ -5,10 +5,13 @@
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/MemoryIndex.h"
 #include "oemmpa/Series.h"
+#include "concurrent_reader_support.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace OEMMPA {
@@ -357,6 +360,202 @@ TEST(SeriesTest, MutationInvalidatesTheMemoizedSeries) {
     ASSERT_EQ(hydrogen_less.GetSeries()[0].Size(), 3U);
     EXPECT_EQ(hydrogen_less.GetSeries()[0].GetMembers()[2],
               SeriesMember("[*:1][H]", 0, {3}, {"benzene"}));
+}
+
+TEST(SeriesLabelledView, ConstantUpGuessBecomesAVariantOnlyMemberAndNamesAVariantHydrogenRow) {
+    // The fixture of UpEnumeratedRecordsDoNotJoinASeries: its baseline view must
+    // stay exactly what that test pins, and the labelled view adds the guess.
+    MemoryIndex index = MakePhenylIndex();
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    Fragmentation guessed(2, "[*:1]c1ccccc1", "[*:1]N", 1, toluene.GetCanonicalSmiles());
+    guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::ConstantUp);
+    index.AddFragmentation(guessed);
+
+    const std::vector<Series>& labelled = index.GetSeries(true);
+    ASSERT_EQ(labelled.size(), 1U);
+    const std::vector<SeriesMember> expected = {
+        SeriesMember("[*:1]C", 1, {3}, {"toluene"}),
+        SeriesMember("[*:1]N", 1, {2}, {"phenol"}, {Fragmentation::EnumerationLabel::ConstantUp}),
+        SeriesMember("[*:1]O", 1, {2}, {"phenol"}),
+        // Benzene is the bucket-level hydrogen source, an observed member; only
+        // the guess names toluene, so toluene joins as a ConstantUp row.
+        SeriesMember("[*:1][H]", 0, {1, 3}, {"benzene", "toluene"},
+                     {Fragmentation::EnumerationLabel::None, Fragmentation::EnumerationLabel::ConstantUp}),
+    };
+    EXPECT_EQ(labelled[0].GetMembers(), expected);
+    EXPECT_EQ(labelled[0].Size(), 4U);
+    EXPECT_FALSE(labelled[0].GetMembers()[1].HasBaselineCompound());
+
+    const std::vector<SeriesMember> observed = {
+        SeriesMember("[*:1]C", 1, {3}, {"toluene"}),
+        SeriesMember("[*:1]O", 1, {2}, {"phenol"}),
+        SeriesMember("[*:1][H]", 0, {1}, {"benzene"}),
+    };
+    ASSERT_EQ(index.GetSeries(false).size(), 1U);
+    EXPECT_EQ(index.GetSeries(false)[0].GetMembers(), observed);
+    EXPECT_EQ(index.GetSeries(), index.GetSeries(false));
+}
+
+TEST(SeriesLabelledView, VariableUpGuessJoinsUnderItsStereoRGroupAndItsHydrogenParentIsIgnored) {
+    MemoryIndex index = MakePhenylIndex();
+    index.AddMolecule(MakeMolecule(4, "CC(O)c1ccccc1", "phenylethanol"));
+    index.AddFragmentation(MakeFragmentation(4, "[*:1]c1ccccc1", "[*:1]C(C)O"));
+    // A VariableUp record keeps the observed constant, so the hydrogen-capped
+    // constant it names is the observed record's own. The toluene it names here
+    // shows the labelled view does not take a parent from it.
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    Fragmentation guessed(4, "[*:1]c1ccccc1", "[*:1][C@H](C)O", 1, toluene.GetCanonicalSmiles());
+    guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(guessed);
+
+    const std::vector<Series>& labelled = index.GetSeries(true);
+    ASSERT_EQ(labelled.size(), 1U);
+    const std::vector<SeriesMember> expected = {
+        SeriesMember("[*:1]C", 1, {3}, {"toluene"}),
+        SeriesMember("[*:1]C(C)O", 3, {4}, {"phenylethanol"}),
+        SeriesMember("[*:1]O", 1, {2}, {"phenol"}),
+        SeriesMember("[*:1][C@H](C)O", 3, {4}, {"phenylethanol"},
+                     {Fragmentation::EnumerationLabel::VariableUp}),
+        SeriesMember("[*:1][H]", 0, {1}, {"benzene"}),
+    };
+    EXPECT_EQ(labelled[0].GetMembers(), expected);
+    EXPECT_EQ(index.GetSeries(false)[0].Size(), 4U);
+}
+
+TEST(SeriesLabelledView, APartitionThatFormsOnlyWithVariantsNeverForms) {
+    // One observed R-group and two guessed ones from other compounds: the
+    // baseline partition holds a single R-group, so nothing forms in either view.
+    MemoryIndex index;
+    index.AddMolecule(MakeMolecule(1, "Oc1ccccc1", "phenol"));
+    index.AddMolecule(MakeMolecule(2, "Cc1ccccc1", "toluene"));
+    index.AddMolecule(MakeMolecule(3, "Nc1ccccc1", "aniline"));
+    index.AddFragmentation(MakeFragmentation(1, "[*:1]c1ccccc1", "[*:1]O"));
+    Fragmentation constant_up(2, "[*:1]c1ccccc1", "[*:1]C", 1);
+    constant_up.SetEnumerationLabel(Fragmentation::EnumerationLabel::ConstantUp);
+    index.AddFragmentation(constant_up);
+    Fragmentation variable_up(3, "[*:1]c1ccccc1", "[*:1]N", 1);
+    variable_up.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(variable_up);
+    EXPECT_TRUE(index.GetSeries(true).empty());
+    EXPECT_TRUE(index.GetSeries(false).empty());
+
+    // Two observed R-groups of one compound (the symmetric two-cut pair of
+    // ABucketWithOneCompoundIsNotASeries) and a guess from a second compound:
+    // the two-compound rule counts observed compounds only.
+    const std::string constant = "[*:1]c1ccc([*:2])cc1";
+    MemoryIndex symmetric;
+    symmetric.AddMolecule(MakeMolecule(1, "Cc1ccc(O)cc1", "p-cresol"));
+    symmetric.AddMolecule(MakeMolecule(2, "Cc1ccc(N)cc1", "p-toluidine"));
+    symmetric.AddFragmentation(MakeFragmentation(1, constant, "[*:1]C.[*:2]O", 2));
+    symmetric.AddFragmentation(MakeFragmentation(1, constant, "[*:1]O.[*:2]C", 2));
+    Fragmentation guessed(2, constant, "[*:1]C.[*:2]N", 2);
+    guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
+    symmetric.AddFragmentation(guessed);
+    EXPECT_TRUE(symmetric.GetSeries(true).empty());
+    EXPECT_TRUE(symmetric.GetSeries(false).empty());
+}
+
+TEST(SeriesLabelledView, BaselineCompoundsWinOverVariantContributions) {
+    // Benzene is already an observed hydrogen member (the bucket-level source)
+    // and phenol's observed record names toluene as its hydrogen parent. Guesses
+    // that name either of them again must not relabel the observed membership.
+    const MoleculeRecord benzene = MakeMolecule(1, "c1ccccc1", "benzene");
+    const MoleculeRecord toluene = MakeMolecule(3, "Cc1ccccc1", "toluene");
+    MemoryIndex index;
+    index.AddMolecule(benzene);
+    index.AddMolecule(MakeMolecule(2, "Oc1ccccc1", "phenol"));
+    index.AddMolecule(toluene);
+    index.AddMolecule(MakeMolecule(4, "Nc1ccccc1", "aniline"));
+    index.AddMolecule(MakeMolecule(5, "Fc1ccccc1", "fluorobenzene"));
+    index.AddFragmentation(Fragmentation(2, "[*:1]c1ccccc1", "[*:1]O", 1, toluene.GetCanonicalSmiles()));
+    index.AddFragmentation(MakeFragmentation(3, "[*:1]c1ccccc1", "[*:1]C"));
+    Fragmentation names_benzene(4, "[*:1]c1ccccc1", "[*:1]N", 1, benzene.GetCanonicalSmiles());
+    names_benzene.SetEnumerationLabel(Fragmentation::EnumerationLabel::ConstantUp);
+    index.AddFragmentation(names_benzene);
+    Fragmentation names_toluene(5, "[*:1]c1ccccc1", "[*:1]F", 1, toluene.GetCanonicalSmiles());
+    names_toluene.SetEnumerationLabel(Fragmentation::EnumerationLabel::ConstantUp);
+    index.AddFragmentation(names_toluene);
+
+    const std::vector<Series>& labelled = index.GetSeries(true);
+    ASSERT_EQ(labelled.size(), 1U);
+    const std::vector<SeriesMember> expected = {
+        SeriesMember("[*:1]C", 1, {3}, {"toluene"}),
+        SeriesMember("[*:1]F", 1, {5}, {"fluorobenzene"}, {Fragmentation::EnumerationLabel::ConstantUp}),
+        SeriesMember("[*:1]N", 1, {4}, {"aniline"}, {Fragmentation::EnumerationLabel::ConstantUp}),
+        SeriesMember("[*:1]O", 1, {2}, {"phenol"}),
+        SeriesMember("[*:1][H]", 0, {1, 3}, {"benzene", "toluene"}),   // Both stay observed.
+    };
+    EXPECT_EQ(labelled[0].GetMembers(), expected);
+}
+
+TEST(SeriesLabelledView, BothViewsAreFilledTogetherAndInvalidatedByEveryMutator) {
+    MemoryIndex index = MakePhenylIndex();
+    EXPECT_EQ(index.GetSeries(true), index.GetSeries(false));   // No guess yet: the views agree.
+
+    index.AddMolecule(MakeMolecule(4, "Nc1ccccc1", "aniline"));
+    Fragmentation guessed(4, "[*:1]c1ccccc1", "[*:1]N", 1);
+    guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
+    index.AddFragmentation(guessed);
+    ASSERT_EQ(index.GetSeries(true).size(), 1U);
+    EXPECT_EQ(index.GetSeries(true)[0].Size(), 4U);    // The guess attached ...
+    EXPECT_EQ(index.GetSeries(false)[0].Size(), 3U);   // ... and stayed out of the baseline view.
+
+    index.Clear();
+    EXPECT_TRUE(index.GetSeries(true).empty());
+    EXPECT_TRUE(index.GetSeries(false).empty());
+}
+
+TEST(SeriesLabelledView, ConcurrentReadersOfBothViewsAgreeWithASequentialTwin) {
+    // Readers alternate the two views on a cold index, so the fill of the pair
+    // of caches races and every later read copies out of a filled slot.
+    const auto make_index = []() {
+        MemoryIndex index = MakePhenylIndex();
+        index.AddMolecule(MakeMolecule(4, "Nc1ccccc1", "aniline"));
+        Fragmentation guessed(4, "[*:1]c1ccccc1", "[*:1]N", 1);
+        guessed.SetEnumerationLabel(Fragmentation::EnumerationLabel::VariableUp);
+        index.AddFragmentation(guessed);
+        return index;
+    };
+    const MemoryIndex reference = make_index();
+    const std::vector<Series> labelled = reference.GetSeries(true);
+    const std::vector<Series> baseline = reference.GetSeries(false);
+    ASSERT_NE(labelled, baseline) << "the views agree, so a torn read would go unnoticed";
+
+    const MemoryIndex shared = make_index();
+    constexpr unsigned int READER_COUNT = 4;
+    StartBarrier barrier(READER_COUNT);
+    std::atomic<unsigned int> mismatches{0};
+    std::vector<std::thread> readers;
+    for (unsigned int reader = 0; reader < READER_COUNT; ++reader) {
+        readers.emplace_back([&, reader]() {
+            barrier.Arrive();
+            for (int round = 0; round < 10; ++round) {
+                const bool include = (round + static_cast<int>(reader)) % 2 == 0;
+                if (shared.GetSeries(include) != (include ? labelled : baseline)) {
+                    ++mismatches;
+                }
+            }
+        });
+    }
+    for (std::thread& reader : readers) {
+        reader.join();
+    }
+    EXPECT_EQ(mismatches.load(), 0U);
+}
+
+TEST(SeriesMemberLabels, LabelsDefaultToNoneMustParallelTheIdsAndTakePartInEquality) {
+    const SeriesMember observed("[*:1]C", 1, {3, 5}, {"a", "b"});
+    EXPECT_EQ(observed.GetEnumerationLabels(),
+              std::vector<Fragmentation::EnumerationLabel>(2, Fragmentation::EnumerationLabel::None));
+    EXPECT_TRUE(observed.HasBaselineCompound());
+    const SeriesMember mixed("[*:1]C", 1, {3, 5}, {"a", "b"},
+                             {Fragmentation::EnumerationLabel::None, Fragmentation::EnumerationLabel::ConstantUp});
+    EXPECT_TRUE(mixed.HasBaselineCompound());
+    EXPECT_NE(observed, mixed);
+    const SeriesMember guessed("[*:1]C", 1, {5}, {"b"}, {Fragmentation::EnumerationLabel::VariableUp});
+    EXPECT_FALSE(guessed.HasBaselineCompound());
+    EXPECT_THROW(SeriesMember("[*:1]C", 1, {3, 5}, {"a", "b"}, {Fragmentation::EnumerationLabel::None}),
+                 InvalidQueryError);
 }
 
 }  // namespace test

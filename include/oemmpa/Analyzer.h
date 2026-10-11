@@ -232,11 +232,22 @@ public:
     /// Throws if Analyze() has not succeeded since the last mutation.
     std::vector<Transform> GetTransforms(QueryOptions options) const;
 
-    /// \brief Return the matched molecular series of the analysed index.
+    /// \brief Return the matched molecular series of the analysed index (the baseline view).
     ///
-    /// Empty for a method that does not produce series (see ProducesSeries).
-    /// Throws if Analyze() has not succeeded since the last mutation.
+    /// Exactly GetSeries(false). Empty for a method that does not produce
+    /// series (see ProducesSeries). Throws if Analyze() has not succeeded since
+    /// the last mutation.
     std::vector<Series> GetSeries() const;
+
+    /// \brief Return the matched molecular series in the chosen view.
+    ///
+    /// \param include_up_enumerated False for the baseline view, in which every
+    ///        compound is one the enumeration observed; true for the labelled
+    ///        view, which adds the up-enumerated guesses that attach to a series
+    ///        the observed compounds formed, each labelled ConstantUp or
+    ///        VariableUp. The same series exist in both views.
+    /// \throws AnalysisStateError If Analyze() has not succeeded since the last mutation.
+    std::vector<Series> GetSeries(bool include_up_enumerated) const;
 
     /// \brief Whether the configured method enumerates series.
     ///

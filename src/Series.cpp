@@ -1,5 +1,8 @@
 #include "oemmpa/Series.h"
 
+#include "oemmpa/Error.h"
+
+#include <algorithm>
 #include <tuple>
 #include <utility>
 
@@ -14,17 +17,45 @@ SeriesMember::SeriesMember(
     : variable_smiles_(std::move(variable_smiles)),
       heavy_atom_count_(heavy_atom_count),
       molecule_ids_(std::move(molecule_ids)),
-      external_ids_(std::move(external_ids)) {}
+      external_ids_(std::move(external_ids)),
+      // Declared after molecule_ids_, so its size is already known here.
+      enumeration_labels_(molecule_ids_.size(), Fragmentation::EnumerationLabel::None) {}
+
+SeriesMember::SeriesMember(
+    std::string variable_smiles,
+    unsigned int heavy_atom_count,
+    std::vector<unsigned int> molecule_ids,
+    std::vector<std::string> external_ids,
+    std::vector<Fragmentation::EnumerationLabel> enumeration_labels
+)
+    : variable_smiles_(std::move(variable_smiles)),
+      heavy_atom_count_(heavy_atom_count),
+      molecule_ids_(std::move(molecule_ids)),
+      external_ids_(std::move(external_ids)),
+      enumeration_labels_(std::move(enumeration_labels)) {
+    if (enumeration_labels_.size() != molecule_ids_.size()) {
+        throw InvalidQueryError(
+            "series member enumeration labels must parallel its molecule ids: " + variable_smiles_);
+    }
+}
 
 const std::string& SeriesMember::GetVariableSmiles() const { return variable_smiles_; }
 unsigned int SeriesMember::GetHeavyAtomCount() const { return heavy_atom_count_; }
 const std::vector<unsigned int>& SeriesMember::GetMoleculeIds() const { return molecule_ids_; }
 const std::vector<std::string>& SeriesMember::GetExternalIds() const { return external_ids_; }
+const std::vector<Fragmentation::EnumerationLabel>& SeriesMember::GetEnumerationLabels() const {
+    return enumeration_labels_;
+}
+
+bool SeriesMember::HasBaselineCompound() const {
+    return std::find(enumeration_labels_.begin(), enumeration_labels_.end(),
+                     Fragmentation::EnumerationLabel::None) != enumeration_labels_.end();
+}
 
 bool SeriesMember::operator==(const SeriesMember& other) const {
-    return std::tie(variable_smiles_, heavy_atom_count_, molecule_ids_, external_ids_) ==
+    return std::tie(variable_smiles_, heavy_atom_count_, molecule_ids_, external_ids_, enumeration_labels_) ==
         std::tie(other.variable_smiles_, other.heavy_atom_count_, other.molecule_ids_,
-                 other.external_ids_);
+                 other.external_ids_, other.enumeration_labels_);
 }
 
 bool SeriesMember::operator!=(const SeriesMember& other) const { return !(*this == other); }

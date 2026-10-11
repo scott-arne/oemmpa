@@ -20,6 +20,7 @@ public:
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const override;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const override;
     std::vector<Series> GetSeries() const override;
+    std::vector<Series> GetSeries(bool include_up_enumerated) const override;
     bool ProducesSeries() const override { return true; }
     unsigned int LastAnalyzeWorkerCount() const override { return last_analyze_worker_count_; }
 

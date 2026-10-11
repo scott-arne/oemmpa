@@ -48,15 +48,26 @@ public:
     std::vector<MatchedPair> GetPairs(const QueryOptions& options) const;
     std::vector<Transform> GetTransforms(const QueryOptions& options) const;
 
-    /// \brief Return the matched molecular series of the index.
+    /// \brief Return the matched molecular series of the index (the baseline view).
     ///
-    /// One series per (constant SMILES, cut count) with at least two distinct
-    /// baseline R-groups realized by at least two distinct compounds, hydrogen
-    /// member included where the pair enumeration would pair one; series take
-    /// no query options, so the result is memoized until the next mutation.
-    /// Sorted by constant SMILES, then by ascending cut count; members by
-    /// R-group SMILES; molecule ids ascending.
+    /// Exactly GetSeries(false): one series per (constant SMILES, cut count) with
+    /// at least two distinct observed R-groups realized by at least two distinct
+    /// observed compounds, hydrogen member included where the pair enumeration
+    /// would pair one. Sorted by constant SMILES, then by ascending cut count;
+    /// members by R-group SMILES; molecule ids ascending.
     const std::vector<Series>& GetSeries() const;
+
+    /// \brief Return the series in the chosen view.
+    ///
+    /// The same series exist in both views, because only observed records
+    /// decide formation. The labelled view (true) adds the up-enumerated
+    /// contributions of each formed series' bucket and cut count: a ConstantUp
+    /// or VariableUp record's (R-group, compound), and the record-level hydrogen
+    /// parents a ConstantUp record names, each labelled; an observed
+    /// (R-group, compound) is never relabelled, and an R-group only guesses
+    /// realize becomes a member of its own. Both views are memoized together
+    /// until the next mutation.
+    const std::vector<Series>& GetSeries(bool include_up_enumerated) const;
 
 private:
     // The parallel analyzer validates and measures every fragmentation in its
@@ -98,24 +109,28 @@ private:
     // ComputeSeries; 1 == serial.
     unsigned int pair_thread_count_ = 1;
 
-    // Lazy single-slot caches, written from the const query methods. Readers of
-    // one index may run concurrently (the Python wrappers release the GIL), so
-    // the fill and every copy out of a cache happen under cache_mutex_. The
-    // mutators (Clear, AddMolecule, InsertFragmentation) invalidate the caches
-    // without locking: mutation concurrent with a read stays outside the
-    // contract, and locking the insertion path would tax every analysis. One
-    // mutex couples both caches, so a cold GetPairs blocks GetSeries on the same
-    // instance; that is the accepted trade, and a caller wanting parallel
-    // throughput uses one instance per thread. GetSeries may hand out a
-    // reference only because the series cache is not options-keyed and so is
-    // never refilled by another reader -- making it options-keyed means
-    // switching it to copy-out, as GetPairs does.
+    // Lazy caches, written from the const query methods. Readers of one index
+    // may run concurrently (the Python wrappers release the GIL), so the fill
+    // and every copy out of a cache happen under cache_mutex_. The mutators
+    // (Clear, AddMolecule, InsertFragmentation) invalidate the caches without
+    // locking: mutation concurrent with a read stays outside the contract, and
+    // locking the insertion path would tax every analysis. One mutex couples
+    // the caches, so a cold GetPairs blocks GetSeries on the same instance;
+    // that is the accepted trade, and a caller wanting parallel throughput uses
+    // one instance per thread. The series slots hold the labelled view and the
+    // baseline view derived from it; one enumeration fills both under the lock
+    // and one validity flag invalidates both, so a reader can never see the two
+    // views of different index contents. GetSeries may hand out references only
+    // because neither series slot is options-keyed and so neither is refilled
+    // by another reader -- making them options-keyed means switching to
+    // copy-out, as GetPairs does.
     CacheMutex cache_mutex_;
     mutable bool pairs_cache_valid_ = false;
     mutable QueryOptions pairs_cache_options_;
     mutable std::vector<MatchedPair> pairs_cache_;
     mutable bool series_cache_valid_ = false;
     mutable std::vector<Series> series_cache_;
+    mutable std::vector<Series> labelled_series_cache_;
 };
 
 }  // namespace OEMMPA

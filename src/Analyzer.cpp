@@ -431,8 +431,12 @@ std::vector<Transform> Analyzer::GetTransforms(QueryOptions options) const {
 }
 
 std::vector<Series> Analyzer::GetSeries() const {
+    return GetSeries(false);
+}
+
+std::vector<Series> Analyzer::GetSeries(bool include_up_enumerated) const {
     RequireAnalyzed();
-    return method_->GetSeries();
+    return method_->GetSeries(include_up_enumerated);
 }
 
 bool Analyzer::ProducesSeries() const {

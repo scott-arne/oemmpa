@@ -9,6 +9,7 @@
 #include "oemmpa/Series.h"
 #include "oemmpa/WizePairZMethod.h"
 #include "concurrent_reader_support.h"
+#include "series_fixture_support.h"
 #include "oemmpa/oemmpa.h"
 #include "ring_search_bound_guard.h"
 
@@ -23,6 +24,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1503,6 +1505,148 @@ TEST(AnalyzerConcurrency, ColdConcurrentReadersAgreeWithASequentialTwin) {
         reader.join();
     }
     EXPECT_EQ(mismatches.load(), 0U);
+}
+
+namespace {
+
+using Label = Fragmentation::EnumerationLabel;
+
+// A member pinned without spelling a stereo SMILES, whose canonical form is the
+// renderer's choice: whether its R-group carries a stereo mark, its heavy
+// atoms, its compounds and their labels.
+using MemberShape = std::tuple<bool, unsigned int, std::vector<unsigned int>, std::vector<std::string>,
+                               std::vector<Label>>;
+
+std::vector<MemberShape> Sorted(std::vector<MemberShape> shapes) {
+    std::sort(shapes.begin(), shapes.end());
+    return shapes;
+}
+
+std::vector<MemberShape> ShapesOf(const Series& series) {
+    std::vector<MemberShape> shapes;
+    for (const SeriesMember& member : series.GetMembers()) {
+        shapes.emplace_back(member.GetVariableSmiles().find('@') != std::string::npos,
+                            member.GetHeavyAtomCount(), member.GetMoleculeIds(), member.GetExternalIds(),
+                            member.GetEnumerationLabels());
+    }
+    return Sorted(shapes);
+}
+
+}  // namespace
+
+TEST(AnalyzerSeries, CreatedStereocentreGuessesAttachOnlyToSeriesTheBaselineFormed) {
+    const Analyzer analyzer = MakeCreatedStereocentreAnalyzer();   // iso 1, rac-OH 2, R-OH 3, R-NH2 4
+    const std::vector<Series> baseline = analyzer.GetSeries();
+    EXPECT_EQ(analyzer.GetSeries(false), baseline);
+    const std::vector<Series> labelled = analyzer.GetSeries(true);
+
+    // Formation is unchanged: the same series, in the same order, in both views.
+    ASSERT_EQ(labelled.size(), baseline.size());
+    std::size_t stereo_index = labelled.size();
+    std::size_t methyl_index = labelled.size();
+    unsigned int stereo_series = 0;
+    for (std::size_t i = 0; i < labelled.size(); ++i) {
+        EXPECT_EQ(labelled[i].GetConstantSmiles(), baseline[i].GetConstantSmiles());
+        EXPECT_EQ(labelled[i].GetCutCount(), baseline[i].GetCutCount());
+        if (labelled[i].GetConstantSmiles().find('@') != std::string::npos) {
+            ++stereo_series;
+            stereo_index = i;
+        }
+        if (labelled[i].GetConstantSmiles() == "[*:1]C" && labelled[i].GetCutCount() == 1) {
+            methyl_index = i;
+        }
+        // Only isopentane has a stereocentre a cut creates, so every guessed
+        // compound anywhere is isopentane's, and the baseline view holds none.
+        for (const SeriesMember& member : labelled[i].GetMembers()) {
+            for (std::size_t c = 0; c < member.GetMoleculeIds().size(); ++c) {
+                if (member.GetEnumerationLabels()[c] != Label::None) {
+                    EXPECT_EQ(member.GetMoleculeIds()[c], 1U) << member.GetVariableSmiles();
+                }
+            }
+        }
+        for (const SeriesMember& member : baseline[i].GetMembers()) {
+            EXPECT_EQ(member.GetEnumerationLabels(),
+                      std::vector<Label>(member.GetMoleculeIds().size(), Label::None))
+                << member.GetVariableSmiles();
+        }
+    }
+    ASSERT_EQ(stereo_series, 1U) << "R-OH and R-NH2 form exactly one stereo-constant series";
+    ASSERT_LT(methyl_index, labelled.size()) << "no [*:1]C series";
+
+    // The stereo-constant series: R-OH and R-NH2 observed, and isopentane's
+    // ConstantUp guess of the matching configuration adds its methyl, an R-group
+    // no observed compound of the series realizes.
+    EXPECT_EQ(labelled[stereo_index].GetMembers(), (std::vector<SeriesMember>{
+        SeriesMember("[*:1]C", 1, {1}, {"iso"}, {Label::ConstantUp}),
+        SeriesMember("[*:1]N", 1, {4}, {"R-NH2"}),
+        SeriesMember("[*:1]O", 1, {3}, {"R-OH"}),
+    }));
+    EXPECT_EQ(baseline[stereo_index].GetMembers(), (std::vector<SeriesMember>{
+        SeriesMember("[*:1]N", 1, {4}, {"R-NH2"}),
+        SeriesMember("[*:1]O", 1, {3}, {"R-OH"}),
+    }));
+
+    // The [*:1]C series: one observed member per compound's methyl cut (R-OH's
+    // and R-NH2's R-groups keep their input stereo), and isopentane's VariableUp
+    // guesses add one guess-only member per configuration of the stereocentre
+    // the cut creates. Every R-group here has four heavy atoms.
+    const std::vector<MemberShape> observed_methyl = {
+        MemberShape{false, 4, {1}, {"iso"}, {Label::None}},
+        MemberShape{false, 4, {2}, {"rac-OH"}, {Label::None}},
+        MemberShape{true, 4, {3}, {"R-OH"}, {Label::None}},
+        MemberShape{true, 4, {4}, {"R-NH2"}, {Label::None}},
+    };
+    std::vector<MemberShape> labelled_methyl = observed_methyl;
+    labelled_methyl.push_back(MemberShape{true, 4, {1}, {"iso"}, {Label::VariableUp}});
+    labelled_methyl.push_back(MemberShape{true, 4, {1}, {"iso"}, {Label::VariableUp}});
+    EXPECT_EQ(ShapesOf(labelled[methyl_index]), Sorted(labelled_methyl));
+    EXPECT_EQ(ShapesOf(baseline[methyl_index]), Sorted(observed_methyl));
+    // Isopentane's observed R-group is the sec-butyl fragment that
+    // CreatedStereocentreUpEnumerationDoesNotJoinSeries pins as a constant.
+    bool iso_spelling_seen = false;
+    for (const SeriesMember& member : baseline[methyl_index].GetMembers()) {
+        if (member.GetMoleculeIds() == std::vector<unsigned int>{1}) {
+            EXPECT_EQ(member.GetVariableSmiles(), "[*:1]C(C)CC");
+            iso_spelling_seen = true;
+        }
+    }
+    EXPECT_TRUE(iso_spelling_seen);
+}
+
+TEST(AnalyzerSeries, McsMethodsReturnNoSeriesInEitherView) {
+    for (const char* method : {"dmcss", "wizepairz", "oemedchem"}) {
+        Analyzer analyzer(method);
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze();
+        EXPECT_TRUE(analyzer.GetSeries(true).empty()) << method;
+        EXPECT_TRUE(analyzer.GetSeries(false).empty()) << method;
+    }
+    Analyzer unanalyzed;
+    unanalyzed.AddMolecule("Cc1ccccc1", "toluene");
+    EXPECT_THROW(unanalyzed.GetSeries(true), AnalysisStateError);
+}
+
+TEST(ParallelAnalyzeTest, BothSeriesViewsAreIdenticalAcrossThreadCounts) {
+    std::vector<std::pair<std::string, std::string>> molecules = CreatedStereocentreMolecules();
+    molecules.insert(molecules.end(), {
+        {"Cc1ccccc1", "toluene"}, {"Oc1ccccc1", "phenol"}, {"CC(C)c1ccccc1", "cumene"},
+        {"CC(O)c1ccccc1", "phenylethanol"},
+    });
+    std::vector<std::vector<Series>> labelled;
+    std::vector<std::vector<Series>> baseline;
+    for (const unsigned int threads : {1U, 4U}) {
+        Analyzer analyzer;
+        for (const auto& entry : molecules) {
+            analyzer.AddMolecule(entry.first, entry.second);
+        }
+        analyzer.Analyze(threads);
+        labelled.push_back(analyzer.GetSeries(true));
+        baseline.push_back(analyzer.GetSeries(false));
+    }
+    ASSERT_NE(labelled[0], baseline[0]) << "the fixture carries no guessed rows";
+    EXPECT_EQ(labelled[0], labelled[1]);
+    EXPECT_EQ(baseline[0], baseline[1]);
 }
 
 }  // namespace test

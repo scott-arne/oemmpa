@@ -714,6 +714,50 @@ void for_each_constant(std::size_t constant_count, unsigned int worker_count, Pr
     }
 }
 
+// Molecule id -> label of one R-group's compounds.
+using LabelledCompounds = std::map<unsigned int, Fragmentation::EnumerationLabel>;
+
+// Record one (R-group, compound) contribution, observed or guessed. One rule
+// decides every collision, so the label never depends on record order: the
+// smallest label wins, which keeps an observed compound observed (seams spec
+// 5.1, baseline wins) and puts ConstantUp ahead of VariableUp.
+void add_contribution(
+    LabelledCompounds& compounds,
+    unsigned int molecule_id,
+    Fragmentation::EnumerationLabel label
+) {
+    // Relies on Fragmentation::EnumerationLabel's declaration order: None < ConstantUp < VariableUp.
+    Fragmentation::EnumerationLabel& held = compounds.emplace(molecule_id, label).first->second;
+    held = std::min(held, label);
+}
+
+// The baseline view of one labelled series: guessed compounds removed, and a
+// member left without compounds removed with them. Formation counts observed
+// compounds only, so the result is never empty and equals what the
+// enumeration produced before guesses were attached.
+Series baseline_series_view(const Series& labelled) {
+    std::vector<SeriesMember> members;
+    members.reserve(labelled.GetMembers().size());
+    for (const SeriesMember& member : labelled.GetMembers()) {
+        if (!member.HasBaselineCompound()) {
+            continue;
+        }
+        std::vector<unsigned int> ids;
+        std::vector<std::string> external_ids;
+        for (std::size_t c = 0; c < member.GetMoleculeIds().size(); ++c) {
+            if (member.GetEnumerationLabels()[c] == Fragmentation::EnumerationLabel::None) {
+                ids.push_back(member.GetMoleculeIds()[c]);
+                external_ids.push_back(member.GetExternalIds()[c]);
+            }
+        }
+        members.emplace_back(
+            member.GetVariableSmiles(), member.GetHeavyAtomCount(), std::move(ids), std::move(external_ids));
+    }
+    return Series(
+        labelled.GetSeriesId(), labelled.GetConstantSmiles(), labelled.GetCutCount(),
+        labelled.GetConstantHeavyAtomCount(), std::move(members));
+}
+
 }  // namespace
 
 VariableFragmentMetrics validate_and_measure_fragmentation(const Fragmentation& fragmentation) {
@@ -1056,15 +1100,14 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
         // sorted by R-group SMILES, and std::set keeps a member's molecule ids
         // ascending and deduplicated.
         std::map<unsigned int, std::map<std::string, std::set<unsigned int>>> partitions;
+        // The up-enumerated contributions of the bucket, keyed like the
+        // partitions. A guess about a stereocentre the cut created is not
+        // evidence that the compound belongs to a series, so these never decide
+        // whether one forms; they attach, labelled, to a series the observed
+        // records formed (seams spec 5.1).
+        std::map<unsigned int, std::map<std::string, LabelledCompounds>> variants;
         std::map<std::string, unsigned int> heavy_atoms_by_variable;
         for (const Fragmentation& record : members.records) {
-            // An up-enumerated record is a guess about a stereocentre the cut
-            // created; it must not lend the compound a second R-group.
-            if (record.GetEnumerationLabel() != Fragmentation::EnumerationLabel::None) {
-                continue;
-            }
-            partitions[record.GetCutCount()][record.GetVariableSmiles()].insert(
-                record.GetMoleculeId());
             if (heavy_atoms_by_variable.count(record.GetVariableSmiles()) == 0) {
                 heavy_atoms_by_variable.emplace(
                     record.GetVariableSmiles(),
@@ -1072,25 +1115,43 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
                         ? record.GetVariableHeavyAtomCount()
                         : parse_smiles_metrics(record.GetVariableSmiles(), "variable").heavy_atom_count);
             }
+            const Fragmentation::EnumerationLabel label = record.GetEnumerationLabel();
+            if (label == Fragmentation::EnumerationLabel::None) {
+                partitions[record.GetCutCount()][record.GetVariableSmiles()].insert(
+                    record.GetMoleculeId());
+            } else {
+                add_contribution(
+                    variants[record.GetCutCount()][record.GetVariableSmiles()],
+                    record.GetMoleculeId(), label);
+            }
         }
 
         // Membership follows pair eligibility with respect to members: a
-        // compound is a hydrogen member exactly when a member of this bucket
-        // would pair it as a hydrogen partner. The bucket-level source names the
-        // compound this constant caps to, which every member of the bucket would
-        // pair with; a record-level parent is named by one record alone, so it
-        // qualifies only when that record is itself a member, which an
-        // up-enumerated guess is not. `record_hydrogen_parent_ids` is aligned
-        // with `records`.
+        // compound is an observed hydrogen member exactly when an observed
+        // member of this bucket would pair it as a hydrogen partner. The
+        // bucket-level source names the compound this constant caps to, which
+        // every member of the bucket would pair with; a record-level parent is
+        // named by one record alone, so it is observed only when that record
+        // is. A ConstantUp record caps a constant other than the observed one,
+        // so the parents it names attach as guessed hydrogen rows; a VariableUp
+        // record keeps the observed constant and so names nothing new.
+        // `record_hydrogen_parent_ids` is aligned with `records`.
         std::set<unsigned int> hydrogen_ids(
             members.synthesized_hydrogen_ids.begin(), members.synthesized_hydrogen_ids.end());
         for (std::size_t r = 0; r < members.records.size(); ++r) {
-            if (members.records[r].GetEnumerationLabel() !=
-                Fragmentation::EnumerationLabel::None) {
-                continue;
-            }
+            const Fragmentation::EnumerationLabel label = members.records[r].GetEnumerationLabel();
             const std::vector<unsigned int>& parents = members.record_hydrogen_parent_ids[r];
-            hydrogen_ids.insert(parents.begin(), parents.end());
+            if (label == Fragmentation::EnumerationLabel::None) {
+                hydrogen_ids.insert(parents.begin(), parents.end());
+            } else if (label == Fragmentation::EnumerationLabel::ConstantUp && !parents.empty()) {
+                // Both hydrogen sources cap exactly one attachment point, so
+                // guessed hydrogen rows join the one-cut partition and no other.
+                LabelledCompounds& hydrogen = variants[1][kHydrogenVariableSmiles];
+                for (const unsigned int parent : parents) {
+                    add_contribution(hydrogen, parent, label);
+                }
+                heavy_atoms_by_variable.emplace(kHydrogenVariableSmiles, 0U);
+            }
         }
         if (!hydrogen_ids.empty()) {
             // Hydrogen substitution is a single-cut relationship: both sources
@@ -1133,18 +1194,45 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
                 constant_measured = true;
             }
 
-            std::vector<SeriesMember> series_members;
-            series_members.reserve(molecule_ids_by_variable.size());
+            // R-group -> (molecule id -> label), observed compounds and guesses
+            // through the same add_contribution, so a guess about an
+            // (R-group, compound) the observed records already hold keeps the
+            // observed label (seams spec 5.1); an R-group only guesses realize
+            // becomes a member whose compounds are all guesses.
+            std::map<std::string, LabelledCompounds> labelled;
             for (const auto& entry : molecule_ids_by_variable) {
-                std::vector<unsigned int> ids(entry.second.begin(), entry.second.end());
+                LabelledCompounds& compounds = labelled[entry.first];
+                for (const unsigned int id : entry.second) {
+                    add_contribution(compounds, id, Fragmentation::EnumerationLabel::None);
+                }
+            }
+            const auto guesses = variants.find(partition.first);
+            if (guesses != variants.end()) {
+                for (const auto& entry : guesses->second) {
+                    LabelledCompounds& compounds = labelled[entry.first];
+                    for (const auto& contribution : entry.second) {
+                        add_contribution(compounds, contribution.first, contribution.second);
+                    }
+                }
+            }
+
+            std::vector<SeriesMember> series_members;
+            series_members.reserve(labelled.size());
+            for (const auto& entry : labelled) {
+                std::vector<unsigned int> ids;
                 std::vector<std::string> external_ids;
-                external_ids.reserve(ids.size());
-                for (const unsigned int id : ids) {
-                    external_ids.push_back(molecules_.at(id).GetExternalId());
+                std::vector<Fragmentation::EnumerationLabel> labels;
+                ids.reserve(entry.second.size());
+                external_ids.reserve(entry.second.size());
+                labels.reserve(entry.second.size());
+                for (const auto& compound : entry.second) {
+                    ids.push_back(compound.first);
+                    external_ids.push_back(molecules_.at(compound.first).GetExternalId());
+                    labels.push_back(compound.second);
                 }
                 series_members.emplace_back(
                     entry.first, heavy_atoms_by_variable.at(entry.first),
-                    std::move(ids), std::move(external_ids));
+                    std::move(ids), std::move(external_ids), std::move(labels));
             }
             per_constant[i].emplace_back(
                 0,
@@ -1167,14 +1255,27 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
 }
 
 const std::vector<Series>& MemoryIndex::GetSeries() const {
+    return GetSeries(false);
+}
+
+const std::vector<Series>& MemoryIndex::GetSeries(bool include_up_enumerated) const {
     std::lock_guard<std::mutex> lock(cache_mutex_.Get());
     if (!series_cache_valid_) {
-        series_cache_ = ComputeSeries();
+        // One enumeration fills both slots under one lock; a throw leaves the
+        // flag clear, so the next reader recomputes rather than reading a half.
+        std::vector<Series> labelled = ComputeSeries();
+        std::vector<Series> baseline;
+        baseline.reserve(labelled.size());
+        for (const Series& entry : labelled) {
+            baseline.push_back(baseline_series_view(entry));
+        }
+        labelled_series_cache_ = std::move(labelled);
+        series_cache_ = std::move(baseline);
         series_cache_valid_ = true;
     }
-    // The slot is never replaced until the next mutation, so the reference
-    // stays valid after the lock is released.
-    return series_cache_;
+    // Neither slot is replaced until the next mutation, so the reference stays
+    // valid after the lock is released.
+    return include_up_enumerated ? labelled_series_cache_ : series_cache_;
 }
 
 std::vector<MatchedPair> MemoryIndex::GetPairs(const QueryOptions& options) const {

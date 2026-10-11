@@ -511,6 +511,12 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %include "../include/oemmpa/RingPerception.h"
 %include "../include/oemmpa/FragmentationStrategy.h"
 %include "../include/oemmpa/Fragmenter.h"
+// A member's enumeration labels are an enum class per compound, and this module
+// has no vector wrapper for that type: the accessor and the constructor that
+// takes the labels would surface in Python as opaque pointers. Same placement
+// rule as the ignores above: before the %include.
+%ignore OEMMPA::SeriesMember::GetEnumerationLabels;
+%ignore OEMMPA::SeriesMember::SeriesMember(std::string, unsigned int, std::vector<unsigned int>, std::vector<std::string>, std::vector<Fragmentation::EnumerationLabel>);
 %include "../include/oemmpa/Series.h"
 // The store validates its own support ladders, so Python never calls this one.
 %ignore OEMMPA::validate_support_ladder;

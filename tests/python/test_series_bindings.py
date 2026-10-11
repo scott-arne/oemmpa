@@ -419,3 +419,20 @@ def test_store_exposes_the_refresh_timer_and_the_linked_duckdb_version(tmp_path)
     assert facade_seconds > 0.0
     # The facade reports the store's own measurement, not a figure of its own.
     assert facade_seconds == facade.raw.GetLastSeriesCountRefreshSeconds()
+
+
+def test_series_member_keeps_its_one_python_constructor_and_no_raw_label_vector():
+    import inspect
+
+    # The labelled C++ constructor and the raw enum-vector accessor stay out of
+    # Python: a second constructor would turn __init__ into an *args dispatcher
+    # with an overload no Python caller can satisfy.
+    signature = inspect.signature(_oemmpa.SeriesMember.__init__)
+    assert list(signature.parameters) == ["self", "variable_smiles", "heavy_atom_count", "molecule_ids", "external_ids"]
+    assert not hasattr(_oemmpa.SeriesMember, "GetEnumerationLabels")
+    member = _oemmpa.SeriesMember("[*:1]C", 1, [3], ["toluene"])
+    assert member.HasBaselineCompound() is True
+    analyzer = _phenyl_raw_analyzer()
+    labelled = list(analyzer.GetSeries(True))
+    observed = list(analyzer.GetSeries())
+    assert [s.GetConstantSmiles() for s in labelled] == [s.GetConstantSmiles() for s in observed]
