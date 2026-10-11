@@ -250,11 +250,26 @@ public:
     /// \throws AnalysisStateError If Analyze() has not succeeded since the last mutation.
     std::vector<Series> GetSeries(bool include_up_enumerated) const;
 
-    /// \brief Whether the configured method enumerates series.
-    ///
-    /// True for the fragmentation method, false for the MCS methods, which
-    /// build pairs without a fragment index.
+    /// \brief Whether this analysis enumerates series: GetSeriesEnumeration().
     bool ProducesSeries() const;
+
+    /// \brief Choose whether this analysis enumerates matched molecular series.
+    ///
+    /// The fragmentation method always does, so true is accepted with no effect
+    /// and false is rejected. An MCS method does not by default. With the flag
+    /// on, Analyze() also runs an auxiliary fragmentation pass over the
+    /// retained molecule records with this analyzer's fragmentation settings:
+    /// GetSeries and SaveTo then carry series from that pass, while GetPairs
+    /// and GetTransforms still come from the MCS method. The fragmentation
+    /// setters configure that pass while the flag is on and are refused while
+    /// it is off. Any change of the flag marks the analysis stale; turning it
+    /// off discards the auxiliary pass, and the settings survive.
+    ///
+    /// \throws InvalidQueryError When false is passed for the fragmentation method.
+    void SetSeriesEnumeration(bool enabled);
+
+    /// \brief Whether this analysis enumerates series (always true for the fragmentation method).
+    bool GetSeriesEnumeration() const;
 
 #if OEMMPA_HAS_DUCKDB
     /// \brief Save staged molecules, properties, and analyzed pairs to DuckDB.
@@ -283,6 +298,7 @@ private:
     void RejectDuplicateExternalId(const std::string& external_id) const;
     void RequireKnownExternalId(const std::string& external_id) const;
     void RequireAnalyzed() const;
+    void RunAnalysis(unsigned int threads);
     Fragmenter RequireFragmenter();
     void CommitFragmenter(const Fragmenter& fragmenter);
     void CommitFragmenter(const Fragmenter& fragmenter, std::optional<std::vector<std::string>> cut_smarts);
@@ -302,6 +318,10 @@ private:
     // SetRingPerceptionPolicy. It is the store's source for
     // dataset.fragment_options, because the cut strategy has no getter.
     FragmentationSettings fragmentation_settings_;
+    // Series enumeration for an MCS method (the fragmentation method ignores
+    // it), and the auxiliary pass it builds at Analyze from molecules_.
+    bool series_enumeration_ = false;
+    std::unique_ptr<AnalysisMethod> series_method_;
 };
 
 }  // namespace OEMMPA

@@ -406,14 +406,29 @@ void Analyzer::AddProperty(
 }
 
 void Analyzer::Analyze() {
-    analyzed_ = false;
-    method_->Analyze(resolve_analyze_threads(std::nullopt));
-    analyzed_ = true;
+    RunAnalysis(resolve_analyze_threads(std::nullopt));
 }
 
 void Analyzer::Analyze(unsigned int threads) {
+    RunAnalysis(resolve_analyze_threads(std::optional<unsigned int>(threads)));
+}
+
+void Analyzer::RunAnalysis(unsigned int threads) {
     analyzed_ = false;
-    method_->Analyze(resolve_analyze_threads(std::optional<unsigned int>(threads)));
+    series_method_.reset();
+    method_->Analyze(threads);
+    if (!method_->ProducesSeries() && series_enumeration_) {
+        // Built fresh from the retained records at every Analyze, never fed
+        // incrementally, so enabling the flag before or after the molecules
+        // were added gives the same series. Its pairs are never asked for.
+        std::unique_ptr<AnalysisMethod> series_method = std::make_unique<FragmentationMethod>();
+        series_method->SetFragmenter(make_fragmenter(fragmentation_settings_));
+        for (const MoleculeRecord& record : molecules_) {
+            series_method->AddMolecule(record);
+        }
+        series_method->Analyze(threads);
+        series_method_ = std::move(series_method);
+    }
     analyzed_ = true;
 }
 
@@ -445,11 +460,34 @@ std::vector<Series> Analyzer::GetSeries() const {
 
 std::vector<Series> Analyzer::GetSeries(bool include_up_enumerated) const {
     RequireAnalyzed();
+    if (series_method_) {
+        return series_method_->GetSeries(include_up_enumerated);
+    }
     return method_->GetSeries(include_up_enumerated);
 }
 
 bool Analyzer::ProducesSeries() const {
-    return method_->ProducesSeries();
+    return GetSeriesEnumeration();
+}
+
+void Analyzer::SetSeriesEnumeration(bool enabled) {
+    if (method_->ProducesSeries()) {
+        if (!enabled) {
+            throw InvalidQueryError("the fragmentation method always enumerates series");
+        }
+        return;
+    }
+    if (enabled == series_enumeration_) {
+        return;
+    }
+    series_enumeration_ = enabled;
+    // Re-enabling rebuilds the pass at the next Analyze with the retained settings.
+    series_method_.reset();
+    analyzed_ = false;
+}
+
+bool Analyzer::GetSeriesEnumeration() const {
+    return method_->ProducesSeries() || series_enumeration_;
 }
 
 #if OEMMPA_HAS_DUCKDB
@@ -467,11 +505,11 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
         // each of its series lists every R-group its constant carried across
         // the analyzed set, so a compound, pair or series this analysis never
         // saw leaves those series describing only part of the store. The check
-        // follows the method rather than what this analysis happened to
-        // enumerate, because an analysis that yields no series still stamps the
-        // store as series-producing, and accepting it would relabel a store
-        // that was built elsewhere.
-        if (method_->ProducesSeries() && !store.FirstPopulatedCoreTable().empty()) {
+        // follows the method and its series flag rather than what this analysis
+        // happened to enumerate, because an analysis that yields no series still
+        // stamps the store as series-producing, and accepting it would relabel
+        // a store that was built elsewhere.
+        if (ProducesSeries() && !store.FirstPopulatedCoreTable().empty()) {
             throw StorageError(
                 "a series-producing analysis can only be saved into an empty "
                 "store; rebuild the store");
@@ -489,18 +527,20 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
         // count and default read keeps to the observed ones.
         store.AppendBulk(molecules_, GetPairs(options), GetSeries(true));
 
-        // Say whether this method enumerates series, so a store with zero
-        // series rows is never ambiguous: 'fragmentation' means computed and
-        // empty, 'none' means the method has no series to offer. Stamped after
-        // the rows, because AppendBulk reads it to refuse direct pair writes
-        // into a store an enumeration owns and this save's own pairs are not
-        // such a write.
-        store.SetSeriesSource(method_->ProducesSeries() ? method_name_ : "none");
-        // The settings that produced the stored series, or '' when the analysis
-        // produced none, so a reader never mistakes an MCS method's untouched
-        // defaults for settings that were applied.
+        // 'fragmentation' for the fragmentation method, '<method>+fragmentation'
+        // for an MCS analysis whose series came from the auxiliary pass, 'none'
+        // otherwise. Stamped after the rows, because AppendBulk reads it to
+        // refuse direct pair writes into a store an enumeration owns and this
+        // save's own pairs are not such a write.
+        const std::string series_source = method_->ProducesSeries()
+            ? method_name_
+            : (series_enumeration_ ? method_name_ + "+fragmentation" : std::string("none"));
+        store.SetSeriesSource(series_source);
+        // The settings of the pass that produced the stored series, or '' when
+        // the analysis produced none, so a reader never mistakes an MCS method's
+        // untouched defaults for settings that were applied.
         store.SetFragmentOptions(
-            method_->ProducesSeries() ? fragment_options_json(fragmentation_settings_) : std::string());
+            ProducesSeries() ? fragment_options_json(fragmentation_settings_) : std::string());
 
         // Properties stay on the existing upsert DML path (AddMoleculeProperty),
         // inside the SAME transaction, keyed by the verbatim analyzer id
@@ -535,6 +575,8 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
 
 void Analyzer::Clear() {
     method_->Clear();
+    series_method_.reset();
+    // The series flag and the fragmentation settings are configuration and stay.
     molecules_.clear();
     external_ids_.clear();
     properties_.clear();
@@ -567,12 +609,17 @@ void Analyzer::RequireAnalyzed() const {
 Fragmenter Analyzer::RequireFragmenter() {
     // Return a snapshot by value: callers mutate a local copy and write it back
     // through CommitFragmenter, so handing out a reference into method_-owned
-    // state would let a stale alias outlive a SetFragmenter reassignment.
+    // state would let a stale alias outlive a SetFragmenter reassignment. An
+    // MCS method has no fragmenter of its own; with series enumeration on, the
+    // settings snapshot stands in for the auxiliary pass's.
     Fragmenter* fragmenter = method_->GetFragmenter();
-    if (fragmenter == nullptr) {
-        throw InvalidQueryError("fragmentation controls require the fragmentation method");
+    if (fragmenter != nullptr) {
+        return *fragmenter;
     }
-    return *fragmenter;
+    if (series_enumeration_) {
+        return make_fragmenter(fragmentation_settings_);
+    }
+    throw InvalidQueryError("fragmentation controls require the fragmentation method");
 }
 
 void Analyzer::CommitFragmenter(const Fragmenter& fragmenter) {

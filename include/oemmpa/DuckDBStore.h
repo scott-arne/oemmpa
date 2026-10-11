@@ -391,7 +391,8 @@ private:
     );
 
     // Record on dataset whether the analysis method that saved this store
-    // enumerates series ('fragmentation'), does not ('none'), or whether no
+    // enumerates series ('fragmentation', or '<method>+fragmentation' for an
+    // MCS analysis with series enumeration), does not ('none'), or whether no
     // analyzer save ran at all (the column's default, 'not-computed'). Written
     // by Analyzer::SaveTo next to the analysis method, inside its transaction,
     // so a store with zero series always says why.

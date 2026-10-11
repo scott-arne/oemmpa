@@ -1713,5 +1713,310 @@ TEST(FragmentationSettings, MakeFragmenterAppliesEverySettingAndCaptureReadsItBa
     EXPECT_TRUE(make_fragmenter(smarts_only).Fragment(1, phenol.GetMol()).empty());
 }
 
+namespace {
+
+// MatchedPair has no operator==, and no helper in tests/cpp compares every public
+// field (PairDigest and PairContentDigest read a subset), so a change in an
+// unlisted field would pass a digest. This compares every getter of
+// include/oemmpa/MatchedPair.h in vector order: identity, external ids, the
+// molecule and fragment SMILES, the transform, the deltas, every environment
+// SMIRKS entry, the valid-radius state and range, whether the variable
+// heavy-atom counts were recorded and their values, and the presence and
+// values of each named property (the class offers no way to list its
+// properties, so the caller names the ones its fixture sets).
+void ExpectSamePairs(
+    const std::vector<MatchedPair>& actual,
+    const std::vector<MatchedPair>& expected,
+    const std::vector<std::string>& property_names,
+    const std::string& context
+) {
+    ASSERT_EQ(actual.size(), expected.size()) << context;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        SCOPED_TRACE(context + ", pair " + std::to_string(i));
+        const MatchedPair& a = actual[i];
+        const MatchedPair& e = expected[i];
+        EXPECT_EQ(a.GetSourceMoleculeId(), e.GetSourceMoleculeId());
+        EXPECT_EQ(a.GetTargetMoleculeId(), e.GetTargetMoleculeId());
+        EXPECT_EQ(a.GetSourceExternalId(), e.GetSourceExternalId());
+        EXPECT_EQ(a.GetTargetExternalId(), e.GetTargetExternalId());
+        EXPECT_EQ(a.GetSourceSmiles(), e.GetSourceSmiles());
+        EXPECT_EQ(a.GetTargetSmiles(), e.GetTargetSmiles());
+        EXPECT_EQ(a.GetConstantSmiles(), e.GetConstantSmiles());
+        EXPECT_EQ(a.GetSourceVariableSmiles(), e.GetSourceVariableSmiles());
+        EXPECT_EQ(a.GetTargetVariableSmiles(), e.GetTargetVariableSmiles());
+        EXPECT_EQ(a.GetTransformSmiles(), e.GetTransformSmiles());
+        EXPECT_EQ(a.GetCutCount(), e.GetCutCount());
+        EXPECT_EQ(a.GetHeavyAtomDelta(), e.GetHeavyAtomDelta());
+        EXPECT_EQ(a.GetHeavyBondDelta(), e.GetHeavyBondDelta());
+        ASSERT_EQ(a.GetEnvironmentSmirks().size(), e.GetEnvironmentSmirks().size());
+        for (std::size_t s = 0; s < e.GetEnvironmentSmirks().size(); ++s) {
+            EXPECT_EQ(a.GetEnvironmentSmirks()[s].radius, e.GetEnvironmentSmirks()[s].radius) << "smirks " << s;
+            EXPECT_EQ(a.GetEnvironmentSmirks()[s].smirks, e.GetEnvironmentSmirks()[s].smirks) << "smirks " << s;
+        }
+        EXPECT_EQ(a.HasValidRadiusRange(), e.HasValidRadiusRange());
+        EXPECT_EQ(a.GetMinValidRadius(), e.GetMinValidRadius());
+        EXPECT_EQ(a.GetMaxValidRadius(), e.GetMaxValidRadius());
+        EXPECT_EQ(a.HasRecordedVariableHeavyAtomCounts(), e.HasRecordedVariableHeavyAtomCounts());
+        EXPECT_EQ(a.GetSourceVariableHeavyAtoms(), e.GetSourceVariableHeavyAtoms());
+        EXPECT_EQ(a.GetTargetVariableHeavyAtoms(), e.GetTargetVariableHeavyAtoms());
+        for (const std::string& name : property_names) {
+            ASSERT_EQ(a.HasProperty(name), e.HasProperty(name)) << name;
+            if (e.HasProperty(name)) {
+                EXPECT_EQ(a.GetSourceProperty(name), e.GetSourceProperty(name)) << name;
+                EXPECT_EQ(a.GetTargetProperty(name), e.GetTargetProperty(name)) << name;
+                EXPECT_EQ(a.GetPropertyDelta(name), e.GetPropertyDelta(name)) << name;
+            }
+        }
+    }
+}
+
+// Transforms are their SMILES, their evidence count and the pairs they group.
+void ExpectSameTransforms(
+    const std::vector<Transform>& actual,
+    const std::vector<Transform>& expected,
+    const std::vector<std::string>& property_names,
+    const std::string& context
+) {
+    ASSERT_EQ(actual.size(), expected.size()) << context;
+    for (std::size_t t = 0; t < actual.size(); ++t) {
+        EXPECT_EQ(actual[t].GetTransformSmiles(), expected[t].GetTransformSmiles()) << context;
+        EXPECT_EQ(actual[t].GetEvidenceCount(), expected[t].GetEvidenceCount()) << context;
+        ExpectSamePairs(actual[t].GetPairs(), expected[t].GetPairs(), property_names,
+                        context + ", transform " + expected[t].GetTransformSmiles());
+    }
+}
+
+const std::vector<std::pair<std::string, std::string>>& McsSeriesMolecules() {
+    // Single-cut phenyl series plus the three xylenes, whose two methyls share
+    // a two-cut constant, so a max_cuts of 1 visibly changes the series.
+    static const std::vector<std::pair<std::string, std::string>> molecules = {
+        {"c1ccccc1", "benzene"}, {"Cc1ccccc1", "toluene"}, {"Oc1ccccc1", "phenol"},
+        {"Nc1ccccc1", "aniline"}, {"Cc1ccc(C)cc1", "p-xylene"}, {"Cc1cccc(C)c1", "m-xylene"},
+        {"Cc1ccccc1C", "o-xylene"},
+    };
+    return molecules;
+}
+
+void AddMolecules(Analyzer& analyzer, const std::vector<std::pair<std::string, std::string>>& molecules) {
+    for (const auto& entry : molecules) {
+        analyzer.AddMolecule(entry.first, entry.second);
+    }
+}
+
+// The molecules with a distinct pIC50 each, so the pairs carry injected
+// property values the comparison covers too.
+void AddMoleculesWithProperty(
+    Analyzer& analyzer,
+    const std::vector<std::pair<std::string, std::string>>& molecules
+) {
+    double value = 5.0;
+    for (const auto& entry : molecules) {
+        analyzer.AddMolecule(entry.first, entry.second);
+        analyzer.AddProperty(entry.second, "pIC50", value);
+        value += 0.25;
+    }
+}
+
+}  // namespace
+
+TEST(AnalyzerSeriesEnumeration, TheFragmentationMethodAlwaysEnumerates) {
+    Analyzer analyzer;
+    EXPECT_TRUE(analyzer.GetSeriesEnumeration());
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    analyzer.SetSeriesEnumeration(true);   // Accepted, and not a change: the analysis stays valid.
+    EXPECT_FALSE(analyzer.GetSeries().empty());
+    try {
+        analyzer.SetSeriesEnumeration(false);
+        FAIL() << "false was accepted for the fragmentation method";
+    } catch (const InvalidQueryError& error) {
+        EXPECT_STREQ(error.what(), "the fragmentation method always enumerates series");
+    }
+    EXPECT_TRUE(analyzer.GetSeriesEnumeration());
+    EXPECT_FALSE(analyzer.GetSeries().empty());
+}
+
+TEST(AnalyzerSeriesEnumeration, AnMcsMethodEnumeratesThroughTheAuxiliaryPassOnlyWhenAsked) {
+    Analyzer reference;
+    AddMolecules(reference, McsSeriesMolecules());
+    reference.Analyze();
+    ASSERT_FALSE(reference.GetSeries().empty());
+    const std::vector<std::string> properties = {"pIC50"};
+    QueryOptions symmetric;
+    symmetric.SetSymmetric(true);
+    QueryOptions asymmetric;
+    asymmetric.SetSymmetric(false);
+    for (const char* method : {"dmcss", "wizepairz", "oemedchem"}) {
+        // WizePairZ's default identity of 0.9 rejects every pair of these small
+        // molecules (toluene against phenol is 6/7), which would leave nothing
+        // to compare; 0.5 is the fraction BuildWizePairZStore uses.
+        const auto configure = [method](Analyzer& analyzer) {
+            if (std::string(method) == "wizepairz") {
+                analyzer.SetWizePairZIdentityFraction(0.5);
+            }
+        };
+        Analyzer plain(method);
+        configure(plain);
+        AddMoleculesWithProperty(plain, McsSeriesMolecules());
+        plain.Analyze();
+        // The comparison below is not vacuous: there are pairs, every one
+        // carries the injected property, and WizePairZ's carry SMIRKS.
+        const std::vector<MatchedPair> plain_pairs = plain.GetPairs(symmetric);
+        ASSERT_FALSE(plain_pairs.empty()) << method;
+        bool smirks_seen = false;
+        for (const MatchedPair& pair : plain_pairs) {
+            EXPECT_TRUE(pair.HasProperty("pIC50")) << method;
+            smirks_seen = smirks_seen || !pair.GetEnvironmentSmirks().empty();
+        }
+        if (std::string(method) == "wizepairz") {
+            EXPECT_TRUE(smirks_seen);
+        }
+        EXPECT_FALSE(plain.GetSeriesEnumeration()) << method;
+        EXPECT_FALSE(plain.ProducesSeries()) << method;
+        EXPECT_TRUE(plain.GetSeries().empty()) << method;
+
+        Analyzer opted(method);
+        configure(opted);
+        opted.SetSeriesEnumeration(true);
+        AddMoleculesWithProperty(opted, McsSeriesMolecules());
+        opted.Analyze();
+        EXPECT_TRUE(opted.ProducesSeries()) << method;
+        // The auxiliary pass with default settings is a fragmentation analysis
+        // of the same records ...
+        EXPECT_EQ(opted.GetSeries(), reference.GetSeries()) << method;
+        EXPECT_EQ(opted.GetSeries(true), reference.GetSeries(true)) << method;
+        // ... and the pairs and transforms still come from the MCS method alone,
+        // every public field equal, in order, for both pair orientations.
+        ExpectSamePairs(opted.GetPairs(symmetric), plain.GetPairs(symmetric), properties,
+                        std::string(method) + " symmetric");
+        ExpectSamePairs(opted.GetPairs(asymmetric), plain.GetPairs(asymmetric), properties,
+                        std::string(method) + " asymmetric");
+        ExpectSameTransforms(opted.GetTransforms(symmetric), plain.GetTransforms(symmetric), properties,
+                             std::string(method) + " transforms");
+    }
+}
+
+TEST(AnalyzerSeriesEnumeration, EnablingBeforeOrAfterTheMoleculesGivesTheSameSeries) {
+    Analyzer before("dmcss");
+    before.SetSeriesEnumeration(true);
+    AddMolecules(before, McsSeriesMolecules());
+    before.Analyze();
+    Analyzer after("dmcss");
+    AddMolecules(after, McsSeriesMolecules());
+    after.SetSeriesEnumeration(true);
+    after.Analyze();
+    ASSERT_FALSE(before.GetSeries().empty());
+    EXPECT_EQ(before.GetSeries(true), after.GetSeries(true));
+}
+
+TEST(AnalyzerSeriesEnumeration, TogglingTheFlagMakesTheAnalysisStaleAndSettingsSurvive) {
+    Analyzer unconstrained("dmcss");
+    unconstrained.SetSeriesEnumeration(true);
+    AddMolecules(unconstrained, McsSeriesMolecules());
+    unconstrained.Analyze();
+    bool multi_cut = false;
+    for (const Series& entry : unconstrained.GetSeries()) {
+        multi_cut = multi_cut || entry.GetCutCount() > 1;
+    }
+    ASSERT_TRUE(multi_cut) << "the fixture must form a multi-cut series";
+
+    Analyzer analyzer("dmcss");
+    analyzer.SetSeriesEnumeration(true);
+    analyzer.SetFragmentationMaxCuts(1);
+    AddMolecules(analyzer, McsSeriesMolecules());
+    analyzer.Analyze();
+    const std::vector<Series> one_cut = analyzer.GetSeries();
+    ASSERT_FALSE(one_cut.empty());
+    for (const Series& entry : one_cut) {
+        EXPECT_EQ(entry.GetCutCount(), 1U);
+    }
+
+    analyzer.SetSeriesEnumeration(false);
+    EXPECT_FALSE(analyzer.ProducesSeries());
+    EXPECT_THROW(analyzer.GetSeries(), AnalysisStateError);
+    EXPECT_THROW(analyzer.GetPairs(), AnalysisStateError);
+    analyzer.Analyze();
+    EXPECT_TRUE(analyzer.GetSeries().empty());
+
+    analyzer.SetSeriesEnumeration(true);
+    EXPECT_THROW(analyzer.GetSeries(), AnalysisStateError);
+    analyzer.Analyze();
+    EXPECT_EQ(analyzer.GetSeries(), one_cut);   // max_cuts 1 survived both toggles.
+    analyzer.SetSeriesEnumeration(true);        // The value in force: not a change.
+    EXPECT_EQ(analyzer.GetSeries(), one_cut);
+}
+
+TEST(AnalyzerSeriesEnumeration, FragmentationSettersNeedTheFlagOnAnMcsMethod) {
+    Analyzer analyzer("dmcss");
+    EXPECT_THROW(analyzer.SetFragmentationMaxCuts(1), InvalidQueryError);
+    EXPECT_THROW(analyzer.SetFragmentationCutSmarts("[C:1]-[O:2]"), InvalidQueryError);
+    EXPECT_THROW(analyzer.ConfigureFragmentation(
+                     true, 1, false, 0, false, 0, false, 0, false, false, 0, false, false, ""),
+                 InvalidQueryError);
+    analyzer.SetSeriesEnumeration(true);
+    EXPECT_NO_THROW(analyzer.SetFragmentationMaxCuts(1));
+    EXPECT_NO_THROW(analyzer.SetFragmentationMaxUpEnumerations(5));
+    EXPECT_NO_THROW(analyzer.ClearFragmentationMaxHeavyAtoms());
+    // A value the fragmenter refuses is refused here too.
+    EXPECT_THROW(analyzer.SetFragmentationMinCuts(2), FragmentationError);
+    analyzer.SetSeriesEnumeration(false);
+    EXPECT_THROW(analyzer.SetFragmentationMaxCuts(2), InvalidQueryError);
+    // Ring perception was never fragmentation-only.
+    EXPECT_NO_THROW(analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT));
+}
+
+TEST(AnalyzerSeriesEnumeration, ClearDiscardsTheAuxiliaryPassButKeepsTheFlagAndTheSettings) {
+    // After Clear() the analyzer sees only these: the xylenes share a two-cut
+    // constant, so a max_cuts of 1 visibly changes their series, and p-cresol
+    // gives the one-cut p-tolyl constant a second compound.
+    const std::vector<std::pair<std::string, std::string>> after_clear = {
+        {"Cc1ccc(C)cc1", "p-xylene"}, {"Cc1cccc(C)c1", "m-xylene"},
+        {"Cc1ccccc1C", "o-xylene"}, {"Cc1ccc(O)cc1", "p-cresol"},
+    };
+    Analyzer unbounded("dmcss");
+    unbounded.SetSeriesEnumeration(true);
+    AddMolecules(unbounded, after_clear);
+    unbounded.Analyze();
+    bool multi_cut = false;
+    for (const Series& entry : unbounded.GetSeries()) {
+        multi_cut = multi_cut || entry.GetCutCount() > 1;
+    }
+    ASSERT_TRUE(multi_cut) << "without the bound the post-clear fixture must form a multi-cut series";
+    Analyzer bounded("dmcss");
+    bounded.SetSeriesEnumeration(true);
+    bounded.SetFragmentationMaxCuts(1);
+    AddMolecules(bounded, after_clear);
+    bounded.Analyze();
+    ASSERT_FALSE(bounded.GetSeries().empty());
+
+    Analyzer analyzer("dmcss");
+    analyzer.SetSeriesEnumeration(true);
+    analyzer.SetFragmentationMaxCuts(1);   // A non-default bound set before Clear().
+    AddMolecules(analyzer, McsSeriesMolecules());
+    analyzer.Analyze();
+    ASSERT_FALSE(analyzer.GetSeries().empty());
+    analyzer.Clear();
+    EXPECT_THROW(analyzer.GetSeries(), AnalysisStateError);
+    EXPECT_TRUE(analyzer.GetSeriesEnumeration());   // The flag is configuration and stays (D5).
+    AddMolecules(analyzer, after_clear);
+    analyzer.Analyze();
+    const std::vector<Series> series = analyzer.GetSeries();
+    // The bound still applies: every series is single-cut, exactly the bounded
+    // twin's, so the settings snapshot survived Clear() as well.
+    for (const Series& entry : series) {
+        EXPECT_EQ(entry.GetCutCount(), 1U) << entry.GetConstantSmiles();
+    }
+    EXPECT_EQ(series, bounded.GetSeries());
+    // Rebuilt from the new molecules alone, not fed on top of the old ones.
+    for (const Series& entry : series) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            for (const std::string& id : member.GetExternalIds()) {
+                EXPECT_TRUE(id == "p-xylene" || id == "m-xylene" || id == "o-xylene" || id == "p-cresol") << id;
+            }
+        }
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

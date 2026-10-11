@@ -4733,5 +4733,98 @@ TEST(DuckDBStoreFragmentOptions, AnMcsSaveWithoutSeriesAndAnUnsavedStoreRecordNo
     EXPECT_EQ(store.GetFragmentOptions(), "");
 }
 
+TEST(DuckDBStoreMcsSeries, AnOptedInMcsSaveRecordsItsSeriesSourceAndFragmentOptions) {
+    Analyzer analyzer("dmcss");
+    analyzer.SetSeriesEnumeration(true);
+    analyzer.AddMolecule("c1ccccc1", "benzene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol-dup");
+    analyzer.Analyze();
+    const std::vector<Series> in_memory = analyzer.GetSeries();
+    ASSERT_FALSE(in_memory.empty());
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "dmcss+fragmentation");
+        EXPECT_EQ(store.GetFragmentOptions(), DEFAULT_FRAGMENT_OPTIONS_JSON);
+        EXPECT_GT(store.GetRowCount("pair"), 0U);   // The MCS pairs were saved beside the series.
+        const std::vector<Series> stored = store.GetSeries();
+        ASSERT_EQ(stored.size(), in_memory.size());
+        for (std::size_t i = 0; i < stored.size(); ++i) {
+            EXPECT_EQ(stored[i].GetMembers(), in_memory[i].GetMembers()) << in_memory[i].GetConstantSmiles();
+        }
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from dataset where id = 1 and analysis_method = 'dmcss'"), 1U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreMcsSeries, TheEmptyStoreRuleAndThePairRefusalFollowTheFlag) {
+    const MatchedPair stored_pair(
+        100, 1, "stored-chlorobenzene", "toluene", "Clc1ccccc1", "Cc1ccccc1",
+        "[*:1]c1ccccc1", "[*:1]Cl", "[*:1]C", 1, 0, 0);
+    // Without the flag an MCS save produces no series: a populated store takes
+    // it, and direct pair writes stay open afterwards (06ffad1 behaviour).
+    {
+        DuckDBStore store;
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "stored-chlorobenzene"));
+        Analyzer plain("dmcss");
+        plain.AddMolecule("Cc1ccccc1", "toluene");
+        plain.AddMolecule("Oc1ccccc1", "phenol");
+        plain.Analyze();
+        EXPECT_NO_THROW(plain.SaveTo(store));
+        EXPECT_EQ(store.GetSummary().GetSeriesSource(), "none");
+        EXPECT_NO_THROW(store.AddPairs(std::vector<MatchedPair>{stored_pair}));
+    }
+    // With the flag the same save is refused by a populated store ...
+    {
+        DuckDBStore store;
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "stored-chlorobenzene"));
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.AddMolecule("Cc1ccccc1", "toluene");
+        opted.AddMolecule("Oc1ccccc1", "phenol");
+        opted.Analyze();
+        EXPECT_THROW(opted.SaveTo(store), StorageError);
+        EXPECT_EQ(store.GetRowCount("series"), 0U);
+        EXPECT_EQ(store.GetSummary(true).GetSeriesSource(), "not-computed");
+    }
+    // ... and the empty store that takes it refuses direct pair writes afterwards.
+    {
+        DuckDBStore store;
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.AddMolecule("Cc1ccccc1", "toluene");
+        opted.AddMolecule("Oc1ccccc1", "phenol");
+        opted.Analyze();
+        opted.SaveTo(store);
+        const MatchedPair direct(
+            1, 2, "toluene", "phenol", "Cc1ccccc1", "Oc1ccccc1", "[*:1]c1ccccc1", "[*:1]C", "[*:1]O", 1, 0, 0);
+        EXPECT_THROW(store.AddPairs(std::vector<MatchedPair>{direct}), StorageError);
+    }
+    // The refusal is the analyzer's own, not only AppendBulk's series contract:
+    // an opted-in analysis of one compound has no series row and no pair to
+    // write, which AppendBulk alone accepts, yet saving it would stamp the
+    // populated store as series-producing.
+    {
+        DuckDBStore store;
+        store.InitializeSchema();
+        store.AddMolecule(MoleculeRecord::FromSmiles(100, "Clc1ccccc1", "stored-chlorobenzene"));
+        Analyzer opted("dmcss");
+        opted.SetSeriesEnumeration(true);
+        opted.AddMolecule("Cc1ccccc1", "toluene");
+        opted.Analyze();
+        ASSERT_TRUE(opted.GetSeries().empty());
+        EXPECT_THROW(opted.SaveTo(store), StorageError);
+        EXPECT_EQ(store.GetSummary(true).GetSeriesSource(), "not-computed");
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA
