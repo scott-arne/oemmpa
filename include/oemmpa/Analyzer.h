@@ -325,6 +325,8 @@ private:
     // it), and the auxiliary pass it builds at Analyze from molecules_.
     bool series_enumeration_ = false;
     std::unique_ptr<AnalysisMethod> series_method_;
+    // The auxiliary pass's workers in the last Analyze, or 0 when it ran none.
+    unsigned int series_worker_count_ = 0;
 };
 
 }  // namespace OEMMPA

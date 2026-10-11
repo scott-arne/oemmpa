@@ -417,6 +417,7 @@ void Analyzer::Analyze(unsigned int threads) {
 void Analyzer::RunAnalysis(unsigned int threads) {
     analyzed_ = false;
     series_method_.reset();
+    series_worker_count_ = 0;
     method_->Analyze(threads);
     if (!method_->ProducesSeries() && series_enumeration_) {
         // Built fresh from the retained records at every Analyze, never fed
@@ -427,7 +428,15 @@ void Analyzer::RunAnalysis(unsigned int threads) {
         for (const MoleculeRecord& record : molecules_) {
             series_method->AddMolecule(record);
         }
-        series_method->Analyze(threads);
+        try {
+            series_method->Analyze(threads);
+        } catch (...) {
+            // A pass that fails has still spawned its workers, and the method
+            // that counted them is about to be discarded.
+            series_worker_count_ = series_method->LastAnalyzeWorkerCount();
+            throw;
+        }
+        series_worker_count_ = series_method->LastAnalyzeWorkerCount();
         series_method_ = std::move(series_method);
     }
     analyzed_ = true;
@@ -435,11 +444,10 @@ void Analyzer::RunAnalysis(unsigned int threads) {
 
 unsigned int Analyzer::LastAnalyzeWorkerCount() const {
     // The auxiliary pass runs after the method's, never beside it, so the most
-    // workers alive at once is the larger of the two counts.
-    if (series_method_) {
-        return std::max(method_->LastAnalyzeWorkerCount(), series_method_->LastAnalyzeWorkerCount());
-    }
-    return method_->LastAnalyzeWorkerCount();
+    // workers alive at once is the larger of the two counts. The pass's count
+    // is kept until the next Analyze, as the method keeps its own across
+    // Clear(), so discarding the pass without analysing leaves it.
+    return std::max(method_->LastAnalyzeWorkerCount(), series_worker_count_);
 }
 
 std::vector<MatchedPair> Analyzer::GetPairs() const {

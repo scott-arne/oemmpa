@@ -11,7 +11,9 @@
 /// stereo-constant series the guesses can join.
 
 #include "oemmpa/Analyzer.h"
+#include "oemmpa/Series.h"
 
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +38,20 @@ inline Analyzer MakeCreatedStereocentreAnalyzer(unsigned int threads = 1) {
     }
     analyzer.Analyze(threads);
     return analyzer;
+}
+
+/// \brief The up-enumerated (ConstantUp or VariableUp) label rows across every
+/// member of the series: what the labelled view adds to the baseline view.
+inline std::size_t CountVariantRows(const std::vector<Series>& series) {
+    std::size_t rows = 0;
+    for (const Series& entry : series) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
+                rows += label == Fragmentation::EnumerationLabel::None ? 0U : 1U;
+            }
+        }
+    }
+    return rows;
 }
 
 /// \brief The exact dataset.fragment_options of an untouched analyzer (seams

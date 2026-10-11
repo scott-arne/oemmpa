@@ -4906,14 +4906,7 @@ TEST(DuckDBStoreMcsSeries, AnOptedInMcsSavePersistsTheLabelledView) {
     // lacks, and an opted-in save must persist them as a fragmentation save does.
     const Analyzer reference = MakeCreatedStereocentreAnalyzer();   // tests/cpp/series_fixture_support.h
     const std::vector<Series> labelled = reference.GetSeries(true);
-    std::uint64_t variant_rows = 0;
-    for (const Series& entry : labelled) {
-        for (const SeriesMember& member : entry.GetMembers()) {
-            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
-                variant_rows += label == Fragmentation::EnumerationLabel::None ? 0U : 1U;
-            }
-        }
-    }
+    const std::uint64_t variant_rows = CountVariantRows(labelled);
     ASSERT_GT(variant_rows, 0U);
 
     Analyzer opted("dmcss");

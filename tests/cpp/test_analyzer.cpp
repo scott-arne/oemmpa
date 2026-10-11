@@ -2060,15 +2060,7 @@ TEST(AnalyzerSeriesEnumeration, AnMcsMethodCarriesTheLabelledView) {
     const Analyzer reference = MakeCreatedStereocentreAnalyzer();   // tests/cpp/series_fixture_support.h
     const std::vector<Series> baseline = reference.GetSeries();
     const std::vector<Series> labelled = reference.GetSeries(true);
-    std::size_t variant_rows = 0;
-    for (const Series& entry : labelled) {
-        for (const SeriesMember& member : entry.GetMembers()) {
-            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
-                variant_rows += label == Fragmentation::EnumerationLabel::None ? 0U : 1U;
-            }
-        }
-    }
-    ASSERT_GT(variant_rows, 0U);
+    ASSERT_GT(CountVariantRows(labelled), 0U);
 
     Analyzer opted("dmcss");
     opted.SetSeriesEnumeration(true);
@@ -2096,7 +2088,40 @@ TEST(AnalyzerSeriesEnumeration, LastAnalyzeWorkerCountCoversTheAuxiliaryPass) {
     opted.SetSeriesEnumeration(true);
     AddMolecules(opted, McsSeriesMolecules());
     opted.Analyze(4);
-    EXPECT_EQ(opted.LastAnalyzeWorkerCount(), fragmentation.LastAnalyzeWorkerCount());
+    const unsigned int spawned = fragmentation.LastAnalyzeWorkerCount();
+    EXPECT_EQ(opted.LastAnalyzeWorkerCount(), spawned);
+
+    // The count belongs to the last Analyze, as FragmentationMethod keeps its
+    // own across Clear(): discarding the auxiliary pass without analysing
+    // again, by Clear() or by turning the flag off, leaves it.
+    opted.Clear();
+    EXPECT_EQ(opted.LastAnalyzeWorkerCount(), spawned);
+    Analyzer toggled("oemedchem");
+    toggled.SetSeriesEnumeration(true);
+    AddMolecules(toggled, McsSeriesMolecules());
+    toggled.Analyze(4);
+    toggled.SetSeriesEnumeration(false);
+    EXPECT_EQ(toggled.LastAnalyzeWorkerCount(), spawned);
+    toggled.Analyze(4);
+    EXPECT_EQ(toggled.LastAnalyzeWorkerCount(), 1U);
+
+    // A pass that fails after spawning its workers still spawned them: the
+    // up-enumeration cap of AFailedAuxiliaryPassLeavesNoAnalysis, in parallel,
+    // against a fragmentation analysis that fails the same way.
+    const auto add_capped = [](Analyzer& analyzer) {
+        analyzer.SetFragmentationMaxUpEnumerations(0);
+        analyzer.AddMolecule("CC(C)CC", "isopentane");
+        analyzer.AddMolecule("CC(O)CC", "butan-2-ol");
+    };
+    Analyzer capped_fragmentation;
+    add_capped(capped_fragmentation);
+    EXPECT_THROW(capped_fragmentation.Analyze(4), FragmentationError);
+    ASSERT_GT(capped_fragmentation.LastAnalyzeWorkerCount(), 1U);
+    Analyzer capped("oemedchem");
+    capped.SetSeriesEnumeration(true);
+    add_capped(capped);
+    EXPECT_THROW(capped.Analyze(4), FragmentationError);
+    EXPECT_EQ(capped.LastAnalyzeWorkerCount(), capped_fragmentation.LastAnalyzeWorkerCount());
 }
 
 }  // namespace test
