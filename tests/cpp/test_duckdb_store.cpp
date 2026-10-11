@@ -4680,5 +4680,58 @@ TEST(DuckDBStoreSeriesSave, AFingerprintFailureOnASeriesConstantRollsTheSaveBack
     EXPECT_NO_THROW(store.SetAnalysisMethod("wizepairz"));
 }
 
+TEST(DuckDBStoreFragmentOptions, AFragmentationSaveRecordsTheDefaultSettingsExactly) {
+    Analyzer analyzer = MakePhenylAnalyzer();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+    EXPECT_EQ(store.GetFragmentOptions(), DEFAULT_FRAGMENT_OPTIONS_JSON);
+}
+
+TEST(DuckDBStoreFragmentOptions, EveryFieldSetIsRecordedExactly) {
+    Analyzer analyzer;
+    analyzer.ConfigureFragmentation(
+        true, 2, true, 2, true, 15, true, 50, false, true, 8, false, true, "[#6]-[#6]", true, "[C:1]-[O:2]");
+    analyzer.SetFragmentationMaxUpEnumerations(7);
+    analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    analyzer.AddMolecule("CCOCC", "diethyl-ether");
+    analyzer.AddMolecule("CCOC", "methyl-ethyl-ether");
+    analyzer.Analyze();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+    EXPECT_EQ(store.GetFragmentOptions(),
+        R"json({"cut_smarts":["[C:1]-[O:2]"],"max_cut_bonds":15,"max_cuts":2,"max_heavy_atoms":50,"max_rotatable_bonds":8,"max_up_enumerations":7,"min_cuts":2,"ring_perception":"strict","rotatable_smarts":"[#6]-[#6]"})json");
+}
+
+TEST(DuckDBStoreFragmentOptions, ClearedLimitsAndLaterSettersKeepTheRecordInStep) {
+    Analyzer analyzer;
+    analyzer.SetFragmentationMaxHeavyAtoms(50);
+    analyzer.ClearFragmentationMaxHeavyAtoms();
+    analyzer.SetFragmentationRotatableSmarts("[#6]-[#6]");
+    analyzer.SetFragmentationCutSmarts("[C:1]-[O:2]");
+    analyzer.SetFragmentationMaxCuts(2);   // A later setter keeps the cut SMARTS.
+    // A setter the fragmenter refuses leaves the record as it was.
+    EXPECT_THROW(analyzer.SetFragmentationMinCuts(5), FragmentationError);
+    analyzer.AddMolecule("CCOCC", "diethyl-ether");
+    analyzer.AddMolecule("CCOC", "methyl-ethyl-ether");
+    analyzer.Analyze();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+    EXPECT_EQ(store.GetFragmentOptions(),
+        R"json({"cut_smarts":["[C:1]-[O:2]"],"max_cut_bonds":20,"max_cuts":2,"max_heavy_atoms":null,"max_rotatable_bonds":null,"max_up_enumerations":1000,"min_cuts":1,"ring_perception":"consulted","rotatable_smarts":"[#6]-[#6]"})json");
+}
+
+TEST(DuckDBStoreFragmentOptions, AnMcsSaveWithoutSeriesAndAnUnsavedStoreRecordNothing) {
+    DuckDBStore unsaved;
+    unsaved.InitializeSchema();
+    EXPECT_EQ(unsaved.GetFragmentOptions(), "");
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    DuckDBStore store;
+    analyzer.SaveTo(store);
+    EXPECT_EQ(store.GetFragmentOptions(), "");
+}
+
 }  // namespace test
 }  // namespace OEMMPA

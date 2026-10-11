@@ -17,6 +17,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/Fragmentation.h"
 #include "oemmpa/FragmentationMethod.h"
+#include "oemmpa/FragmentationSettings.h"
 #include "oemmpa/FragmentationStrategy.h"
 #include "oemmpa/Fragmenter.h"
 #include "oemmpa/FragmentSmiles.h"

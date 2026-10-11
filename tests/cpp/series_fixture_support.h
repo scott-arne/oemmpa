@@ -38,5 +38,11 @@ inline Analyzer MakeCreatedStereocentreAnalyzer(unsigned int threads = 1) {
     return analyzer;
 }
 
+/// \brief The exact dataset.fragment_options of an untouched analyzer (seams
+/// spec 7.2): sorted keys, compact separators. Defined once for the snapshot
+/// tests of test_analyzer.cpp and the store tests of test_duckdb_store.cpp.
+inline constexpr const char* DEFAULT_FRAGMENT_OPTIONS_JSON =
+    R"json({"cut_smarts":null,"max_cut_bonds":20,"max_cuts":3,"max_heavy_atoms":null,"max_rotatable_bonds":null,"max_up_enumerations":1000,"min_cuts":1,"ring_perception":"consulted","rotatable_smarts":"[!$([NH]!@C(=O))&!D1&!$(*#*)]-&!@[!$([NH]!@C(=O))&!D1&!$(*#*)]"})json";
+
 }  // namespace test
 }  // namespace OEMMPA

@@ -2580,6 +2580,25 @@ void DuckDBStore::SetSeriesSource(const std::string& source) {
     execute_prepared(connection_, sql, std::move(values));
 }
 
+void DuckDBStore::SetFragmentOptions(const std::string& fragment_options) {
+    const std::string sql = "update dataset set fragment_options = ? where id = 1";
+    duckdb::vector<duckdb::Value> values = {duckdb::Value(fragment_options)};
+    execute_prepared(connection_, sql, std::move(values));
+}
+
+std::string DuckDBStore::GetFragmentOptions() const {
+    const std::string sql = "select fragment_options from dataset where id = 1";
+    std::unique_ptr<duckdb::QueryResult> result = connection_->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+    for (const auto& row : *result) {
+        return row.GetValue<std::string>(0);
+    }
+    return std::string();
+}
+
 std::string DuckDBStore::FirstPopulatedCoreTable() const {
     for (const char* table : {"compound", "pair", "series"}) {
         if (GetRowCount(table) != 0) {

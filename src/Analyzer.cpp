@@ -17,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace OEMMPA {
 
@@ -125,7 +126,8 @@ Analyzer::Analyzer()
 
 Analyzer::Analyzer(const std::string& method_name)
     : method_(make_analysis_method(method_name)),
-      method_name_(method_name) {}
+      method_name_(method_name),
+      fragmentation_settings_(default_fragmentation_settings()) {}
 
 const std::string& Analyzer::GetMethodName() const {
     return method_name_;
@@ -182,7 +184,10 @@ void Analyzer::ConfigureFragmentation(
         fragmenter.SetStrategy(strategy);
     }
 
-    CommitFragmenter(fragmenter);
+    CommitFragmenter(
+        fragmenter,
+        set_cut_smarts ? std::optional<std::vector<std::string>>(std::vector<std::string>{cut_smarts})
+                       : fragmentation_settings_.cut_smarts);
 }
 
 void Analyzer::ConfigureFragmentation(
@@ -279,7 +284,7 @@ void Analyzer::SetFragmentationCutSmarts(const std::string& cut_smarts) {
     Fragmenter fragmenter = RequireFragmenter();
     SmartsFragmentationStrategy strategy(cut_smarts);
     fragmenter.SetStrategy(strategy);
-    CommitFragmenter(fragmenter);
+    CommitFragmenter(fragmenter, std::vector<std::string>{cut_smarts});
 }
 
 void Analyzer::SetWizePairZIdentityFraction(double fraction) {
@@ -302,6 +307,10 @@ void Analyzer::SetWizePairZMaxEnvironmentRadius(unsigned int radius) {
 
 void Analyzer::SetRingPerceptionPolicy(RingPerceptionPolicy policy) {
     method_->SetRingPerceptionPolicy(policy);
+    // Recorded with the store's fragmentation settings, and applied to the
+    // auxiliary series pass of an MCS analysis, so the snapshot follows the
+    // policy whatever the method.
+    fragmentation_settings_.ring_perception = policy;
     analyzed_ = false;
 }
 
@@ -487,6 +496,11 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
         // into a store an enumeration owns and this save's own pairs are not
         // such a write.
         store.SetSeriesSource(method_->ProducesSeries() ? method_name_ : "none");
+        // The settings that produced the stored series, or '' when the analysis
+        // produced none, so a reader never mistakes an MCS method's untouched
+        // defaults for settings that were applied.
+        store.SetFragmentOptions(
+            method_->ProducesSeries() ? fragment_options_json(fragmentation_settings_) : std::string());
 
         // Properties stay on the existing upsert DML path (AddMoleculeProperty),
         // inside the SAME transaction, keyed by the verbatim analyzer id
@@ -562,7 +576,17 @@ Fragmenter Analyzer::RequireFragmenter() {
 }
 
 void Analyzer::CommitFragmenter(const Fragmenter& fragmenter) {
+    CommitFragmenter(fragmenter, fragmentation_settings_.cut_smarts);
+}
+
+void Analyzer::CommitFragmenter(
+    const Fragmenter& fragmenter,
+    std::optional<std::vector<std::string>> cut_smarts
+) {
     method_->SetFragmenter(fragmenter);
+    // Captured only here, after the setter's validation passed, so a refused
+    // setter leaves the record as it was.
+    fragmentation_settings_ = capture_fragmentation_settings(fragmenter, std::move(cut_smarts));
     analyzed_ = false;
 }
 

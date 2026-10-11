@@ -4,6 +4,7 @@
 #include "oedesalt/Desalter.h"
 #include "oemmpa/AnalysisMethod.h"
 #include "oemmpa/Fragmenter.h"
+#include "oemmpa/FragmentationSettings.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RingPerception.h"
@@ -284,6 +285,7 @@ private:
     void RequireAnalyzed() const;
     Fragmenter RequireFragmenter();
     void CommitFragmenter(const Fragmenter& fragmenter);
+    void CommitFragmenter(const Fragmenter& fragmenter, std::optional<std::vector<std::string>> cut_smarts);
     std::vector<MatchedPair> InjectProperties(std::vector<MatchedPair> pairs) const;
 
     std::unique_ptr<AnalysisMethod> method_;
@@ -295,6 +297,11 @@ private:
     std::unordered_map<unsigned int, std::vector<std::string>> stripped_names_by_id_;
     unsigned int next_internal_id_ = 1;
     bool analyzed_ = false;
+    // Every fragmentation option this analyzer applies, captured from the
+    // fragmenter after each committed setter and updated by
+    // SetRingPerceptionPolicy. It is the store's source for
+    // dataset.fragment_options, because the cut strategy has no getter.
+    FragmentationSettings fragmentation_settings_;
 };
 
 }  // namespace OEMMPA

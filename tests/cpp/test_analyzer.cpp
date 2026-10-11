@@ -1649,5 +1649,65 @@ TEST(ParallelAnalyzeTest, BothSeriesViewsAreIdenticalAcrossThreadCounts) {
     EXPECT_EQ(baseline[0], baseline[1]);
 }
 
+TEST(FragmentationSettings, DefaultsAreAFreshFragmentersAndSerializeExactly) {
+    const FragmentationSettings defaults = default_fragmentation_settings();
+    const Fragmenter fresh;
+    EXPECT_EQ(defaults.min_cuts, fresh.GetMinCuts());
+    EXPECT_EQ(defaults.max_cuts, fresh.GetMaxCuts());
+    EXPECT_EQ(defaults.max_cut_bonds, fresh.GetMaxCutBonds());
+    EXPECT_EQ(defaults.max_up_enumerations, fresh.GetMaxUpEnumerations());
+    EXPECT_FALSE(defaults.max_heavy_atoms.has_value());
+    EXPECT_FALSE(defaults.max_rotatable_bonds.has_value());
+    EXPECT_EQ(defaults.rotatable_smarts, fresh.GetRotatableSmarts());
+    EXPECT_FALSE(defaults.cut_smarts.has_value());
+    EXPECT_EQ(defaults.ring_perception, RingPerceptionPolicy::CONSULTED);
+    EXPECT_EQ(fragment_options_json(defaults), DEFAULT_FRAGMENT_OPTIONS_JSON);
+}
+
+TEST(FragmentationSettings, JsonEscapesStringsLikePythonsJsonDumps) {
+    FragmentationSettings settings = default_fragmentation_settings();
+    // "\x01" "d" and "\x7f" "e" stay split literals: a hex escape would otherwise
+    // swallow the letter after it. Python writes DEL (0x7f) as \u007f too.
+    settings.rotatable_smarts = std::string("a\"b\\c\n\t\x01" "d" "\x7f" "e");
+    settings.cut_smarts = std::vector<std::string>{"[C:1]-[O:2]", "x/y"};
+    const std::string json = fragment_options_json(settings);
+    EXPECT_NE(json.find(R"json("rotatable_smarts":"a\"b\\c\n\t\u0001d\u007fe")json"), std::string::npos) << json;
+    EXPECT_NE(json.find(R"json("cut_smarts":["[C:1]-[O:2]","x/y"])json"), std::string::npos) << json;
+}
+
+TEST(FragmentationSettings, MakeFragmenterAppliesEverySettingAndCaptureReadsItBack) {
+    FragmentationSettings settings = default_fragmentation_settings();
+    settings.min_cuts = 2;
+    settings.max_cuts = 2;
+    settings.max_cut_bonds = 15;
+    settings.max_up_enumerations = 7;
+    settings.max_heavy_atoms = 50U;
+    settings.max_rotatable_bonds = 8U;
+    settings.rotatable_smarts = "[#6]-[#6]";
+    settings.cut_smarts = std::vector<std::string>{"[C:1]-[O:2]"};
+    settings.ring_perception = RingPerceptionPolicy::STRICT;
+    const Fragmenter fragmenter = make_fragmenter(settings);
+    EXPECT_EQ(fragmenter.GetMinCuts(), 2U);
+    EXPECT_EQ(fragmenter.GetMaxCuts(), 2U);
+    EXPECT_EQ(fragmenter.GetMaxCutBonds(), 15U);
+    EXPECT_EQ(fragmenter.GetMaxUpEnumerations(), 7U);
+    EXPECT_TRUE(fragmenter.HasMaxHeavyAtoms());
+    EXPECT_EQ(fragmenter.GetMaxHeavyAtoms(), 50U);
+    EXPECT_TRUE(fragmenter.HasMaxRotatableBonds());
+    EXPECT_EQ(fragmenter.GetMaxRotatableBonds(), 8U);
+    EXPECT_EQ(fragmenter.GetRotatableSmarts(), "[#6]-[#6]");
+    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(fragment_options_json(capture_fragmentation_settings(fragmenter, settings.cut_smarts)),
+              fragment_options_json(settings));
+
+    // The cut SMARTS is applied, not only recorded: an aliphatic C-O query
+    // cuts nothing in phenol, which the default rule fragments.
+    FragmentationSettings smarts_only = default_fragmentation_settings();
+    smarts_only.cut_smarts = std::vector<std::string>{"[C:1]-[O:2]"};
+    const MoleculeRecord phenol = MoleculeRecord::FromSmiles(1, "Oc1ccccc1", "phenol");
+    EXPECT_FALSE(make_fragmenter(default_fragmentation_settings()).Fragment(1, phenol.GetMol()).empty());
+    EXPECT_TRUE(make_fragmenter(smarts_only).Fragment(1, phenol.GetMol()).empty());
+}
+
 }  // namespace test
 }  // namespace OEMMPA

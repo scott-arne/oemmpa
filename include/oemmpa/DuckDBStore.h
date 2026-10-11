@@ -236,6 +236,13 @@ public:
     /// \brief Return cached or freshly counted database summary totals.
     DatabaseSummary GetSummary(bool recount = false) const;
 
+    /// \brief Return dataset.fragment_options: the fragmentation settings saved with the analysis.
+    ///
+    /// The JSON of fragment_options_json (include/oemmpa/FragmentationSettings.h)
+    /// for a store a series-producing analysis was saved into, and the empty
+    /// string otherwise (an MCS analysis without series, or no save yet).
+    std::string GetFragmentOptions() const;
+
     /// \brief Return a stored molecule property value.
     double GetMoleculeProperty(
         unsigned int molecule_id,
@@ -389,6 +396,10 @@ private:
     // by Analyzer::SaveTo next to the analysis method, inside its transaction,
     // so a store with zero series always says why.
     void SetSeriesSource(const std::string& source);
+
+    // Record the fragmentation settings of the analysis being saved; written
+    // by Analyzer::SaveTo inside its transaction, beside the series source.
+    void SetFragmentOptions(const std::string& fragment_options);
 
     // Name the first of compound, pair and series that already holds rows, or
     // return an empty string when the store holds none of them. A

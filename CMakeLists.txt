@@ -131,6 +131,7 @@ set(OEMMPA_SOURCES
     src/EnvironmentFingerprint.cpp
     src/QueryEnvironment.cpp
     src/FragmentationMethod.cpp
+    src/FragmentationSettings.cpp
     src/MCSCommon.cpp
     src/DMCSSMethod.cpp
     src/WizePairZMethod.cpp
