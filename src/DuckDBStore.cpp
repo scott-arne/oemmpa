@@ -3209,6 +3209,34 @@ void DuckDBStore::AppendBulk(
         new_rule_smiles.push_back({id, smiles, num_heavies});
         return id;
     };
+    // constant_environment maps a constant to its environment at each radius:
+    // the pair read and statistics joins derive a pair's rule environments
+    // through it, and the series queries pool series by it, so every constant
+    // the save writes, through a pair or a series, gets its six rows the first
+    // time either loop reaches it. Idempotent across reloads via
+    // constant_environment_ids_; a fingerprint failure throws out of the save.
+    auto ensure_constant_environment = [&](std::uint64_t constant_id, const std::string& constant_smiles) {
+        if (!constant_environment_ids_.insert(constant_id).second) {
+            return;
+        }
+        for (const EnvironmentFingerprint& fingerprint : constant_fingerprints(constant_smiles)) {
+            const std::string key = fingerprint.GetSmarts() + "\x1f" +
+                fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
+            std::uint64_t fingerprint_id;
+            auto it = fingerprint_id_cache_.find(key);
+            if (it != fingerprint_id_cache_.end()) {
+                fingerprint_id = it->second;
+            } else {
+                fingerprint_id = fingerprint_counter();
+                fingerprint_id_cache_.emplace(key, fingerprint_id);
+                new_fingerprints.push_back({
+                    fingerprint_id, fingerprint.GetSmarts(),
+                    fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
+            }
+            new_constant_environments.push_back({
+                constant_id, static_cast<int>(fingerprint.GetRadius()), fingerprint_id});
+        }
+    };
     for (const MatchedPair& pair : pairs) {
         // Preserve the legacy get_or_create_named_row_id guard: empty normalized
         // values must never be stored. AppendBulk assigns ids directly rather
@@ -3253,38 +3281,7 @@ void DuckDBStore::AppendBulk(
                 new_rules.push_back({rule_id, from_id, to_id});
             }
         }
-        // Materialize this constant's per-radius environment memberships once.
-        // constant_environment is what the read/statistics joins use to derive
-        // each pair's rule_environments from its single physical row, so it must
-        // be populated the first time a constant's fingerprints are resolved.
-        // Idempotent across reloads via constant_environment_ids_.
-        if (constant_environment_ids_.find(constant_id) ==
-            constant_environment_ids_.end()) {
-            constant_environment_ids_.insert(constant_id);
-            for (const EnvironmentFingerprint& fingerprint :
-                 constant_fingerprints(pair.GetConstantSmiles())) {
-                // fingerprint_id resolution below already caches ids; reuse it.
-                const std::string key = fingerprint.GetSmarts() + "\x1f" +
-                    fingerprint.GetPseudoSmiles() + "\x1f" +
-                    fingerprint.GetParentSmarts();
-                std::uint64_t fingerprint_id;
-                auto it = fingerprint_id_cache_.find(key);
-                if (it != fingerprint_id_cache_.end()) {
-                    fingerprint_id = it->second;
-                } else {
-                    fingerprint_id = fingerprint_counter();
-                    fingerprint_id_cache_.emplace(key, fingerprint_id);
-                    new_fingerprints.push_back({
-                        fingerprint_id, fingerprint.GetSmarts(),
-                        fingerprint.GetPseudoSmiles(),
-                        fingerprint.GetParentSmarts()});
-                }
-                new_constant_environments.push_back({
-                    constant_id,
-                    static_cast<int>(fingerprint.GetRadius()),
-                    fingerprint_id});
-            }
-        }
+        ensure_constant_environment(constant_id, pair.GetConstantSmiles());
         // One physical pair row per (compound1, compound2, rule, constant)
         // identity. Resolve the identity and run the dedup check BEFORE any v3
         // environment derivation: a pair dropped here (a duplicate seen earlier
@@ -3421,11 +3418,11 @@ void DuckDBStore::AppendBulk(
     // --- Series: one row per (constant, cut_count), one member row per
     // (series, R-group, compound). Constants and R-groups resolve through the
     // same caches as pairs, so an R-group that formed no pair still lands in
-    // rule_smiles, with its heavy count. A constant reached only through a
-    // series gets NO constant_environment rows: those describe a pair's
-    // environments and are derived only where a pair exists, and no read joins
-    // constant_environment from series. Only this loop and the two series
-    // Appenders are timed: the figure is the series share of the save.
+    // rule_smiles, with its heavy count, and a constant reached only through a
+    // series gets its environment rows here, as a pair's constant does in the
+    // pair loop. Only this loop and the two series Appenders are timed, so the
+    // figure is the series share of the save, which now includes computing the
+    // environment fingerprints of constants no pair reached.
     std::vector<NewSeries> new_series;
     std::vector<NewSeriesMember> new_series_members;
     new_series.reserve(series.size());
@@ -3447,6 +3444,7 @@ void DuckDBStore::AppendBulk(
                     new_constants.push_back({constant_id, entry.GetConstantSmiles()});
                 }
             }
+            ensure_constant_environment(constant_id, entry.GetConstantSmiles());
             const std::uint64_t series_id = series_counter();
             // The stored length counts the R-groups an observed compound
             // realizes; refresh_dataset_counts rewrites the same number.

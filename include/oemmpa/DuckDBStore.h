@@ -308,8 +308,9 @@ public:
     /// \brief Seconds the last AppendBulk spent staging and appending series.
     ///
     /// A benchmark diagnostic so the series share of a save can be measured
-    /// rather than inferred: it covers the series staging loop and the two
-    /// series Appenders only, never the molecule, dictionary or pair writes,
+    /// rather than inferred: it covers the series staging loop, including the
+    /// environment fingerprints it computes for constants no pair reached, and
+    /// the two series Appenders, never the molecule, dictionary or pair writes,
     /// and it is 0 when the last save carried no series.
     double GetLastSeriesAppendSeconds() const;
 

@@ -4617,5 +4617,63 @@ TEST(DuckDBStoreSeriesRead, IncludeUpEnumeratedReadsGuessedRowsWithLabelsAndCoun
     EXPECT_TRUE(store.GetSeries(observed_three).empty());
 }
 
+TEST(DuckDBStoreSeriesSave, ASeriesOnlyConstantGetsItsSixEnvironmentRows) {
+    // Series ignore the pair filters, so a variable bound no pair passes leaves
+    // the phenyl series with no pair under its constant: a series-only
+    // constant, which used to get no environment rows at all.
+    Analyzer analyzer;
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("CCCCCCc1ccccc1", "hexylbenzene");
+    analyzer.Analyze();
+    QueryOptions one_heavy;
+    one_heavy.SetMaxVariableHeavies(1);
+    ASSERT_TRUE(analyzer.GetPairs(one_heavy).empty());
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store, one_heavy);
+        ASSERT_EQ(store.GetRowCount("pair"), 0U);
+        ASSERT_GT(store.GetSeriesCount(), 0U);
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series s where (select count(distinct ce.radius) from constant_environment ce "
+        "where ce.constant_id = s.constant_id and ce.radius between 0 and 5) <> 6"), 0U);
+    EXPECT_EQ(ScalarUBigint(connection, "select count(*) from constant_environment"),
+              6U * ScalarUBigint(connection, "select count(*) from constant_smiles"));
+    EXPECT_GT(ScalarUBigint(connection, "select count(*) from environment_fingerprint"), 0U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, AFingerprintFailureOnASeriesConstantRollsTheSaveBack) {
+    // Four cuts give neopentane and tetramethylsilane a shared constant of four
+    // methyls, and an environment fingerprint takes at most three attachment
+    // points. A variable bound of 0 heavy atoms keeps every pair out, so only
+    // the series loop reaches that constant, and its failure must undo the save.
+    Analyzer analyzer;
+    analyzer.SetFragmentationMaxCuts(4);
+    analyzer.AddMolecule("CC(C)(C)C", "neopentane");
+    analyzer.AddMolecule("C[Si](C)(C)C", "tetramethylsilane");
+    analyzer.Analyze();
+    bool four_cut_series = false;
+    for (const Series& entry : analyzer.GetSeries()) {
+        four_cut_series = four_cut_series || entry.GetCutCount() == 4;
+    }
+    ASSERT_TRUE(four_cut_series) << "the fixture must form a four-cut series (assumption A2)";
+    QueryOptions no_pairs;
+    no_pairs.SetMaxVariableHeavies(0);
+    ASSERT_TRUE(analyzer.GetPairs(no_pairs).empty());
+
+    DuckDBStore store;
+    EXPECT_THROW(analyzer.SaveTo(store, no_pairs), StorageError);
+    EXPECT_EQ(store.GetRowCount("compound"), 0U);
+    EXPECT_EQ(store.GetRowCount("constant_smiles"), 0U);
+    EXPECT_EQ(store.GetRowCount("constant_environment"), 0U);
+    EXPECT_EQ(store.GetRowCount("series"), 0U);
+    EXPECT_EQ(store.GetSummary(true).GetSeriesSource(), "not-computed");
+}
+
 }  // namespace test
 }  // namespace OEMMPA
