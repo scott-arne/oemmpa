@@ -4620,7 +4620,7 @@ TEST(DuckDBStoreSeriesRead, IncludeUpEnumeratedReadsGuessedRowsWithLabelsAndCoun
 TEST(DuckDBStoreSeriesSave, ASeriesOnlyConstantGetsItsSixEnvironmentRows) {
     // Series ignore the pair filters, so a variable bound no pair passes leaves
     // the phenyl series with no pair under its constant: a series-only
-    // constant, which used to get no environment rows at all.
+    // constant, whose environment rows only the series loop can write.
     Analyzer analyzer;
     analyzer.AddMolecule("Cc1ccccc1", "toluene");
     analyzer.AddMolecule("CCCCCCc1ccccc1", "hexylbenzene");
@@ -4673,6 +4673,11 @@ TEST(DuckDBStoreSeriesSave, AFingerprintFailureOnASeriesConstantRollsTheSaveBack
     EXPECT_EQ(store.GetRowCount("constant_environment"), 0U);
     EXPECT_EQ(store.GetRowCount("series"), 0U);
     EXPECT_EQ(store.GetSummary(true).GetSeriesSource(), "not-computed");
+    // Every row is still staged when the fingerprint throws, so the counts
+    // above are 0 either way. The analysis-method stamp is the one write the
+    // save makes before that point, and only the rollback removes it: a
+    // surviving 'fragmentation' stamp would refuse a different method here.
+    EXPECT_NO_THROW(store.SetAnalysisMethod("wizepairz"));
 }
 
 }  // namespace test

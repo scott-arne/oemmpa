@@ -91,10 +91,13 @@ DEFAULT_THREADS = (1, 2, 4, 8)
 #: OEMMPA stages, in pipeline order. ``persist`` is the whole save;
 #: ``persist_series`` is the share of it spent staging and appending the two
 #: series tables, measured inside the save rather than inferred. The series
-#: phase also adds dictionary rows (the ``rule_smiles`` and ``constant_smiles``
-#: entries only series reference), and those are appended outside the timed
-#: block, so ``persist - persist_series`` is "everything but the two series
-#: tables' appends" rather than a series-free save.
+#: phase also adds rows to other tables: the ``rule_smiles`` and
+#: ``constant_smiles`` entries only series reference, and the
+#: ``environment_fingerprint`` and ``constant_environment`` rows of constants no
+#: pair reached. Those rows are staged inside the timed block (computing the
+#: fingerprints is counted in ``persist_series``) but appended outside it, so
+#: ``persist - persist_series`` is "everything but the series staging and the
+#: two series tables' appends" rather than a series-free save.
 OEMMPA_STAGES = (
     "load", "fragment", "enumerate", "series", "transforms", "materialize",
     "persist", "persist_series",
@@ -282,10 +285,11 @@ def _bytes_without_series(store_class, database, scratch, database_bytes):
     copy so the measured store is never mutated.
 
     This is the store minus ``series``, ``series_member`` and their indexes, not
-    the store as if series had never been enumerated: the dictionary rows the
-    series phase adds (``rule_smiles`` and ``constant_smiles`` entries that only
-    series reference) are in other tables and survive the drop, so they stay
-    counted in both figures.
+    the store as if series had never been enumerated: the other rows the series
+    phase adds (``rule_smiles`` and ``constant_smiles`` entries that only series
+    reference, and the ``environment_fingerprint`` and ``constant_environment``
+    rows of constants no pair reached) are in other tables and survive the drop,
+    so they stay counted in both figures.
 
     :param store_class: ``oemmpa._storage.DuckDBStore``.
     :param database: Saved store to copy.

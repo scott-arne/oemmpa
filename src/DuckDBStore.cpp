@@ -3209,32 +3209,38 @@ void DuckDBStore::AppendBulk(
         new_rule_smiles.push_back({id, smiles, num_heavies});
         return id;
     };
-    // constant_environment maps a constant to its environment at each radius:
-    // the pair read and statistics joins derive a pair's rule environments
-    // through it, and the series queries pool series by it, so every constant
-    // the save writes, through a pair or a series, gets its six rows the first
-    // time either loop reaches it. Idempotent across reloads via
-    // constant_environment_ids_; a fingerprint failure throws out of the save.
+    // An environment_fingerprint row is keyed by its three texts, so a
+    // fingerprint a constant and a rule environment share is minted once and
+    // staged once, by whichever reaches it first.
+    auto resolve_fingerprint_id = [&](const EnvironmentFingerprint& fingerprint) -> std::uint64_t {
+        const std::string key = fingerprint.GetSmarts() + "\x1f" +
+            fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
+        auto it = fingerprint_id_cache_.find(key);
+        if (it != fingerprint_id_cache_.end()) {
+            return it->second;
+        }
+        const std::uint64_t fingerprint_id = fingerprint_counter();
+        fingerprint_id_cache_.emplace(key, fingerprint_id);
+        new_fingerprints.push_back({
+            fingerprint_id, fingerprint.GetSmarts(),
+            fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
+        return fingerprint_id;
+    };
+    // constant_environment maps a constant to its environment at each radius.
+    // The reads that join it go through pair.constant_id: the pair read and
+    // statistics joins derive a pair's rule environments from it. A series'
+    // constant gets the same six rows so that a read pooling series by
+    // environment can join it as well, even for a constant no pair reached.
+    // Each constant gets its rows the first time either loop reaches it.
+    // Idempotent across reloads via constant_environment_ids_; a fingerprint
+    // failure throws out of the save.
     auto ensure_constant_environment = [&](std::uint64_t constant_id, const std::string& constant_smiles) {
         if (!constant_environment_ids_.insert(constant_id).second) {
             return;
         }
         for (const EnvironmentFingerprint& fingerprint : constant_fingerprints(constant_smiles)) {
-            const std::string key = fingerprint.GetSmarts() + "\x1f" +
-                fingerprint.GetPseudoSmiles() + "\x1f" + fingerprint.GetParentSmarts();
-            std::uint64_t fingerprint_id;
-            auto it = fingerprint_id_cache_.find(key);
-            if (it != fingerprint_id_cache_.end()) {
-                fingerprint_id = it->second;
-            } else {
-                fingerprint_id = fingerprint_counter();
-                fingerprint_id_cache_.emplace(key, fingerprint_id);
-                new_fingerprints.push_back({
-                    fingerprint_id, fingerprint.GetSmarts(),
-                    fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
-            }
             new_constant_environments.push_back({
-                constant_id, static_cast<int>(fingerprint.GetRadius()), fingerprint_id});
+                constant_id, static_cast<int>(fingerprint.GetRadius()), resolve_fingerprint_id(fingerprint)});
         }
     };
     for (const MatchedPair& pair : pairs) {
@@ -3368,22 +3374,7 @@ void DuckDBStore::AppendBulk(
                 (radius < pair_min_radius || radius > pair_max_radius)) {
                 continue;
             }
-            std::uint64_t fingerprint_id;
-            {
-                const std::string key = fingerprint.GetSmarts() + "\x1f" +
-                    fingerprint.GetPseudoSmiles() + "\x1f" +
-                    fingerprint.GetParentSmarts();
-                auto it = fingerprint_id_cache_.find(key);
-                if (it != fingerprint_id_cache_.end()) {
-                    fingerprint_id = it->second;
-                } else {
-                    fingerprint_id = fingerprint_counter();
-                    fingerprint_id_cache_.emplace(key, fingerprint_id);
-                    new_fingerprints.push_back({
-                        fingerprint_id, fingerprint.GetSmarts(),
-                        fingerprint.GetPseudoSmiles(), fingerprint.GetParentSmarts()});
-                }
-            }
+            const std::uint64_t fingerprint_id = resolve_fingerprint_id(fingerprint);
             // Ensure the (rule, fingerprint, radius) rule_environment row
             // exists. num_pairs is left 0 here and set by the post-append
             // set-based UPDATE, which derives each environment's count from the
@@ -3421,7 +3412,7 @@ void DuckDBStore::AppendBulk(
     // rule_smiles, with its heavy count, and a constant reached only through a
     // series gets its environment rows here, as a pair's constant does in the
     // pair loop. Only this loop and the two series Appenders are timed, so the
-    // figure is the series share of the save, which now includes computing the
+    // figure is the series share of the save, which includes computing the
     // environment fingerprints of constants no pair reached.
     std::vector<NewSeries> new_series;
     std::vector<NewSeriesMember> new_series_members;
