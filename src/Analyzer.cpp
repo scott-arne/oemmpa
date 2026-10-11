@@ -583,10 +583,12 @@ void Analyzer::CommitFragmenter(
     const Fragmenter& fragmenter,
     std::optional<std::vector<std::string>> cut_smarts
 ) {
-    method_->SetFragmenter(fragmenter);
     // Captured only here, after the setter's validation passed, so a refused
-    // setter leaves the record as it was.
-    fragmentation_settings_ = capture_fragmentation_settings(fragmenter, std::move(cut_smarts));
+    // setter leaves the record as it was. The capture allocates, so it runs
+    // before the fragmenter is replaced: if it throws, neither has changed.
+    FragmentationSettings settings = capture_fragmentation_settings(fragmenter, std::move(cut_smarts));
+    method_->SetFragmenter(fragmenter);
+    fragmentation_settings_ = std::move(settings);
     analyzed_ = false;
 }
 

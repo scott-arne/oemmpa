@@ -62,7 +62,10 @@ Fragmenter make_fragmenter(const FragmentationSettings& settings);
 /// rotatable_smarts. Strings are escaped the way Python's json.dumps escapes
 /// ASCII text (0x00 to 0x7f), so for ASCII settings json.loads reads the record
 /// back and json.dumps with sort_keys=True and separators=(",", ":")
-/// reproduces it byte for byte.
+/// reproduces it byte for byte. Bytes from 0x80 up pass through unescaped (the
+/// SMARTS setters accept text after whitespace, which OEChem ignores), so a
+/// non-ASCII value still gives valid JSON when it is UTF-8, but not
+/// json.dumps's \u-escaped bytes.
 std::string fragment_options_json(const FragmentationSettings& settings);
 
 }  // namespace OEMMPA

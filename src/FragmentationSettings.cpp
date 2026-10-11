@@ -11,8 +11,12 @@ namespace {
 // Escape a string as Python's json.dumps escapes ASCII text: the quote, the
 // backslash and the five short control escapes by name, every other control
 // character and DEL (0x7f) as \u00xx, the printable range 0x20 to 0x7e as is.
-// Bytes from 0x80 up pass through as UTF-8, where Python would \u-escape the
-// code point; the analyzer only ever records ASCII SMARTS.
+// Bytes from 0x80 up pass through unescaped, where Python would \u-escape the
+// code point. They do reach this writer: OEChem's SMARTS parser ignores the
+// text after whitespace, so a cut or rotatable SMARTS such as
+// "[C:1]-[O:2] café" is accepted and recorded verbatim. The record is still
+// valid JSON when the input is UTF-8, but matches json.dumps byte for byte
+// only for ASCII values.
 std::string json_string(const std::string& text) {
     std::string out = "\"";
     for (const char ch : text) {

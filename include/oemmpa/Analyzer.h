@@ -3,8 +3,8 @@
 
 #include "oedesalt/Desalter.h"
 #include "oemmpa/AnalysisMethod.h"
-#include "oemmpa/Fragmenter.h"
 #include "oemmpa/FragmentationSettings.h"
+#include "oemmpa/Fragmenter.h"
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/QueryOptions.h"
 #include "oemmpa/RingPerception.h"

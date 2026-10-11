@@ -1666,12 +1666,16 @@ TEST(FragmentationSettings, DefaultsAreAFreshFragmentersAndSerializeExactly) {
 
 TEST(FragmentationSettings, JsonEscapesStringsLikePythonsJsonDumps) {
     FragmentationSettings settings = default_fragmentation_settings();
-    // "\x01" "d" and "\x7f" "e" stay split literals: a hex escape would otherwise
-    // swallow the letter after it. Python writes DEL (0x7f) as \u007f too.
-    settings.rotatable_smarts = std::string("a\"b\\c\n\t\x01" "d" "\x7f" "e");
+    // "\x01" "d", "\x1f" "e" and "\x7f" "f" stay split literals: a hex escape
+    // would otherwise swallow the letter after it. All five named escapes are
+    // here, and so is the boundary: 0x1f is the last control byte escaped, and
+    // the space after "e" (0x20) is the first byte passed through as is.
+    // Python writes DEL (0x7f) as \u007f too.
+    settings.rotatable_smarts = std::string("a\"b\\c\n\t\b\f\r\x01" "d" "\x1f" "e \x7f" "f");
     settings.cut_smarts = std::vector<std::string>{"[C:1]-[O:2]", "x/y"};
     const std::string json = fragment_options_json(settings);
-    EXPECT_NE(json.find(R"json("rotatable_smarts":"a\"b\\c\n\t\u0001d\u007fe")json"), std::string::npos) << json;
+    EXPECT_NE(json.find(R"json("rotatable_smarts":"a\"b\\c\n\t\b\f\r\u0001d\u001fe \u007ff")json"), std::string::npos)
+        << json;
     EXPECT_NE(json.find(R"json("cut_smarts":["[C:1]-[O:2]","x/y"])json"), std::string::npos) << json;
 }
 
