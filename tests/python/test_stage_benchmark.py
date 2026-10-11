@@ -25,6 +25,16 @@ def _golden_rows(table):
     return len(text.splitlines())
 
 
+def _golden_observed_member_rows():
+    """Return the committed ``series_member`` rows of observed compounds (label ``none``).
+
+    The golden dump pins the guessed rows too; ``Analyzer.series()`` is the
+    baseline view, so it is compared with the observed rows alone.
+    """
+    text = (GOLDEN_DUMP_DIR / "series_member.tsv").read_text(encoding="utf-8")
+    return sum(1 for line in text.splitlines() if line.split("\t")[-1] == "none")
+
+
 @pytest.fixture
 def tiny_corpus(tmp_path):
     """A small offline SMILES corpus sliced from the committed public fixture."""
@@ -445,7 +455,7 @@ def test_golden_fixture_series_counts_match_the_committed_snapshot():
     series = analyzer.series()
 
     golden_series = _golden_rows("series")
-    golden_members = _golden_rows("series_member")
+    golden_members = _golden_observed_member_rows()
     assert (golden_series, golden_members) == (226, 670)  # the snapshot has not moved
     assert len(series) == golden_series
     assert sb._series_member_rows(series) == golden_members

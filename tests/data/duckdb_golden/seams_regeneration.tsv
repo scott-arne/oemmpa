@@ -1,0 +1,41 @@
+file	bucket	count	example_row	rationale
+dataset.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+dataset.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+dataset.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+dataset.tsv	s	0		dataset.num_series_variant_members is new and dataset.fragment_options is now filled. Counted 0 because the golden dump projects only analysis_method from the dataset table; both are pinned by the C++ and Python unit tests.
+compound.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+compound.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+compound.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+constant_smiles.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+constant_smiles.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+constant_smiles.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_smiles.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_smiles.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_smiles.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+rule.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+rule.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+rule.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+environment_fingerprint.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+environment_fingerprint.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+environment_fingerprint.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+pair.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+pair.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+pair.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+property_name.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+property_name.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+property_name.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+compound_property.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+compound_property.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+compound_property.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment_statistics.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment_statistics.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+rule_environment_statistics.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+series.tsv	d	0		File is byte-identical before and after; the regeneration does not touch it.
+series.tsv	l	0		File is byte-identical before and after; the regeneration does not touch it.
+series.tsv	v	0		File is byte-identical before and after; the regeneration does not touch it.
+series_member.tsv	d	0		No row was left unattributed.
+series_member.tsv	l	670	[*:1]/C=C/CC | 1 | [*:1]c1nc(c(n1Cc2ccc(cc2)c3ccccc3C(=O)O)C=O)Cl | 24 | S136 | none	series_member gained the enumeration_label column: the row is otherwise unchanged and its label is 'none', an observed compound.
+series_member.tsv	v	30	[*:1]C | 1 | [*:1][C@@](C)(C#N)/N=N/C(C)(C)C#N | 11 | S120 | variable-up	An up-enumerated compound (label constant-up or variable-up) attached as a labelled row to a series the old golden already holds; formation counts observed compounds only, so series.tsv is unchanged.

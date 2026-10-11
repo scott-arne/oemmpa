@@ -140,14 +140,16 @@ _QUERIES = {
         "from series s join constant_smiles c on c.id = s.constant_id "
         "order by 1, 2, 3, 4"
     ),
+    # The label rides along so the golden pins which rows are up-enumerated
+    # guesses ('constant-up' / 'variable-up') and which are observed ('none').
     "series_member": (
-        "select c.smiles, s.cut_count, rs.smiles, rs.num_heavies, cp.public_id "
+        "select c.smiles, s.cut_count, rs.smiles, rs.num_heavies, cp.public_id, sm.enumeration_label "
         "from series_member sm "
         "join series s on s.id = sm.series_id "
         "join constant_smiles c on c.id = s.constant_id "
         "join rule_smiles rs on rs.id = sm.rule_smiles_id "
         "join compound cp on cp.id = sm.compound_id "
-        "order by 1, 2, 3, 4, 5"
+        "order by 1, 2, 3, 4, 5, 6"
     ),
 }
 

@@ -363,3 +363,146 @@ def test_committed_manifest_shows_every_pre_existing_table_unchanged_except_rule
     rule_smiles = {row[1]: int(row[2]) for row in rows if row[0] == "rule_smiles.tsv"}
     assert rule_smiles["h"] > 0
     assert all(count == 0 for bucket, count in rule_smiles.items() if bucket != "h")
+
+
+# A seams regeneration (spec 8.4 of the seams design): both sides already hold
+# the schema-5 tables, and only series_member may change.
+SEAMS_OLD_SERIES: list[tuple[str, ...]] = [("[*:1]C", "1", "1", "2")]
+SEAMS_OLD_SERIES_MEMBER: list[tuple[str, ...]] = [
+    ("[*:1]C", "1", "[*:1]Br", "1", "M2"),
+    ("[*:1]C", "1", "[*:1]Cl", "1", "M1"),
+]
+LABELLED_SERIES_MEMBER = [(*row, "none") for row in SEAMS_OLD_SERIES_MEMBER]
+VARIANT_ROW = ("[*:1]C", "1", "[*:1]I", "1", "M1", "constant-up")
+KNOWN_SERIES = {("[*:1]C", "1")}
+
+
+def _write_seams_golden_pair(old_dir, new_dir, *, new_series_member, new_rule_smiles=None):
+    """Write a synthetic seams before/after pair: every table on both sides.
+
+    :param old_dir: Directory to receive the pre-regeneration snapshot.
+    :param new_dir: Directory to receive the regenerated golden.
+    :param new_series_member: The new ``series_member`` rows (with the label).
+    :param new_rule_smiles: Override the new ``rule_smiles`` rows, to change a
+        table the seams regeneration must not touch.
+    """
+    for table, rows in SHARED_TABLES.items():
+        _write(old_dir, table, rows)
+        _write(new_dir, table, rows)
+    _write(old_dir, "rule_smiles", NEW_RULE_SMILES)
+    _write(new_dir, "rule_smiles", NEW_RULE_SMILES if new_rule_smiles is None else new_rule_smiles)
+    _write(old_dir, "series", SEAMS_OLD_SERIES)
+    _write(new_dir, "series", SEAMS_OLD_SERIES)
+    _write(old_dir, "series_member", SEAMS_OLD_SERIES_MEMBER)
+    _write(new_dir, "series_member", new_series_member)
+
+
+def test_seams_label_column_on_every_existing_row_is_booked_l():
+    classifier = _load_classifier()
+    counts, examples = classifier.classify_label_column(
+        SEAMS_OLD_SERIES_MEMBER, LABELLED_SERIES_MEMBER, KNOWN_SERIES)
+    assert counts == {"l": 2}
+    assert examples["l"] in LABELLED_SERIES_MEMBER
+
+
+def test_seams_variant_row_of_a_series_the_old_golden_holds_is_booked_v():
+    classifier = _load_classifier()
+    counts, examples = classifier.classify_label_column(
+        SEAMS_OLD_SERIES_MEMBER, [*LABELLED_SERIES_MEMBER, VARIANT_ROW], KNOWN_SERIES)
+    assert counts == {"l": 2, "v": 1}
+    assert examples["v"] == VARIANT_ROW
+
+
+def test_seams_rows_outside_the_two_buckets_are_unexplained():
+    classifier = _load_classifier()
+    relabelled = (*SEAMS_OLD_SERIES_MEMBER[0], "variable-up")      # An observed row came back guessed.
+    unknown_series = ("[*:1]N", "1", "[*:1]I", "1", "M1", "variable-up")
+    new_observed = ("[*:1]C", "1", "[*:1]F", "1", "M1", "none")
+    counts, _ = classifier.classify_label_column(
+        SEAMS_OLD_SERIES_MEMBER,
+        [relabelled, LABELLED_SERIES_MEMBER[1], unknown_series, new_observed],
+        KNOWN_SERIES,
+    )
+    # The first old row has no 'none' twin (d); the second does (l); the
+    # relabelled row is a guess of a known series (v) but its loss is already d;
+    # the guess of an unknown series and the new observed row are d.
+    assert counts == {"d": 3, "l": 1, "v": 1}
+
+
+def test_seams_classification_refuses_any_change_outside_series_member(tmp_path, monkeypatch):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_seams_golden_pair(
+        old_dir, new_dir, new_series_member=LABELLED_SERIES_MEMBER,
+        new_rule_smiles=[("[*:1]Cl", "1"), ("[*:1]F", "1")],
+    )
+    manifest = tmp_path / "seams.tsv"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["classify_regeneration.py", "--seams", str(old_dir), str(new_dir), str(manifest)],
+    )
+
+    with pytest.raises(SystemExit) as failure:
+        classifier.main()
+
+    assert "unexplained" in str(failure.value)
+    counts = _manifest_counts(manifest)
+    assert counts[("rule_smiles.tsv", "d")] == 2   # [*:1]Br removed, [*:1]F added.
+    assert counts[("series_member.tsv", "l")] == 2
+
+
+def test_classifying_a_synthetic_seams_regeneration_writes_the_seams_manifest(tmp_path, monkeypatch, capsys):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_seams_golden_pair(old_dir, new_dir, new_series_member=[*LABELLED_SERIES_MEMBER, VARIANT_ROW])
+    manifest = tmp_path / "seams.tsv"
+    monkeypatch.setattr(
+        sys, "argv",
+        ["classify_regeneration.py", "--seams", str(old_dir), str(new_dir), str(manifest)],
+    )
+
+    classifier.main()
+
+    counts = _manifest_counts(manifest)
+    assert counts[("series_member.tsv", "l")] == 2
+    assert counts[("series_member.tsv", "v")] == 1
+    assert counts[("series_member.tsv", "d")] == 0
+    for (file, _bucket), count in counts.items():
+        if file != "series_member.tsv":
+            assert count == 0, file
+    lines = manifest.read_text(encoding="utf-8").splitlines()
+    assert any(line.startswith("dataset.tsv\ts\t0\t") for line in lines)
+    assert "Bucket (d) unexplained: 0." in capsys.readouterr().out
+
+
+def test_a_seams_regeneration_needs_every_table_on_the_old_side(tmp_path):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_seams_golden_pair(old_dir, new_dir, new_series_member=LABELLED_SERIES_MEMBER)
+    (old_dir / "series.tsv").unlink()
+
+    with pytest.raises(SystemExit) as failure:
+        classifier.classify_seams(old_dir, new_dir)
+
+    assert "series.tsv is missing" in str(failure.value)
+
+
+def test_committed_seams_manifest_explains_the_label_column_and_nothing_else():
+    classifier = _load_classifier()
+    golden = REPO_ROOT / "tests" / "data" / "duckdb_golden"
+    lines = (golden / "seams_regeneration.tsv").read_text(encoding="utf-8").splitlines()
+    header, rows = lines[0].split("\t"), [line.split("\t") for line in lines[1:]]
+    assert header == ["file", "bucket", "count", "example_row", "rationale"]
+    assert [row for row in rows if row[1] == "d" and int(row[2])] == []
+    assert {row[0] for row in rows} == {f"{table}.tsv" for table in classifier.TABLES}
+    counts = {(row[0], row[1]): int(row[2]) for row in rows}
+    # Every one of the 670 series_member rows of the golden before the seams
+    # work came back labelled 'none'.
+    assert counts[("series_member.tsv", "l")] == 670
+    variant_rows = counts[("series_member.tsv", "v")]
+    member_rows = (golden / "series_member.tsv").read_text(encoding="utf-8").splitlines()
+    assert len(member_rows) == 670 + variant_rows
+    assert sum(1 for line in member_rows if line.split("\t")[-1] != "none") == variant_rows
+    for (file, bucket), count in counts.items():
+        if file != "series_member.tsv":
+            assert count == 0, (file, bucket)

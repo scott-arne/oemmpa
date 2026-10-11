@@ -127,7 +127,24 @@ struct SeriesSelection {
     unsigned int max_variable_heavy_atoms = 0;
     unsigned int min_constant_heavy_atoms = 0;
     unsigned int cut_count = 0;
+    /// Read the up-enumerated rows too. False (the default) reads exactly the
+    /// observed rows; true reads the labelled view: members carry their labels,
+    /// members only guesses realize appear, and the length test counts every
+    /// R-group read. DuckDBStore::GetSeries honours it; RankNextSubstituents
+    /// and FindSimilarSeries read the observed rows whatever it says.
+    bool include_up_enumerated = false;
 };
+
+/// \brief The store's spelling of an enumeration label.
+///
+/// "none", "constant-up" or "variable-up": the values the series_member check
+/// constraint admits. The store's writer and reader and the binding's row
+/// helper all spell labels through this one function.
+const char* enumeration_label_name(Fragmentation::EnumerationLabel label);
+
+/// \brief Inverse of enumeration_label_name.
+/// \throws InvalidQueryError For any other spelling.
+Fragmentation::EnumerationLabel parse_enumeration_label(const std::string& name);
 
 }  // namespace OEMMPA
 

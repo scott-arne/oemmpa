@@ -99,7 +99,10 @@ public:
     // for matched molecular series: the `series` and `series_member` tables,
     // `dataset.num_series` / `num_series_members` / `series_source`, and
     // `rule_smiles.num_heavies` now populated. Membership cannot be recovered
-    // from `pair`, so there is no migration; rebuild.
+    // from `pair`, so there is no migration; rebuild. Schema 5 also carries
+    // series_member.enumeration_label and dataset.num_series_variant_members;
+    // both were added before any schema-5 store was published, so the revision
+    // stays 5.
     static constexpr std::uint32_t kOemmpaSchemaVersion = 5;
 
     /// \brief Open an in-memory DuckDB database.
@@ -262,7 +265,9 @@ public:
     /// a member's compounds by compound id, with the public ids parallel to
     /// them. Bounds apply in the order Series.h documents: member filter,
     /// length test, constant floor, cut count. A series with no surviving
-    /// members is never returned, even when min_series_length is 0.
+    /// members is never returned, even when min_series_length is 0. With
+    /// selection.include_up_enumerated the guessed rows are read too and carry
+    /// their labels; without it the read returns exactly the observed rows.
     ///
     /// The selection is taken by value because the Python binding releases the
     /// GIL for this read: copying it in the caller's thread gives the query a

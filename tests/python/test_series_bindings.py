@@ -436,3 +436,12 @@ def test_series_member_keeps_its_one_python_constructor_and_no_raw_label_vector(
     labelled = list(analyzer.GetSeries(True))
     observed = list(analyzer.GetSeries())
     assert [s.GetConstantSmiles() for s in labelled] == [s.GetConstantSmiles() for s in observed]
+
+
+def test_the_store_label_spelling_helpers_stay_out_of_the_binding():
+    # The store's writer and reader and the row helper share these two C++
+    # functions so the spellings cannot drift; Python reads labels already
+    # spelled, so neither is a binding name.
+    for name in ("enumeration_label_name", "parse_enumeration_label"):
+        assert not hasattr(_oemmpa, name)
+        assert not hasattr(_swig_proxy, name)

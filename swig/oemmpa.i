@@ -517,6 +517,10 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // rule as the ignores above: before the %include.
 %ignore OEMMPA::SeriesMember::GetEnumerationLabels;
 %ignore OEMMPA::SeriesMember::SeriesMember(std::string, unsigned int, std::vector<unsigned int>, std::vector<std::string>, std::vector<Fragmentation::EnumerationLabel>);
+// The store's label spellings are shared by its writer, its reader and the row
+// helper; Python receives labels already spelled, so neither is a binding name.
+%ignore OEMMPA::enumeration_label_name;
+%ignore OEMMPA::parse_enumeration_label;
 %include "../include/oemmpa/Series.h"
 // The store validates its own support ladders, so Python never calls this one.
 %ignore OEMMPA::validate_support_ladder;

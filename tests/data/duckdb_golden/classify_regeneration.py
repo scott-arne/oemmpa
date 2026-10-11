@@ -37,6 +37,15 @@ The buckets are:
 ``s`` Schema stamp, one row for ``dataset.tsv``.
 ===== ==============================================================
 
+Seams mode
+----------
+
+With ``--seams`` the script classifies the regeneration that added
+``series_member.enumeration_label``: every table must be present on both sides,
+an old ``series_member`` row that comes back with ``'none'`` is bucket ``l``, an
+added guessed row of a series the old golden holds is bucket ``v``, every other
+change anywhere is ``d``, and the manifest goes to ``seams_regeneration.tsv``.
+
 How the classification works
 ----------------------------
 
@@ -118,7 +127,7 @@ SPEC: dict[str, list[str]] = {
         [SMILES, SMILES, ENV, PLAIN, PLAIN] + [MEASURE] * 12 + [ENV]
     ),
     "series": [SMILES, PLAIN, PLAIN, MEASURE],
-    "series_member": [SMILES, PLAIN, SMILES, PLAIN, PLAIN],
+    "series_member": [SMILES, PLAIN, SMILES, PLAIN, PLAIN, PLAIN],
 }
 
 BUCKETS = ("a", "b", "c", "d", "e", "f", "g", "h", "n")
@@ -198,6 +207,36 @@ STAMP = (
     "kOemmpaSchemaVersion 4 -> 5. Counted 0 because the golden dump projects "
     "only analysis_method from the dataset table, so the stamp never reaches a "
     "TSV; it is pinned by the C++ tests instead."
+)
+
+#: Buckets of a seams regeneration (spec 8.4 of the seams design). Only
+#: series_member may change, and only in the two ways these name.
+SEAMS_BUCKETS = ("d", "l", "v")
+
+#: The old side of a seams regeneration: the golden before it already holds the
+#: schema-5 tables, so every table must be present on both sides.
+SEAMS_OLD = "seams-old"
+
+#: The labels a guessed row carries; ``none`` marks an observed compound.
+VARIANT_LABELS = ("constant-up", "variable-up")
+
+SEAMS_RATIONALE = {
+    "d": "No row was left unattributed.",
+    "l": (
+        "series_member gained the enumeration_label column: the row is otherwise "
+        "unchanged and its label is 'none', an observed compound."
+    ),
+    "v": (
+        "An up-enumerated compound (label constant-up or variable-up) attached as "
+        "a labelled row to a series the old golden already holds; formation counts "
+        "observed compounds only, so series.tsv is unchanged."
+    ),
+}
+
+SEAMS_DATASET_NOTE = (
+    "dataset.num_series_variant_members is new and dataset.fragment_options is "
+    "now filled. Counted 0 because the golden dump projects only analysis_method "
+    "from the dataset table; both are pinned by the C++ and Python unit tests."
 )
 
 
@@ -908,6 +947,65 @@ def classify_num_heavies_population(before: list[Row], after: list[Row]) -> Tabl
     return counts, examples
 
 
+def classify_label_column(
+    before: list[Row], after: list[Row], old_series: set[tuple[str, str]]
+) -> TableReport:
+    """Book the seams changes of ``series_member.tsv``.
+
+    A removed row that comes back with ``none`` appended is one ``l`` row. An
+    added row whose last cell is a guessed label and whose (constant, cut count)
+    names a series of the old golden is one ``v`` row. Everything else is ``d``:
+    an observed row that is new, an old row that came back guessed, or a guess
+    attached to a series the old golden lacks.
+
+    :param before: Old rows ``(constant, cut_count, rgroup, num_heavies, compound)``.
+    :param after: New rows with ``enumeration_label`` appended.
+    :param old_series: ``(constant, cut_count)`` of every row of the old ``series.tsv``.
+    :returns: ``(counts, examples)``.
+    """
+    removed, added = multiset_difference(before, after)
+    unmatched = Counter(added)
+    counts: Counter = Counter()
+    examples: dict[str, Row] = {}
+    for row in removed:
+        twin = (*row, "none")
+        if unmatched[twin] > 0:
+            unmatched[twin] -= 1
+            counts["l"] += 1
+            examples.setdefault("l", twin)
+        else:
+            counts["d"] += 1
+            examples.setdefault("d", row)
+    for row in added:
+        if unmatched[row] == 0:
+            continue
+        unmatched[row] -= 1
+        guessed = len(row) == len(SPEC["series_member"]) and row[-1] in VARIANT_LABELS
+        if guessed and (row[0], row[1]) in old_series:
+            counts["v"] += 1
+            examples.setdefault("v", row)
+        else:
+            counts["d"] += 1
+            examples.setdefault("d", row)
+    return counts, examples
+
+
+def classify_seams_unchanged(before: list[Row], after: list[Row]) -> TableReport:
+    """Book every changed row of a table the seams regeneration must not touch as ``d``.
+
+    :param before: Rows of the old file.
+    :param after: Rows of the new file.
+    :returns: ``(counts, examples)``.
+    """
+    removed, added = multiset_difference(before, after)
+    counts: Counter = Counter()
+    examples: dict[str, Row] = {}
+    for row in removed + added:
+        counts["d"] += 1
+        examples.setdefault("d", row)
+    return counts, examples
+
+
 def classify_pairs(
     before: list[Row], after: list[Row], records: dict[tuple[str, str, str], set[int]]
 ) -> tuple[TableReport, dict[Row, set[str]], dict[Row, set[str]]]:
@@ -1154,6 +1252,52 @@ def classify(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     return report
 
 
+def classify_seams(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
+    """Classify a seams regeneration (spec 8.4 of the seams design).
+
+    :param old_dir: Golden directory before the regeneration; it holds every table.
+    :param new_dir: Golden directory after the regeneration.
+    :returns: Per-table ``(counts, examples)``.
+    :raises SystemExit: If any table is missing on either side.
+    """
+    if set(SPEC) != set(TABLES):
+        raise SystemExit(
+            "column spec and _duckdb_dump.TABLES disagree: "
+            f"{sorted(set(SPEC) ^ set(TABLES))}"
+        )
+    old_series = {(row[0], row[1]) for row in read_table(old_dir, "series", side=SEAMS_OLD)}
+    report: dict[str, TableReport] = {}
+    for table in TABLES:
+        before_rows = read_table(old_dir, table, side=SEAMS_OLD)
+        after_rows = read_table(new_dir, table, side=NEW)
+        if table == "series_member":
+            report[table] = classify_label_column(before_rows, after_rows, old_series)
+        else:
+            report[table] = classify_seams_unchanged(before_rows, after_rows)
+    return report
+
+
+def write_seams_manifest(report: dict[str, TableReport], out_path: Path) -> None:
+    """Write the five-column manifest of a seams regeneration.
+
+    :param report: Per-table ``(counts, examples)`` from :func:`classify_seams`.
+    :param out_path: File to write.
+    """
+    lines = ["file\tbucket\tcount\texample_row\trationale"]
+    for table in TABLES:
+        counts, examples = report[table]
+        unchanged = sum(counts.values()) == 0
+        for bucket in SEAMS_BUCKETS:
+            rationale = NO_CHANGE if unchanged else SEAMS_RATIONALE[bucket]
+            lines.append(
+                f"{table}.tsv\t{bucket}\t{counts.get(bucket, 0)}\t"
+                f"{render_example(examples.get(bucket))}\t{rationale}"
+            )
+        if table == "dataset":
+            lines.append(f"dataset.tsv\ts\t0\t\t{SEAMS_DATASET_NOTE}")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     """Classify a regeneration and write the manifest.
 
@@ -1164,10 +1308,22 @@ def main() -> None:
     parser.add_argument("old_dir", type=Path, help="golden directory before")
     parser.add_argument("new_dir", type=Path, help="golden directory after")
     parser.add_argument("manifest", type=Path, help="manifest TSV to write")
+    parser.add_argument(
+        "--seams",
+        action="store_true",
+        help="classify a seams regeneration (series_member label column and guessed rows)",
+    )
     args = parser.parse_args()
 
-    report = classify(args.old_dir, args.new_dir)
-    write_manifest(report, args.manifest)
+    buckets: tuple[str, ...]
+    if args.seams:
+        report = classify_seams(args.old_dir, args.new_dir)
+        write_seams_manifest(report, args.manifest)
+        buckets = SEAMS_BUCKETS
+    else:
+        report = classify(args.old_dir, args.new_dir)
+        write_manifest(report, args.manifest)
+        buckets = BUCKETS
 
     unexplained = 0
     for table in TABLES:
@@ -1175,7 +1331,7 @@ def main() -> None:
         total = sum(counts.values())
         if not total:
             continue
-        detail = "  ".join(f"{b}={counts[b]}" for b in BUCKETS if counts.get(b))
+        detail = "  ".join(f"{b}={counts[b]}" for b in buckets if counts.get(b))
         print(f"{table}.tsv  changed_rows={total}  {detail}")
         unexplained += counts.get("d", 0)
     print(f"wrote {args.manifest}")

@@ -1571,3 +1571,76 @@ TEST(SeriesSimilarity, RequestContractRejectsAnUnknownMeasure) {
     }
     std::filesystem::remove(fixture.path);
 }
+
+TEST(SeriesVariantRows, RankingAndSimilarityReadObservedRowsOnly) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    const auto ranking_digest = [](const SubstituentRankingResult& result) {
+        std::string digest = std::to_string(result.matched_series) + "/" + std::to_string(result.support_level);
+        for (const std::string& smiles : result.query_used) {
+            digest += "|q:" + smiles;
+        }
+        for (const SubstituentRanking& candidate : result.candidates) {
+            digest += "|" + candidate.variable_smiles + ":" + std::to_string(candidate.support) + ":" +
+                std::to_string(candidate.wins);
+        }
+        return digest;
+    };
+    const auto similarity_digest = [](const SeriesSimilarityResult& result) {
+        std::string digest = std::to_string(result.query_size);
+        for (const SeriesSimilarity& match : result.matches) {
+            digest += "|" + std::to_string(match.series_id) + ":" + std::to_string(match.overlap) + ":" +
+                std::to_string(match.spearman) + ":" + std::to_string(match.centred_rmsd);
+        }
+        return digest;
+    };
+
+    std::uint64_t methyl_series = 0;
+    for (const Series& entry : store.GetSeries()) {
+        if (entry.GetConstantSmiles() == "[*:1]c1ccc(cc1)C" && entry.GetCutCount() == 1) {
+            methyl_series = entry.GetSeriesId();
+        }
+    }
+    ASSERT_NE(methyl_series, 0U);
+    SubstituentRankingRequest explicit_query = HigherQuery();
+    explicit_query.support_ladder = {5U};
+    SubstituentRankingRequest by_id;
+    by_id.property_name = "act";
+    by_id.direction = PropertyDirection::HIGHER_IS_BETTER;
+    by_id.query_series_id = methyl_series;
+    by_id.support_ladder = {1U};
+    SeriesSimilarityRequest similar;
+    similar.property_name = "act";
+    similar.query_series_id = methyl_series;
+    similar.min_overlap = 2;
+    const std::vector<Series> series_before = store.GetSeries();
+    const std::string explicit_before = ranking_digest(store.RankNextSubstituents(explicit_query));
+    const std::string by_id_before = ranking_digest(store.RankNextSubstituents(by_id));
+    const std::string similar_before = similarity_digest(store.FindSimilarSeries(similar));
+
+    // A guessed [*:1]I row in every series that holds a bromine member, carried
+    // by that bromine compound. Read as data it would be a candidate in every
+    // matched series, a member tied with bromine in the id query (which the
+    // ranking refuses) and a shared R-group of every similarity candidate.
+    store.Execute("insert into rule_smiles (id, smiles, num_heavies) select max(id) + 1, '[*:1]I', 1 from rule_smiles");
+    store.Execute(
+        "insert into series_member (id, series_id, rule_smiles_id, compound_id, enumeration_label) "
+        "select (select max(id) from series_member) + row_number() over (order by sm.series_id), sm.series_id, "
+        "(select id from rule_smiles where smiles = '[*:1]I'), sm.compound_id, 'constant-up' "
+        "from series_member sm join rule_smiles rs on rs.id = sm.rule_smiles_id where rs.smiles = '[*:1]Br'");
+    SeriesSelection include;
+    include.include_up_enumerated = true;
+    std::size_t iodine_rows = 0;
+    for (const Series& entry : store.GetSeries(include)) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            iodine_rows += member.GetVariableSmiles() == "[*:1]I" ? member.GetMoleculeIds().size() : 0U;
+        }
+    }
+    ASSERT_GE(iodine_rows, 5U);
+
+    EXPECT_EQ(ranking_digest(store.RankNextSubstituents(explicit_query)), explicit_before);
+    EXPECT_EQ(ranking_digest(store.RankNextSubstituents(by_id)), by_id_before);
+    EXPECT_EQ(similarity_digest(store.FindSimilarSeries(similar)), similar_before);
+    EXPECT_EQ(store.GetSeries(), series_before);
+    std::filesystem::remove(fixture.path);
+}

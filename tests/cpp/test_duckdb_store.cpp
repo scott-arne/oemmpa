@@ -9,6 +9,7 @@
 #include "oemmpa/RuleEnvironmentStatistics.h"
 #include "oemmpa/Series.h"
 #include "oemmpa/WizePairZMethod.h"
+#include "series_fixture_support.h"
 
 #include <duckdb.hpp>
 
@@ -4452,6 +4453,168 @@ TEST(DuckDBStoreSeriesRead, RoundTripPreservesMultiCutAndDuplicateStructureSerie
     const Series* two_cut = FindSeries(stored, "[*:1]c1ccccc1.[*:2]c1ccccc1");
     ASSERT_NE(two_cut, nullptr);
     EXPECT_EQ(two_cut->GetCutCount(), 2U);
+}
+
+namespace {
+
+// The stale-count fixture with two guessed rows: compound c2's [*:1]C row in
+// series 1 becomes a ConstantUp guess, and compound c3 adds a guess-only
+// [*:1]O member to series 1. Observed rows: 1, 3 and 4; guessed rows: 2 and 5.
+void InsertLabelledSeriesFixture(DuckDBStore& store) {
+    InsertStaleSeriesFixture(store);
+    store.Execute("update series_member set enumeration_label = 'constant-up' where id = 2");
+    store.Execute(
+        "insert into series_member (id, series_id, rule_smiles_id, compound_id, enumeration_label) "
+        "values (5, 1, 3, 3, 'variable-up')");
+}
+
+}  // namespace
+
+TEST(DuckDBStoreSchema5, SeriesMemberCarriesACheckedEnumerationLabelAndDatasetCountsGuessedRows) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        InsertStaleSeriesFixture(store);
+        // The check admits only the three spellings the store writes, and the
+        // column refuses NULL, so a read can always tell observed from guessed.
+        EXPECT_THROW(store.Execute("update series_member set enumeration_label = 'guessed' where id = 1"),
+                     StorageError);
+        EXPECT_THROW(store.Execute("update series_member set enumeration_label = null where id = 1"),
+                     StorageError);
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from information_schema.columns where table_name = 'series_member' "
+        "and column_name = 'enumeration_label' and data_type = 'VARCHAR' and is_nullable = 'NO'"), 1U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from information_schema.columns where table_name = 'dataset' "
+        "and column_name = 'num_series_variant_members' and data_type = 'UBIGINT' and is_nullable = 'NO'"), 1U);
+    // A row written without a label is an observed row.
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series_member where enumeration_label = 'none'"), 4U);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select num_series_variant_members from dataset where id = 1"), 0U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSchema5, CountsSplitObservedAndGuessedRowsAndBothSummaryBranchesAgree) {
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        store.InitializeSchema();
+        InsertLabelledSeriesFixture(store);
+        store.RefreshDatasetCounts();
+        for (const bool recount : {false, true}) {
+            const DatabaseSummary summary = store.GetSummary(recount);
+            EXPECT_EQ(summary.GetNumSeries(), 2U) << recount;
+            EXPECT_EQ(summary.GetNumSeriesMembers(), 3U) << recount;
+            EXPECT_EQ(summary.GetNumSeriesVariantMembers(), 2U) << recount;
+        }
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    // A series' length counts the R-groups observed compounds realize: series 1
+    // holds [*:1]C (observed c1 plus guessed c2), [*:1]CC (c1) and the
+    // guess-only [*:1]O, so its length is 2.
+    EXPECT_EQ(ScalarUBigint(connection, "select num_members::ubigint from series where id = 1"), 2U);
+    EXPECT_EQ(ScalarUBigint(connection, "select num_members::ubigint from series where id = 2"), 1U);
+    EXPECT_EQ(ScalarUBigint(connection, "select num_series_members from dataset where id = 1"), 3U);
+    EXPECT_EQ(ScalarUBigint(connection, "select num_series_variant_members from dataset where id = 1"), 2U);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesSave, SaveToPersistsTheLabelledViewAndCountsObservedRowsOnly) {
+    const Analyzer analyzer = MakeCreatedStereocentreAnalyzer();   // tests/cpp/series_fixture_support.h
+    const std::vector<Series> baseline = analyzer.GetSeries();
+    const std::vector<Series> labelled = analyzer.GetSeries(true);
+    std::uint64_t observed_rows = 0;
+    std::uint64_t constant_up_rows = 0;
+    std::uint64_t variable_up_rows = 0;
+    std::uint64_t observed_lengths = 0;
+    for (const Series& entry : labelled) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            observed_lengths += member.HasBaselineCompound() ? 1U : 0U;
+            for (const Fragmentation::EnumerationLabel label : member.GetEnumerationLabels()) {
+                observed_rows += label == Fragmentation::EnumerationLabel::None ? 1U : 0U;
+                constant_up_rows += label == Fragmentation::EnumerationLabel::ConstantUp ? 1U : 0U;
+                variable_up_rows += label == Fragmentation::EnumerationLabel::VariableUp ? 1U : 0U;
+            }
+        }
+    }
+    ASSERT_GT(constant_up_rows, 0U);
+    ASSERT_GT(variable_up_rows, 0U);
+
+    const std::filesystem::path path = TemporaryDatabasePath();
+    {
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+        for (const bool recount : {false, true}) {
+            const DatabaseSummary summary = store.GetSummary(recount);
+            EXPECT_EQ(summary.GetNumSeries(), labelled.size()) << recount;
+            EXPECT_EQ(summary.GetNumSeriesMembers(), observed_rows) << recount;
+            EXPECT_EQ(summary.GetNumSeriesVariantMembers(), constant_up_rows + variable_up_rows) << recount;
+        }
+        // The default read is the baseline view; the include flag reads the
+        // labelled view. Both equal their in-memory twins, row ids aside.
+        const std::vector<Series> stored_baseline = store.GetSeries();
+        ASSERT_EQ(stored_baseline.size(), baseline.size());
+        for (std::size_t i = 0; i < baseline.size(); ++i) {
+            EXPECT_EQ(stored_baseline[i].GetConstantSmiles(), baseline[i].GetConstantSmiles());
+            EXPECT_EQ(stored_baseline[i].GetMembers(), baseline[i].GetMembers()) << baseline[i].GetConstantSmiles();
+        }
+        SeriesSelection include;
+        include.include_up_enumerated = true;
+        const std::vector<Series> stored_labelled = store.GetSeries(include);
+        ASSERT_EQ(stored_labelled.size(), labelled.size());
+        for (std::size_t i = 0; i < labelled.size(); ++i) {
+            EXPECT_EQ(stored_labelled[i].GetConstantSmiles(), labelled[i].GetConstantSmiles());
+            EXPECT_EQ(stored_labelled[i].GetMembers(), labelled[i].GetMembers()) << labelled[i].GetConstantSmiles();
+        }
+    }
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series_member where enumeration_label = 'none'"), observed_rows);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series_member where enumeration_label = 'constant-up'"), constant_up_rows);
+    EXPECT_EQ(ScalarUBigint(connection,
+        "select count(*) from series_member where enumeration_label = 'variable-up'"), variable_up_rows);
+    EXPECT_EQ(ScalarUBigint(connection, "select sum(num_members)::ubigint from series"), observed_lengths);
+    std::filesystem::remove(path);
+}
+
+TEST(DuckDBStoreSeriesRead, IncludeUpEnumeratedReadsGuessedRowsWithLabelsAndCountsThemForLength) {
+    DuckDBStore store;
+    store.InitializeSchema();
+    InsertLabelledSeriesFixture(store);
+
+    // The default read is exactly what the store returned before labels existed.
+    const std::vector<Series> observed = store.GetSeries();
+    ASSERT_EQ(observed.size(), 1U);   // Series 2 has one member, under the default length 2.
+    EXPECT_EQ(observed[0].GetMembers(), (std::vector<SeriesMember>{
+        SeriesMember("[*:1]C", 1, {1}, {"c1"}),
+        SeriesMember("[*:1]CC", 2, {1}, {"c1"}),
+    }));
+
+    SeriesSelection include;
+    include.include_up_enumerated = true;
+    const std::vector<Series> labelled = store.GetSeries(include);
+    ASSERT_EQ(labelled.size(), 1U);
+    EXPECT_EQ(labelled[0].GetMembers(), (std::vector<SeriesMember>{
+        SeriesMember("[*:1]C", 1, {1, 2}, {"c1", "c2"},
+                     {Fragmentation::EnumerationLabel::None, Fragmentation::EnumerationLabel::ConstantUp}),
+        SeriesMember("[*:1]CC", 2, {1}, {"c1"}),
+        SeriesMember("[*:1]O", 1, {3}, {"c3"}, {Fragmentation::EnumerationLabel::VariableUp}),
+    }));
+
+    // The length test counts the R-groups among the rows read.
+    include.min_series_length = 3;
+    EXPECT_EQ(store.GetSeries(include).size(), 1U);
+    SeriesSelection observed_three;
+    observed_three.min_series_length = 3;
+    EXPECT_TRUE(store.GetSeries(observed_three).empty());
 }
 
 }  // namespace test

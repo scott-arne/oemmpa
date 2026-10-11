@@ -88,4 +88,29 @@ bool Series::operator==(const Series& other) const {
 
 bool Series::operator!=(const Series& other) const { return !(*this == other); }
 
+const char* enumeration_label_name(Fragmentation::EnumerationLabel label) {
+    switch (label) {
+    case Fragmentation::EnumerationLabel::ConstantUp:
+        return "constant-up";
+    case Fragmentation::EnumerationLabel::VariableUp:
+        return "variable-up";
+    case Fragmentation::EnumerationLabel::None:
+        break;
+    }
+    return "none";
+}
+
+Fragmentation::EnumerationLabel parse_enumeration_label(const std::string& name) {
+    if (name == "none") {
+        return Fragmentation::EnumerationLabel::None;
+    }
+    if (name == "constant-up") {
+        return Fragmentation::EnumerationLabel::ConstantUp;
+    }
+    if (name == "variable-up") {
+        return Fragmentation::EnumerationLabel::VariableUp;
+    }
+    throw InvalidQueryError("unknown enumeration label: " + name);
+}
+
 }  // namespace OEMMPA

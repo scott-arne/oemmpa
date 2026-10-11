@@ -571,5 +571,17 @@ TEST(SeriesMemberLabels, LabelsDefaultToNoneMustParallelTheIdsAndTakePartInEqual
                  InvalidQueryError);
 }
 
+TEST(SeriesMemberLabels, StoreSpellingsRoundTripAndRejectAnythingElse) {
+    for (const Fragmentation::EnumerationLabel label :
+         {Fragmentation::EnumerationLabel::None, Fragmentation::EnumerationLabel::ConstantUp,
+          Fragmentation::EnumerationLabel::VariableUp}) {
+        EXPECT_EQ(parse_enumeration_label(enumeration_label_name(label)), label);
+    }
+    EXPECT_STREQ(enumeration_label_name(Fragmentation::EnumerationLabel::None), "none");
+    EXPECT_STREQ(enumeration_label_name(Fragmentation::EnumerationLabel::ConstantUp), "constant-up");
+    EXPECT_STREQ(enumeration_label_name(Fragmentation::EnumerationLabel::VariableUp), "variable-up");
+    EXPECT_THROW(parse_enumeration_label("guessed"), InvalidQueryError);
+}
+
 }  // namespace test
 }  // namespace OEMMPA

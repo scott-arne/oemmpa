@@ -475,8 +475,10 @@ void Analyzer::SaveTo(DuckDBStore& store, QueryOptions options) const {
 
         // Molecules (verbatim analyzer ids) + dimensions + pairs, bulk-appended
         // through the non-owning helper inside this single owning transaction.
-        // Series ride the same transaction; they take no options.
-        store.AppendBulk(molecules_, GetPairs(options), GetSeries());
+        // Series ride the same transaction; they take no options. The labelled
+        // view is persisted, so a reader can opt in to the guessed rows; every
+        // count and default read keeps to the observed ones.
+        store.AppendBulk(molecules_, GetPairs(options), GetSeries(true));
 
         // Say whether this method enumerates series, so a store with zero
         // series rows is never ambiguous: 'fragmentation' means computed and

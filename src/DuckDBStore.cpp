@@ -157,6 +157,7 @@ struct NewSeriesMember {
     std::uint64_t series_id;
     std::uint64_t rule_smiles_id;
     std::uint64_t compound_id;
+    Fragmentation::EnumerationLabel enumeration_label;
 };
 
 std::string trim_copy(const std::string& text) {
@@ -344,6 +345,7 @@ ResolvedQuery resolve_series_query(
         "join rule_smiles rs on rs.id = sm.rule_smiles_id "
         "join compound_property cp on cp.compound_id = sm.compound_id "
         "where sm.series_id = ? and cp.property_name_id = ? and isfinite(cp.value) "
+        "and sm.enumeration_label = 'none' "
         "group by sm.rule_smiles_id, rs.smiles "
         "order by rs.smiles",
         {duckdb::Value::UBIGINT(series_id), duckdb::Value::UBIGINT(property_id)});
@@ -381,13 +383,16 @@ void order_best_first(std::vector<QueryMember>& members, PropertyDirection direc
 // form aggregates only the series the posting prefilter selected, which is what
 // keeps a query from aggregating every property value in the store; the global
 // form (posting counts for shortening) has no such restriction by definition.
+// Ranking and similarity read the observed rows only;
+// selection.include_up_enumerated is honoured by GetSeries and reaches the
+// queries through the profile query that replaces these pieces.
 std::string member_value_cte(bool restricted_to_posting) {
     return std::string("member_value as (")
         + "select sm.series_id, sm.rule_smiles_id, median(cp.value) as value "
         + "from series_member sm "
         + (restricted_to_posting ? "join posting p on p.series_id = sm.series_id " : "")
         + "join compound_property cp on cp.compound_id = sm.compound_id "
-        + "where cp.property_name_id = ? and isfinite(cp.value) "
+        + "where cp.property_name_id = ? and isfinite(cp.value) and sm.enumeration_label = 'none' "
         + "group by sm.series_id, sm.rule_smiles_id)";
 }
 
@@ -425,6 +430,7 @@ std::string posting_cte() {
     return "posting as ("
            "select sm.series_id from series_member sm "
            "join query q on q.rule_smiles_id = sm.rule_smiles_id "
+           "where sm.enumeration_label = 'none' "
            "group by sm.series_id having count(distinct sm.rule_smiles_id) >= ?)";
 }
 
@@ -1355,6 +1361,14 @@ void stream_rule_environment_property_deltas(
     }
 }
 
+// The two sides of the observed/guessed split of series_member. The dataset
+// refresh and the recounting summary read the same two statements, so the
+// cached and the recounted summary cannot disagree about which rows count.
+const char* const OBSERVED_SERIES_MEMBER_COUNT_SQL =
+    "select count(*) from series_member where enumeration_label = 'none'";
+const char* const GUESSED_SERIES_MEMBER_COUNT_SQL =
+    "select count(*) from series_member where enumeration_label <> 'none'";
+
 /// \brief Rewrite the dataset row and series.num_members.
 ///
 /// \returns Seconds the series.num_members rewrite alone took. It is reported
@@ -1385,7 +1399,8 @@ double refresh_dataset_counts(
         "num_rule_environments = (select count(*) from rule_environment),"
         "num_rule_environment_stats = (select count(*) from rule_environment_statistics),"
         "num_series = (select count(*) from series),"
-        "num_series_members = (select count(*) from series_member) "
+        "num_series_members = (" + std::string(OBSERVED_SERIES_MEMBER_COUNT_SQL) + "),"
+        "num_series_variant_members = (" + std::string(GUESSED_SERIES_MEMBER_COUNT_SQL) + ") "
         "where id = 1";
     std::unique_ptr<duckdb::QueryResult> update_result = connection->Query(update_sql);
     if (!update_result) {
@@ -1395,13 +1410,13 @@ double refresh_dataset_counts(
 
     // series.num_members is a denormalized fan-out count, kept in step with the
     // membership rows here rather than at append time so a partially appended
-    // series can never leave a stale count behind. Distinct R-groups is the
-    // series' length: the same R-group reached through two compounds is one
-    // member of the series.
+    // series can never leave a stale count behind. Distinct observed R-groups is
+    // the series' length: the same R-group reached through two compounds is one
+    // member, and a member only guesses realize is not part of it.
     const std::string members_sql =
         "update series set num_members = ("
         "select count(distinct sm.rule_smiles_id) from series_member sm "
-        "where sm.series_id = series.id)";
+        "where sm.series_id = series.id and sm.enumeration_label = 'none')";
     const auto members_started = std::chrono::steady_clock::now();
     std::unique_ptr<duckdb::QueryResult> members_result = connection->Query(members_sql);
     if (!members_result) {
@@ -1430,6 +1445,25 @@ std::string read_series_source(
         }
     }
     return "not-computed";
+}
+
+// Count the series_member rows on one side of the observed/guessed split. The
+// recounting summary cannot use GetRowCount here, because the two dataset
+// counts it must agree with split the table by label.
+std::uint64_t count_series_member_rows(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    bool guessed
+) {
+    const std::string sql = guessed ? GUESSED_SERIES_MEMBER_COUNT_SQL : OBSERVED_SERIES_MEMBER_COUNT_SQL;
+    std::unique_ptr<duckdb::QueryResult> result = connection->Query(sql);
+    if (!result) {
+        throw StorageError("DuckDB query returned no result: " + sql);
+    }
+    require_success(*result, sql);
+    for (const auto& row : *result) {
+        return static_cast<std::uint64_t>(row.GetValue<std::int64_t>(0));
+    }
+    return 0;
 }
 
 /// \brief Completed groups per explicit Appender flush.
@@ -2172,6 +2206,7 @@ void AppendSeriesMembers(
         appender.Append(duckdb::Value::UBIGINT(row.series_id));
         appender.Append(duckdb::Value::UBIGINT(row.rule_smiles_id));
         appender.Append(duckdb::Value::UBIGINT(row.compound_id));
+        appender.Append(duckdb::Value(std::string(enumeration_label_name(row.enumeration_label))));
         appender.EndRow();
     }
     appender.Close();
@@ -2274,6 +2309,9 @@ void DuckDBStore::InitializeSchema() {
             "analysis_method varchar,"
             "num_series ubigint,"
             "num_series_members ubigint,"
+            // Up-enumerated series_member rows; num_series_members counts the
+            // observed ones, so both keep their meaning on a store with guesses.
+            "num_series_variant_members ubigint not null default 0,"
             // Not nullable: an un-analysed store must still say why it holds no
             // series, so the column defaults to 'not-computed' rather than NULL.
             "series_source varchar not null default 'not-computed'"
@@ -2434,6 +2472,13 @@ void DuckDBStore::InitializeSchema() {
             "series_id ubigint not null references series(id),"
             "rule_smiles_id ubigint not null references rule_smiles(id),"
             "compound_id ubigint not null references compound(id),"
+            // 'none' for a compound the enumeration observed; 'constant-up' or
+            // 'variable-up' for a guessed stereo variant that attached to a
+            // series the observed compounds formed (seams spec 5.3). Counts and
+            // default reads use the 'none' rows. The unique key stays as it is:
+            // the enumeration never emits one (R-group, compound) twice.
+            "enumeration_label varchar not null default 'none' "
+            "check (enumeration_label in ('none', 'constant-up', 'variable-up')),"
             "unique (series_id, rule_smiles_id, compound_id)"
             ")"
         );
@@ -3402,18 +3447,25 @@ void DuckDBStore::AppendBulk(
                 }
             }
             const std::uint64_t series_id = series_counter();
+            // The stored length counts the R-groups an observed compound
+            // realizes; refresh_dataset_counts rewrites the same number.
+            unsigned int observed_members = 0;
+            for (const SeriesMember& member : entry.GetMembers()) {
+                observed_members += member.HasBaselineCompound() ? 1U : 0U;
+            }
             new_series.push_back({
                 series_id, constant_id, entry.GetCutCount(),
-                entry.GetConstantHeavyAtomCount(),
-                static_cast<unsigned int>(entry.Size())});
+                entry.GetConstantHeavyAtomCount(), observed_members});
             for (const SeriesMember& member : entry.GetMembers()) {
                 if (member.GetVariableSmiles().empty()) {
                     throw StorageError("cannot store empty normalized value in rule_smiles");
                 }
                 const std::uint64_t rule_smiles_id = resolve_rule_smiles(member.GetVariableSmiles());
-                for (const unsigned int molecule_id : member.GetMoleculeIds()) {
+                const std::vector<unsigned int>& molecule_ids = member.GetMoleculeIds();
+                const std::vector<Fragmentation::EnumerationLabel>& labels = member.GetEnumerationLabels();
+                for (std::size_t c = 0; c < molecule_ids.size(); ++c) {
                     new_series_members.push_back({
-                        series_member_counter(), series_id, rule_smiles_id, molecule_id});
+                        series_member_counter(), series_id, rule_smiles_id, molecule_ids[c], labels[c]});
                 }
             }
         }
@@ -3695,7 +3747,8 @@ DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
             GetRowCount("rule_environment"),
             GetRowCount("rule_environment_statistics"),
             GetRowCount("series"),
-            GetRowCount("series_member"),
+            count_series_member_rows(connection_, /*guessed=*/false),
+            count_series_member_rows(connection_, /*guessed=*/true),
             read_series_source(connection_)
         );
     }
@@ -3703,7 +3756,8 @@ DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
     const std::string sql =
         "select "
         "num_compounds, num_rules, num_pairs, num_rule_environments, "
-        "num_rule_environment_stats, num_series, num_series_members, series_source "
+        "num_rule_environment_stats, num_series, num_series_members, "
+        "num_series_variant_members, series_source "
         "from dataset "
         "where id = 1 "
         "and num_compounds is not null "
@@ -3729,7 +3783,8 @@ DatabaseSummary DuckDBStore::GetSummary(bool recount) const {
             row.GetValue<std::uint64_t>(4),
             row.GetValue<std::uint64_t>(5),
             row.GetValue<std::uint64_t>(6),
-            row.GetValue<std::string>(7)
+            row.GetValue<std::uint64_t>(7),
+            row.GetValue<std::string>(8)
         );
     }
 
@@ -3785,11 +3840,13 @@ std::vector<MatchedPair> DuckDBStore::GetPairs(const QueryOptions& options) cons
 }
 
 std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
-    // The member bound, the constant floor and the cut count are applied in
-    // SQL; the length test after grouping, so it sees the trimmed member list.
+    // The member bound, the constant floor, the cut count and the label filter
+    // are applied in SQL; the length test after grouping, so it sees the
+    // trimmed member list (with include_up_enumerated, a member only guesses
+    // realize counts like any other R-group read).
     const std::string sql =
         "select s.id, c.smiles, s.cut_count, s.constant_num_heavies, "
-        "rs.smiles, rs.num_heavies, sm.compound_id, coalesce(cp.public_id, '') "
+        "rs.smiles, rs.num_heavies, sm.compound_id, coalesce(cp.public_id, ''), sm.enumeration_label "
         "from series s "
         "join constant_smiles c on c.id = s.constant_id "
         "join series_member sm on sm.series_id = s.id "
@@ -3798,6 +3855,7 @@ std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
         "where (? = 0 or s.cut_count = ?) "
         "and (? = 0 or s.constant_num_heavies >= ?) "
         "and (? = 0 or coalesce(rs.num_heavies, 0) <= ?) "
+        "and (? or sm.enumeration_label = 'none') "
         "order by c.smiles, s.cut_count, rs.smiles, sm.compound_id";
     duckdb::vector<duckdb::Value> values = {
         duckdb::Value::UINTEGER(selection.cut_count),
@@ -3806,6 +3864,7 @@ std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
         duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms),
         duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms),
         duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms),
+        duckdb::Value::BOOLEAN(selection.include_up_enumerated),
     };
     std::unique_ptr<duckdb::QueryResult> result =
         execute_prepared(connection_, sql, std::move(values));
@@ -3820,12 +3879,14 @@ std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
     unsigned int member_heavies = 0;
     std::vector<unsigned int> member_ids;
     std::vector<std::string> member_external_ids;
+    std::vector<Fragmentation::EnumerationLabel> member_labels;
 
     const auto flush_member = [&]() {
         if (!member_ids.empty()) {
-            members.emplace_back(member_smiles, member_heavies, member_ids, member_external_ids);
+            members.emplace_back(member_smiles, member_heavies, member_ids, member_external_ids, member_labels);
             member_ids.clear();
             member_external_ids.clear();
+            member_labels.clear();
         }
     };
     const auto flush_series = [&]() {
@@ -3855,6 +3916,7 @@ std::vector<Series> DuckDBStore::GetSeries(SeriesSelection selection) const {
         }
         member_ids.push_back(static_cast<unsigned int>(row.GetValue<std::uint64_t>(6)));
         member_external_ids.push_back(row.GetValue<std::string>(7));
+        member_labels.push_back(parse_enumeration_label(row.GetValue<std::string>(8)));
     }
     flush_series();
     return series;
