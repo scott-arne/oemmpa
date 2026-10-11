@@ -45,6 +45,10 @@ With ``--seams`` the script classifies the regeneration that added
 an old ``series_member`` row that comes back with ``'none'`` is bucket ``l``, an
 added guessed row of a series the old golden holds is bucket ``v``, every other
 change anywhere is ``d``, and the manifest goes to ``seams_regeneration.tsv``.
+Order counts too. Every other table must be byte-identical, so a reordered
+line is ``d``. The ``l`` rows must keep the old file's order, and
+``series_member.tsv`` must be in the dump query's order; a row out of either
+order is ``d``.
 
 How the classification works
 ----------------------------
@@ -79,10 +83,12 @@ import argparse
 import importlib
 import re
 import sys
-from collections import Counter, defaultdict
-from collections.abc import Callable
+from bisect import bisect_right
+from collections import Counter, defaultdict, deque
+from collections.abc import Callable, Hashable, Sequence
 from hashlib import blake2b
 from pathlib import Path
+from typing import Any
 
 GOLDEN_DIR = Path(__file__).resolve().parent
 REPO_ROOT = GOLDEN_DIR.parents[2]
@@ -877,6 +883,25 @@ def read_table(directory: Path, table: str, *, side: str) -> list[Row]:
         return [tuple(line.rstrip("\n").split("\t")) for line in handle]
 
 
+def read_table_bytes(directory: Path, table: str, *, side: str) -> bytes:
+    """Read one golden TSV as raw bytes, for a comparison that must see every byte.
+
+    Meant for the ``SEAMS_OLD`` and ``NEW`` sides, where every table must
+    exist; :func:`read_table` explains why a missing file is never read as an
+    empty one.
+
+    :param directory: Golden directory.
+    :param table: Table name, without the ``.tsv`` suffix.
+    :param side: ``SEAMS_OLD`` or ``NEW``, for the error message.
+    :returns: The file's bytes.
+    :raises SystemExit: If the file is missing.
+    """
+    path = directory / f"{table}.tsv"
+    if not path.exists():
+        raise SystemExit(f"{path} is missing: the {side} golden is incomplete")
+    return path.read_bytes()
+
+
 def multiset_difference(before: list[Row], after: list[Row]) -> tuple[list[Row], list[Row]]:
     """Split two files into the rows unique to each, preserving multiplicity.
 
@@ -953,63 +978,172 @@ def classify_num_heavies_population(before: list[Row], after: list[Row]) -> Tabl
     return counts, examples
 
 
+def displaced_positions(keys: Sequence[Any]) -> set[int]:
+    """Return the positions outside one longest non-decreasing run of ``keys``.
+
+    The rows at these positions are the fewest that must move to put the
+    sequence in order. A swap therefore reports one or two rows, and a single
+    misplaced row reports itself rather than every row it shifted.
+
+    :param keys: Mutually comparable sort keys, one per row, in file order.
+    :returns: Positions of the rows out of order.
+    """
+    tails: list[Any] = []
+    tail_positions: list[int] = []
+    previous: list[int] = []
+    for position, key in enumerate(keys):
+        length = bisect_right(tails, key)
+        if length == len(tails):
+            tails.append(key)
+            tail_positions.append(position)
+        else:
+            tails[length] = key
+            tail_positions[length] = position
+        previous.append(tail_positions[length - 1] if length else -1)
+    kept: set[int] = set()
+    position = tail_positions[-1] if tail_positions else -1
+    while position != -1:
+        kept.add(position)
+        position = previous[position]
+    return set(range(len(keys))) - kept
+
+
+def old_positions(old: Sequence[Hashable], new: Sequence[Hashable]) -> list[int]:
+    """Map each item of ``new`` to the position of its twin in ``old``.
+
+    :param old: Items in the old order.
+    :param new: The same multiset of items in the new order. Equal items take
+        the old positions in turn, so duplicates never count as moved.
+    :returns: One old position per item of ``new``.
+    """
+    slots: dict[Hashable, deque[int]] = defaultdict(deque)
+    for position, item in enumerate(old):
+        slots[item].append(position)
+    return [slots[item].popleft() for item in new]
+
+
+def series_member_order_key(row: Row) -> tuple[object, ...]:
+    """Sort key of a row under the series_member dump query's ``order by 1, ..., 6``.
+
+    DuckDB orders the VARCHAR columns bytewise, which is Python's string order
+    (code point order is UTF-8 byte order). It orders the two integer columns,
+    cut count and heavy-atom count, numerically, with NULL (an empty cell) last.
+
+    :param row: A ``series_member.tsv`` row.
+    :returns: A key that orders rows as the dump query does.
+    """
+
+    def integer(cell: str) -> tuple[int, int | str]:
+        if cell.isdigit():
+            return (0, int(cell))
+        return (1, 0) if cell == "" else (2, cell)
+
+    return tuple(
+        integer(cell) if index in (1, 3) else cell for index, cell in enumerate(row)
+    )
+
+
 def classify_label_column(
     before: list[Row], after: list[Row], old_series: set[tuple[str, str]]
 ) -> TableReport:
     """Book the seams changes of ``series_member.tsv``.
 
-    A removed row that comes back with ``none`` appended is one ``l`` row. An
-    added row whose last cell is a guessed label and whose (constant, cut count)
-    names a series of the old golden is one ``v`` row. Everything else is ``d``:
-    an observed row that is new, an old row that came back guessed, or a guess
-    attached to a series the old golden lacks.
+    The labels are bucketed as multisets. A new row labelled ``none`` whose
+    other cells are an old row is one ``l`` row. A new row whose label is a
+    guess and whose (constant, cut count) names a series of the old golden is
+    one ``v`` row. Everything else is ``d``: an observed row that is new, an old
+    row that came back guessed or not at all, or a guess attached to a series
+    the old golden lacks.
+
+    Order is checked on top, because a multiset cannot see it. The ``l`` rows,
+    label stripped, must keep the old file's order, and the whole new file must
+    be in the dump query's order, so a guess may sit only where the query puts
+    it. A row out of either order is ``d`` instead of ``l`` or ``v``. When two
+    rows are out of order only relative to each other, either could be the one
+    booked ``d``; the classification fails both ways.
 
     :param before: Old rows ``(constant, cut_count, rgroup, num_heavies, compound)``.
     :param after: New rows with ``enumeration_label`` appended.
     :param old_series: ``(constant, cut_count)`` of every row of the old ``series.tsv``.
-    :returns: ``(counts, examples)``.
+    :returns: ``(counts, examples)``; each example is the first row of its bucket.
     """
-    removed, added = multiset_difference(before, after)
-    unmatched = Counter(added)
-    counts: Counter = Counter()
+    width = len(SPEC["series_member"])
+    unmatched = Counter(before)
+    buckets: list[str] = []
+    for row in after:
+        labelled = len(row) == width
+        if labelled and row[-1] == "none" and unmatched[row[:-1]] > 0:
+            unmatched[row[:-1]] -= 1
+            buckets.append("l")
+        elif labelled and row[-1] in VARIANT_LABELS and (row[0], row[1]) in old_series:
+            buckets.append("v")
+        else:
+            buckets.append("d")
+    lost = list(unmatched.elements())
+
+    observed = [index for index, bucket in enumerate(buckets) if bucket == "l"]
+    new_observed = [after[index][:-1] for index in observed]
+    returned = Counter(new_observed)
+    old_observed: list[Row] = []
+    for row in before:
+        if returned[row] > 0:
+            returned[row] -= 1
+            old_observed.append(row)
+    for slot in displaced_positions(old_positions(old_observed, new_observed)):
+        buckets[observed[slot]] = "d"
+    for index in displaced_positions([series_member_order_key(row) for row in after]):
+        buckets[index] = "d"
+
+    counts: Counter = Counter(buckets)
+    if lost:
+        counts["d"] += len(lost)
     examples: dict[str, Row] = {}
-    for row in removed:
-        twin = (*row, "none")
-        if unmatched[twin] > 0:
-            unmatched[twin] -= 1
-            counts["l"] += 1
-            examples.setdefault("l", twin)
-        else:
-            counts["d"] += 1
-            examples.setdefault("d", row)
-    for row in added:
-        if unmatched[row] == 0:
-            continue
-        unmatched[row] -= 1
-        guessed = len(row) == len(SPEC["series_member"]) and row[-1] in VARIANT_LABELS
-        if guessed and (row[0], row[1]) in old_series:
-            counts["v"] += 1
-            examples.setdefault("v", row)
-        else:
-            counts["d"] += 1
-            examples.setdefault("d", row)
+    for row, bucket in zip(after, buckets):
+        examples.setdefault(bucket, row)
+    if lost:
+        examples.setdefault("d", lost[0])
     return counts, examples
 
 
-def classify_seams_unchanged(before: list[Row], after: list[Row]) -> TableReport:
-    """Book every changed row of a table the seams regeneration must not touch as ``d``.
+def classify_seams_unchanged(before: bytes, after: bytes) -> TableReport:
+    """Book every change to a table the seams regeneration must not touch as ``d``.
 
-    :param before: Rows of the old file.
-    :param after: Rows of the new file.
+    The files are compared line by line with the line endings kept, so the
+    comparison sees every byte: identical bytes book nothing, and otherwise each
+    line that was removed, added or moved out of the old order is ``d``. The
+    moved lines are the shared lines outside a longest run kept in the old
+    order, so a swap books one or two lines rather than every line between.
+
+    :param before: The old file's bytes.
+    :param after: The new file's bytes.
     :returns: ``(counts, examples)``.
     """
-    removed, added = multiset_difference(before, after)
-    counts: Counter = Counter()
-    examples: dict[str, Row] = {}
-    for row in removed + added:
-        counts["d"] += 1
-        examples.setdefault("d", row)
-    return counts, examples
+    old_lines = before.decode("utf-8", "surrogateescape").splitlines(keepends=True)
+    new_lines = after.decode("utf-8", "surrogateescape").splitlines(keepends=True)
+    shared = Counter(old_lines) & Counter(new_lines)
+
+    def split(lines: list[str]) -> tuple[list[str], list[str]]:
+        budget = Counter(shared)
+        kept: list[str] = []
+        extra: list[str] = []
+        for line in lines:
+            if budget[line] > 0:
+                budget[line] -= 1
+                kept.append(line)
+            else:
+                extra.append(line)
+        return kept, extra
+
+    old_kept, removed = split(old_lines)
+    new_kept, added = split(new_lines)
+    moved = [
+        new_kept[position]
+        for position in sorted(displaced_positions(old_positions(old_kept, new_kept)))
+    ]
+    changed = removed + added + moved
+    if not changed:
+        return Counter(), {}
+    return Counter({"d": len(changed)}), {"d": tuple(changed[0].rstrip("\r\n").split("\t"))}
 
 
 def classify_pairs(
@@ -1312,12 +1446,17 @@ def classify_seams(old_dir: Path, new_dir: Path) -> dict[str, TableReport]:
     old_series = {(row[0], row[1]) for row in read_table(old_dir, "series", side=SEAMS_OLD)}
     report: dict[str, TableReport] = {}
     for table in TABLES:
-        before_rows = read_table(old_dir, table, side=SEAMS_OLD)
-        after_rows = read_table(new_dir, table, side=NEW)
         if table == "series_member":
-            report[table] = classify_label_column(before_rows, after_rows, old_series)
+            report[table] = classify_label_column(
+                read_table(old_dir, table, side=SEAMS_OLD),
+                read_table(new_dir, table, side=NEW),
+                old_series,
+            )
         else:
-            report[table] = classify_seams_unchanged(before_rows, after_rows)
+            report[table] = classify_seams_unchanged(
+                read_table_bytes(old_dir, table, side=SEAMS_OLD),
+                read_table_bytes(new_dir, table, side=NEW),
+            )
     return report
 
 

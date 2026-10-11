@@ -506,3 +506,117 @@ def test_committed_seams_manifest_explains_the_label_column_and_nothing_else():
     for (file, bucket), count in counts.items():
         if file != "series_member.tsv":
             assert count == 0, (file, bucket)
+
+
+# The seams regeneration must leave every file other than series_member.tsv
+# byte-identical, and series_member.tsv must stay in the dump query's order, so
+# a reordering is a change the classifier has to refuse, not a no-op.
+def _run_seams(classifier, old_dir, new_dir, manifest, monkeypatch):
+    """Run the seams classifier's command line on a synthetic before/after pair.
+
+    :param classifier: The loaded classifier module.
+    :param old_dir: Golden directory before the regeneration.
+    :param new_dir: Golden directory after the regeneration.
+    :param manifest: Manifest file to write.
+    :param monkeypatch: pytest's monkeypatch fixture, to set ``sys.argv``.
+    """
+    monkeypatch.setattr(
+        sys, "argv",
+        ["classify_regeneration.py", "--seams", str(old_dir), str(new_dir), str(manifest)],
+    )
+    classifier.main()
+
+
+def test_seams_mode_compares_an_untouched_table_byte_for_byte():
+    classifier = _load_classifier()
+    assert classifier.classify_seams_unchanged(b"a\t1\nb\t2\n", b"a\t1\nb\t2\n") == ({}, {})
+    # The same rows in another order, and the same rows with the last line
+    # ending dropped, both differ in bytes, so both are unexplained.
+    swapped, example = classifier.classify_seams_unchanged(b"a\t1\nb\t2\n", b"b\t2\na\t1\n")
+    assert swapped == {"d": 1}
+    assert example["d"] in {("a", "1"), ("b", "2")}
+    truncated, _ = classifier.classify_seams_unchanged(b"a\t1\nb\t2\n", b"a\t1\nb\t2")
+    assert truncated["d"] > 0
+
+
+def test_seams_mode_refuses_two_swapped_rows_of_an_untouched_table(tmp_path, monkeypatch):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_seams_golden_pair(
+        old_dir, new_dir, new_series_member=LABELLED_SERIES_MEMBER,
+        new_rule_smiles=list(reversed(NEW_RULE_SMILES)),
+    )
+    manifest = tmp_path / "seams.tsv"
+
+    with pytest.raises(SystemExit) as failure:
+        _run_seams(classifier, old_dir, new_dir, manifest, monkeypatch)
+
+    assert "unexplained" in str(failure.value)
+    counts = _manifest_counts(manifest)
+    # Same rows, other order: one of the two sits out of the old order.
+    assert counts[("rule_smiles.tsv", "d")] == 1
+    assert counts[("series_member.tsv", "l")] == 2
+
+
+def test_seams_mode_refuses_two_swapped_observed_rows_of_series_member(tmp_path, monkeypatch):
+    classifier = _load_classifier()
+    old_dir, new_dir = tmp_path / "old", tmp_path / "new"
+    _write_seams_golden_pair(
+        old_dir, new_dir, new_series_member=list(reversed(LABELLED_SERIES_MEMBER)))
+    manifest = tmp_path / "seams.tsv"
+
+    with pytest.raises(SystemExit) as failure:
+        _run_seams(classifier, old_dir, new_dir, manifest, monkeypatch)
+
+    assert "unexplained" in str(failure.value)
+    counts = _manifest_counts(manifest)
+    # Both rows came back labelled 'none', but one of them out of the old order.
+    assert counts[("series_member.tsv", "d")] == 1
+    assert counts[("series_member.tsv", "l")] == 1
+
+
+def test_seams_variant_row_must_sit_where_the_dump_order_puts_it():
+    classifier = _load_classifier()
+    # A guess of compound M3 on the [*:1]Br R-group sorts between the two
+    # observed rows (public id M3 after M2, R-group [*:1]Br before [*:1]Cl).
+    between = ("[*:1]C", "1", "[*:1]Br", "1", "M3", "variable-up")
+    in_place = [LABELLED_SERIES_MEMBER[0], between, LABELLED_SERIES_MEMBER[1]]
+    counts, examples = classifier.classify_label_column(
+        SEAMS_OLD_SERIES_MEMBER, in_place, KNOWN_SERIES)
+    assert counts == {"l": 2, "v": 1}
+    assert examples["v"] == between
+
+    # Appended instead, it breaks the dump order. Moving either it or the
+    # [*:1]Cl row would restore the order, so which of the two is booked d is
+    # not pinned; exactly one is.
+    appended = [*LABELLED_SERIES_MEMBER, between]
+    counts, examples = classifier.classify_label_column(
+        SEAMS_OLD_SERIES_MEMBER, appended, KNOWN_SERIES)
+    assert counts["d"] == 1
+    assert sum(counts.values()) == len(appended)
+    assert examples["d"] in {between, LABELLED_SERIES_MEMBER[1]}
+
+
+def test_the_committed_golden_satisfies_the_seams_order_rules(tmp_path):
+    classifier = _load_classifier()
+    golden = REPO_ROOT / "tests" / "data" / "duckdb_golden"
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    for table in classifier.TABLES:
+        text = (golden / f"{table}.tsv").read_text(encoding="utf-8")
+        if table == "series_member":
+            # The golden before the seams work: the observed rows, unlabelled,
+            # in the order the labelled golden holds them.
+            text = "".join(
+                line.rsplit("\t", 1)[0] + "\n"
+                for line in text.splitlines()
+                if line.rsplit("\t", 1)[1] == "none"
+            )
+        (old_dir / f"{table}.tsv").write_text(text, encoding="utf-8")
+
+    report = classifier.classify_seams(old_dir, golden)
+
+    assert report["series_member"][0] == {"l": 670, "v": 30}
+    for table in classifier.TABLES:
+        if table != "series_member":
+            assert report[table] == ({}, {}), table
