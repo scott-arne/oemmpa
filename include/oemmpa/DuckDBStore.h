@@ -72,9 +72,10 @@ struct PairIdentityHash {
 /// once, readers included, because every member function shares the
 /// instance's single DuckDB connection. That covers the methods the Python
 /// binding runs with the GIL released (AddMoleculesFromSmilesFile,
-/// AddPropertiesFromCsvFile, GetSeries, RankNextSubstituents and
-/// FindSimilarSeries, the DuckDBStore methods swig/oemmpa.i opts into GIL
-/// release) and Analyzer::SaveTo, which writes through the store it is given.
+/// AddPropertiesFromCsvFile, GetSeries, RankNextSubstituents,
+/// FindSimilarSeries and BuildSeriesNetwork, the DuckDBStore methods
+/// swig/oemmpa.i opts into GIL release) and Analyzer::SaveTo, which writes
+/// through the store it is given.
 /// Use one store per thread; several read-only stores may open the same
 /// database file at once.
 class DuckDBStore {

@@ -186,6 +186,7 @@ INTEGER_COLUMNS = {
     "support",
     "overlap",
     "position",
+    "environment_fingerprint_id",
 }
 BOOLEAN_COLUMNS = frozenset({"win"})
 

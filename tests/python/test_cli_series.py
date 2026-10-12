@@ -191,7 +191,8 @@ def test_series_similar_rows_measures_top_and_evidence(database, tmp_path):
     base = ["series-similar", "--database", str(database), "--property", "act",
             "--rgroup", "[*:1][H]=3", "--rgroup", "[*:1]F=2", "--rgroup", "[*:1]Cl=1"]
     header, rows = _tsv(_run_cli(*base).stdout)
-    assert header == ["series_id", "constant", "cut_count", "overlap", "spearman", "centred_rmsd"]
+    assert header == ["series_id", "constant", "cut_count", "overlap", "spearman", "centred_rmsd",
+                      "environment_fingerprint_id", "environment"]
     assert len(rows) == 5
     assert all(row["spearman"] == "1" and row["overlap"] == "3" for row in rows)
     _, top = _tsv(_run_cli(*base, "--top", "2", "--measure", "crmsd").stdout)
@@ -199,7 +200,8 @@ def test_series_similar_rows_measures_top_and_evidence(database, tmp_path):
     evidence = tmp_path / "similar-evidence.tsv"
     _run_cli(*base, "--top", "2", "--evidence", str(evidence))
     evidence_header, evidence_rows = _tsv(evidence.read_text())
-    assert evidence_header == ["series_id", "rgroup", "query_value", "candidate_value"]
+    assert evidence_header == ["series_id", "rgroup", "query_value", "candidate_value",
+                               "environment_fingerprint_id", "environment"]
     assert len(evidence_rows) == 6
     bad = _run_cli(*base, "--min-overlap", "1", check=False)
     assert bad.returncode == 2 and "min_overlap" in bad.stderr
@@ -314,8 +316,10 @@ def test_query_file_tolerates_one_header_but_not_a_broken_value(database, tmp_pa
 @pytest.mark.parametrize(
     ("command", "query", "evidence_header"),
     [
-        ("series-rank", RANK_QUERY, ["series_id", "constant", "role", "rgroup", "value", "position", "win"]),
-        ("series-similar", SIMILAR_QUERY, ["series_id", "rgroup", "query_value", "candidate_value"]),
+        ("series-rank", RANK_QUERY, ["series_id", "constant", "role", "rgroup", "value", "position", "win",
+                                     "environment_fingerprint_id", "environment"]),
+        ("series-similar", SIMILAR_QUERY, ["series_id", "rgroup", "query_value", "candidate_value",
+                                           "environment_fingerprint_id", "environment"]),
     ],
 )
 def test_evidence_may_not_share_standard_output_with_the_report(database, tmp_path, command, query, evidence_header):

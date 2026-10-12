@@ -27,3 +27,24 @@ def without_column(rows, column):
     :returns: New mappings, in the order of ``rows``.
     """
     return [{key: value for key, value in row.items() if key != column} for row in rows]
+
+
+# Eleven compounds whose constants pool at radius 1 (seams spec 9.1): six aryl
+# constants share one attachment environment and pool into a profile valued
+# H 4.0, F 2.0, Cl 0.75, Br 4.0, C 2.0 and CC 1.0; [*:1]CC and [*:1]CC(C)(C)C
+# pool into one valued H 1.0, F 2.0, Cl 3.0. Toluene reaches the aryl hydrogen
+# cell through two series, so a median that counted it twice would read 3.0.
+# tests/cpp/test_series_query.cpp (MakePooledStore) holds the same compounds.
+POOLED_COMPOUNDS: tuple[tuple[str, str, float], ...] = (
+    ("c1ccccc1C", "A-H", 3.0),
+    ("Fc1ccc(C)cc1", "A-F", 2.0),
+    ("Clc1ccc(C)cc1", "A-Cl", 1.0),
+    ("Brc1ccc(C)cc1", "A-Br", 4.0),
+    ("c1ccccc1CC", "B-H", 5.0),
+    ("Fc1ccc(CC)cc1", "B-F", 1.0),
+    ("Clc1ccc(CC)cc1", "B-Cl", 0.5),
+    ("CC(C)(C)C", "N-H", 1.0),
+    ("FCC(C)(C)C", "N-F", 2.0),
+    ("ClCC(C)(C)C", "N-Cl", 3.0),
+    ("Cc1ccccc1F", "O-F", 7.0),
+)

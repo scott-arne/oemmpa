@@ -738,6 +738,12 @@ _RAW_BINDING_EXPORTS = (
     "Series",
     "SeriesMember",
     "SeriesMemberVector",
+    "SeriesNetworkEdge",
+    "SeriesNetworkEdgeVector",
+    "SeriesNetworkNode",
+    "SeriesNetworkNodeVector",
+    "SeriesNetworkRequest",
+    "SeriesNetworkResult",
     "SeriesSelection",
     "SeriesSimilarity",
     "SeriesSimilarityEvidence",
@@ -855,11 +861,13 @@ from ._query import (
     analyze_dataframe,
 )
 from ._series import (
+    SeriesNetworkCollection,
     SeriesSelectionOptions,
     SeriesSimilarityCollection,
     SubstituentRankingCollection,
     find_similar_series,
     rank_next_substituents,
+    series_network,
 )
 from ._storage import DuckDBStore, duckdb_available, duckdb_library_version
 from ._transform import (
@@ -908,6 +916,7 @@ __all__ = [
     "RuleEnvironmentStatisticsResult",
     "RuleSelectionOptions",
     "Selection",
+    "SeriesNetworkCollection",
     "SeriesQuery",
     "SeriesSelectionOptions",
     "SeriesSimilarityCollection",
@@ -949,4 +958,5 @@ __all__ = [
     "read_rgroup_file",
     "rgroup_smiles_to_smarts",
     "rgroups_to_recursive_smarts",
+    "series_network",
 ]

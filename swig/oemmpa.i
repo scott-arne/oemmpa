@@ -387,6 +387,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %template(SubstituentRankingEvidenceVector) std::vector<OEMMPA::SubstituentRankingEvidence>;
 %template(SeriesSimilarityVector) std::vector<OEMMPA::SeriesSimilarity>;
 %template(SeriesSimilarityEvidenceVector) std::vector<OEMMPA::SeriesSimilarityEvidence>;
+%template(SeriesNetworkNodeVector) std::vector<OEMMPA::SeriesNetworkNode>;
+%template(SeriesNetworkEdgeVector) std::vector<OEMMPA::SeriesNetworkEdge>;
 
 // ============================================================================
 // Version macros
@@ -398,7 +400,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 // GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
 // ============================================================================
-// These 10 methods are the ONLY wrappers that release the GIL.
+// These 11 methods are the ONLY wrappers that release the GIL.
 %threadallow OEMMPA::Analyzer::Analyze;
 %threadallow OEMMPA::Analyzer::GetPairs;
 %threadallow OEMMPA::Analyzer::GetSeries;
@@ -407,10 +409,11 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %threadallow OEMMPA::DuckDBStore::AddMoleculesFromSmilesFile;
 %threadallow OEMMPA::DuckDBStore::AddPropertiesFromCsvFile;
 %threadallow OEMMPA::DuckDBStore::GetSeries;
-// Both take their request by value so the wrapper copies it before releasing
+// All three take their request by value so the wrapper copies it before releasing
 // the GIL (the plan 1 ruling for GetSeries(SeriesSelection)).
 %threadallow OEMMPA::DuckDBStore::RankNextSubstituents;
 %threadallow OEMMPA::DuckDBStore::FindSimilarSeries;
+%threadallow OEMMPA::DuckDBStore::BuildSeriesNetwork;
 
 // ============================================================================
 // Phase 1 public headers
@@ -546,7 +549,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // Python a view whose lifetime is the record's: the store returns its results by
 // value, so `store.RankNextSubstituents(request).candidates` would outlive the
 // record it points into and read freed memory as an empty sequence, which no
-// caller can tell apart from "no candidates". Every vector member of these four
+// caller can tell apart from "no candidates". Every vector member of these five
 // records is therefore natural: a write accepts any Python sequence, and a read
 // returns an independent copy that stays valid after the record is gone. The cost
 // is one copy per access, which the Python helpers pay once when they materialise
@@ -562,6 +565,8 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 %naturalvar OEMMPA::SeriesSimilarityRequest::query_values;
 %naturalvar OEMMPA::SeriesSimilarityResult::matches;
 %naturalvar OEMMPA::SeriesSimilarityResult::evidence;
+%naturalvar OEMMPA::SeriesNetworkResult::nodes;
+%naturalvar OEMMPA::SeriesNetworkResult::edges;
 // `selection` stays a view onto the live member, so `request.selection.cut_count = 2`
 // still reaches the request, but SWIG's getter hands out a bare pointer into the parent
 // without retaining it: a view read off a temporary request, as in
@@ -599,6 +604,22 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 
     selection = property(_selection_view, _oemmpa.SeriesSimilarityRequest_selection_set,
                          doc="Series bounds, a live view into this request (spec 7.5).")
+%}
+}
+%extend OEMMPA::SeriesNetworkRequest {
+%pythoncode %{
+    def _selection_view(self):
+        r"""Return the series bounds of this request as a live view.
+
+        :returns: The request's own :class:`SeriesSelection`; writes through it change
+            this request, which the view keeps alive for as long as it exists.
+        """
+        view = _oemmpa.SeriesNetworkRequest_selection_get(self)
+        view._owner = self
+        return view
+
+    selection = property(_selection_view, _oemmpa.SeriesNetworkRequest_selection_set,
+                         doc="Series bounds, a live view into this request (seams spec 11.1).")
 %}
 }
 %include "../include/oemmpa/SeriesQuery.h"

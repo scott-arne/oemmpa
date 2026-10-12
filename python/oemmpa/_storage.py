@@ -363,6 +363,15 @@ class DuckDBStore:
 
         return find_similar_series(self, property_name, **kwargs)
 
+    def series_network(self, property_name, **kwargs):
+        """Build the series similarity network; see :func:`oemmpa.series_network`.
+
+        **Thread safety:** releases the GIL like :meth:`series`; use one store per thread.
+        """
+        from ._series import series_network
+
+        return series_network(self, property_name, **kwargs)
+
     def table_names(self):
         """Return base table names from the backing store."""
         return list(self._raw_store.GetTableNames())

@@ -1,12 +1,14 @@
-"""Matched molecular series: selection options and row conversion.
+"""Matched molecular series: selection options, row conversion and the query helpers.
 
-The ranking and similarity helpers of plan 2 live here too.
+The ranking, similarity and network helpers and their result collections live
+here; the records they fill are the SWIG wrappers of include/oemmpa/SeriesQuery.h.
 """
 
 from __future__ import annotations
 
 import math
 import operator
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import pairwise
@@ -119,9 +121,16 @@ def series_rows(series):
 INVALID_QUERY_PREFIX = "invalid series query: "
 
 RANKING_ROW_COLUMNS = ("rgroup", "rgroup_num_heavies", "wins", "support", "fraction")
-RANKING_EVIDENCE_COLUMNS = ("series_id", "constant", "role", "rgroup", "value", "position", "win")
-SIMILARITY_ROW_COLUMNS = ("series_id", "constant", "cut_count", "overlap", "spearman", "centred_rmsd")
-SIMILARITY_EVIDENCE_COLUMNS = ("series_id", "rgroup", "query_value", "candidate_value")
+# The environment columns name a pooled profile (seams spec 10.3); they come last so
+# readers of the earlier columns by position are unaffected.
+RANKING_EVIDENCE_COLUMNS = ("series_id", "constant", "role", "rgroup", "value", "position", "win",
+                            "environment_fingerprint_id", "environment")
+SIMILARITY_ROW_COLUMNS = ("series_id", "constant", "cut_count", "overlap", "spearman", "centred_rmsd",
+                          "environment_fingerprint_id", "environment")
+SIMILARITY_EVIDENCE_COLUMNS = ("series_id", "rgroup", "query_value", "candidate_value",
+                               "environment_fingerprint_id", "environment")
+NETWORK_EDGE_COLUMNS = ("cut_count", "source_id", "target_id", "overlap", "spearman", "centred_rmsd")
+NETWORK_NODE_COLUMNS = ("cut_count", "id", "label", "size")
 
 _DIRECTIONS = {
     "higher": _oemmpa.PropertyDirection_HIGHER_IS_BETTER,
@@ -135,6 +144,12 @@ _MEASURES = {
     "centred_rmsd": _oemmpa.SimilarityMeasure_CENTRED_RMSD,
     "centered_rmsd": _oemmpa.SimilarityMeasure_CENTRED_RMSD,
 }
+_MEASURE_NAMES = {
+    _oemmpa.SimilarityMeasure_SPEARMAN: "spearman",
+    _oemmpa.SimilarityMeasure_CENTRED_RMSD: "crmsd",
+}
+# Every stored constant has environment rows for radii 0 to 5 (seams spec 10.1).
+_MAX_ENVIRONMENT_RADIUS = 5
 
 
 def _raw_store(store):
@@ -247,6 +262,32 @@ def _validated_ladder(support_ladder):
     return ladder
 
 
+def _environment_radius(value):
+    """Return the binding's radius: -1 for ``None`` (stored series), else an integer from 0 to 5."""
+    if value is None:
+        return -1
+    return _integer("environment_radius", value, 0, _MAX_ENVIRONMENT_RADIUS)
+
+
+def _reported_radius(radius):
+    """Return a result's radius as Python spells it: ``None`` for stored series (-1)."""
+    radius = int(radius)
+    return None if radius < 0 else radius
+
+
+def _threshold(value):
+    """Return a network threshold as a finite float."""
+    if isinstance(value, bool):
+        raise ValueError("threshold must be a number, not bool")  # noqa: TRY004 - ValueError is the public contract
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("threshold must be a finite number") from None
+    if not math.isfinite(number):
+        raise ValueError("threshold must be a finite number")
+    return number
+
+
 def _raw_selection(selection):
     """Return the raw ``SeriesSelection`` for an options object, or the default."""
     if selection is None:
@@ -314,10 +355,11 @@ class _RowCollection:
 
 
 class RankingEvidenceCollection(_RowCollection):
-    """Evidence rows of a ranking: query members and reported candidates per matched series.
+    """Evidence rows of a ranking: query members and reported candidates per matched profile.
 
-    Rows are ordered by series id, then role (query before candidate), then
-    query position or R-group SMILES.
+    Rows are ordered by profile (the series id, or for a pooled profile, whose
+    ``series_id`` is 0, its environment fingerprint id), then role (query before
+    candidate), then query position or R-group SMILES.
     """
 
     _columns = RANKING_EVIDENCE_COLUMNS
@@ -332,6 +374,8 @@ class RankingEvidenceCollection(_RowCollection):
             "value": float(entry.value),
             "position": int(entry.position),
             "win": bool(entry.win),
+            "environment_fingerprint_id": int(entry.environment_fingerprint_id),
+            "environment": str(entry.environment_smarts),
         }
 
     def _clone(self, entries):
@@ -361,18 +405,21 @@ class SubstituentRankingCollection(_RowCollection):
     :ivar support_level: Ladder level that produced the candidates (see the spec for empty results).
     :ivar matched_series: Matched series of ``query_used``.
     :ivar evidence: :class:`RankingEvidenceCollection` (empty unless requested).
+    :ivar environment_radius: Pooling radius of the query, or ``None`` for stored series.
     """
 
     _columns = RANKING_ROW_COLUMNS
     _smiles_columns = RANKING_SMILES_COLUMNS
 
-    def __init__(self, candidates, *, query_used=(), dropped=(), support_level=0, matched_series=0, evidence=None):
+    def __init__(self, candidates, *, query_used=(), dropped=(), support_level=0, matched_series=0, evidence=None,
+                 environment_radius=None):
         super().__init__(candidates)
         self.query_used = tuple(query_used)
         self.dropped = tuple(dropped)
         self.support_level = int(support_level)
         self.matched_series = int(matched_series)
         self.evidence = evidence if evidence is not None else RankingEvidenceCollection([])
+        self.environment_radius = environment_radius
 
     @classmethod
     def from_raw(cls, raw):
@@ -389,6 +436,7 @@ class SubstituentRankingCollection(_RowCollection):
             support_level=raw.support_level,
             matched_series=raw.matched_series,
             evidence=RankingEvidenceCollection(list(raw.evidence)),
+            environment_radius=_reported_radius(raw.environment_radius),
         )
 
     def _row(self, entry):
@@ -404,6 +452,7 @@ class SubstituentRankingCollection(_RowCollection):
         return SubstituentRankingCollection(
             entries, query_used=self.query_used, dropped=self.dropped,
             support_level=self.support_level, matched_series=self.matched_series, evidence=self.evidence,
+            environment_radius=self.environment_radius,
         )
 
     def filter(self, *, min_support=None, min_fraction=None, max_rgroup_heavies=None):
@@ -422,10 +471,12 @@ class SubstituentRankingCollection(_RowCollection):
 
 
 class SimilarityEvidenceCollection(_RowCollection):
-    """Shared R-groups of the reported similar series with both values.
+    """Shared R-groups of the reported similar series or pooled profiles with both values.
 
-    Rows are ordered by series id, then R-group SMILES, so they are joined to
-    the matches on ``series_id`` rather than by position.
+    Rows are ordered by series id, then environment fingerprint id (a pooled
+    profile's series id is 0), then R-group SMILES, so they are joined to the
+    matches on ``series_id``, or on ``environment_fingerprint_id`` when pooled,
+    rather than by position.
     """
 
     _columns = SIMILARITY_EVIDENCE_COLUMNS
@@ -437,6 +488,8 @@ class SimilarityEvidenceCollection(_RowCollection):
             "rgroup": str(entry.variable_smiles),
             "query_value": float(entry.query_value),
             "candidate_value": float(entry.candidate_value),
+            "environment_fingerprint_id": int(entry.environment_fingerprint_id),
+            "environment": str(entry.environment_smarts),
         }
 
     def _clone(self, entries):
@@ -452,23 +505,26 @@ class SimilarityEvidenceCollection(_RowCollection):
 
 
 class SeriesSimilarityCollection(_RowCollection):
-    """Stored series similar to the query (spec 7.4), already sorted by the requested measure.
+    """Stored series or pooled profiles similar to the query (spec 7.4), sorted by the requested measure.
 
     The matches are in rank order: the measure first, then descending overlap,
-    then series id. The evidence rows use their own order, so they are joined
-    on ``series_id``.
+    then series id (fingerprint id when pooled). The evidence rows use their own
+    order, so they are joined on ``series_id``, or on
+    ``environment_fingerprint_id`` when pooled.
 
     :ivar query_size: Valued query R-groups.
     :ivar evidence: :class:`SimilarityEvidenceCollection` (empty unless requested).
+    :ivar environment_radius: Pooling radius of the query, or ``None`` for stored series.
     """
 
     _columns = SIMILARITY_ROW_COLUMNS
     _smiles_columns = SIMILARITY_SMILES_COLUMNS
 
-    def __init__(self, matches, *, query_size=0, evidence=None):
+    def __init__(self, matches, *, query_size=0, evidence=None, environment_radius=None):
         super().__init__(matches)
         self.query_size = int(query_size)
         self.evidence = evidence if evidence is not None else SimilarityEvidenceCollection([])
+        self.environment_radius = environment_radius
 
     @classmethod
     def from_raw(cls, raw):
@@ -479,7 +535,8 @@ class SeriesSimilarityCollection(_RowCollection):
         :returns: A new :class:`SeriesSimilarityCollection`.
         """
         return cls(list(raw.matches), query_size=raw.query_size,
-                   evidence=SimilarityEvidenceCollection(list(raw.evidence)))
+                   evidence=SimilarityEvidenceCollection(list(raw.evidence)),
+                   environment_radius=_reported_radius(raw.environment_radius))
 
     def _row(self, entry):
         return {
@@ -489,10 +546,13 @@ class SeriesSimilarityCollection(_RowCollection):
             "overlap": int(entry.overlap),
             "spearman": float(entry.spearman) if entry.has_spearman else None,
             "centred_rmsd": float(entry.centred_rmsd),
+            "environment_fingerprint_id": int(entry.environment_fingerprint_id),
+            "environment": str(entry.environment_smarts),
         }
 
     def _clone(self, entries):
-        return SeriesSimilarityCollection(entries, query_size=self.query_size, evidence=self.evidence)
+        return SeriesSimilarityCollection(entries, query_size=self.query_size, evidence=self.evidence,
+                                          environment_radius=self.environment_radius)
 
     def filter(self, *, min_overlap=None, min_spearman=None, max_centred_rmsd=None):
         """Return the matches meeting every given bound (an undefined Spearman never passes ``min_spearman``).
@@ -520,9 +580,85 @@ class SeriesSimilarityCollection(_RowCollection):
         return self._clone(self._entries[: _integer("n", n, 0)])
 
 
+class SeriesNetworkNodeCollection(_RowCollection):
+    """Nodes of a series network: every eligible profile, ordered by cut count then id.
+
+    In series mode ``id`` is the series id and ``label`` its constant SMILES; when
+    pooled, ``id`` is the environment fingerprint id and ``label`` its SMARTS.
+    ``size`` counts the profile's valued R-groups after the member bound.
+    """
+
+    _columns = NETWORK_NODE_COLUMNS
+
+    def _row(self, entry):
+        return {
+            "cut_count": int(entry.cut_count),
+            "id": int(entry.id),
+            "label": str(entry.label),
+            "size": int(entry.size),
+        }
+
+    def _clone(self, entries):
+        return SeriesNetworkNodeCollection(entries)
+
+
+class SeriesNetworkCollection(_RowCollection):
+    """Undirected similarity edges between stored series or pooled profiles (seams spec 11).
+
+    Each profile keeps its ``top`` best neighbours by the measure (after the
+    threshold, when one was given) and the edges are the union of those
+    selections, ordered by cut count, then ``source_id``, then ``target_id``,
+    with ``source_id < target_id``. A profile that many others select can
+    therefore have more than ``top`` edges.
+
+    :ivar nodes: :class:`SeriesNetworkNodeCollection` of every eligible profile.
+    :ivar measure: ``"spearman"`` or ``"crmsd"``.
+    :ivar top: Neighbours each profile kept before the union.
+    :ivar threshold: The score threshold, or ``None``.
+    :ivar environment_radius: Pooling radius, or ``None`` for stored series.
+    """
+
+    _columns = NETWORK_EDGE_COLUMNS
+
+    def __init__(self, edges, *, nodes=None, measure="spearman", top=10, threshold=None, environment_radius=None):
+        super().__init__(edges)
+        self.nodes = nodes if nodes is not None else SeriesNetworkNodeCollection([])
+        self.measure = measure
+        self.top = int(top)
+        self.threshold = threshold
+        self.environment_radius = environment_radius
+
+    @classmethod
+    def from_raw(cls, raw, *, measure, top, threshold):
+        """Return the collection for a raw ``SeriesNetworkResult``.
+
+        :param raw: Raw result; each vector member is read exactly once.
+        :param measure: ``"spearman"`` or ``"crmsd"``, the request's measure.
+        :param top: The request's ``top``.
+        :param threshold: The request's threshold, or ``None``.
+        :returns: A new :class:`SeriesNetworkCollection`.
+        """
+        return cls(list(raw.edges), nodes=SeriesNetworkNodeCollection(list(raw.nodes)), measure=measure, top=top,
+                   threshold=threshold, environment_radius=_reported_radius(raw.environment_radius))
+
+    def _row(self, entry):
+        return {
+            "cut_count": int(entry.cut_count),
+            "source_id": int(entry.source_id),
+            "target_id": int(entry.target_id),
+            "overlap": int(entry.overlap),
+            "spearman": float(entry.spearman) if entry.has_spearman else None,
+            "centred_rmsd": float(entry.centred_rmsd),
+        }
+
+    def _clone(self, entries):
+        return SeriesNetworkCollection(entries, nodes=self.nodes, measure=self.measure, top=self.top,
+                                       threshold=self.threshold, environment_radius=self.environment_radius)
+
+
 def rank_next_substituents(store, property_name, direction, *, series_id=None, rgroups=None,
                            support_ladder=(20, 10, 5), shorten=True, min_query_length=3,
-                           selection=None, evidence=False):
+                           selection=None, evidence=False, environment_radius=None):
     """Rank candidate next substituents for a query series (Matsy).
 
     A candidate is never a member of the original query, not even one that
@@ -533,16 +669,23 @@ def rank_next_substituents(store, property_name, direction, *, series_id=None, r
     :param direction: ``"higher"`` or ``"lower"`` (case-insensitive) or a
         ``_oemmpa.PropertyDirection_*`` constant; which end of the scale is better.
     :param series_id: Stored series to use as the query (its members' medians
-        become the query values). Exactly one of ``series_id`` and ``rgroups``.
+        become the query values; when pooled, its pooled profile's). Exactly one
+        of ``series_id`` and ``rgroups``.
     :param rgroups: Mapping of R-group SMILES to value, or a sequence of
         ``(smiles, value)`` pairs; at least two, values finite and distinct.
     :param support_ladder: Strictly decreasing positive support levels.
     :param shorten: Drop the least common query member and retry when no
         candidate reaches the last level (never below ``min_query_length``).
     :param min_query_length: Floor of the shortening (at least 2).
-    :param selection: Optional :class:`SeriesSelectionOptions` or raw ``SeriesSelection``.
-    :param evidence: Also return the per-series evidence rows, ordered by series
-        id, then role (query before candidate), then position or SMILES.
+    :param selection: Optional :class:`SeriesSelectionOptions` or raw ``SeriesSelection``;
+        its ``include_up_enumerated`` reads the guessed stereo-variant rows too.
+    :param evidence: Also return the per-profile evidence rows, ordered by
+        profile, then role (query before candidate), then position or SMILES.
+    :param environment_radius: ``None`` ranks over stored series; 0 to 5 pools
+        every series of one cut count whose constant shares its attachment
+        environment at that radius into one profile, valued by the median over
+        its distinct compounds. Pooled evidence reports ``series_id`` 0 and names
+        the profile by ``environment_fingerprint_id`` and ``environment``.
     :returns: :class:`SubstituentRankingCollection`.
     :raises ValueError: For every documented request-validation failure, with the store's message.
     :raises RuntimeError: For a database failure.
@@ -559,25 +702,33 @@ def rank_next_substituents(store, property_name, direction, *, series_id=None, r
     request.min_query_length = _integer("min_query_length", min_query_length, 2, _UINT32_MAX)
     request.selection = _raw_selection(selection)
     request.include_evidence = bool(evidence)
+    request.environment_radius = _environment_radius(environment_radius)
     return SubstituentRankingCollection.from_raw(_call_store(_raw_store(store).RankNextSubstituents, request))
 
 
 def find_similar_series(store, property_name, *, series_id=None, rgroups=None, min_overlap=3,
-                        measure="spearman", top=None, selection=None, evidence=False):
-    """Find stored series whose shared R-groups order like the query's.
+                        measure="spearman", top=None, selection=None, evidence=False, environment_radius=None):
+    """Find stored series, or pooled profiles, whose shared R-groups order like the query's.
 
     :param store: :class:`oemmpa.DuckDBStore` facade or raw ``_oemmpa.DuckDBStore``.
     :param property_name: Stored property the series are compared on.
-    :param series_id: Stored query series (excluded from its own results). Exactly one of ``series_id`` and ``rgroups``.
+    :param series_id: Stored query series (its own series, or when pooled its own
+        profile, is excluded from the results). Exactly one of ``series_id`` and ``rgroups``.
     :param rgroups: Mapping of R-group SMILES to value, or ``(smiles, value)`` pairs; ties are allowed.
     :param min_overlap: Minimum shared valued R-groups (at least 2).
     :param measure: ``"spearman"`` (descending) or ``"crmsd"`` (centred RMSD, ascending), or a
         ``_oemmpa.SimilarityMeasure_*`` constant.
     :param top: Keep this many matches after sorting; ``None`` or 0 keeps all.
         The truncation only shortens the output, never the work.
-    :param selection: Optional :class:`SeriesSelectionOptions` or raw ``SeriesSelection``.
-    :param evidence: Also return one row per (reported series, shared R-group),
-        ordered by series id then R-group SMILES rather than in match order.
+    :param selection: Optional :class:`SeriesSelectionOptions` or raw ``SeriesSelection``;
+        its ``include_up_enumerated`` reads the guessed stereo-variant rows too.
+    :param evidence: Also return one row per (reported match, shared R-group),
+        ordered by series id, fingerprint id, then R-group SMILES rather than in match order.
+    :param environment_radius: ``None`` compares stored series; 0 to 5 pools them
+        by attachment environment at that radius, as for
+        :func:`rank_next_substituents`. Pooled matches report ``series_id`` 0, an
+        empty ``constant``, and the profile's ``environment_fingerprint_id`` and
+        ``environment``.
     :returns: :class:`SeriesSimilarityCollection`.
     :raises ValueError: For every documented request-validation failure, with the store's message.
     :raises RuntimeError: For a database failure.
@@ -593,4 +744,53 @@ def find_similar_series(store, property_name, *, series_id=None, rgroups=None, m
     request.top = 0 if top is None else _integer("top", top, 0, _UINT32_MAX)
     request.selection = _raw_selection(selection)
     request.include_evidence = bool(evidence)
+    request.environment_radius = _environment_radius(environment_radius)
     return SeriesSimilarityCollection.from_raw(_call_store(_raw_store(store).FindSimilarSeries, request))
+
+
+def series_network(store, property_name, *, measure="spearman", min_overlap=3, top=10, threshold=None,
+                   environment_radius=None, selection=None, threads=None):
+    """Build the bounded all-pairs similarity network of the stored series (seams spec 11).
+
+    Every eligible profile (a stored series, or a pooled profile when
+    ``environment_radius`` is given) keeps its ``top`` best neighbours by the
+    measure among the profiles of its cut count that share at least
+    ``min_overlap`` valued R-groups with it, after the threshold; the network is
+    the union of those selections as undirected edges. Each profile's
+    selections are exactly the first ``top`` matches :func:`find_similar_series`
+    returns for it with the same settings. The result does not depend on
+    ``threads``.
+
+    :param store: :class:`oemmpa.DuckDBStore` facade or raw ``_oemmpa.DuckDBStore``.
+    :param property_name: Stored property the profiles are compared on.
+    :param measure: ``"spearman"`` (descending) or ``"crmsd"`` (centred RMSD, ascending), or a
+        ``_oemmpa.SimilarityMeasure_*`` constant.
+    :param min_overlap: Minimum shared valued R-groups (at least 2).
+    :param top: Neighbours each profile keeps before the union (at least 1).
+    :param threshold: Keep only pairs whose Spearman is defined and at least this
+        (``"spearman"``), or whose centred RMSD is at most this (``"crmsd"``); ``None`` keeps all.
+    :param environment_radius: ``None`` for stored series; 0 to 5 pools them by
+        attachment environment at that radius, as for :func:`rank_next_substituents`.
+    :param selection: Optional :class:`SeriesSelectionOptions` or raw ``SeriesSelection``;
+        ``cut_count`` 0 reads every cut count, and profiles of different cut counts never meet.
+    :param threads: Scoring threads; ``None`` uses every CPU.
+    :returns: :class:`SeriesNetworkCollection`.
+    :raises ValueError: For every documented request-validation failure, with the store's message.
+    :raises RuntimeError: For a database failure.
+    """
+    request = _oemmpa.SeriesNetworkRequest()
+    request.property_name = str(property_name)
+    request.measure = _measure_constant(measure)
+    request.min_overlap = _integer("min_overlap", min_overlap, 2, _UINT32_MAX)
+    request.top = _integer("top", top, 1, _UINT32_MAX)
+    reported_threshold = None if threshold is None else _threshold(threshold)
+    request.has_threshold = reported_threshold is not None
+    request.threshold = 0.0 if reported_threshold is None else reported_threshold
+    request.environment_radius = _environment_radius(environment_radius)
+    request.selection = _raw_selection(selection)
+    if threads is None:
+        threads = os.cpu_count() or 1
+    request.threads = _integer("threads", threads, 1, _UINT32_MAX)
+    raw = _call_store(_raw_store(store).BuildSeriesNetwork, request)
+    return SeriesNetworkCollection.from_raw(raw, measure=_MEASURE_NAMES[request.measure], top=request.top,
+                                            threshold=reported_threshold)

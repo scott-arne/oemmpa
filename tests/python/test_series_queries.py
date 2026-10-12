@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 
 import oemmpa
 import pytest
@@ -13,16 +15,26 @@ from oemmpa import (
     _oemmpa,
     find_similar_series,
     rank_next_substituents,
+    series_network,
 )
 from oemmpa._series import (
     INVALID_QUERY_PREFIX,
+    NETWORK_EDGE_COLUMNS,
+    NETWORK_NODE_COLUMNS,
     RANKING_EVIDENCE_COLUMNS,
     RANKING_ROW_COLUMNS,
     SIMILARITY_EVIDENCE_COLUMNS,
     SIMILARITY_ROW_COLUMNS,
+    SeriesNetworkCollection,
     SeriesSimilarityCollection,
     SubstituentRankingCollection,
 )
+
+# tests/python is not a package, and site-packages ships an unrelated ``tests``
+# package that wins the dotted lookup, so the shared fixture is imported the way
+# test_series_oracle.py imports _series_oracle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _series_fixture import POOLED_COMPOUNDS
 
 CORES = ["C", "CC", "OC", "N", "C#N"]
 BROMINE = [4.0, 2.5, 1.5, 0.5, 3.0]
@@ -409,3 +421,165 @@ def test_store_methods_delegate_to_the_helpers(store):
     assert store.find_similar_series("act", rgroups=QUERY).to_dicts() == find_similar_series(store, "act", rgroups=QUERY).to_dicts()
     assert oemmpa.rank_next_substituents is rank_next_substituents
     assert "rank_next_substituents" in oemmpa.__all__ and "find_similar_series" in oemmpa.__all__
+
+
+_RADIUS_CALLS = {
+    "rank": lambda store, radius: rank_next_substituents(store, "act", "higher", rgroups=QUERY,
+                                                         environment_radius=radius),
+    "similar": lambda store, radius: find_similar_series(store, "act", rgroups=QUERY, environment_radius=radius),
+    "network": lambda store, radius: series_network(store, "act", environment_radius=radius),
+}
+
+
+@pytest.mark.parametrize("call", sorted(_RADIUS_CALLS))
+@pytest.mark.parametrize("radius", [-1, 6, True, 1.0, "1"])
+def test_environment_radius_is_validated_before_the_store(call, radius):
+    # None is the only spelling of "stored series"; -1 is the binding's, not Python's.
+    with pytest.raises(ValueError, match="environment_radius"):
+        _RADIUS_CALLS[call](_ExplodingStore(), radius)
+
+
+@pytest.fixture(scope="module")
+def pooled_store(tmp_path_factory):
+    analyzer = Analyzer()
+    for smiles, name, value in POOLED_COMPOUNDS:
+        analyzer.add_molecule(smiles, id=name)
+        analyzer.add_property(name, "act", value)
+    analyzer.analyze()
+    path = tmp_path_factory.mktemp("pooled-queries") / "pooled.duckdb"
+    pooled = DuckDBStore(path)
+    pooled.save_analyzer(analyzer)
+    return pooled
+
+
+def _environment_smarts(constant, radius):
+    return str(_oemmpa.ComputeConstantEnvironmentFingerprints(constant, radius, radius)[0].GetSmarts())
+
+
+def test_pooled_queries_report_profiles_and_echo_the_radius(pooled_store):
+    aryl = _environment_smarts("[*:1]c1ccc(cc1)C", 1)
+    methylene = _environment_smarts("[*:1]CC(C)(C)C", 1)
+    similar = find_similar_series(pooled_store, "act", rgroups=QUERY, environment_radius=1, evidence=True)
+    assert similar.environment_radius == 1
+    rows = similar.to_dicts()
+    assert tuple(rows[0]) == SIMILARITY_ROW_COLUMNS
+    assert [row["environment"] for row in rows] == [aryl, methylene]
+    assert all(row["series_id"] == 0 and row["constant"] == "" and row["cut_count"] == 1 for row in rows)
+    assert all(row["environment_fingerprint_id"] > 0 for row in rows)
+    assert rows[0]["spearman"] == pytest.approx(1.0) and rows[1]["spearman"] == pytest.approx(-1.0)
+    assert rows[0]["centred_rmsd"] == pytest.approx(math.sqrt(0.875 / 3.0))
+    # Toluene reaches the aryl hydrogen cell through two series and counts once:
+    # median(3, 5) = 4.0, where counting it twice would read median(3, 3, 5) = 3.0.
+    aryl_id = rows[0]["environment_fingerprint_id"]
+    aryl_rows = [row for row in similar.evidence.to_dicts() if row["environment_fingerprint_id"] == aryl_id]
+    assert tuple(aryl_rows[0]) == SIMILARITY_EVIDENCE_COLUMNS
+    assert [(row["rgroup"], row["candidate_value"]) for row in aryl_rows] == [
+        ("[*:1]Cl", 0.75), ("[*:1]F", 2.0), ("[*:1][H]", 4.0)]
+    assert all(row["environment"] == aryl and row["series_id"] == 0 for row in aryl_rows)
+
+    plain = find_similar_series(pooled_store, "act", rgroups=QUERY)
+    assert plain.environment_radius is None
+    assert all(row["environment_fingerprint_id"] == 0 and row["environment"] == "" for row in plain.to_dicts())
+
+    ranking = rank_next_substituents(pooled_store, "act", "higher", rgroups=QUERY, support_ladder=(1,),
+                                     environment_radius=1, evidence=True)
+    assert ranking.environment_radius == 1
+    assert ranking.matched_series == 1
+    assert [(row["rgroup"], row["support"], row["wins"]) for row in ranking.to_dicts()] == [
+        ("[*:1]Br", 1, 0), ("[*:1]C", 1, 0), ("[*:1]CC", 1, 0)]
+    evidence = ranking.evidence.to_dicts()
+    assert tuple(evidence[0]) == RANKING_EVIDENCE_COLUMNS
+    assert {(row["series_id"], row["constant"], row["environment"]) for row in evidence} == {(0, "", aryl)}
+    assert rank_next_substituents(pooled_store, "act", "higher", rgroups=QUERY).environment_radius is None
+
+
+def test_series_network_rows_nodes_and_metadata(store):
+    network = series_network(store, "act", threads=2)
+    assert isinstance(network, SeriesNetworkCollection)
+    assert (network.measure, network.top, network.threshold, network.environment_radius) == (
+        "spearman", 10, None, None)
+    rows = network.to_dicts()
+    assert rows and tuple(rows[0]) == NETWORK_EDGE_COLUMNS
+    nodes = network.nodes.to_dicts()
+    assert nodes and tuple(nodes[0]) == NETWORK_NODE_COLUMNS
+    assert [(row["cut_count"], row["id"]) for row in nodes] == sorted((row["cut_count"], row["id"]) for row in nodes)
+    keys = [(row["cut_count"], row["source_id"], row["target_id"]) for row in rows]
+    assert keys == sorted(set(keys))
+    known = {(row["cut_count"], row["id"]) for row in nodes}
+    assert all(row["source_id"] < row["target_id"] for row in rows)
+    assert all((row["cut_count"], row["source_id"]) in known and (row["cut_count"], row["target_id"]) in known
+               for row in rows)
+    assert len(rows) <= network.top * len(nodes)
+    # The five para series share H, F, Cl and Br, so every pair of them is an edge with overlap 4.
+    para = sorted(_series_id(store, f"[*:1]c1ccc(cc1){core}") for core in CORES)
+    edges = {(row["source_id"], row["target_id"]): row for row in rows if row["cut_count"] == 1}
+    for index, first in enumerate(para):
+        for second in para[index + 1:]:
+            assert edges[(first, second)]["overlap"] == 4
+    labels = {row["id"]: row["label"] for row in nodes}
+    assert labels[_series_id(store, "[*:1]c1ccc(cc1)C")] == "[*:1]c1ccc(cc1)C"
+    strict = series_network(store, "act", threshold=0.5, measure="crmsd", top=2)
+    assert (strict.measure, strict.top, strict.threshold) == ("crmsd", 2, 0.5)
+    assert all(row["centred_rmsd"] <= 0.5 for row in strict.to_dicts())
+    pandas = pytest.importorskip("pandas")
+    assert isinstance(network.to_dataframe(), pandas.DataFrame)
+    assert list(network.to_dataframe().columns) == list(NETWORK_EDGE_COLUMNS)
+    assert list(network.nodes.to_dataframe().columns) == list(NETWORK_NODE_COLUMNS)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"top": 0}, "top must be at least 1"),
+        ({"top": 2**32}, "top must be at most 4294967295"),
+        ({"min_overlap": 1}, "min_overlap must be at least 2"),
+        ({"threshold": float("nan")}, "threshold must be a finite number"),
+        ({"threshold": float("inf")}, "threshold must be a finite number"),
+        ({"threshold": "high"}, "threshold must be a finite number"),
+        ({"threshold": True}, "threshold must be a number, not bool"),
+        ({"threads": 0}, "threads must be at least 1"),
+        ({"measure": "cosine"}, "measure"),
+    ],
+)
+def test_series_network_arguments_are_validated_before_the_store(kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        series_network(_ExplodingStore(), "act", **kwargs)
+
+
+class _CapturingStore:
+    """A raw store that records the network request instead of running it."""
+
+    def __init__(self):
+        self.request = None
+
+    def BuildSeriesNetwork(self, request):   # The binding's spelling.
+        self.request = request
+        return _oemmpa.SeriesNetworkResult()
+
+
+def test_series_network_threads_default_to_the_cpu_count(monkeypatch):
+    capturing = _CapturingStore()
+    monkeypatch.setattr("os.cpu_count", lambda: 6)
+    network = series_network(capturing, "act")
+    assert capturing.request.threads == 6
+    assert len(network) == 0 and len(network.nodes) == 0 and network.environment_radius is None
+    monkeypatch.setattr("os.cpu_count", lambda: None)
+    series_network(capturing, "act")
+    assert capturing.request.threads == 1
+    series_network(capturing, "act", threads=3, threshold=1, environment_radius=2)
+    assert capturing.request.threads == 3
+    assert (capturing.request.has_threshold, capturing.request.threshold) == (True, 1.0)
+    assert capturing.request.environment_radius == 2
+
+
+def test_store_series_network_delegates_and_is_exported(store):
+    assert store.series_network("act").to_dicts() == series_network(store, "act").to_dicts()
+    assert oemmpa.series_network is series_network
+    assert oemmpa.SeriesNetworkCollection is SeriesNetworkCollection
+    assert {"series_network", "SeriesNetworkCollection"} <= set(oemmpa.__all__)
+
+
+def test_store_side_network_validation_becomes_value_error(store):
+    with pytest.raises(ValueError) as error:
+        series_network(store, "absent")
+    assert str(error.value) == INVALID_QUERY_PREFIX + "property_name is not stored: absent"

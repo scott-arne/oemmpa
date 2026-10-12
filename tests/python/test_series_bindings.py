@@ -350,7 +350,8 @@ def test_request_selection_views_keep_their_request_alive():
     # `request.selection` is a live view into the request's own memory, so it has to keep
     # that request alive. A view whose request has been freed reads and writes whatever
     # the allocator hands the next request, answering for a record it never saw.
-    for request_type in (_oemmpa.SubstituentRankingRequest, _oemmpa.SeriesSimilarityRequest):
+    for request_type in (_oemmpa.SubstituentRankingRequest, _oemmpa.SeriesSimilarityRequest,
+                         _oemmpa.SeriesNetworkRequest):
         name = request_type.__name__
         request = request_type()
         view = request.selection
@@ -524,3 +525,38 @@ def test_raw_analyzer_and_store_expose_the_series_flag_the_guessed_row_count_and
                  "capture_fragmentation_settings", "default_fragmentation_settings"):
         assert not hasattr(_swig_proxy, name), name
         assert not hasattr(_oemmpa, name), name
+
+
+def test_binding_exposes_the_network_records_and_the_radius_defaults():
+    for name in ("SeriesNetworkRequest", "SeriesNetworkNode", "SeriesNetworkEdge", "SeriesNetworkResult",
+                 "SeriesNetworkNodeVector", "SeriesNetworkEdgeVector"):
+        assert hasattr(_oemmpa, name), name
+    request = _oemmpa.SeriesNetworkRequest()
+    assert request.measure == _oemmpa.SimilarityMeasure_SPEARMAN
+    assert (request.min_overlap, request.top, request.threads) == (3, 10, 1)
+    assert request.has_threshold is False and request.threshold == 0.0
+    assert request.environment_radius == -1
+    assert request.selection.min_series_length == 2 and request.selection.include_up_enumerated is False
+    assert _oemmpa.SubstituentRankingRequest().environment_radius == -1
+    assert _oemmpa.SeriesSimilarityRequest().environment_radius == -1
+    assert _oemmpa.SeriesNetworkResult().environment_radius == -1
+    edge = _oemmpa.SeriesNetworkEdge()
+    assert (edge.cut_count, edge.source_id, edge.target_id, edge.overlap, edge.has_spearman) == (0, 0, 0, 0, False)
+    node = _oemmpa.SeriesNetworkNode()
+    assert (node.id, node.label, node.cut_count, node.size) == (0, "", 0, 0)
+    match = _oemmpa.SeriesSimilarity()
+    assert (match.environment_fingerprint_id, match.environment_smarts) == (0, "")
+
+
+def test_network_result_vectors_survive_the_result_object():
+    # As for the ranking and similarity results: a vector read off the temporary
+    # result must stay valid once the result is gone.
+    store = _interleaving_raw_store()
+    request = _oemmpa.SeriesNetworkRequest()
+    request.property_name = "act"
+    nodes = list(store.BuildSeriesNetwork(request).nodes)
+    edges = list(store.BuildSeriesNetwork(request).edges)
+    gc.collect()
+    assert len(nodes) >= 5 and len(edges) >= 10   # Five para cores share four valued R-groups pairwise.
+    assert all(edge.source_id < edge.target_id for edge in edges)
+    assert all(node.size >= 2 for node in nodes)

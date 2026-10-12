@@ -27,15 +27,15 @@ def test_target_methods_release_gil():
     # Scan windows are the number of chars examined after a wrapper name. The
     # release check uses a wider window so it reaches the GIL macro inside larger
     # wrapper bodies; every absence assertion uses a tighter window so it cannot
-    # bleed into the following wrapper and read a neighbor's macro. The two query
-    # wrappers convert a request of ten fields before they release, which puts
+    # bleed into the following wrapper and read a neighbor's macro. The three query
+    # wrappers convert a request of up to eleven fields before they release, which puts
     # their macro ~1500 chars in, still far short of the next wrapper's.
     RELEASE_SCAN = 1800
     GETTER_SCAN = 800
     def wrapper_releases(pattern, scan=RELEASE_SCAN):
         blocks = re.findall(pattern + r"[\s\S]{0," + str(scan) + r"}", text)
         return blocks and any(any(r in b for r in RELEASE) for b in blocks)
-    # Every one of the ten target methods must release the GIL. The two series reads
+    # Every one of the eleven target methods must release the GIL. The two series reads
     # are named by their overload wrappers rather than by the bare method name: the
     # prefix "DuckDBStore_GetSeries" also matches the GIL-held GetSeriesCount wrapper,
     # so a bare prefix would pass on a build where only one of the three releases.
@@ -47,7 +47,8 @@ def test_target_methods_release_gil():
                  "DuckDBStore_AddMoleculesFromSmilesFile",
                  "DuckDBStore_AddPropertiesFromCsvFile",
                  "DuckDBStore_GetSeries__SWIG_0", "DuckDBStore_GetSeries__SWIG_1",
-                 "DuckDBStore_RankNextSubstituents", "DuckDBStore_FindSimilarSeries"):
+                 "DuckDBStore_RankNextSubstituents", "DuckDBStore_FindSimilarSeries",
+                 "DuckDBStore_BuildSeriesNetwork"):
         assert wrapper_releases(r"_wrap_" + name), f"{name} should release the GIL"
     # A sampled trivial getter must NOT release (proves selectivity, no churn).
     getter = re.findall(r"_wrap_Analyzer_GetMethodName[\s\S]{0," + str(GETTER_SCAN) + r"}", text)
@@ -63,11 +64,11 @@ def test_target_methods_release_gil():
         assert re.search(r"_wrap_" + name + r"\b", text), f"{name} is not a wrapper any more"
         assert not wrapper_releases(r"_wrap_" + name, scan=GETTER_SCAN), f"{name} should NOT release the GIL"
     # Total GIL macro count: 5 mentions in SWIG's runtime header (four definitions
-    # and one #if !defined guard) plus one BEGIN per releasing wrapper body, 19
-    # bodies across the 10 targets' overloads. Pin the observed count so a
+    # and one #if !defined guard) plus one BEGIN per releasing wrapper body, 20
+    # bodies across the 11 targets' overloads. Pin the observed count so a
     # regression that goes broad will fail.
     macro_count = text.count("SWIG_PYTHON_THREAD_BEGIN_ALLOW") + text.count("Py_BEGIN_ALLOW_THREADS")
-    assert macro_count <= 24, f"Expected ≤24 GIL macros (10 targets), found {macro_count}"
+    assert macro_count <= 25, f"Expected ≤25 GIL macros (11 targets), found {macro_count}"
 
 
 @pytest.mark.skipif(not WRAP.exists(), reason="generated SWIG wrapper not built")
@@ -107,6 +108,7 @@ def test_query_requests_are_copied_before_the_gil_is_released():
     for wrapper, record in (
         ("DuckDBStore_RankNextSubstituents", "SubstituentRankingRequest"),
         ("DuckDBStore_FindSimilarSeries", "SeriesSimilarityRequest"),
+        ("DuckDBStore_BuildSeriesNetwork", "SeriesNetworkRequest"),
     ):
         source = _wrapper_source(text, wrapper)
         before, macro, after = source.partition("SWIG_PYTHON_THREAD_BEGIN_ALLOW")
