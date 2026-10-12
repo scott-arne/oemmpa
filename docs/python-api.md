@@ -967,7 +967,8 @@ its series: observed members only without the flag, which equals the stored
 count unless a member bound (`max_variable_heavy_atoms`) trims the series, and
 guess-only members too under `include_up_enumerated=True`, so a series can
 read longer with the flag than without it. Ranking and similarity read the
-observed rows.
+guessed rows too when their `selection` sets `include_up_enumerated=True`,
+and the observed rows otherwise.
 
 ### Series for MCS analyses
 

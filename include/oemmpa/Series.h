@@ -134,8 +134,9 @@ struct SeriesSelection {
     /// Read the up-enumerated rows too. False (the default) reads exactly the
     /// observed rows; true reads the labelled view: members carry their labels,
     /// members only guesses realize appear, and the length test counts every
-    /// R-group read. DuckDBStore::GetSeries honours it; RankNextSubstituents
-    /// and FindSimilarSeries read the observed rows whatever it says.
+    /// R-group read. Every DuckDBStore read and query that takes a selection
+    /// honours it (GetSeries, RankNextSubstituents, FindSimilarSeries), so one
+    /// selection means the same rows on every surface (seams spec 5.4).
     bool include_up_enumerated = false;
 };
 
