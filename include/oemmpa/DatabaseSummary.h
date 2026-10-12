@@ -53,8 +53,8 @@ public:
     /// GetNumSeriesMembers counts the observed rows only.
     std::uint64_t GetNumSeriesVariantMembers() const;
     /// 'fragmentation' (the fragmentation method), '\<method\>+fragmentation' (an MCS
-    /// analysis with series enumeration), 'none' (no series produced) or
-    /// 'not-computed' (no analyzer save yet).
+    /// analysis with series enumeration), 'none' (an analysis without series
+    /// enumeration) or 'not-computed' (no analyzer save yet).
     const std::string& GetSeriesSource() const;
 
 private:

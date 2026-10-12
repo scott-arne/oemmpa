@@ -29,10 +29,11 @@ method names raise `ValueError`.
 matched molecular series; `None` keeps the method's default (on for
 `fragmentation`, off for the MCS methods). See "Series for MCS analyses" below.
 
-DMCSS emits at most three cuts, the most the store's environment fingerprint
-represents, and skips a candidate pair whose rendered constant or variable
-SMILES OEChem cannot read back, such as a match that splits an aromatic ring;
-OEChem prints a warning on stderr for each such skipped candidate.
+DMCSS emits pairs of at most three cuts, the most the store's environment
+fingerprint represents, and skips a candidate pair whose rendered constant or
+variable SMILES OEChem cannot read back, such as a match that splits an
+aromatic ring; OEChem prints a warning on stderr for each such skipped
+candidate.
 
 WizePairZ supports configuration via `configure_wizepairz()`:
 
@@ -313,11 +314,12 @@ analyzer = Analyzer()
 analyzer.configure_fragmentation(max_cuts=2, max_heavy_atoms=100)
 ```
 
-Fragmentation controls are available for the default fragmentation method.
-They let you limit the number of cuts, cap very dense cut surfaces, and skip
-molecules above a heavy-atom or rotatable-bond threshold. These controls are
-useful for keeping large jobs predictable and for reproducing a validation
-protocol.
+Fragmentation controls are available for the default fragmentation method,
+and for an MCS method with series enumeration on, where they configure the
+auxiliary series pass (see "Series for MCS analyses"). They let you limit the
+number of cuts, cap very dense cut surfaces, and skip molecules above a
+heavy-atom or rotatable-bond threshold. These controls are useful for keeping
+large jobs predictable and for reproducing a validation protocol.
 
 `cut_smarts` replaces the default MMPDB-style cut-bond SMARTS with an explicit
 SMARTS query. `cut_rgroups` and `cut_rgroup_file` provide the MMPDB
@@ -926,11 +928,14 @@ read), `constant`, `cut_count`, `constant_num_heavies`, `num_members`,
 `enumeration_label`; `filter()` takes `constant`, `cut_count` and `min_length`.
 
 Saving an analysis persists its series (tables `series` and `series_member`;
-`dataset.series_source` records the method). A series-producing analysis can
-only be saved into an empty store, and direct pair writes are refused
-afterwards, because a stored series describes the whole analysed set. Series
-take no query options, so a save that bounds its pairs still stores every
-enumerated series. Read them back with `DuckDBStore.series(selection)`, where
+`dataset.series_source` records `fragmentation` for the fragmentation method,
+the method name plus `+fragmentation` for an MCS analysis with series
+enumeration, `none` for one without, and `not-computed` until an analysis is
+saved). A series-producing analysis can only be saved into an empty store, and
+direct pair writes are refused afterwards, because a stored series describes
+the whole analysed set. Series take no query options, so a save that bounds
+its pairs still stores every enumerated series. Read them back with
+`DuckDBStore.series(selection)`, where
 `SeriesSelectionOptions` holds the query-time bounds (`min_series_length`,
 `max_variable_heavy_atoms`, `min_constant_heavy_atoms`, `cut_count`; zero means
 unbounded and a minimum length of 0 equals 1). `DuckDBStore.series_count()`
@@ -957,10 +962,11 @@ compounds realize, so a member only guesses realize does not lengthen a
 stored series; the summary's `series_members` is the number of observed
 `series_member` rows (compound memberships); and the summary's
 `series_variant_members` is the number of up-enumerated `series_member` rows.
-A row's `num_members` column is the length of the series as read: the stored
-count in a default read, and every R-group the read returns, guess-only
-members included, under `include_up_enumerated=True`, so a series can read
-longer with the flag than without it. Ranking and similarity read the
+A row's `num_members` column is the number of R-groups the read returns for
+its series: observed members only without the flag, which equals the stored
+count unless a member bound (`max_variable_heavy_atoms`) trims the series, and
+guess-only members too under `include_up_enumerated=True`, so a series can
+read longer with the flag than without it. Ranking and similarity read the
 observed rows.
 
 ### Series for MCS analyses
@@ -1196,22 +1202,22 @@ readers open the same database file at once.
 
 `save_analyzer()` writes the analyzer's molecules, properties, pairs and
 series in one transaction. A series-producing analysis (the default
-`fragmentation` method) is only accepted by an empty store, so save before
-anything else is written and rebuild the store instead of appending to it.
-Properties can still be loaded into a saved store afterwards; molecules belong
-in a store no analysis is saved into, because molecules added after a save are
-not members of any stored series.
+`fragmentation` method, or an MCS method with `series=True`) is only accepted
+by an empty store, so save before anything else is written and rebuild the
+store instead of appending to it. Properties can still be loaded into a saved
+store afterwards; molecules belong in a store no analysis is saved into,
+because molecules added after a save are not members of any stored series.
 
 `DuckDBStore.fragment_options()` returns the fragmentation settings saved
 with a series-producing analysis as a dict: `cut_smarts` (a list of SMARTS, or
 `None` for the default cut rule), `max_cut_bonds`, `max_cuts`,
-`max_heavy_atoms` and `max_rotatable_bonds` (`None` when unset),
-`max_up_enumerations`, `min_cuts`, `ring_perception` (`"consulted"` or
-`"strict"`) and `rotatable_smarts`. R-groups passed as `cut_rgroups` or
-`cut_rgroup_file` are recorded as the SMARTS they convert to. A store that
-holds no series-producing analysis returns an empty dict. The column
-`dataset.fragment_options` holds the same record as compact JSON with sorted
-keys.
+`max_heavy_atoms`, `max_rotatable_bonds`, `max_up_enumerations`, `min_cuts`,
+`ring_perception` (`"consulted"` or `"strict"`) and `rotatable_smarts`;
+`max_heavy_atoms` and `max_rotatable_bonds` are `None` when unset. R-groups
+passed as `cut_rgroups` or `cut_rgroup_file` are recorded as the SMARTS they
+convert to. A store that holds no series-producing analysis returns an empty
+dict. The column `dataset.fragment_options` holds the same record as compact
+JSON with sorted keys.
 
 ```python
 store.save_analyzer(analyzer)

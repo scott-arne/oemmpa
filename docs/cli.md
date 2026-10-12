@@ -148,6 +148,11 @@ to lift that default. The heavy-atom change filters (`--max-heavies-transf`,
 `--max-frac-trans`) and the orientation option (`--symmetric`) apply to every
 method as well.
 
+`--method dmcss` emits pairs of at most three cuts and skips a candidate pair
+whose fragments OEChem cannot read back, such as a match that splits an
+aromatic ring; OEChem prints a warning on stderr for each such skipped
+candidate.
+
 ### Salt And Solvent Removal
 
 By default, `oemmpa` desalts every input molecule: it splits disconnected
@@ -227,9 +232,10 @@ observed `series_member` rows (compound memberships in those series),
 `series_variant_members` counts the up-enumerated rows (guessed stereo
 variants, listed by `oemmpa series --include-up-enumerated`), and
 `series_source` is `not-computed` when no analyzer save has reached the store
-yet, `none` when the saved analysis produces no series, the method name for a
-fragmentation build, or the method name plus `+fragmentation` for an MCS build
-with `--series`.
+yet, `none` for an analysis without series enumeration (an MCS build without
+`--series`), the method name for a fragmentation build (even one that found no
+series), or the method name plus `+fragmentation` for an MCS build with
+`--series`.
 
 `list` is accepted as an alias for `summary`. Both open the store read-only, so
 they fail on a DuckDB file that OEMMPA did not create rather than adding the
@@ -333,10 +339,11 @@ id. `--min-length`, `--max-rgroup-heavies`, `--min-constant-heavies` and
 `--min-length 0` is the same as `1`, while zero or an omitted
 `--max-rgroup-heavies`, `--min-constant-heavies` or `--cut-count` means
 unbounded. `--include-up-enumerated` adds the guessed stereo-variant rows
-(`enumeration_label` `constant-up` or `variable-up`), and each row's
-`num_members` then counts every R-group listed, guess-only members included;
-without it every row is an observed compound (`none`) and `num_members` is the
-stored, observed-only length.
+(`enumeration_label` `constant-up` or `variable-up`); without it every row is
+an observed compound (`none`). Each row's `num_members` is the number of
+R-groups the read returns for its series: observed members only without the
+flag, which equals the stored count unless `--max-rgroup-heavies` trims the
+series, and guess-only members too with it.
 
 `oemmpa series-rank` ranks candidate next substituents the way Matsy does:
 

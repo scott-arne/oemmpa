@@ -242,8 +242,8 @@ be generated from, whether that is `--parquet` or the file the resolver finds
 without it — or when `--out` names the store's write-ahead log, because those
 files are truncated or, under `--force`, unlinked. The JSON records the corpus
 provenance sidecar, the linked DuckDB library version, the host, the store
-build (molecules, series, member rows, build seconds — parse, load the
-property, analyse and persist — and the seconds spent rewriting
+build (molecules, series, observed member rows, build seconds — parse, load
+the property, analyse and persist — and the seconds spent rewriting
 `series.num_members`), the query definitions and timings, and
 `all_under_target`. Results live under the git-ignored `benchmarks/results/`.
 
@@ -254,9 +254,10 @@ the two for `--pairs` pairs (default and minimum 3; plain first in even pairs,
 series first in odd ones) so drift in machine state over the run favours
 neither. Each child's wall seconds are timed from its spawn to its reaping, and
 its peak resident memory comes from its own `os.wait4` record. On Linux a
-child's peak includes the parent's highest resident size up to the spawn,
-because the kernel carries it across `exec`; the bundle records `platform` so a
-reader can tell, and per-child isolation holds on macOS. The JSON (default
+child's peak is at least the parent's highest resident size up to the spawn,
+because the kernel carries that high-water mark across `exec`; the bundle
+records `platform` so a reader can tell, and per-child isolation holds on
+macOS. The JSON (default
 `benchmarks/results/series_mcs_build.json`) keeps every child's figures, each
 mode's median build seconds and maximum peak, the pairs and series each store
 holds, and the two series-over-plain ratios. The two stores are built beside

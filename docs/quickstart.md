@@ -630,9 +630,9 @@ store.save_analyzer(analyzer)
 
 `save_analyzer()` writes the analyzer's molecules, properties, matched pairs
 and matched molecular series in one transaction. A series-producing analysis
-(the default `fragmentation` method) is only accepted by an empty store, so
-save into a new database file and rebuild it when the analysis changes instead
-of appending to it.
+(the default `fragmentation` method, or an MCS method with `series=True`) is
+only accepted by an empty store, so save into a new database file and rebuild
+it when the analysis changes instead of appending to it.
 
 Files can also be loaded straight into a store. Properties can be added to a
 store that already holds an analysis; molecules belong in a store no analysis
@@ -655,7 +655,7 @@ compounds, properties, rules, constants, and pairs. Schema 5 adds the matched
 molecular series (`series`, `series_member`, with `enumeration_label`) and the
 dataset columns `num_series`, `num_series_members`,
 `num_series_variant_members` and `series_source`, and fills
-`fragment_options`.
+`fragment_options` for a series-producing save.
 
 When an analyzed dataset is saved to DuckDB, OEMMPA stores each transformation
 together with the local chemical environment around the attachment point. These

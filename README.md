@@ -164,7 +164,8 @@ The `oemmpa build` command applies mmpdb-equivalent defaults for fragment filter
 non-symmetric indexing. These defaults can be overridden by passing `none` to any
 of the filter flags or `--symmetric` to enable bidirectional pair indexing. The
 molecule-size filters (`--max-heavies`, `--max-rotatable-bonds`) apply to the
-default `fragmentation` method; the four variable-fragment size filters,
+default `fragmentation` method, and to the auxiliary series pass of an MCS build
+with `--series`; the four variable-fragment size filters,
 `--max-variable-heavies 10` included, apply to every method, and the MCS-based
 methods (`dmcss`, `oemedchem`, `wizepairz`) require both sides of a pair to pass
 (a `[*:1][H]` pseudo-fragment side is exempt). See [docs/cli.md](docs/cli.md)
@@ -350,10 +351,11 @@ pairs. Raw fragmentations are not stored as stable database tables yet.
 
 `save_analyzer()` writes the analyzer's molecules, properties, pairs, and
 matched molecular series in one transaction, and a series-producing analysis
-(the default `fragmentation` method) is only accepted by an empty store, so
-rebuild the store instead of appending to it. The file loaders fill a store
-directly: properties can be added to a store that already holds an analysis,
-while molecules belong in a store no analysis is saved into.
+(the default `fragmentation` method, or an MCS method with `series=True`) is
+only accepted by an empty store, so rebuild the store instead of appending to
+it. The file loaders fill a store directly: properties can be added to a store
+that already holds an analysis, while molecules belong in a store no analysis
+is saved into.
 
 ```python
 from oemmpa import DuckDBStore
@@ -451,12 +453,14 @@ refused when opened and must be rebuilt from source; there is no migration.
 Schema 5 adds the matched molecular series tables `series` and
 `series_member` (with `enumeration_label`), the dataset columns `num_series`,
 `num_series_members`, `num_series_variant_members` and `series_source`, fills
-`dataset.fragment_options` with the fragmentation settings, and populates
-`rule_smiles.num_heavies`, which 4.x left NULL.
+`dataset.fragment_options` with the fragmentation settings for a
+series-producing save, and populates `rule_smiles.num_heavies`, which 4.x left
+NULL.
 
 Behaviour changes to know about:
 
-- A series-producing analysis (the fragmentation method) can only be saved into
+- A series-producing analysis (the fragmentation method, or an MCS method with
+  series enumeration on: `series=True` or `--series`) can only be saved into
   an empty store, and `AddPair`/`AddPairs` are refused afterwards, even when the
   analysis produced no series; rebuild the store instead of appending to it.
   Molecules and properties can still be added afterwards, but molecules added
@@ -466,9 +470,9 @@ Behaviour changes to know about:
   count.
 - Series enumeration requires a series to span at least two distinct
   compounds; single-compound series are not stored.
-- `dataset.num_series_members` counts member rows (compound memberships),
-  while `series.num_members` counts distinct R-groups; the two are not
-  comparable.
+- `dataset.num_series_members` counts observed member rows (compound
+  memberships), while `series.num_members` counts distinct R-groups; the two
+  are not comparable.
 - Stored series are read back in the database's string order, which assumes
   DuckDB's default binary collation.
 - `Analyzer::GetPairs(QueryOptions)`, `Analyzer::GetTransforms(QueryOptions)`
@@ -480,7 +484,7 @@ Behaviour changes to know about:
 - Every series constant now has its `constant_environment` rows, not only the
   constants that carry pairs.
 - DMCSS no longer emits pairs that need more than three cuts or whose fragments
-  cannot be parsed, so its stores can be saved on real data, and its pair count
+  cannot be parsed, so a save no longer refuses its pairs, and its pair count
   can fall.
 
 New in 5.0.0: `Analyzer.series()`, `DuckDBStore.series()`,

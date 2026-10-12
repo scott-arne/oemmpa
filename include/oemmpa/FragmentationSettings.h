@@ -65,7 +65,7 @@ Fragmenter make_fragmenter(const FragmentationSettings& settings);
 /// reproduces it byte for byte. Bytes from 0x80 up pass through unescaped (the
 /// SMARTS setters accept text after whitespace, which OEChem ignores), so a
 /// non-ASCII value still gives valid JSON when it is UTF-8, but not
-/// json.dumps's \u-escaped bytes.
+/// json.dumps's \\u-escaped bytes.
 std::string fragment_options_json(const FragmentationSettings& settings);
 
 }  // namespace OEMMPA
