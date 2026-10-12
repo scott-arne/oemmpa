@@ -312,6 +312,22 @@ public:
     /// \throws StorageError For a database failure.
     SeriesSimilarityResult FindSimilarSeries(SeriesSimilarityRequest request) const;
 
+    /// \brief Build the bounded all-pairs similarity network of the stored series (seams spec 11).
+    ///
+    /// Loads the profile relation once (stored series, or pooled profiles at
+    /// environment_radius), keeps each profile's `top` best neighbours by the
+    /// measure after the optional threshold, and returns their union as
+    /// undirected edges with every eligible profile as a node. Each profile's
+    /// selections are exactly the first `top` matches FindSimilarSeries returns
+    /// for it with the same settings. The scoring runs on request.threads
+    /// workers and its result does not depend on that number. The request is
+    /// taken by value for the same reason as RankNextSubstituents.
+    ///
+    /// \throws std::invalid_argument With SERIES_QUERY_INVALID_PREFIX for every
+    ///         request-validation failure.
+    /// \throws StorageError For a database failure.
+    SeriesNetworkResult BuildSeriesNetwork(SeriesNetworkRequest request) const;
+
     /// \brief Seconds the last AppendBulk spent staging and appending series.
     ///
     /// A benchmark diagnostic so the series share of a save can be measured

@@ -21,6 +21,7 @@
 #include "oemmpa/MatchedPair.h"
 #include "oemmpa/Series.h"
 #include "oemmpa/SeriesQuery.h"
+#include "series_network_support.h"
 
 using namespace OEMMPA;
 
@@ -67,6 +68,21 @@ TEST(SeriesQueryRecords, DefaultsMatchTheSpec) {
     const SeriesSimilarityEvidence similarity_row;
     EXPECT_EQ(similarity_row.environment_fingerprint_id, 0U);
     EXPECT_TRUE(similarity_row.environment_smarts.empty());
+    const SeriesNetworkRequest network;
+    EXPECT_EQ(network.measure, SimilarityMeasure::SPEARMAN);
+    EXPECT_EQ(network.min_overlap, 3U);
+    EXPECT_EQ(network.top, 10U);
+    EXPECT_FALSE(network.has_threshold);
+    EXPECT_EQ(network.threshold, 0.0);
+    EXPECT_EQ(network.environment_radius, -1);
+    EXPECT_EQ(network.threads, 1U);
+    EXPECT_EQ(network.selection.min_series_length, 2U);
+    const SeriesNetworkEdge edge;
+    EXPECT_EQ(edge.source_id, 0U);
+    EXPECT_FALSE(edge.has_spearman);
+    const SeriesNetworkNode node;
+    EXPECT_EQ(node.size, 0U);
+    EXPECT_EQ(SeriesNetworkResult().environment_radius, -1);
 }
 
 TEST(SeriesQueryCanonicalisation, RendersEverySpellingLikeTheStoredRuleSmiles) {
@@ -2061,5 +2077,339 @@ TEST(PooledProfiles, CutCountsNeverShareAProfileInSimilarity) {
     EXPECT_EQ(linker.matches[0].overlap, 2U);
     EXPECT_FALSE(linker.matches[0].has_spearman);   // The two shared candidate values tie at 2.
     EXPECT_DOUBLE_EQ(linker.matches[0].centred_rmsd, 1.0);
+    std::filesystem::remove(fixture.path);
+}
+
+namespace {
+
+using OEMMPA::test::EdgeKey;
+
+// The lowest series id of every pooled profile at a radius, read on a connection
+// of its own (no store may hold the file): any member series of a pooled profile
+// queries that profile (spec 11.3).
+std::map<std::pair<std::uint32_t, std::uint64_t>, std::uint64_t> PooledQuerySeries(
+    const std::filesystem::path& path, int radius) {
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    std::unique_ptr<duckdb::MaterializedQueryResult> result = connection.Query(
+        "select s.cut_count, ce.environment_fingerprint_id, min(s.id) from series s "
+        "join constant_environment ce on ce.constant_id = s.constant_id and ce.radius = " +
+        std::to_string(radius) + " group by 1, 2");
+    EXPECT_FALSE(result->HasError()) << result->GetError();
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::uint64_t> members;
+    for (duckdb::idx_t row = 0; row < result->RowCount(); ++row) {
+        members[{result->GetValue(0, row).GetValue<std::uint32_t>(),
+                 result->GetValue(1, row).GetValue<std::uint64_t>()}] =
+            result->GetValue(2, row).GetValue<std::uint64_t>();
+    }
+    return members;
+}
+
+// Spec 11.3: each eligible profile's selections are the first `top` matches of
+// FindSimilarSeries run with that profile as the query (after the threshold),
+// and the edges are their union as unordered pairs, carrying the matches'
+// values exactly. `query_series` names, for every (cut_count, profile id), a
+// series whose id query reads that profile.
+void ExpectNetworkIsTheUnionOfSimilaritySelections(
+    const DuckDBStore& store, const SeriesNetworkRequest& request,
+    const std::map<std::pair<std::uint32_t, std::uint64_t>, std::uint64_t>& query_series) {
+    const SeriesNetworkResult network = store.BuildSeriesNetwork(request);
+    std::map<EdgeKey, SeriesSimilarity> expected;
+    for (const SeriesNetworkNode& node : network.nodes) {
+        SeriesSimilarityRequest similar;
+        similar.property_name = request.property_name;
+        similar.query_series_id = query_series.at({node.cut_count, node.id});
+        similar.min_overlap = request.min_overlap;
+        similar.measure = request.measure;
+        similar.selection = request.selection;
+        similar.selection.cut_count = node.cut_count;
+        similar.environment_radius = request.environment_radius;
+        std::uint32_t kept = 0;
+        for (const SeriesSimilarity& match : store.FindSimilarSeries(similar).matches) {
+            const bool passes = !request.has_threshold ||
+                (request.measure == SimilarityMeasure::SPEARMAN
+                     ? match.has_spearman && match.spearman >= request.threshold
+                     : match.centred_rmsd <= request.threshold);
+            if (!passes) {
+                continue;
+            }
+            if (kept == request.top) {
+                break;
+            }
+            ++kept;
+            const std::uint64_t target =
+                request.environment_radius < 0 ? match.series_id : match.environment_fingerprint_id;
+            expected.emplace(OEMMPA::test::Key(node.cut_count, node.id, target), match);
+        }
+    }
+    ASSERT_EQ(network.edges.size(), expected.size());
+    std::size_t i = 0;
+    for (const auto& [key, match] : expected) {
+        const SeriesNetworkEdge& edge = network.edges[i++];
+        EXPECT_EQ((EdgeKey{edge.cut_count, edge.source_id, edge.target_id}), key);
+        EXPECT_EQ(edge.overlap, match.overlap);
+        EXPECT_EQ(edge.has_spearman, match.has_spearman);
+        EXPECT_EQ(edge.spearman, match.spearman);
+        EXPECT_EQ(edge.centred_rmsd, match.centred_rmsd);
+    }
+}
+
+std::string NetworkRejection(const DuckDBStore& store, const SeriesNetworkRequest& request) {
+    try {
+        store.BuildSeriesNetwork(request);
+    } catch (const std::invalid_argument& error) {
+        return error.what();
+    }
+    ADD_FAILURE() << "expected the network request to be rejected";
+    return "";
+}
+
+}  // namespace
+
+TEST(SeriesNetworkStore, RequestContractRejectsEveryBound) {
+    const SimilarityStore fixture = MakeSimilarityStore();
+    DuckDBStore store(fixture.path.string());
+    const std::string prefix = SERIES_QUERY_INVALID_PREFIX;
+    SeriesNetworkRequest request;
+    request.property_name = "act";
+    EXPECT_NO_THROW(store.BuildSeriesNetwork(request));
+    SeriesNetworkRequest bad = request;
+    bad.measure = static_cast<SimilarityMeasure>(2);
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "measure must be SPEARMAN or CENTRED_RMSD");
+    bad = request;
+    bad.min_overlap = 1;
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "min_overlap must be at least 2");
+    bad = request;
+    bad.top = 0;
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "top must be at least 1");
+    bad = request;
+    bad.has_threshold = true;
+    bad.threshold = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "threshold must be finite");
+    bad.threshold = std::numeric_limits<double>::infinity();
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "threshold must be finite");
+    bad = request;
+    bad.threshold = std::numeric_limits<double>::quiet_NaN();   // Ignored without has_threshold.
+    EXPECT_NO_THROW(store.BuildSeriesNetwork(bad));
+    for (const int radius : {-2, 6}) {
+        bad = request;
+        bad.environment_radius = radius;
+        EXPECT_EQ(NetworkRejection(store, bad), prefix + "environment_radius must be -1 or between 0 and 5");
+    }
+    bad = request;
+    bad.threads = 0;
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "threads must be at least 1");
+    bad = request;
+    bad.property_name = "";
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "property_name must not be empty");
+    bad = request;
+    bad.property_name = "nope";
+    EXPECT_EQ(NetworkRejection(store, bad), prefix + "property_name is not stored: nope");
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, SeriesModeEdgesAreTheUnionOfSimilaritySelections) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::uint64_t> query_series;
+    for (const Series& entry : store.GetSeries()) {
+        query_series[{entry.GetCutCount(), entry.GetSeriesId()}] = entry.GetSeriesId();
+    }
+    for (const SimilarityMeasure measure : {SimilarityMeasure::SPEARMAN, SimilarityMeasure::CENTRED_RMSD}) {
+        for (const std::uint32_t top : {1U, 2U, 10U}) {
+            for (const bool threshold : {false, true}) {
+                SeriesNetworkRequest request;
+                request.property_name = "act";
+                request.measure = measure;
+                request.top = top;
+                request.min_overlap = 2;
+                request.has_threshold = threshold;
+                request.threshold = measure == SimilarityMeasure::SPEARMAN ? 0.0 : 1.5;
+                request.threads = 4;
+                ExpectNetworkIsTheUnionOfSimilaritySelections(store, request, query_series);
+            }
+        }
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, PooledModeEdgesAreTheUnionOfSimilaritySelections) {
+    const PooledStore fixture = MakePooledStore();
+    for (const int radius : {0, 1, 5}) {
+        const auto query_series = PooledQuerySeries(fixture.path, radius);
+        DuckDBStore store(fixture.path.string());
+        for (const SimilarityMeasure measure : {SimilarityMeasure::SPEARMAN, SimilarityMeasure::CENTRED_RMSD}) {
+            for (const std::uint32_t top : {1U, 10U}) {
+                SeriesNetworkRequest request;
+                request.property_name = "act";
+                request.measure = measure;
+                request.top = top;
+                request.min_overlap = 2;
+                request.environment_radius = radius;
+                request.threads = 2;
+                ExpectNetworkIsTheUnionOfSimilaritySelections(store, request, query_series);
+            }
+        }
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, CutCountZeroReadsEveryCutCountAndAnExactOneReadsOnlyIt) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    SeriesNetworkRequest request;
+    request.property_name = "act";
+    request.min_overlap = 2;
+    const SeriesNetworkResult all = store.BuildSeriesNetwork(request);
+    std::set<std::uint32_t> cut_counts;
+    for (const SeriesNetworkNode& node : all.nodes) {
+        cut_counts.insert(node.cut_count);
+    }
+    EXPECT_EQ(cut_counts, (std::set<std::uint32_t>{1U, 2U, 3U}));
+    request.selection.cut_count = 2;
+    const SeriesNetworkResult two = store.BuildSeriesNetwork(request);
+    std::vector<std::uint64_t> two_cut_nodes;
+    std::vector<std::uint64_t> expected_nodes;
+    for (const SeriesNetworkNode& node : two.nodes) {
+        EXPECT_EQ(node.cut_count, 2U);
+        two_cut_nodes.push_back(node.id);
+    }
+    for (const SeriesNetworkNode& node : all.nodes) {
+        if (node.cut_count == 2U) {
+            expected_nodes.push_back(node.id);
+        }
+    }
+    EXPECT_EQ(two_cut_nodes, expected_nodes);
+    EXPECT_EQ(two_cut_nodes.size(), 3U);
+    std::vector<EdgeKey> expected_edges;
+    for (const EdgeKey& key : OEMMPA::test::EdgeKeys(all)) {
+        if (std::get<0>(key) == 2U) {
+            expected_edges.push_back(key);
+        }
+    }
+    EXPECT_EQ(OEMMPA::test::EdgeKeys(two), expected_edges);
+    EXPECT_EQ(expected_edges.size(), 1U);   // [*:1]C.[*:2]Cl and [*:1]C.[*:2]F share two linkers.
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, NodesAreNamedByConstantOrEnvironmentAndEdgesAreExact) {
+    const PooledStore fixture = MakePooledStore();
+    const std::uint64_t methyl = EnvironmentId(fixture.path, "[*:1]C", 1);
+    const std::uint64_t chloro = EnvironmentId(fixture.path, "[*:1]Cl", 1);
+    const std::uint64_t fluoro = EnvironmentId(fixture.path, "[*:1]F", 1);
+    DuckDBStore store(fixture.path.string());
+    SeriesNetworkRequest request;
+    request.property_name = "act";   // min_overlap 3, top 10, Spearman.
+    const SeriesNetworkResult series = store.BuildSeriesNetwork(request);
+    EXPECT_EQ(series.environment_radius, -1);
+    std::map<std::uint64_t, std::string> labels;
+    for (const SeriesNetworkNode& node : series.nodes) {
+        labels[node.id] = node.label;
+    }
+    for (const auto& [constant, id] : fixture.series_ids) {
+        EXPECT_EQ(labels.at(id), constant);
+    }
+    // Three shared R-groups: tolyl, ethylphenyl and neopentyl share H, F and Cl;
+    // [*:1]C and [*:1]CC share three aryl R-groups; [*:1]Cl and [*:1]F share three.
+    const auto id = [&fixture](const char* constant) { return fixture.series_ids.at(constant); };
+    std::vector<EdgeKey> expected = {
+        OEMMPA::test::Key(1, id("[*:1]CC(C)(C)C"), id("[*:1]c1ccc(cc1)C")),
+        OEMMPA::test::Key(1, id("[*:1]CC(C)(C)C"), id("[*:1]c1ccc(cc1)CC")),
+        OEMMPA::test::Key(1, id("[*:1]c1ccc(cc1)C"), id("[*:1]c1ccc(cc1)CC")),
+        OEMMPA::test::Key(1, id("[*:1]C"), id("[*:1]CC")),
+        OEMMPA::test::Key(1, id("[*:1]Cl"), id("[*:1]F")),
+    };
+    std::sort(expected.begin(), expected.end());
+    EXPECT_EQ(OEMMPA::test::EdgeKeys(series), expected);
+
+    request.environment_radius = 1;
+    const SeriesNetworkResult pooled = store.BuildSeriesNetwork(request);
+    EXPECT_EQ(pooled.environment_radius, 1);
+    bool saw_aryl = false;
+    for (const SeriesNetworkNode& node : pooled.nodes) {
+        if (node.cut_count == 1U && node.id == fixture.aryl) {
+            saw_aryl = true;
+            EXPECT_EQ(node.label, fixture.aryl_smarts);
+            EXPECT_EQ(node.size, 6U);
+        }
+    }
+    EXPECT_TRUE(saw_aryl);
+    // Pooled: aryl with methylene (H, F, Cl); methylene with the methyl profile
+    // (three aryl R-groups); the chloro and fluoro profiles (three).
+    expected = {OEMMPA::test::Key(1, fixture.aryl, fixture.methylene),
+                OEMMPA::test::Key(1, methyl, fixture.methylene),
+                OEMMPA::test::Key(1, chloro, fluoro)};
+    std::sort(expected.begin(), expected.end());
+    EXPECT_EQ(OEMMPA::test::EdgeKeys(pooled), expected);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, ThreadCountsGiveIdenticalResults) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    for (const int radius : {-1, 1}) {
+        SeriesNetworkRequest request;
+        request.property_name = "act";
+        request.min_overlap = 2;
+        request.top = 2;
+        request.environment_radius = radius;
+        request.threads = 1;
+        const SeriesNetworkResult serial = store.BuildSeriesNetwork(request);
+        ASSERT_FALSE(serial.edges.empty());
+        for (const std::uint32_t threads : {2U, 8U}) {
+            request.threads = threads;
+            OEMMPA::test::ExpectSameNetwork(serial, store.BuildSeriesNetwork(request));
+        }
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, CutCountsNeverShareAProfile) {
+    const PooledStore fixture = MakePooledStore();
+    GiveTheTwoCutConstantTheArylFingerprint(fixture);
+    DuckDBStore store(fixture.path.string());
+    SeriesNetworkRequest request;
+    request.property_name = "act";
+    request.min_overlap = 2;
+    request.environment_radius = 1;
+    const SeriesNetworkResult network = store.BuildSeriesNetwork(request);
+    std::map<std::uint32_t, std::uint32_t> aryl_sizes;   // Cut count -> size of the node carrying the aryl id.
+    for (const SeriesNetworkNode& node : network.nodes) {
+        if (node.id == fixture.aryl) {
+            aryl_sizes[node.cut_count] = node.size;
+        }
+    }
+    EXPECT_EQ(aryl_sizes, (std::map<std::uint32_t, std::uint32_t>{{1U, 6U}, {2U, 3U}}));
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, GuessedRowsJoinTheNetworkOnlyWithTheFlag) {
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    SeriesNetworkRequest request;
+    request.property_name = "act";
+    request.min_overlap = 2;
+    const SeriesNetworkResult before = store.BuildSeriesNetwork(request);
+    InsertGuessedIodineRows(store);
+    OEMMPA::test::ExpectSameNetwork(before, store.BuildSeriesNetwork(request));
+    std::set<std::uint64_t> with_bromine;
+    for (const Series& entry : store.GetSeries()) {
+        for (const SeriesMember& member : entry.GetMembers()) {
+            if (member.GetVariableSmiles() == "[*:1]Br") {
+                with_bromine.insert(entry.GetSeriesId());
+            }
+        }
+    }
+    ASSERT_GE(with_bromine.size(), 5U);
+    request.selection.include_up_enumerated = true;
+    const SeriesNetworkResult guessed = store.BuildSeriesNetwork(request);
+    std::map<std::uint64_t, std::uint32_t> sizes_before;
+    for (const SeriesNetworkNode& node : before.nodes) {
+        sizes_before[node.id] = node.size;
+    }
+    ASSERT_EQ(guessed.nodes.size(), before.nodes.size());
+    for (const SeriesNetworkNode& node : guessed.nodes) {
+        EXPECT_EQ(node.size, sizes_before.at(node.id) + (with_bromine.count(node.id) != 0U ? 1U : 0U)) << node.id;
+    }
     std::filesystem::remove(fixture.path);
 }

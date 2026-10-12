@@ -145,6 +145,7 @@ set(OEMMPA_SOURCES
     src/MemoryIndex.cpp
     src/Series.cpp
     src/SeriesQuery.cpp
+    src/SeriesNetwork.cpp
     src/ThreadSupport.cpp
 )
 

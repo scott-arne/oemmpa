@@ -127,6 +127,51 @@ struct SeriesSimilarityResult {
     int environment_radius = -1;   ///< The request's radius, echoed.
 };
 
+/// \brief Inputs of DuckDBStore::BuildSeriesNetwork (seams spec 11.1).
+///
+/// Each profile keeps its `top` best neighbours by the measure, after the
+/// optional threshold, and the network is the union of those selections as
+/// undirected edges, so a popular profile can end with more than `top` edges.
+/// selection.cut_count 0 reads every cut count. Plain aggregate: the store
+/// validates it.
+struct SeriesNetworkRequest {
+    std::string property_name;
+    SimilarityMeasure measure = SimilarityMeasure::SPEARMAN;
+    std::uint32_t min_overlap = 3;      ///< At least 2.
+    std::uint32_t top = 10;             ///< At least 1; bounds each profile's own selections.
+    bool has_threshold = false;
+    double threshold = 0.0;             ///< Finite when has_threshold: Spearman >= it, or centred RMSD <= it.
+    int environment_radius = -1;        ///< -1 or 0 to 5, as for SeriesSimilarityRequest.
+    SeriesSelection selection;          ///< include_up_enumerated lives here.
+    std::uint32_t threads = 1;          ///< At least 1; the result is identical for every value.
+};
+
+/// \brief One eligible profile of a network.
+struct SeriesNetworkNode {
+    std::uint64_t id = 0;               ///< Series id, or fingerprint id when pooled.
+    std::string label;                  ///< Constant SMILES, or environment SMARTS when pooled.
+    std::uint32_t cut_count = 0;
+    std::uint32_t size = 0;             ///< Valued R-groups left after max_variable_heavy_atoms.
+};
+
+/// \brief One undirected edge between two profiles of one cut count.
+struct SeriesNetworkEdge {
+    std::uint32_t cut_count = 0;        ///< Both endpoints share it.
+    std::uint64_t source_id = 0;        ///< source_id < target_id.
+    std::uint64_t target_id = 0;
+    std::uint32_t overlap = 0;
+    bool has_spearman = false;          ///< False when either rank vector is constant.
+    double spearman = 0.0;
+    double centred_rmsd = 0.0;
+};
+
+/// \brief Output of DuckDBStore::BuildSeriesNetwork.
+struct SeriesNetworkResult {
+    int environment_radius = -1;            ///< The request's radius, echoed.
+    std::vector<SeriesNetworkNode> nodes;   ///< Every eligible profile, by (cut_count, id).
+    std::vector<SeriesNetworkEdge> edges;   ///< By (cut_count, source_id, target_id).
+};
+
 /// \brief One explicitly supplied query R-group after canonicalisation.
 struct CanonicalQueryRGroup {
     std::string variable_smiles;   ///< Spelled like the stored rule_smiles.smiles.

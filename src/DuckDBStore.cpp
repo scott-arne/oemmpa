@@ -5,6 +5,7 @@
 #include "oemmpa/Error.h"
 #include "oemmpa/MoleculeRecord.h"
 #include "oemmpa/PairScoring.h"
+#include "oemmpa/SeriesNetwork.h"
 #include "oemmpa/Statistics.h"
 
 #include <duckdb.hpp>
@@ -250,6 +251,28 @@ std::invalid_argument invalid_series_query(const std::string& message) {
 void validate_environment_radius(int radius) {
     if (radius < -1 || radius > 5) {
         throw invalid_series_query("environment_radius must be -1 or between 0 and 5");
+    }
+}
+
+// Spec 11.1's bounds; the property is checked by require_property_name_id.
+void validate_network_request(const SeriesNetworkRequest& request) {
+    // As in FindSimilarSeries: the binding hands the measure over as a plain
+    // integer, so the enum's type is no guarantee of range.
+    if (request.measure != SimilarityMeasure::SPEARMAN && request.measure != SimilarityMeasure::CENTRED_RMSD) {
+        throw invalid_series_query("measure must be SPEARMAN or CENTRED_RMSD");
+    }
+    if (request.min_overlap < 2) {
+        throw invalid_series_query("min_overlap must be at least 2");
+    }
+    if (request.top < 1) {
+        throw invalid_series_query("top must be at least 1");
+    }
+    if (request.has_threshold && !std::isfinite(request.threshold)) {
+        throw invalid_series_query("threshold must be finite");
+    }
+    validate_environment_radius(request.environment_radius);
+    if (request.threads < 1) {
+        throw invalid_series_query("threads must be at least 1");
     }
 }
 
@@ -4363,6 +4386,50 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
                    std::tie(b.series_id, b.environment_fingerprint_id, b.variable_smiles);
         });
     return result;
+}
+
+SeriesNetworkResult DuckDBStore::BuildSeriesNetwork(SeriesNetworkRequest request) const {
+    validate_network_request(request);
+    const std::uint64_t property_id = require_property_name_id(connection_, request.property_name);
+    ProfileSpec spec;
+    spec.property_id = property_id;
+    spec.include_up_enumerated = request.selection.include_up_enumerated;
+    spec.environment_radius = request.environment_radius;
+    spec.cut_count = request.selection.cut_count;
+    spec.min_constant_heavy_atoms = request.selection.min_constant_heavy_atoms;
+    // Spec 11.2 step 1: the one profile read of a network build, every profile
+    // with its label and one row per valued R-group. The R-group key is the dense
+    // rank of the SMILES, so the scorer merges two profiles in the order
+    // FindSimilarSeries feeds its measures and the values agree bit for bit.
+    const ProfileLabel label = profile_label(spec, "p");
+    BoundSql sql;
+    sql.text += "with ";
+    append_profile_ctes(sql, spec, false);
+    sql.text += " select p.cut_count, p.profile_id, ";
+    sql.text += label.column;
+    sql.text += ", cast(dense_rank() over (order by rs.smiles) as bigint), p.rgroup_num_heavies, p.value "
+                "from profile p join rule_smiles rs on rs.id = p.rule_smiles_id ";
+    sql.text += label.join;
+    sql.text += "order by p.cut_count, p.profile_id, rs.smiles";
+    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(connection_, sql.text, std::move(sql.values));
+    std::vector<SeriesNetworkProfile> profiles;
+    for (const auto& row : *rows) {
+        const std::uint32_t cut_count = row.GetValue<std::uint32_t>(0);
+        const std::uint64_t profile_id = row.GetValue<std::uint64_t>(1);
+        if (profiles.empty() || profiles.back().cut_count != cut_count || profiles.back().id != profile_id) {
+            SeriesNetworkProfile profile;
+            profile.cut_count = cut_count;
+            profile.id = profile_id;
+            profile.label = row.GetValue<std::string>(2);
+            profiles.push_back(std::move(profile));
+        }
+        SeriesNetworkMember member;
+        member.rgroup = static_cast<std::uint32_t>(row.GetValue<std::int64_t>(3));
+        member.num_heavies = row.GetValue<std::uint32_t>(4);
+        member.value = row.GetValue<double>(5);
+        profiles.back().members.push_back(member);
+    }
+    return score_series_network(std::move(profiles), request);
 }
 
 std::vector<MatchedPair> DuckDBStore::GetPairsForRuleEnvironment(
