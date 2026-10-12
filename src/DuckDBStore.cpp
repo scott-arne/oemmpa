@@ -4358,8 +4358,18 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
             if (a.match.has_spearman && a.match.spearman != b.match.spearman) {
                 return a.match.spearman > b.match.spearman;
             }
-        } else if (a.match.centred_rmsd != b.match.centred_rmsd) {
-            return a.match.centred_rmsd < b.match.centred_rmsd;
+        } else {
+            // centred_rmsd overflows to NaN only on extreme magnitudes (values near
+            // DBL_MAX); NaN never compares, so it is ordered last explicitly and the
+            // comparator stays a strict weak order. The network scorer orders it alike.
+            const bool a_nan = std::isnan(a.match.centred_rmsd);
+            const bool b_nan = std::isnan(b.match.centred_rmsd);
+            if (a_nan != b_nan) {
+                return b_nan;
+            }
+            if (!a_nan && a.match.centred_rmsd != b.match.centred_rmsd) {
+                return a.match.centred_rmsd < b.match.centred_rmsd;
+            }
         }
         if (a.match.overlap != b.match.overlap) {
             return a.match.overlap > b.match.overlap;

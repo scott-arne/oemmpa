@@ -211,3 +211,32 @@ TEST(SeriesNetworkScoring, MeasuresAreSymmetricBitForBit) {
         }
     }
 }
+
+TEST(SeriesNetworkScoring, OverflowedCentredRmsdSortsLastAndStaysDeterministic) {
+    // S1 and S2 hold values near DBL_MAX: in key order the running mean of
+    // (1.7e308, -1.7e308, 0) goes to -inf and then NaN, so every centred RMSD
+    // involving them is NaN. A NaN sorts after every finite value and ties among
+    // NaNs fall through to overlap and id, which keeps the order a strict weak one.
+    const std::vector<SeriesNetworkProfile> profiles = {
+        Profile(1, 1, {{METHYL, 1.7e308}, {AMINO, -1.7e308}, {HYDROXY, 0.0}}),
+        Profile(1, 2, {{METHYL, 1.7e308}, {AMINO, -1.7e308}, {HYDROXY, 0.0}}),
+        Profile(1, 3, {{METHYL, 1.0}, {AMINO, 2.0}, {HYDROXY, 3.0}}),
+        Profile(1, 4, {{METHYL, 1.0}, {AMINO, 2.0}, {HYDROXY, 4.0}}),
+    };
+    SeriesNetworkRequest request = Request(SimilarityMeasure::CENTRED_RMSD, 1);
+    const SeriesNetworkResult serial = score_series_network(profiles, request);
+    // S3 and S4 pick each other because the finite distance beats the NaN ones; S1
+    // and S2 pick each other because every candidate of theirs is NaN at overlap 3,
+    // so the lower id wins.
+    EXPECT_EQ(EdgeKeys(serial), (std::vector<EdgeKey>{{1, 1, 2}, {1, 3, 4}}));
+    const SeriesNetworkEdge* finite = FindEdge(serial, 1, 3, 4);
+    ASSERT_NE(finite, nullptr);
+    EXPECT_TRUE(std::isfinite(finite->centred_rmsd));
+    const SeriesNetworkEdge* overflowed = FindEdge(serial, 1, 1, 2);
+    ASSERT_NE(overflowed, nullptr);
+    EXPECT_TRUE(std::isnan(overflowed->centred_rmsd));
+    for (const std::uint32_t threads : {2U, 8U}) {
+        request.threads = threads;
+        ExpectSameNetwork(serial, score_series_network(profiles, request));
+    }
+}

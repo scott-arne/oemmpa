@@ -2149,8 +2149,8 @@ void ExpectNetworkIsTheUnionOfSimilaritySelections(
         EXPECT_EQ((EdgeKey{edge.cut_count, edge.source_id, edge.target_id}), key);
         EXPECT_EQ(edge.overlap, match.overlap);
         EXPECT_EQ(edge.has_spearman, match.has_spearman);
-        EXPECT_EQ(edge.spearman, match.spearman);
-        EXPECT_EQ(edge.centred_rmsd, match.centred_rmsd);
+        EXPECT_TRUE(OEMMPA::test::SameDouble(edge.spearman, match.spearman));
+        EXPECT_TRUE(OEMMPA::test::SameDouble(edge.centred_rmsd, match.centred_rmsd));
     }
 }
 
@@ -2412,4 +2412,45 @@ TEST(SeriesNetworkStore, GuessedRowsJoinTheNetworkOnlyWithTheFlag) {
         EXPECT_EQ(node.size, sizes_before.at(node.id) + (with_bromine.count(node.id) != 0U ? 1U : 0U)) << node.id;
     }
     std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesNetworkStore, OverflowedCentredRmsdSortsLastInSimilarityAndNetwork) {
+    // The "CC" series holds values near DBL_MAX; over the shared R-groups in SMILES
+    // order (Cl, F, H) its running mean overflows, so its centred RMSD against the
+    // query is NaN. It must come last, after the finite ones, in both queries.
+    const std::filesystem::path path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        add_para_series(analyzer, "C", "x1", 3.0, 2.0, 1.0, 9.0);
+        add_para_series(analyzer, "OC", "x2", 3.0, 2.0, 1.5, 9.0);
+        add_para_series(analyzer, "CC", "x3", 0.0, -1.7e308, 1.7e308, 9.0);
+        analyzer.Analyze();
+        DuckDBStore store(path.string());
+        analyzer.SaveTo(store);
+    }
+    DuckDBStore store(path.string());
+    std::map<std::string, std::uint64_t> series_ids;
+    std::map<std::pair<std::uint32_t, std::uint64_t>, std::uint64_t> query_series;
+    for (const Series& entry : store.GetSeries()) {
+        series_ids[entry.GetConstantSmiles()] = entry.GetSeriesId();
+        query_series[{entry.GetCutCount(), entry.GetSeriesId()}] = entry.GetSeriesId();
+    }
+    SeriesSimilarityRequest similar = SimilarityQuery();
+    similar.measure = SimilarityMeasure::CENTRED_RMSD;
+    const SeriesSimilarityResult result = store.FindSimilarSeries(similar);
+    ASSERT_EQ(result.matches.size(), 3U);
+    EXPECT_EQ(result.matches[0].series_id, series_ids.at("[*:1]c1ccc(cc1)C"));
+    EXPECT_EQ(result.matches[1].series_id, series_ids.at("[*:1]c1ccc(cc1)OC"));
+    EXPECT_EQ(result.matches[2].series_id, series_ids.at("[*:1]c1ccc(cc1)CC"));
+    EXPECT_FALSE(std::isnan(result.matches[0].centred_rmsd));
+    EXPECT_FALSE(std::isnan(result.matches[1].centred_rmsd));
+    EXPECT_TRUE(std::isnan(result.matches[2].centred_rmsd));
+
+    SeriesNetworkRequest request;
+    request.property_name = "act";
+    request.measure = SimilarityMeasure::CENTRED_RMSD;
+    request.top = 1;
+    request.min_overlap = 2;
+    ExpectNetworkIsTheUnionOfSimilaritySelections(store, request, query_series);
+    std::filesystem::remove(path);
 }

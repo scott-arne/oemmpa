@@ -10,6 +10,7 @@
 #include "oemmpa/SeriesQuery.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <tuple>
@@ -24,6 +25,11 @@ using EdgeKey = std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>;
 /// \brief The key of the edge between two profiles of one cut count, lower id first.
 inline EdgeKey Key(std::uint32_t cut_count, std::uint64_t a, std::uint64_t b) {
     return EdgeKey{cut_count, std::min(a, b), std::max(a, b)};
+}
+
+/// \brief Two doubles are the same result: equal, or both NaN (an overflowed centred RMSD).
+inline bool SameDouble(double a, double b) {
+    return a == b || (std::isnan(a) && std::isnan(b));
 }
 
 /// \brief The keys of a result's edges, in the result's order.
@@ -65,8 +71,8 @@ inline void ExpectSameNetwork(const SeriesNetworkResult& expected, const SeriesN
             << "edge " << i;
         EXPECT_EQ(a.overlap, e.overlap) << "edge " << i;
         EXPECT_EQ(a.has_spearman, e.has_spearman) << "edge " << i;
-        EXPECT_EQ(a.spearman, e.spearman) << "edge " << i;
-        EXPECT_EQ(a.centred_rmsd, e.centred_rmsd) << "edge " << i;
+        EXPECT_TRUE(SameDouble(a.spearman, e.spearman)) << "edge " << i;
+        EXPECT_TRUE(SameDouble(a.centred_rmsd, e.centred_rmsd)) << "edge " << i;
     }
 }
 

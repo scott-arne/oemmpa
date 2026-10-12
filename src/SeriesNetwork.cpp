@@ -3,6 +3,7 @@
 #include "oemmpa/ThreadSupport.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <tuple>
 #include <utility>
@@ -108,8 +109,18 @@ SeriesNetworkResult score_series_network(std::vector<SeriesNetworkProfile> profi
             if (a.has_spearman && a.spearman != b.spearman) {
                 return a.spearman > b.spearman;
             }
-        } else if (a.centred_rmsd != b.centred_rmsd) {
-            return a.centred_rmsd < b.centred_rmsd;
+        } else {
+            // centred_rmsd overflows to NaN only on extreme magnitudes (values near
+            // DBL_MAX); NaN never compares, so it is ordered last explicitly and the
+            // comparator stays a strict weak order. FindSimilarSeries orders it alike.
+            const bool a_nan = std::isnan(a.centred_rmsd);
+            const bool b_nan = std::isnan(b.centred_rmsd);
+            if (a_nan != b_nan) {
+                return b_nan;
+            }
+            if (!a_nan && a.centred_rmsd != b.centred_rmsd) {
+                return a.centred_rmsd < b.centred_rmsd;
+            }
         }
         if (a.overlap != b.overlap) {
             return a.overlap > b.overlap;
