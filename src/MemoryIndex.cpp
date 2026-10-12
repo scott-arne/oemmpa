@@ -653,68 +653,6 @@ bool query_options_equal(const QueryOptions& a, const QueryOptions& b) {
 // The `State` for an enumeration that keeps nothing per worker.
 struct NoState {};
 
-// Run `process(i, state)` for every constant index in [0, constant_count),
-// serially when `worker_count` is 1 and on that many work-stealing threads
-// otherwise. `process` must write only to its own constant's output slot, so
-// the workers never share state except the atomic cursor; `State` is created
-// once per worker (the pair enumeration keeps its order-key cache there). The
-// lowest-worker-index failure is rethrown so the exception is invariant across
-// thread counts.
-template <typename State, typename Process>
-void for_each_constant(std::size_t constant_count, unsigned int worker_count, Process process) {
-    const unsigned int workers = std::min<unsigned int>(
-        worker_count, static_cast<unsigned int>(constant_count));
-    if (workers <= 1 || constant_count <= 1) {
-        State state;
-        for (std::size_t i = 0; i < constant_count; ++i) {
-            process(i, state);
-        }
-        return;
-    }
-
-    // OEChem is reachable from both enumerations (order-key resolution, the
-    // metrics-fallback parse, the constant heavy-atom count), so the memory
-    // pool must be thread-safe before workers spawn.
-    ensure_thread_safe_mempool();
-
-    std::vector<std::exception_ptr> errors(workers);
-    std::atomic<std::size_t> cursor{0};
-    std::vector<std::thread> threads;
-    threads.reserve(workers);
-    struct JoinAllGuard {
-        std::vector<std::thread>& threads;
-        ~JoinAllGuard() {
-            for (std::thread& thread : threads) {
-                if (thread.joinable()) {
-                    thread.join();
-                }
-            }
-        }
-    } join_all_guard{threads};
-
-    for (unsigned int w = 0; w < workers; ++w) {
-        threads.emplace_back([&, w]() {
-            State state;
-            try {
-                std::size_t i;
-                while ((i = cursor.fetch_add(1)) < constant_count) {
-                    process(i, state);
-                }
-            } catch (...) {
-                errors[w] = std::current_exception();
-            }
-        });
-    }
-    for (std::thread& thread : threads) {
-        thread.join();
-    }
-    for (const std::exception_ptr& error : errors) {
-        if (error) {
-            std::rethrow_exception(error);
-        }
-    }
-}
-
 // Molecule id -> label of one R-group's compounds.
 using LabelledCompounds = std::map<unsigned int, Fragmentation::EnumerationLabel>;
 
@@ -1045,7 +983,7 @@ std::vector<MatchedPair> MemoryIndex::ComputePairs(const QueryOptions& options) 
     // `constants` list reproduces the serial pre-sort order however the workers
     // stole the constants, so the final std::sort keeps its near-sorted input.
     std::vector<std::vector<MatchedPair>> per_constant(constants.size());
-    for_each_constant<VariableOrderKeyCache>(
+    for_each_index<VariableOrderKeyCache>(
         constants.size(), pair_thread_count_,
         [&](std::size_t i, VariableOrderKeyCache& order_key_cache) {
             process_constant(constants[i], order_key_cache, per_constant[i]);
@@ -1252,7 +1190,7 @@ std::vector<Series> MemoryIndex::ComputeSeries() const {
         }
     };
 
-    for_each_constant<NoState>(constants.size(), pair_thread_count_, process_constant);
+    for_each_index<NoState>(constants.size(), pair_thread_count_, process_constant);
 
     std::vector<Series> series;
     for (std::vector<Series>& slot : per_constant) {
