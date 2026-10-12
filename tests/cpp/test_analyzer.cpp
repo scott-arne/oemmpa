@@ -2124,5 +2124,25 @@ TEST(AnalyzerSeriesEnumeration, LastAnalyzeWorkerCountCoversTheAuxiliaryPass) {
     EXPECT_EQ(capped.LastAnalyzeWorkerCount(), capped_fragmentation.LastAnalyzeWorkerCount());
 }
 
+TEST(AnalyzerTest, DMCSSEmitsAtMostThreeCuts) {
+    // 1,2,3,4-tetramethylbenzene and benzene-1,2,3,4-tetrol differ at four ring
+    // positions, a four-cut pair the store could not fingerprint; toluene and
+    // phenol differ at one.
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1c(C)c(C)c(C)cc1", "tetramethyl");
+    analyzer.AddMolecule("Oc1c(O)c(O)c(O)cc1", "tetrol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    bool toluene_phenol = false;
+    for (const MatchedPair& pair : analyzer.GetPairs()) {
+        EXPECT_LE(pair.GetCutCount(), 3U) << pair.GetConstantSmiles();
+        const std::set<std::string> ends = {pair.GetSourceExternalId(), pair.GetTargetExternalId()};
+        EXPECT_NE(ends, (std::set<std::string>{"tetramethyl", "tetrol"}));
+        toluene_phenol = toluene_phenol || ends == std::set<std::string>{"toluene", "phenol"};
+    }
+    EXPECT_TRUE(toluene_phenol) << "the one-cut pair must survive the limit";
+}
+
 }  // namespace test
 }  // namespace OEMMPA

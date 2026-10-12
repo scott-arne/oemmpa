@@ -8,6 +8,9 @@
 namespace OEMMPA {
 
 /// \brief Analysis backend that derives pairs from pairwise maximum common substructures.
+///
+/// A pair whose constant would carry more than three attachment points is not
+/// emitted: the store's environment fingerprint represents at most three.
 class DMCSSMethod : public AnalysisMethod {
 public:
     DMCSSMethod() = default;

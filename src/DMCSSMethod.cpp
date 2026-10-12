@@ -16,6 +16,12 @@
 namespace OEMMPA {
 namespace {
 
+// The store's environment fingerprint, which follows MMPDB, represents a
+// constant with at most three attachment labels, and three is the fragmentation
+// method's default max_cuts. A DMCSS relation that needs more cuts is dropped
+// here rather than at save, so the in-memory pairs and the stored ones agree.
+constexpr std::size_t MAX_DMCSS_CUTS = 3;
+
 void add_mcs_pair_if_valid(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
@@ -52,7 +58,8 @@ void add_mcs_pair_if_valid(
             match_record.target_constant_atoms,
             match_record.target_to_source
         );
-    if (source_boundaries.empty() || source_boundaries.size() != target_boundaries.size()) {
+    if (source_boundaries.empty() || source_boundaries.size() != target_boundaries.size() ||
+        source_boundaries.size() > MAX_DMCSS_CUTS) {
         return;
     }
 
