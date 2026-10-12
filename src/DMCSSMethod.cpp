@@ -22,6 +22,17 @@ namespace {
 // here rather than at save, so the in-memory pairs and the stored ones agree.
 constexpr std::size_t MAX_DMCSS_CUTS = 3;
 
+// The store refuses a SMILES OEChem cannot read back: a variable fragment
+// through count_variable_heavy_atoms, a constant through its environment
+// fingerprint. A maximum common substructure that splits an aromatic ring
+// renders such a fragment (for example "[*:1][cH]c(c[*:2])F"), so the candidate
+// is skipped here, as one whose ring perception fails is, and the in-memory
+// pairs and the stored ones agree.
+bool parses_as_smiles(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    return OEChem::OESmilesToMol(mol, smiles);
+}
+
 void add_mcs_pair_if_valid(
     const MoleculeRecord& source_record,
     const MoleculeRecord& target_record,
@@ -85,7 +96,10 @@ void add_mcs_pair_if_valid(
         constant_smiles.empty() ||
         source_variable_smiles.empty() ||
         target_variable_smiles.empty() ||
-        source_variable_smiles == target_variable_smiles
+        source_variable_smiles == target_variable_smiles ||
+        !parses_as_smiles(constant_smiles) ||
+        !parses_as_smiles(source_variable_smiles) ||
+        !parses_as_smiles(target_variable_smiles)
     ) {
         return;
     }

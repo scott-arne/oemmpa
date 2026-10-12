@@ -2126,11 +2126,14 @@ TEST(AnalyzerSeriesEnumeration, LastAnalyzeWorkerCountCoversTheAuxiliaryPass) {
 
 TEST(AnalyzerTest, DMCSSEmitsAtMostThreeCuts) {
     // 1,2,3,4-tetramethylbenzene and benzene-1,2,3,4-tetrol differ at four ring
-    // positions, a four-cut pair the store could not fingerprint; toluene and
-    // phenol differ at one.
+    // positions, a four-cut pair the store could not fingerprint; the trimethyl
+    // and triol analogues differ at three, the most the limit keeps; toluene
+    // and phenol differ at one.
     Analyzer analyzer("dmcss");
     analyzer.AddMolecule("Cc1c(C)c(C)c(C)cc1", "tetramethyl");
     analyzer.AddMolecule("Oc1c(O)c(O)c(O)cc1", "tetrol");
+    analyzer.AddMolecule("Cc1cccc(C)c1C", "trimethyl");
+    analyzer.AddMolecule("Oc1cccc(O)c1O", "triol");
     analyzer.AddMolecule("Cc1ccccc1", "toluene");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
     analyzer.Analyze();
@@ -2142,6 +2145,29 @@ TEST(AnalyzerTest, DMCSSEmitsAtMostThreeCuts) {
         toluene_phenol = toluene_phenol || ends == std::set<std::string>{"toluene", "phenol"};
     }
     EXPECT_TRUE(toluene_phenol) << "the one-cut pair must survive the limit";
+    EXPECT_TRUE(HasUnorderedPair(analyzer.GetPairs(), "trimethyl", "triol"))
+        << "the three-cut pair must survive the limit";
+}
+
+TEST(AnalyzerTest, DMCSSSkipsCandidatesWhoseFragmentsCannotBeParsed) {
+    // Two public SureChEMBL compounds whose maximum common substructure splits
+    // the isoxazole of one against the benzene of the other, rendering variable
+    // fragments such as "[*:1][cH]c(c[*:2])F" that OEChem cannot read back.
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1noc(-c2ccc(Br)cc2)c1CO", "S1683");
+    analyzer.AddMolecule("Fc1ccc(C2OCc3cc(Br)ccc32)cc1", "S1777");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+    EXPECT_FALSE(HasUnorderedPair(pairs, "S1683", "S1777"));
+    EXPECT_TRUE(HasUnorderedPair(pairs, "toluene", "phenol"));
+    for (const MatchedPair& pair : pairs) {
+        EXPECT_TRUE(count_variable_heavy_atoms(pair.GetSourceVariableSmiles()).has_value())
+            << pair.GetSourceVariableSmiles();
+        EXPECT_TRUE(count_variable_heavy_atoms(pair.GetTargetVariableSmiles()).has_value())
+            << pair.GetTargetVariableSmiles();
+    }
 }
 
 }  // namespace test

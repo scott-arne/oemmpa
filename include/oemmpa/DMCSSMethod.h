@@ -11,6 +11,8 @@ namespace OEMMPA {
 ///
 /// A pair whose constant would carry more than three attachment points is not
 /// emitted: the store's environment fingerprint represents at most three.
+/// A pair whose rendered constant or variable SMILES OEChem cannot read back (a
+/// match that splits an aromatic ring) is not emitted either.
 class DMCSSMethod : public AnalysisMethod {
 public:
     DMCSSMethod() = default;

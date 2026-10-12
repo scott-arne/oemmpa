@@ -4930,12 +4930,26 @@ TEST(DuckDBStoreMcsSeries, AnOptedInMcsSavePersistsTheLabelledView) {
     }
 }
 
-TEST(DuckDBStoreMcsSeries, ADMCSSAnalysisWithAFourCutCandidateSaves) {
+TEST(DuckDBStoreTest, ADMCSSAnalysisWithAFourCutCandidateSaves) {
     // Before the three-cut limit this save failed: the four-cut constant has no
     // environment fingerprint ("at most three attachment labels").
     Analyzer analyzer("dmcss");
     analyzer.AddMolecule("Cc1c(C)c(C)c(C)cc1", "tetramethyl");
     analyzer.AddMolecule("Oc1c(O)c(O)c(O)cc1", "tetrol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    DuckDBStore store;
+    EXPECT_NO_THROW(analyzer.SaveTo(store));
+    EXPECT_GT(store.GetRowCount("pair"), 0U);
+}
+
+TEST(DuckDBStoreTest, ADMCSSAnalysisWithARingSplittingCandidateSaves) {
+    // Before the parse guard this save failed: "cannot store unparsable
+    // variable SMILES in rule_smiles: [*:1][cH]c(c[*:2])F".
+    Analyzer analyzer("dmcss");
+    analyzer.AddMolecule("Cc1noc(-c2ccc(Br)cc2)c1CO", "S1683");
+    analyzer.AddMolecule("Fc1ccc(C2OCc3cc(Br)ccc32)cc1", "S1777");
     analyzer.AddMolecule("Cc1ccccc1", "toluene");
     analyzer.AddMolecule("Oc1ccccc1", "phenol");
     analyzer.Analyze();
