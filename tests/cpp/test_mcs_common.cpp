@@ -394,3 +394,36 @@ TEST(MCSCommonTest, SelectScoredPairsGroupsByMoleculeIdNotSmiles) {
     EXPECT_EQ(selected[1].GetSourceMoleculeId(), 3u);
     EXPECT_EQ(selected[1].GetTargetMoleculeId(), 4u);
 }
+
+namespace {
+
+// The toluene/phenol fragments read back; the ring-split fragment DMCSS
+// rendered for the SureChEMBL compounds S1683 and S1777 does not (OEChem cannot
+// kekulize it). Each test below makes exactly one argument unparsable, so
+// dropping any one leg of the predicate fails its own test.
+const char* const PARSABLE_CONSTANT = "[*:1]c1ccccc1";
+const char* const PARSABLE_SOURCE_VARIABLE = "[*:1]C";
+const char* const PARSABLE_TARGET_VARIABLE = "[*:1]O";
+const char* const RING_SPLIT_FRAGMENT = "[*:1][cH]c(c[*:2])F";
+
+}  // namespace
+
+TEST(MCSCommonTest, FragmentsParseAsSmilesAcceptsThreeReadableFragments) {
+    EXPECT_TRUE(OEMMPA::mcs::fragments_parse_as_smiles(
+        PARSABLE_CONSTANT, PARSABLE_SOURCE_VARIABLE, PARSABLE_TARGET_VARIABLE));
+}
+
+TEST(MCSCommonTest, FragmentsParseAsSmilesRejectsAnUnreadableConstant) {
+    EXPECT_FALSE(OEMMPA::mcs::fragments_parse_as_smiles(
+        RING_SPLIT_FRAGMENT, PARSABLE_SOURCE_VARIABLE, PARSABLE_TARGET_VARIABLE));
+}
+
+TEST(MCSCommonTest, FragmentsParseAsSmilesRejectsAnUnreadableSourceVariable) {
+    EXPECT_FALSE(OEMMPA::mcs::fragments_parse_as_smiles(
+        PARSABLE_CONSTANT, RING_SPLIT_FRAGMENT, PARSABLE_TARGET_VARIABLE));
+}
+
+TEST(MCSCommonTest, FragmentsParseAsSmilesRejectsAnUnreadableTargetVariable) {
+    EXPECT_FALSE(OEMMPA::mcs::fragments_parse_as_smiles(
+        PARSABLE_CONSTANT, PARSABLE_SOURCE_VARIABLE, RING_SPLIT_FRAGMENT));
+}

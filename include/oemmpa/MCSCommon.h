@@ -259,6 +259,26 @@ MatchedPair make_matched_pair(
     int heavy_bond_delta
 );
 
+/// \brief Whether OEChem reads back all three rendered SMILES of a candidate pair.
+///
+/// The store refuses a SMILES OEChem cannot read back: a variable fragment
+/// through count_variable_heavy_atoms, a constant through its environment
+/// fingerprint. A maximum common substructure that splits an aromatic ring
+/// renders such a fragment (for example "[*:1][cH]c(c[*:2])F"), so a method
+/// that calls this skips the candidate rather than emit a pair it could not
+/// store. It is DMCSS's guard for now. The check stops at the first fragment
+/// that fails, and OEChem prints its parse warning for that one.
+///
+/// \param constant_smiles SMILES of the constant region with attachment labels.
+/// \param source_variable_smiles SMILES of the source variable region.
+/// \param target_variable_smiles SMILES of the target variable region.
+/// \returns True when OEChem parses all three.
+bool fragments_parse_as_smiles(
+    const std::string& constant_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+);
+
 /// \brief The molecules the strict ring-perception policy admits.
 ///
 /// A record is kept when the ported ring perception accepts its molecule -- the

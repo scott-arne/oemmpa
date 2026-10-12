@@ -29,8 +29,9 @@ METHODS = [CONTROL, *MCS_METHODS]
 # Measured on this fixture at commit f75535d, unfiltered and symmetric=False:
 # fragmentation 1218 pairs / 1 hydrogen, wizepairz 13 / 1, dmcss 114 / 0,
 # oemedchem 32 / 0. Under DMCSS's three-cut limit dmcss is 86 / 0, measured at
-# c7d6093: the 28 pairs it dropped needed four to seven cuts. The split drives
-# two tests rather than one test with a skip in it -- see their docstrings.
+# commit c7d6093: the 28 pairs it dropped needed four to seven cuts. The split
+# drives two tests rather than one test with a skip in it -- see their
+# docstrings.
 METHODS_WITH_HYDROGEN_PAIRS = ["fragmentation", "wizepairz"]
 METHODS_WITHOUT_HYDROGEN_PAIRS = ["dmcss", "oemedchem"]
 
@@ -207,7 +208,8 @@ def test_mcs_methods_emit_single_candidate_groups():
     groups / multi-candidate groups / largest group: fragmentation 1218 / 1041 /
     97 / 14, wizepairz 13 / 13 / 0 / 1, oemedchem 32 / 32 / 0 / 1. DMCSS was
     114 / 114 / 0 / 1 there and is 86 / 86 / 0 / 1 under its three-cut limit,
-    measured at c7d6093: the 28 pairs it dropped needed four to seven cuts.
+    measured at commit c7d6093: the 28 pairs it dropped needed four to seven
+    cuts.
 
     WizePairZ and DMCSS run one MCS search per molecule pair and emit two
     orientations (forward and reverse) of that single match; each orientation

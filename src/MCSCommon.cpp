@@ -106,6 +106,11 @@ bool transfer_one_double_bond(
     return false;
 }
 
+bool parses_as_smiles(const std::string& smiles) {
+    OEChem::OEGraphMol mol;
+    return OEChem::OESmilesToMol(mol, smiles);
+}
+
 }  // namespace
 
 std::vector<MoleculeRecord> admitted_molecules(const std::vector<MoleculeRecord>& molecules) {
@@ -914,6 +919,16 @@ MatchedPair make_matched_pair(
     );
     pair.SetVariableHeavyAtomCounts(source_variable_heavy_atoms, target_variable_heavy_atoms);
     return pair;
+}
+
+bool fragments_parse_as_smiles(
+    const std::string& constant_smiles,
+    const std::string& source_variable_smiles,
+    const std::string& target_variable_smiles
+) {
+    return parses_as_smiles(constant_smiles) &&
+        parses_as_smiles(source_variable_smiles) &&
+        parses_as_smiles(target_variable_smiles);
 }
 
 }  // namespace mcs
