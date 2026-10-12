@@ -585,10 +585,13 @@ def mcs_store_path(out_path, size, *, series, method=MCS_METHOD):
     :param size: Corpus size, part of the name so runs of two sizes keep apart.
     :param series: True for the store built with ``--series``.
     :param method: MCS analysis method.
-    :returns: The resolved ``series_mcs_<method>_<plain|series>_n<size>.duckdb``.
+    :returns: ``series_mcs_<method>_<plain|series>_n<size>.duckdb`` in the
+        resolved results directory. The file name stays lexical: resolving it
+        would follow a link at that name, and ``--force`` would then remove and
+        build over the link's target, a file the run does not own.
     """
     label = "series" if series else "plain"
-    return (Path(out_path).parent / f"series_mcs_{method}_{label}_n{size}.duckdb").resolve()
+    return Path(out_path).parent.resolve() / f"series_mcs_{method}_{label}_n{size}.duckdb"
 
 
 def _wal_path(store_path):
@@ -708,6 +711,8 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     state over the run (thermal, caches, background load) favours neither; each
     mode reports the median of its build seconds and the maximum of its
     per-child peaks, and every child's own figures are kept beside them.
+    One run at a time per results path: concurrent runs on one results path
+    are not supported.
 
     :param size: Corpus size requested from ``ensure_corpus`` when no
         ``smiles_path`` is given.
@@ -739,9 +744,10 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     # A log whose store is gone is refused like the store: the loop below would
     # remove it, since DuckDB would replay it into the store the child creates,
     # and only --force makes an earlier run's files this run's to remove.
+    # lexists, because a link occupies the name even when its target is gone.
     for store_path in store_paths:
         for leftover in (store_path, _wal_path(store_path)):
-            if leftover.exists() and not force:
+            if os.path.lexists(leftover) and not force:
                 raise FileExistsError(f"{leftover} exists; pass force=True (--force) to replace it")
     smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
     _ensure_mcs_paths_are_distinct(out_path, store_paths, {"the SMILES corpus": smiles})

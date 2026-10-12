@@ -784,3 +784,87 @@ def test_a_corpus_ensure_corpus_returns_at_a_derived_path_is_refused_before_any_
     assert returned.read_text(encoding="utf-8") == MCS_SMILES
     # Nothing beside the corpus: no results file, no staged bundle, no store, no log.
     assert [path.name for path in out.parent.iterdir()] == [returned.name]
+
+
+@pytest.mark.parametrize("dangling", [False, True], ids=["target", "dangling"])
+@pytest.mark.parametrize("series", [False, True])
+def test_a_derived_mcs_store_name_that_is_a_link_is_replaced_never_followed(mcs_smiles, tmp_path, monkeypatch,
+                                                                            series, dangling):
+    # --force replaces whatever sits at the derived name; following a link there
+    # would delete, and then build over, a file this run does not own. A link to
+    # nothing still occupies the name, so it is refused like any other entry.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    sentinel = outside / "sentinel.bin"
+    if not dangling:
+        sentinel.write_bytes(b"a file this run does not own")
+    out = tmp_path / "results" / "mcs.json"
+    out.parent.mkdir()
+    link = series_queries.mcs_store_path(out, 5, series=series)
+    try:
+        link.symlink_to(sentinel)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unsupported here: {exc}")
+
+    def fail_loudly(command):
+        raise AssertionError("no child may run while the derived name is refused")
+
+    monkeypatch.setattr(series_queries, "run_child_build", fail_loudly)
+    with pytest.raises(FileExistsError, match="force"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    assert link.is_symlink() and link.readlink() == sentinel
+    assert sentinel.exists() is not dangling
+    if not dangling:
+        assert sentinel.read_bytes() == b"a file this run does not own"
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def probe_this_mode(command):
+        if ("--series" in command) != series:
+            return 1.0, 100
+        seen["link"], seen["sentinel"] = os.path.lexists(link), sentinel.exists()
+        raise Stop
+
+    monkeypatch.setattr(series_queries, "run_child_build", probe_this_mode)
+    with pytest.raises(Stop):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
+    assert seen == {"link": False, "sentinel": not dangling}
+    if not dangling:
+        assert sentinel.read_bytes() == b"a file this run does not own"
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_a_derived_mcs_store_name_linked_to_the_corpus_is_refused(mcs_smiles, tmp_path, monkeypatch, series):
+    # A derived name kept lexical for --force must not hide an alias from the
+    # guard, which compares resolved paths and so refuses a link to an input as
+    # the query workload refuses any other alias of one.
+    corpus = mcs_smiles.read_bytes()
+    out = tmp_path / "results" / "mcs.json"
+    out.parent.mkdir()
+    link = series_queries.mcs_store_path(out, 5, series=series)
+    try:
+        link.symlink_to(mcs_smiles)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unsupported here: {exc}")
+
+    def fail_loudly(command):
+        raise AssertionError("no child may run once a derived name aliases the corpus")
+
+    monkeypatch.setattr(series_queries, "run_child_build", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
+    assert link.is_symlink() and link.readlink() == mcs_smiles
+    assert mcs_smiles.read_bytes() == corpus
+
+
+def test_each_child_build_reports_its_own_peak_not_the_largest_so_far():
+    # RUSAGE_CHILDREN keeps the largest peak of every child reaped so far, so a
+    # figure read from it would hand the idle child the large child's peak.
+    allocate = "b = bytearray(100 * 1024 * 1024); b[::4096] = b'x' * len(b[::4096])"   # Touched, so resident.
+    _, large_peak = series_queries.run_child_build([sys.executable, "-c", allocate])
+    _, idle_peak = series_queries.run_child_build([sys.executable, "-c", "pass"])
+    assert large_peak >= 100 * 1024 * 1024
+    assert idle_peak < large_peak / 2
