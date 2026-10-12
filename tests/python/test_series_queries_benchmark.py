@@ -481,6 +481,7 @@ def test_the_mcs_workload_times_both_modes_in_child_processes(mcs_smiles, tmp_pa
     assert bundle["meta"]["order"] == ["plain", "series"]
     assert bundle["meta"]["method"] == "dmcss"
     assert bundle["meta"]["size"] == 5
+    assert bundle["meta"]["platform"] == sys.platform   # A Linux bundle's peaks carry the parent's floor.
     assert bundle["series_seconds_ratio"] == opted["median_build_seconds"] / plain["median_build_seconds"]
     assert bundle["series_peak_rss_ratio"] == opted["max_peak_rss_bytes"] / plain["max_peak_rss_bytes"]
 
@@ -860,6 +861,10 @@ def test_a_derived_mcs_store_name_linked_to_the_corpus_is_refused(mcs_smiles, tm
     assert mcs_smiles.read_bytes() == corpus
 
 
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="on Linux a child's peak resident size includes the parent's pre-exec resident size, "
+                           "so an idle child cannot report a peak below the parent's and the test cannot "
+                           "discriminate a per-child peak from a cumulative one")
 def test_each_child_build_reports_its_own_peak_not_the_largest_so_far():
     # RUSAGE_CHILDREN keeps the largest peak of every child reaped so far, so a
     # figure read from it would hand the idle child the large child's peak.

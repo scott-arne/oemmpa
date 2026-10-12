@@ -662,7 +662,8 @@ def peak_resident_bytes(ru_maxrss):
     """Convert ``ru_maxrss`` to bytes.
 
     :param ru_maxrss: The ``ru_maxrss`` field of a ``struct rusage``; macOS
-        reports it in bytes, Linux in kibibytes.
+        reports it in bytes, Linux in kibibytes. On Linux a child's figure
+        also includes the resident size its parent had when it spawned it.
     :returns: The peak resident set size in bytes.
     """
     return int(ru_maxrss) if sys.platform == "darwin" else int(ru_maxrss) * 1024
@@ -673,7 +674,10 @@ def run_child_build(command):
 
     ``os.wait4`` returns the child's own ``struct rusage``, the record that
     ``resource.getrusage(RUSAGE_CHILDREN)`` aggregates over every child, so one
-    build's peak cannot hide behind another's.
+    build's peak cannot hide behind another's. That isolation is exact on
+    macOS only: on Linux the reported peak is at least the parent's resident
+    size at spawn, because the kernel carries the pre-exec high-water mark
+    into the child.
 
     :param command: Argument vector of the child.
     :returns: ``(seconds, peak resident bytes)``.
@@ -785,6 +789,9 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "git_revision": _git_revision(), "python": sys.version.split()[0],
             "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
+            # Read with the peaks: on Linux each one is floored at the parent's
+            # resident size at spawn (see run_child_build).
+            "platform": sys.platform,
         },
         "builds": builds,
         "series_seconds_ratio": opted["median_build_seconds"] / plain["median_build_seconds"],
