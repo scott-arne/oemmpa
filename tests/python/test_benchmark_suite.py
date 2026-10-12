@@ -226,7 +226,7 @@ def test_persisted_cli_workflow_rows_report_phase14_commands_and_counts():
     assert all(row["benchmark"] == "persisted_cli_workflow" for row in rows)
     assert all(row["returncode"] == 0 for row in rows)
     assert all(row["database_bytes"] > 0 for row in rows)
-    assert [row["output_rows"] for row in rows] == [0, 8, 1, 2]
+    assert [row["output_rows"] for row in rows] == [0, 9, 1, 2]
 
     predict_row = next(row for row in rows if row["command"] == "predict")
     generate_row = next(row for row in rows if row["command"] == "generate")

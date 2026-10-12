@@ -10,6 +10,12 @@ from pathlib import Path
 import pytest
 from oemmpa import Analyzer, DuckDBStore
 
+# tests/python is not a package, and site-packages ships an unrelated ``tests``
+# package that wins the dotted lookup, so the shared fixture is imported the way
+# test_series_oracle.py imports _series_oracle.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _series_fixture import CREATED_STEREOCENTRE
+
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
 CORES = ["C", "CC", "OC", "N", "C#N"]
 BROMINE = [4.0, 2.5, 1.5, 0.5, 3.0]
@@ -56,7 +62,7 @@ RANK_ARGS = ["--property", "act", "--direction", "higher",
 def test_series_lists_one_row_per_member_compound(database):
     header, rows = _tsv(_run_cli("series", "--database", str(database)).stdout)
     assert header == ["series_id", "constant", "cut_count", "constant_num_heavies", "num_members",
-                      "rgroup", "rgroup_num_heavies", "compound_id"]
+                      "rgroup", "rgroup_num_heavies", "compound_id", "enumeration_label"]
     toluene = [row for row in rows if row["constant"] == "[*:1]c1ccc(cc1)C"]
     assert [row["rgroup"] for row in toluene] == ["[*:1]Br", "[*:1]Cl", "[*:1]F", "[*:1][H]"]
     assert toluene[0]["compound_id"] == "s1-Br"
@@ -406,3 +412,76 @@ def test_rank_help_states_the_candidate_exclusion_on_every_query_option():
     assert f"Stored series id to use as the query. {clause}" in rank_help
     assert rank_help.count(clause) == 3
     assert clause not in similar_help
+
+
+STEREO_SMILES = "".join(f"{smiles} {name}\n" for smiles, name in CREATED_STEREOCENTRE)
+PHENYL_SMILES = "c1ccccc1 benzene\nCc1ccccc1 toluene\nOc1ccccc1 phenol\nNc1ccccc1 aniline\n"
+
+
+def _list_metrics(database):
+    _, rows = _tsv(_run_cli("list", str(database)).stdout)
+    return {row["metric"]: row["value"] for row in rows}
+
+
+@pytest.mark.parametrize("method", ["dmcss", "oemedchem", "wizepairz"])
+def test_build_series_enumerates_series_for_an_mcs_method(tmp_path, method):
+    smiles = tmp_path / "phenyl.smi"
+    smiles.write_text(PHENYL_SMILES, encoding="utf-8")
+    plain, opted = tmp_path / "plain.duckdb", tmp_path / "opted.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--method", method, "--output", str(plain))
+    _run_cli("build", "--smiles", str(smiles), "--method", method, "--series", "--output", str(opted))
+    plain_metrics, metrics = _list_metrics(plain), _list_metrics(opted)
+    assert (plain_metrics["series_source"], plain_metrics["series"]) == ("none", "0")
+    assert metrics["series_source"] == f"{method}+fragmentation"
+    assert int(metrics["series"]) > 0
+    assert metrics["pairs"] == plain_metrics["pairs"]   # The pairs come from the MCS method either way.
+    # The auxiliary pass took the build's fragmentation defaults, as a fragmentation build does.
+    options = DuckDBStore(opted, read_only=True).fragment_options()
+    assert (options["max_heavy_atoms"], options["max_rotatable_bonds"]) == (100, 10)
+    assert DuckDBStore(plain, read_only=True).fragment_options() == {}
+
+
+def test_build_series_unlocks_the_fragmentation_flags_for_an_mcs_method(tmp_path):
+    pytest.importorskip("rdkit")   # --cut-rgroup converts through RDKit.
+    from oemmpa._rgroup import rgroups_to_recursive_smarts
+
+    smiles = tmp_path / "phenyl.smi"
+    smiles.write_text(PHENYL_SMILES, encoding="utf-8")
+    refused = _run_cli("build", "--smiles", str(smiles), "--method", "dmcss", "--cut-rgroup", "*O",
+                       "--output", str(tmp_path / "refused.duckdb"), check=False)
+    assert refused.returncode == 2
+    assert "--cut-rgroup requires --method fragmentation or --series" in refused.stderr
+    database = tmp_path / "cut.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--method", "dmcss", "--series", "--cut-rgroup", "*O",
+             "--max-heavies", "50", "--output", str(database))
+    options = DuckDBStore(database, read_only=True).fragment_options()
+    assert options["cut_smarts"] == [rgroups_to_recursive_smarts(["*O"])]
+    assert options["max_heavy_atoms"] == 50
+
+
+def test_build_series_is_accepted_without_effect_for_the_fragmentation_method(tmp_path):
+    smiles = tmp_path / "phenyl.smi"
+    smiles.write_text(PHENYL_SMILES, encoding="utf-8")
+    plain, flagged = tmp_path / "plain.duckdb", tmp_path / "flagged.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(plain))
+    _run_cli("build", "--smiles", str(smiles), "--series", "--output", str(flagged))
+    assert _list_metrics(plain) == _list_metrics(flagged)
+    assert DuckDBStore(plain, read_only=True).fragment_options() == \
+        DuckDBStore(flagged, read_only=True).fragment_options()
+
+
+def test_series_include_up_enumerated_adds_the_labelled_rows(tmp_path):
+    smiles = tmp_path / "stereo.smi"
+    smiles.write_text(STEREO_SMILES, encoding="utf-8")
+    database = tmp_path / "stereo.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--output", str(database))
+    header, observed = _tsv(_run_cli("series", "--database", str(database)).stdout)
+    assert header[-1] == "enumeration_label"
+    assert {row["enumeration_label"] for row in observed} == {"none"}
+    _, labelled = _tsv(_run_cli("series", "--database", str(database), "--include-up-enumerated").stdout)
+    guessed = [row for row in labelled if row["enumeration_label"] != "none"]
+    assert {row["compound_id"] for row in guessed} == {"iso"}
+    assert {row["enumeration_label"] for row in guessed} == {"constant-up", "variable-up"}
+    metrics = _list_metrics(database)
+    assert int(metrics["series_variant_members"]) == len(guessed)
+    assert int(metrics["series_members"]) == len(observed)

@@ -155,6 +155,7 @@ LIST_METRICS = [
     "rule_environment_statistics",
     "series",
     "series_members",
+    "series_variant_members",
     "series_source",
 ]
 
@@ -167,6 +168,7 @@ SERIES_CLI_COLUMNS = [
     "rgroup",
     "rgroup_num_heavies",
     "compound_id",
+    "enumeration_label",
 ]
 
 ID_COLUMN_CANDIDATES = ("id", "ID", "Name", "name")
@@ -1033,13 +1035,15 @@ def _build_analyzer(args, *, load_properties=None):
         raise ValueError(
             "--mcs-identity-fraction/--max-environment-radius require --method wizepairz"
         )
-    # Validate fragmentation-only flags are only used with fragmentation method
-    if method != "fragmentation":
+    series = bool(getattr(args, "series", False))
+    # The fragmentation-only flags configure the auxiliary series pass of an
+    # MCS build, so --series is what makes them meaningful for an MCS method.
+    if method != "fragmentation" and not series:
         _reject_fragmentation_only_flags(args)
-    analyzer = Analyzer(method=method)
-    if method == "fragmentation":
+    analyzer = Analyzer(method=method, series=True if series else None)
+    if method == "fragmentation" or series:
         _configure_fragmentation(analyzer, args)
-    elif method == "wizepairz":
+    if method == "wizepairz":
         _configure_wizepairz(analyzer, args)
     _configure_desalting(analyzer, args)
     _configure_ring_perception(analyzer, args)
@@ -1232,6 +1236,7 @@ def _series_selection_from_args(args):
         max_variable_heavy_atoms=args.max_rgroup_heavies or 0,
         min_constant_heavy_atoms=args.min_constant_heavies or 0,
         cut_count=getattr(args, "cut_count", None) or 0,
+        include_up_enumerated=bool(getattr(args, "include_up_enumerated", False)),
     )
 
 
@@ -1369,10 +1374,11 @@ def _require_smiles_input(args, command):
 
 
 def _reject_fragmentation_only_flags(args):
-    """Reject fragmentation-only flags in non-fragmentation methods.
+    """Reject fragmentation-only flags for an MCS method built without ``--series``.
 
-    When the analysis method is wizepairz/dmcss/oemedchem, fragmentation-specific
-    configuration flags should not be silently ignored.
+    When the analysis method is wizepairz/dmcss/oemedchem and ``--series`` is
+    absent, nothing would read these flags, so they must not be silently
+    ignored; with ``--series`` they configure the auxiliary series pass.
     """
     # --cut-rgroup and --cut-rgroup-file have None default, easy to detect
     for option, value in (
@@ -1380,16 +1386,16 @@ def _reject_fragmentation_only_flags(args):
         ("--cut-rgroup-file", getattr(args, "cut_rgroup_file", None)),
     ):
         if value is not None:
-            raise ValueError(f"{option} requires --method fragmentation")
+            raise ValueError(f"{option} requires --method fragmentation or --series")
 
     # --max-heavies and --max-rotatable-bonds use _UNSET sentinel default.
     # Only reject when the flag was explicitly provided (not _UNSET).
     max_heavies = getattr(args, "max_heavies", _UNSET)
     max_rotatable = getattr(args, "max_rotatable_bonds", _UNSET)
     if max_heavies is not _UNSET:
-        raise ValueError("--max-heavies requires --method fragmentation")
+        raise ValueError("--max-heavies requires --method fragmentation or --series")
     if max_rotatable is not _UNSET:
-        raise ValueError("--max-rotatable-bonds requires --method fragmentation")
+        raise ValueError("--max-rotatable-bonds requires --method fragmentation or --series")
 
 
 def _reject_persisted_fragmentation_options(args, command):
@@ -1787,6 +1793,15 @@ def _build_parser():
         default=None,
         help="Maximum relative heavy-atom change for persisted pairs.",
     )
+    build_parser.add_argument(
+        "--series",
+        action="store_true",
+        help=(
+            "Also enumerate matched molecular series for an MCS method, through an "
+            "auxiliary fragmentation pass the fragmentation flags configure; the "
+            "fragmentation method always enumerates them."
+        ),
+    )
     _add_desalting_arguments(build_parser)
     build_parser.set_defaults(func=_build_store)
 
@@ -1840,6 +1855,9 @@ def _build_parser():
     series_parser.add_argument("--database", required=True, help="DuckDB database path.")
     _add_series_selection_arguments(series_parser, with_cut_count=True)
     series_parser.add_argument("--constant", default=None, help="Keep only the series of this constant SMILES.")
+    series_parser.add_argument(
+        "--include-up-enumerated", action="store_true",
+        help="Also list the guessed stereo-variant rows (enumeration_label constant-up or variable-up).")
     series_parser.add_argument("--output", default=None,
                                help="Optional TSV output path, or '-' for standard output. Use .gz for gzip output.")
     series_parser.set_defaults(func=_series)

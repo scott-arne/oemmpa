@@ -26,6 +26,7 @@ EXPECTED_PERSISTED_SUMMARY = [
     {"metric": "rule_environment_statistics", "value": "18"},
     {"metric": "series", "value": "1"},
     {"metric": "series_members", "value": "3"},
+    {"metric": "series_variant_members", "value": "0"},
     {"metric": "series_source", "value": "fragmentation"},
 ]
 
@@ -37,6 +38,7 @@ EXPECTED_NO_PROPERTY_SUMMARY = [
     {"metric": "rule_environment_statistics", "value": "0"},
     {"metric": "series", "value": "1"},
     {"metric": "series_members", "value": "3"},
+    {"metric": "series_variant_members", "value": "0"},
     {"metric": "series_source", "value": "fragmentation"},
 ]
 
@@ -265,6 +267,7 @@ def _assert_rgroup_store_summary(database):
         {"metric": "rule_environment_statistics", "value": "6"},
         {"metric": "series", "value": "1"},
         {"metric": "series_members", "value": "2"},
+        {"metric": "series_variant_members", "value": "0"},
         {"metric": "series_source", "value": "fragmentation"},
     ]
 
@@ -382,6 +385,7 @@ def test_cli_build_accepts_symmetric_index_option(tmp_path):
         {"metric": "rule_environment_statistics", "value": "36"},
         {"metric": "series", "value": "1"},
         {"metric": "series_members", "value": "3"},
+        {"metric": "series_variant_members", "value": "0"},
         {"metric": "series_source", "value": "fragmentation"},
     ]
 
@@ -439,6 +443,7 @@ def test_cli_build_accepts_mmpdb_index_filter_options(tmp_path):
         {"metric": "rule_environment_statistics", "value": "36"},
         {"metric": "series", "value": "1"},
         {"metric": "series_members", "value": "3"},
+        {"metric": "series_variant_members", "value": "0"},
         {"metric": "series_source", "value": "fragmentation"},
     ]
 
@@ -1597,6 +1602,7 @@ def test_cli_list_formats_large_counts_exactly(tmp_path, monkeypatch):
                 "rule_environment_statistics": 6,
                 "series": 7,
                 "series_members": 8,
+                "series_variant_members": 9,
                 "series_source": "fragmentation",
             }
 
