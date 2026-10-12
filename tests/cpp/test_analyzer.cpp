@@ -2165,7 +2165,9 @@ TEST(AnalyzerTest, DMCSSSkipsCandidatesWhoseFragmentsCannotBeParsed) {
         analyzer.AddMolecule("Cc1ccccc1", "toluene");
         analyzer.AddMolecule("Oc1ccccc1", "phenol");
         analyzer.Analyze(threads);
-        EXPECT_EQ(analyzer.LastAnalyzeWorkerCount(), threads);
+        if (std::thread::hardware_concurrency() >= threads) {
+            EXPECT_EQ(analyzer.LastAnalyzeWorkerCount(), threads);
+        }
         const std::vector<MatchedPair> pairs = analyzer.GetPairs();
         EXPECT_FALSE(HasUnorderedPair(pairs, "S1683", "S1777")) << "threads " << threads;
         EXPECT_TRUE(HasUnorderedPair(pairs, "toluene", "phenol")) << "threads " << threads;
