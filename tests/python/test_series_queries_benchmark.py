@@ -487,11 +487,17 @@ def test_the_mcs_workload_times_both_modes_in_child_processes(mcs_smiles, tmp_pa
 
 def test_the_mcs_workload_alternates_the_modes_and_reports_medians_and_peaks(mcs_smiles, tmp_path, monkeypatch):
     commands = []
+    # Indexed by position. Within its own runs, plain's median seconds is its
+    # first run and series' its last, and plain's peak is its middle run and
+    # series' its first, so no statistic that picks one run by index (first,
+    # middle, last) can match both modes; nor can a mean, a minimum or a sum.
+    seconds = [4.0, 2.0, 5.0, 1.0, 6.0, 3.0]
+    peaks = [300, 600, 200, 500, 100, 400]
 
     def fake_child(command):
         commands.append(command)
-        position = len(commands)
-        return float(position), 100 * position   # Distinct seconds and peaks per child.
+        position = len(commands) - 1
+        return seconds[position], peaks[position]
 
     monkeypatch.setattr(series_queries, "run_child_build", fake_child)
     monkeypatch.setattr(series_queries, "_store_summary", lambda store_path: {
@@ -503,8 +509,11 @@ def test_the_mcs_workload_alternates_the_modes_and_reports_medians_and_peaks(mcs
     assert ["--series" in command for command in commands] == [False, True, True, False, False, True]
     plain, opted = bundle["builds"]["plain"], bundle["builds"]["series"]
     assert [run["position"] for run in plain["runs"]] == [0, 3, 4]
-    assert [run["build_seconds"] for run in plain["runs"]] == [1.0, 4.0, 5.0]
-    assert [run["peak_rss_bytes"] for run in opted["runs"]] == [200, 300, 600]
+    assert [run["position"] for run in opted["runs"]] == [1, 2, 5]
+    assert [run["build_seconds"] for run in plain["runs"]] == [4.0, 1.0, 6.0]
+    assert [run["build_seconds"] for run in opted["runs"]] == [2.0, 5.0, 3.0]
+    assert [run["peak_rss_bytes"] for run in plain["runs"]] == [300, 500, 100]
+    assert [run["peak_rss_bytes"] for run in opted["runs"]] == [600, 200, 400]
     assert plain["median_build_seconds"] == 4.0
     assert opted["median_build_seconds"] == 3.0
     assert plain["max_peak_rss_bytes"] == 500
@@ -566,7 +575,9 @@ def test_the_cli_routes_the_mcs_workload_with_its_own_defaults(tmp_path, monkeyp
     with pytest.raises(SystemExit) as refused:
         series_queries.main(["--workload", "mcs", "--pairs", "2"])
     assert refused.value.code == 2
-    assert "--pairs" in capsys.readouterr().err
+    # The usage line argparse prints names every flag, so only the message
+    # itself shows which refusal fired.
+    assert "--pairs must be at least 3" in capsys.readouterr().err
 
 
 def _refuse_every_workload(monkeypatch):
@@ -711,3 +722,65 @@ def test_an_existing_mcs_store_is_refused_unless_forced_and_force_takes_its_log(
     with pytest.raises(Stop):
         series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
     assert seen == {"store": False, "wal": False}
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_a_leftover_mcs_log_without_its_store_is_refused_unless_forced(mcs_smiles, tmp_path, monkeypatch, series):
+    # DuckDB would replay the log into the store the child creates, so the log
+    # is the run's to remove only under --force, like the store it belonged to.
+    out = tmp_path / "mcs.json"
+    store = series_queries.mcs_store_path(out, 5, series=series)
+    wal = store.with_name(store.name + ".wal")
+    wal.write_bytes(b"the log of a store that is gone")
+
+    def fail_loudly(command):
+        raise AssertionError("no child may run while a leftover log is refused")
+
+    monkeypatch.setattr(series_queries, "run_child_build", fail_loudly)
+    with pytest.raises(FileExistsError, match="force"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    assert wal.read_bytes() == b"the log of a store that is gone"
+    assert not store.exists()
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def probe_this_mode(command):
+        # Each mode's store and log are removed just before that mode's first
+        # child, so the probe waits for the child of the mode that owns the log.
+        if ("--series" in command) != series:
+            return 1.0, 100
+        seen["wal"] = wal.exists()
+        raise Stop
+
+    monkeypatch.setattr(series_queries, "run_child_build", probe_this_mode)
+    with pytest.raises(Stop):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
+    assert seen == {"wal": False}
+
+
+@pytest.mark.parametrize("target", ["plain", "series", "results"])
+def test_a_corpus_ensure_corpus_returns_at_a_derived_path_is_refused_before_any_build(tmp_path, monkeypatch,
+                                                                                      target):
+    # The guard run before the fetch cannot know which file ensure_corpus will
+    # return, so the one run with that file is all that stands between --force
+    # (which unlinks each store before its child) and the corpus.
+    parquet = tmp_path / "source.parquet"
+    parquet.write_bytes(b"not really a parquet")
+    out = tmp_path / "results" / "out.json"
+    out.parent.mkdir()
+    returned = out if target == "results" else series_queries.mcs_store_path(out, 5, series=target == "series")
+    returned.write_text(MCS_SMILES, encoding="utf-8")
+
+    def fail_loudly(command):
+        raise AssertionError("no child may run once the corpus names a path this run writes")
+
+    monkeypatch.setattr(series_queries, "ensure_corpus", lambda size, parquet=None: returned)
+    monkeypatch.setattr(series_queries, "run_child_build", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, parquet=str(parquet), out_path=out, pairs=1, force=True)
+    assert returned.read_text(encoding="utf-8") == MCS_SMILES
+    # Nothing beside the corpus: no results file, no staged bundle, no store, no log.
+    assert [path.name for path in out.parent.iterdir()] == [returned.name]

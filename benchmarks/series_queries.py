@@ -683,6 +683,7 @@ def run_child_build(command):
     process = subprocess.Popen(command, env=env)
     _, status, usage = os.wait4(process.pid, 0)
     seconds = perf_counter() - start
+    # Marks the child reaped, so Popen neither warns that it is still running nor polls its pid again.
     process.returncode = os.waitstatus_to_exitcode(status)
     if process.returncode != 0:
         raise RuntimeError(f"child build failed with exit status {process.returncode}: {' '.join(command)}")
@@ -721,7 +722,8 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     :raises ValueError: When ``pairs`` is below 1, or the results path, a derived
         store or its log names an input or one another; before anything is
         fetched, created, built or removed.
-    :raises FileExistsError: When a derived store exists and ``force`` is false.
+    :raises FileExistsError: When a derived store or its log exists and ``force``
+        is false, a log whose store is gone included.
     :raises RuntimeError: When a child build fails.
     """
     order = mcs_build_order(pairs)
@@ -734,9 +736,13 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     source = resolve_corpus_source(parquet) if smiles_path is None else None
     _ensure_mcs_paths_are_distinct(out_path, store_paths,
                                    {"--parquet": parquet, "--smiles": smiles_path, "the corpus source": source})
+    # A log whose store is gone is refused like the store: the loop below would
+    # remove it, since DuckDB would replay it into the store the child creates,
+    # and only --force makes an earlier run's files this run's to remove.
     for store_path in store_paths:
-        if store_path.exists() and not force:
-            raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
+        for leftover in (store_path, _wal_path(store_path)):
+            if leftover.exists() and not force:
+                raise FileExistsError(f"{leftover} exists; pass force=True (--force) to replace it")
     smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
     _ensure_mcs_paths_are_distinct(out_path, store_paths, {"the SMILES corpus": smiles})
     out_path.parent.mkdir(parents=True, exist_ok=True)
