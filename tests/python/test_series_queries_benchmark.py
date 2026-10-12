@@ -862,9 +862,9 @@ def test_a_derived_mcs_store_name_linked_to_the_corpus_is_refused(mcs_smiles, tm
 
 
 @pytest.mark.skipif(sys.platform != "darwin",
-                    reason="on Linux a child's peak resident size includes the parent's pre-exec resident size, "
-                           "so an idle child cannot report a peak below the parent's and the test cannot "
-                           "discriminate a per-child peak from a cumulative one")
+                    reason="on Linux a child's peak resident size is at least the parent's highest resident "
+                           "size up to the spawn, so an idle child cannot report a peak below the parent's and "
+                           "the test cannot discriminate a per-child peak from a cumulative one")
 def test_each_child_build_reports_its_own_peak_not_the_largest_so_far():
     # RUSAGE_CHILDREN keeps the largest peak of every child reaped so far, so a
     # figure read from it would hand the idle child the large child's peak.

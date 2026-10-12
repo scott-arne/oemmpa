@@ -28,8 +28,15 @@ public:
         std::string series_source
     );
 
+    /// \param num_compounds Compound rows.
+    /// \param num_rules Rule rows.
+    /// \param num_pairs Pair rows.
+    /// \param num_rule_environments Rule environment rows.
+    /// \param num_rule_environment_statistics Rule environment statistics rows.
+    /// \param num_series Series rows.
     /// \param num_series_members Observed (label 'none') series_member rows.
     /// \param num_series_variant_members Up-enumerated series_member rows.
+    /// \param series_source The store's series source; see GetSeriesSource.
     DatabaseSummary(
         std::uint64_t num_compounds,
         std::uint64_t num_rules,

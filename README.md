@@ -479,8 +479,10 @@ Behaviour changes to know about:
   and `Analyzer::SaveTo(DuckDBStore&, QueryOptions)` take their options by
   value (source-compatible; the mangled names change).
 - Up-enumerated (guessed stereo-variant) compounds are stored as labelled
-  `series_member` rows; every count and default read uses the observed rows,
-  and `include_up_enumerated` opts in to the guessed ones.
+  `series_member` rows. The observed-only counts (`num_series_members`,
+  `series.num_members`) and every default read use the observed rows, while
+  `num_series_variant_members` (the summary's `series_variant_members`) counts
+  the up-enumerated rows and `include_up_enumerated` opts a read in to them.
 - Every series constant now has its `constant_environment` rows, not only the
   constants that carry pairs.
 - DMCSS no longer emits pairs that need more than three cuts or whose fragments

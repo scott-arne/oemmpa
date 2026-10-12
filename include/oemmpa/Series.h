@@ -33,6 +33,10 @@ public:
 
     /// \brief A member whose compounds carry the label that produced them.
     ///
+    /// \param variable_smiles The member's R-group (variable fragment) SMILES.
+    /// \param heavy_atom_count Heavy atoms in the R-group.
+    /// \param molecule_ids Ids of the compounds that carry the R-group, sorted ascending.
+    /// \param external_ids External id of each compound, parallel to the molecule ids.
     /// \param enumeration_labels One label per molecule id, parallel to it.
     /// \throws InvalidQueryError When the labels do not parallel the molecule ids.
     SeriesMember(

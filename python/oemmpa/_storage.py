@@ -213,9 +213,13 @@ class DuckDBStore:
             atom ratio.
         :raises ValueError: If a ``*_variable_*`` filter is combined with an
             explicit ``query_options``, or if ``index_mode`` is unsupported.
-        :raises RuntimeError: If the analyzer's method produces series and the
-            store already holds rows; a series-producing analysis saves only
-            into an empty store, so rebuild the store to save again.
+        :raises RuntimeError: If the analysis produces series (the
+            fragmentation method, or an MCS method with series enumeration on)
+            and the store already holds rows, because a series-producing
+            analysis saves only into an empty store; or if the save would
+            record a different series source than the store's enumeration
+            stamp, such as a plain ``dmcss`` save over a
+            ``dmcss+fragmentation`` store. Rebuild the store to save again.
         :returns: ``self`` for chaining.
 
         **Thread safety:** This method releases the Python GIL, so do not call it
@@ -396,9 +400,10 @@ class DuckDBStore:
             up-enumerated ones. Both count ROWS (compound memberships), a
             different quantity from a series' member count (distinct R-groups)
             and never comparable to it. ``series_source`` is 'not-computed'
-            (nothing saved yet), 'none' (an analysis that produces no series),
-            the analysis method name, or ``<method>+fragmentation`` (an MCS
-            analysis saved with series enumeration).
+            (nothing saved yet), 'none' (an analysis without series
+            enumeration), the analysis method name, or
+            ``<method>+fragmentation`` (an MCS analysis saved with series
+            enumeration).
         """
         raw_summary = self._raw_store.GetSummary(bool(recount))
         return {

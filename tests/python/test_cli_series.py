@@ -14,7 +14,7 @@ from oemmpa import Analyzer, DuckDBStore
 # package that wins the dotted lookup, so the shared fixture is imported the way
 # test_series_oracle.py imports _series_oracle.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _series_fixture import CREATED_STEREOCENTRE
+from _series_fixture import CREATED_STEREOCENTRE, without_column
 
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
 CORES = ["C", "CC", "OC", "N", "C#N"]
@@ -423,10 +423,6 @@ def _list_metrics(database):
     return {row["metric"]: row["value"] for row in rows}
 
 
-def _without(rows, column):
-    return [{key: value for key, value in row.items() if key != column} for row in rows]
-
-
 @pytest.mark.parametrize("method", ["dmcss", "oemedchem", "wizepairz"])
 def test_build_series_enumerates_series_for_an_mcs_method(tmp_path, method):
     smiles = tmp_path / "phenyl.smi"
@@ -496,8 +492,8 @@ def test_series_include_up_enumerated_adds_the_labelled_rows(tmp_path):
     _, labelled = _tsv(_run_cli("series", "--database", str(database), "--include-up-enumerated").stdout)
     # The flag adds rows rather than replacing them; num_members is left out
     # because it counts the members guesses add, as Analyzer.series does.
-    assert _without([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
-        _without(observed, "num_members")
+    assert without_column([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
+        without_column(observed, "num_members")
     guessed = [row for row in labelled if row["enumeration_label"] != "none"]
     assert {row["compound_id"] for row in guessed} == {"iso"}
     assert {row["enumeration_label"] for row in guessed} == {"constant-up", "variable-up"}

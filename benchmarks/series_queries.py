@@ -663,7 +663,7 @@ def peak_resident_bytes(ru_maxrss):
 
     :param ru_maxrss: The ``ru_maxrss`` field of a ``struct rusage``; macOS
         reports it in bytes, Linux in kibibytes. On Linux a child's figure
-        also includes the resident size its parent had when it spawned it.
+        is at least its parent's highest resident size up to the spawn.
     :returns: The peak resident set size in bytes.
     """
     return int(ru_maxrss) if sys.platform == "darwin" else int(ru_maxrss) * 1024
@@ -675,9 +675,9 @@ def run_child_build(command):
     ``os.wait4`` returns the child's own ``struct rusage``, the record that
     ``resource.getrusage(RUSAGE_CHILDREN)`` aggregates over every child, so one
     build's peak cannot hide behind another's. That isolation is exact on
-    macOS only: on Linux the reported peak is at least the parent's resident
-    size at spawn, because the kernel carries the pre-exec high-water mark
-    into the child.
+    macOS only: on Linux the reported peak is at least the parent's highest
+    resident size up to the spawn, because the kernel carries that high-water
+    mark across ``exec`` into the child.
 
     :param command: Argument vector of the child.
     :returns: ``(seconds, peak resident bytes)``.
@@ -746,8 +746,10 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     _ensure_mcs_paths_are_distinct(out_path, store_paths,
                                    {"--parquet": parquet, "--smiles": smiles_path, "the corpus source": source})
     # A log whose store is gone is refused like the store: the loop below would
-    # remove it, since DuckDB would replay it into the store the child creates,
-    # and only --force makes an earlier run's files this run's to remove.
+    # remove it, since the child builds its store in a temporary directory and
+    # renames it into place, so DuckDB would replay a stale log when the store
+    # is next opened (by _store_summary), and only --force makes an earlier
+    # run's files this run's to remove.
     # lexists, because a link occupies the name even when its target is gone.
     for store_path in store_paths:
         for leftover in (store_path, _wal_path(store_path)):
@@ -761,7 +763,8 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     for position, series in enumerate(order):
         store_path = stores[series]
         # Vetted above, so the store and its log are this run's to replace;
-        # DuckDB would replay a stale log into the store the child writes.
+        # the child renames its store into place, and DuckDB would replay a
+        # stale log when that store is next opened, as _store_summary does.
         store_path.unlink(missing_ok=True)
         _wal_path(store_path).unlink(missing_ok=True)
         label = "series" if series else "plain"
@@ -790,7 +793,7 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
             "git_revision": _git_revision(), "python": sys.version.split()[0],
             "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
             # Read with the peaks: on Linux each one is floored at the parent's
-            # resident size at spawn (see run_child_build).
+            # highest resident size up to the spawn (see run_child_build).
             "platform": sys.platform,
         },
         "builds": builds,

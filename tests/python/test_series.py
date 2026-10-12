@@ -15,7 +15,7 @@ from oemmpa._series import SERIES_ROW_COLUMNS
 # package that wins the dotted lookup, so the shared fixture is imported the way
 # test_series_oracle.py imports _series_oracle.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _series_fixture import CREATED_STEREOCENTRE
+from _series_fixture import CREATED_STEREOCENTRE, without_column
 
 
 def _phenyl_analyzer():
@@ -321,10 +321,6 @@ def _created_stereocentre_analyzer(**kwargs):
     return analyzer
 
 
-def _without(rows, column):
-    return [{key: value for key, value in row.items() if key != column} for row in rows]
-
-
 def test_series_rows_carry_the_enumeration_label_column():
     rows = _phenyl_rows(_phenyl_analyzer().series().to_dicts())
     assert SERIES_ROW_COLUMNS[-1] == "enumeration_label"
@@ -341,8 +337,8 @@ def test_analyzer_series_includes_guessed_rows_only_when_asked():
     assert {row["compound_id"] for row in guessed} == {"iso"}
     # The observed rows are the same in both views; num_members differs where a
     # member only guesses realize joins a series.
-    assert _without([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
-        _without(observed, "num_members")
+    assert without_column([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
+        without_column(observed, "num_members")
     with pytest.raises(ValueError, match="include_up_enumerated"):
         analyzer.series(include_up_enumerated=1)
 

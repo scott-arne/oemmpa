@@ -180,7 +180,10 @@ disconnected common regions between molecule pairs. It returns the same
 constant/variable attachment points with the same `[*:n]` convention, and
 honors the common symmetric and heavy-atom filters. The current implementation
 is intentionally conservative: it emits heavy-atom substitutions where both
-variables have matching attachment counts.
+variables have matching attachment counts. It emits pairs of at most three
+cuts and, through `mcs::fragments_parse_as_smiles`, skips a candidate whose
+rendered constant or variable SMILES OEChem cannot read back; OEChem prints a
+warning on stderr for each skipped candidate.
 
 `OEMedChemMethod` wraps OpenEye's native matched-pair analyzer and converts
 native mapped pair SMILES into the same `MatchedPair` and `Transform` objects.
