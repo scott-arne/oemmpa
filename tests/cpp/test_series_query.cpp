@@ -370,6 +370,19 @@ std::string RejectionMessage(const DuckDBStore& store, const SubstituentRankingR
     return "";
 }
 
+// A guessed [*:1]I row in every series that holds a bromine member, carried by
+// that bromine compound and labelled constant-up: the shape the enumeration
+// writes for a guessed stereo variant, inserted directly so a small fixture can
+// hold some. Read as data, iodine copies bromine's value in every such series.
+void InsertGuessedIodineRows(DuckDBStore& store) {
+    store.Execute("insert into rule_smiles (id, smiles, num_heavies) select max(id) + 1, '[*:1]I', 1 from rule_smiles");
+    store.Execute(
+        "insert into series_member (id, series_id, rule_smiles_id, compound_id, enumeration_label) "
+        "select (select max(id) from series_member) + row_number() over (order by sm.series_id), sm.series_id, "
+        "(select id from rule_smiles where smiles = '[*:1]I'), sm.compound_id, 'constant-up' "
+        "from series_member sm join rule_smiles rs on rs.id = sm.rule_smiles_id where rs.smiles = '[*:1]Br'");
+}
+
 }  // namespace
 
 TEST(SeriesRanking, InterleavingFixtureCountsSupportAndStrictWins) {
@@ -1572,7 +1585,7 @@ TEST(SeriesSimilarity, RequestContractRejectsAnUnknownMeasure) {
     std::filesystem::remove(fixture.path);
 }
 
-TEST(SeriesVariantRows, RankingAndSimilarityReadObservedRowsOnly) {
+TEST(SeriesVariantRows, RankingAndSimilarityReadGuessedRowsOnlyWithTheFlag) {
     const InterleavingStore fixture = MakeInterleavingStore();
     DuckDBStore store(fixture.path.string());
     const auto ranking_digest = [](const SubstituentRankingResult& result) {
@@ -1616,18 +1629,9 @@ TEST(SeriesVariantRows, RankingAndSimilarityReadObservedRowsOnly) {
     const std::vector<Series> series_before = store.GetSeries();
     const std::string explicit_before = ranking_digest(store.RankNextSubstituents(explicit_query));
     const std::string by_id_before = ranking_digest(store.RankNextSubstituents(by_id));
-    const std::string similar_before = similarity_digest(store.FindSimilarSeries(similar));
+    const SeriesSimilarityResult similar_before = store.FindSimilarSeries(similar);
 
-    // A guessed [*:1]I row in every series that holds a bromine member, carried
-    // by that bromine compound. Read as data it would be a candidate in every
-    // matched series, a member tied with bromine in the id query (which the
-    // ranking refuses) and a shared R-group of every similarity candidate.
-    store.Execute("insert into rule_smiles (id, smiles, num_heavies) select max(id) + 1, '[*:1]I', 1 from rule_smiles");
-    store.Execute(
-        "insert into series_member (id, series_id, rule_smiles_id, compound_id, enumeration_label) "
-        "select (select max(id) from series_member) + row_number() over (order by sm.series_id), sm.series_id, "
-        "(select id from rule_smiles where smiles = '[*:1]I'), sm.compound_id, 'constant-up' "
-        "from series_member sm join rule_smiles rs on rs.id = sm.rule_smiles_id where rs.smiles = '[*:1]Br'");
+    InsertGuessedIodineRows(store);
     SeriesSelection include;
     include.include_up_enumerated = true;
     std::size_t iodine_rows = 0;
@@ -1638,9 +1642,57 @@ TEST(SeriesVariantRows, RankingAndSimilarityReadObservedRowsOnly) {
     }
     ASSERT_GE(iodine_rows, 5U);
 
+    // Without the flag nothing changes.
     EXPECT_EQ(ranking_digest(store.RankNextSubstituents(explicit_query)), explicit_before);
     EXPECT_EQ(ranking_digest(store.RankNextSubstituents(by_id)), by_id_before);
-    EXPECT_EQ(similarity_digest(store.FindSimilarSeries(similar)), similar_before);
+    EXPECT_EQ(similarity_digest(store.FindSimilarSeries(similar)), similarity_digest(similar_before));
     EXPECT_EQ(store.GetSeries(), series_before);
+
+    // With it, iodine is a member of every series holding bromine (seams spec 5.4, 9.1).
+    // The explicit ranking gains an iodine candidate valued like bromine: support 5,
+    // one win (4 over H 3), and it sorts after bromine on SMILES.
+    SubstituentRankingRequest explicit_variants = explicit_query;
+    explicit_variants.selection.include_up_enumerated = true;
+    EXPECT_EQ(ranking_digest(store.RankNextSubstituents(explicit_variants)),
+              "5/5|q:[*:1][H]|q:[*:1]F|q:[*:1]Cl|[*:1]Br:5:1|[*:1]I:5:1");
+    // The id query now holds iodine 4 beside bromine 4, a tie the ranking refuses.
+    SubstituentRankingRequest by_id_variants = by_id;
+    by_id_variants.selection.include_up_enumerated = true;
+    EXPECT_NE(RejectionMessage(store, by_id_variants).find("tied ranking query values: [*:1]Br and [*:1]I"),
+              std::string::npos);
+    // Similarity: the query gains iodine, and every candidate shares it.
+    SeriesSimilarityRequest similar_variants = similar;
+    similar_variants.selection.include_up_enumerated = true;
+    const SeriesSimilarityResult with_variants = store.FindSimilarSeries(similar_variants);
+    EXPECT_EQ(with_variants.query_size, similar_before.query_size + 1U);
+    ASSERT_EQ(with_variants.matches.size(), similar_before.matches.size());
+    std::map<std::uint64_t, unsigned int> overlap_before;
+    for (const SeriesSimilarity& match : similar_before.matches) {
+        overlap_before[match.series_id] = match.overlap;
+    }
+    for (const SeriesSimilarity& match : with_variants.matches) {
+        EXPECT_EQ(match.overlap, overlap_before.at(match.series_id) + 1U) << match.series_id;
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(SeriesVariantRows, ShorteningCountsGuessedPostingsOnlyWithTheFlag) {
+    // Query H 3 > F 2 > Cl 1 > I 0.5. Without the flag iodine posts in no series, so
+    // the shortening drops it first. With the flag it posts in all seven series that
+    // hold bromine, and chlorine, valued in six (core 7 leaves it unvalued), becomes
+    // the least common member and goes first instead.
+    const InterleavingStore fixture = MakeInterleavingStore();
+    DuckDBStore store(fixture.path.string());
+    InsertGuessedIodineRows(store);
+    SubstituentRankingRequest request;
+    request.property_name = "act";
+    request.direction = PropertyDirection::HIGHER_IS_BETTER;
+    request.query_variable_smiles = {"[*:1][H]", "[*:1]F", "[*:1]Cl", "[*:1]I"};
+    request.query_values = {3.0, 2.0, 1.0, 0.5};
+    request.support_ladder = {5U};
+    request.min_query_length = 3;
+    EXPECT_EQ(store.RankNextSubstituents(request).dropped, (std::vector<std::string>{"[*:1]I"}));
+    request.selection.include_up_enumerated = true;
+    EXPECT_EQ(store.RankNextSubstituents(request).dropped, (std::vector<std::string>{"[*:1]Cl"}));
     std::filesystem::remove(fixture.path);
 }

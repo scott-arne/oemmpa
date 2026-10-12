@@ -255,6 +255,9 @@ struct QueryMember {
 struct ResolvedQuery {
     std::vector<QueryMember> members;
     unsigned int cut_count = 0;
+    // The query's own profile, which similarity leaves out of its matches: the
+    // series for an id query, 0 for explicit R-groups (no profile has id 0).
+    std::uint64_t profile_id = 0;
 };
 
 std::uint64_t require_property_name_id(
@@ -321,47 +324,6 @@ ResolvedQuery resolve_explicit_query(
     return query;
 }
 
-ResolvedQuery resolve_series_query(
-    const std::unique_ptr<duckdb::Connection>& connection,
-    std::uint64_t series_id,
-    std::uint64_t property_id,
-    const std::string& property_name
-) {
-    ResolvedQuery query;
-    bool found = false;
-    std::unique_ptr<duckdb::QueryResult> cut = execute_prepared(
-        connection, "select cut_count from series where id = ?", {duckdb::Value::UBIGINT(series_id)});
-    for (const auto& row : *cut) {
-        query.cut_count = row.GetValue<std::uint32_t>(0);
-        found = true;
-    }
-    if (!found) {
-        throw invalid_series_query("query_series_id does not exist: " + std::to_string(series_id));
-    }
-    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(
-        connection,
-        "select sm.rule_smiles_id, rs.smiles, median(cp.value) "
-        "from series_member sm "
-        "join rule_smiles rs on rs.id = sm.rule_smiles_id "
-        "join compound_property cp on cp.compound_id = sm.compound_id "
-        "where sm.series_id = ? and cp.property_name_id = ? and isfinite(cp.value) "
-        "and sm.enumeration_label = 'none' "
-        "group by sm.rule_smiles_id, rs.smiles "
-        "order by rs.smiles",
-        {duckdb::Value::UBIGINT(series_id), duckdb::Value::UBIGINT(property_id)});
-    for (const auto& row : *rows) {
-        query.members.push_back({row.GetValue<std::string>(1),
-                                 row.GetValue<std::uint64_t>(0),
-                                 row.GetValue<double>(2)});
-    }
-    if (query.members.size() < 2) {
-        throw invalid_series_query(
-            "query_series_id " + std::to_string(series_id) +
-            " has fewer than two members with values for " + property_name);
-    }
-    return query;
-}
-
 // Order a ranking query best first and refuse ties: the strict order between two
 // equal values is undefined, so the subsequence test would be meaningless.
 void order_best_first(std::vector<QueryMember>& members, PropertyDirection direction) {
@@ -379,22 +341,63 @@ void order_best_first(std::vector<QueryMember>& members, PropertyDirection direc
     }
 }
 
-// member_value: one median per (series, R-group) for the property. The restricted
-// form aggregates only the series the posting prefilter selected, which is what
-// keeps a query from aggregating every property value in the store; the global
-// form (posting counts for shortening) has no such restriction by definition.
-// Today ranking and similarity read the observed rows only, and
-// selection.include_up_enumerated is honoured by GetSeries alone. Plan 2's
-// shared profile query, which is to replace these pieces, will carry the flag
-// to ranking and similarity.
-std::string member_value_cte(bool restricted_to_posting) {
-    return std::string("member_value as (")
-        + "select sm.series_id, sm.rule_smiles_id, median(cp.value) as value "
-        + "from series_member sm "
-        + (restricted_to_posting ? "join posting p on p.series_id = sm.series_id " : "")
-        + "join compound_property cp on cp.compound_id = sm.compound_id "
-        + "where cp.property_name_id = ? and isfinite(cp.value) and sm.enumeration_label = 'none' "
-        + "group by sm.series_id, sm.rule_smiles_id)";
+// SQL text with its bound values in placeholder order. A piece that binds values
+// appends its text and its values together, each piece in a statement of its
+// own: C++17 leaves the evaluation order of the operands of `+` unspecified, so
+// two appending calls inside one expression could bind in a different order from
+// the text they produce.
+struct BoundSql {
+    std::string text;
+    duckdb::vector<duckdb::Value> values;
+};
+
+// The series-level inputs of the profile relation (seams spec 9.2): the variant
+// flag, the cut-count filter and the constant floor. max_variable_heavy_atoms and
+// min_series_length belong to the operations, which read rgroup_num_heavies.
+struct ProfileSpec {
+    std::uint64_t property_id = 0;
+    bool include_up_enumerated = false;
+    unsigned int cut_count = 0;                 // 0 reads every cut count.
+    unsigned int min_constant_heavy_atoms = 0;  // 0 is no floor.
+    std::uint64_t only_profile_id = 0;          // 0 reads every profile.
+};
+
+// The profile inputs of a ranking or similarity request: the query's cut count
+// with the selection's variant flag and constant floor.
+ProfileSpec query_profile_spec(std::uint64_t property_id, unsigned int cut_count,
+                               const SeriesSelection& selection) {
+    ProfileSpec spec;
+    spec.property_id = property_id;
+    spec.include_up_enumerated = selection.include_up_enumerated;
+    spec.cut_count = cut_count;
+    spec.min_constant_heavy_atoms = selection.min_constant_heavy_atoms;
+    return spec;
+}
+
+// Rows (cut_count, profile_id, rule_smiles_id, compound_id) of the series members
+// that pass the series-level inputs; in series mode the profile is the series.
+// `join_clause` is a program-chosen join placed before the filters (the query
+// R-groups for the posting set, the posting set for a restricted profile), and
+// ends in a space. distinct makes a compound count once per profile and R-group
+// (spec 9.1); within one series the unique key of series_member already does.
+void append_profile_member_rows(BoundSql& sql, const ProfileSpec& spec, const std::string& join_clause) {
+    sql.text += "select distinct s.cut_count, s.id as profile_id, sm.rule_smiles_id, sm.compound_id "
+                "from series_member sm join series s on s.id = sm.series_id ";
+    sql.text += join_clause;
+    sql.text += "where (? = 0 or s.cut_count = ?) and (? = 0 or s.constant_num_heavies >= ?)";
+    sql.values.push_back(duckdb::Value::UINTEGER(spec.cut_count));
+    sql.values.push_back(duckdb::Value::UINTEGER(spec.cut_count));
+    sql.values.push_back(duckdb::Value::UINTEGER(spec.min_constant_heavy_atoms));
+    sql.values.push_back(duckdb::Value::UINTEGER(spec.min_constant_heavy_atoms));
+    if (spec.only_profile_id != 0) {
+        sql.text += " and s.id = ?";
+        sql.values.push_back(duckdb::Value::UBIGINT(spec.only_profile_id));
+    }
+    // Program-chosen text rather than a binding, so the observed-only statement
+    // keeps the exact predicate the 06ffad1 queries used.
+    if (!spec.include_up_enumerated) {
+        sql.text += " and sm.enumeration_label = 'none'";
+    }
 }
 
 // query(rule_smiles_id, position): one bound row per query member, best first.
@@ -423,77 +426,133 @@ std::string similarity_query_cte(std::size_t count) {
     return sql + ")";
 }
 
-// posting: the R-group -> series inverted index read through
-// series_member_rule_smiles_idx. A series is a candidate only when it posts at
-// least `minimum` distinct query R-groups (all of them for ranking, min_overlap
-// for similarity); everything downstream aggregates these series alone.
-std::string posting_cte() {
-    return "posting as ("
-           "select sm.series_id from series_member sm "
-           "join query q on q.rule_smiles_id = sm.rule_smiles_id "
-           "where sm.enumeration_label = 'none' "
-           "group by sm.series_id having count(distinct sm.rule_smiles_id) >= ?)";
+// posting(cut_count, profile_id): the R-group -> profile inverted index read
+// through series_member_rule_smiles_idx. A profile is a candidate only when it
+// posts at least `minimum` distinct query R-groups (all of them for ranking,
+// min_overlap for similarity); everything downstream aggregates these profiles
+// alone. It reads the rows the profile reads, so a guessed row posts exactly
+// when the variant flag reads it.
+void append_posting_cte(BoundSql& sql, const ProfileSpec& spec, std::uint64_t minimum) {
+    sql.text += "posting as (select cut_count, profile_id from (";
+    append_profile_member_rows(sql, spec, "join query q on q.rule_smiles_id = sm.rule_smiles_id ");
+    sql.text += ") group by cut_count, profile_id having count(distinct rule_smiles_id) >= ?)";
+    sql.values.push_back(duckdb::Value::UBIGINT(minimum));
+}
+
+// profile_member and profile (spec 9.1): profile(cut_count, profile_id,
+// rule_smiles_id, rgroup_num_heavies, value) holds one row per profile and
+// valued R-group, the value being the median over the R-group's distinct
+// compounds with a finite value. The restricted form aggregates only the
+// profiles of the posting set, which is what keeps a query from aggregating
+// every property value in the store; the global form (the shortening's posting
+// counts, the network) has no such restriction by definition.
+void append_profile_ctes(BoundSql& sql, const ProfileSpec& spec, bool restricted_to_posting) {
+    sql.text += "profile_member as (";
+    append_profile_member_rows(
+        sql, spec,
+        restricted_to_posting ? "join posting p on p.cut_count = s.cut_count and p.profile_id = s.id " : "");
+    sql.text += "), profile as ("
+                "select pm.cut_count, pm.profile_id, pm.rule_smiles_id, "
+                "coalesce(rs.num_heavies, 0) as rgroup_num_heavies, median(cp.value) as value "
+                "from profile_member pm "
+                "join rule_smiles rs on rs.id = pm.rule_smiles_id "
+                "join compound_property cp on cp.compound_id = pm.compound_id "
+                "where cp.property_name_id = ? and isfinite(cp.value) "
+                "group by pm.cut_count, pm.profile_id, pm.rule_smiles_id, rs.num_heavies)";
+    sql.values.push_back(duckdb::Value::UBIGINT(spec.property_id));
+}
+
+// The query of a stored series: its valued members from the profile relation
+// (seams spec 9.1), restricted to the series itself. The constant floor is not
+// applied: the query is the series the caller named, as at 06ffad1, whatever the
+// selection admits as candidates. The variant flag is: one switch means one
+// thing on every surface (spec 5.4).
+ResolvedQuery resolve_series_query(
+    const std::unique_ptr<duckdb::Connection>& connection,
+    std::uint64_t series_id,
+    std::uint64_t property_id,
+    const std::string& property_name,
+    const SeriesSelection& selection
+) {
+    ResolvedQuery query;
+    bool found = false;
+    std::unique_ptr<duckdb::QueryResult> cut = execute_prepared(
+        connection, "select cut_count from series where id = ?", {duckdb::Value::UBIGINT(series_id)});
+    for (const auto& row : *cut) {
+        query.cut_count = row.GetValue<std::uint32_t>(0);
+        found = true;
+    }
+    if (!found) {
+        throw invalid_series_query("query_series_id does not exist: " + std::to_string(series_id));
+    }
+    query.profile_id = series_id;
+    ProfileSpec spec = query_profile_spec(property_id, query.cut_count, selection);
+    spec.min_constant_heavy_atoms = 0;
+    spec.only_profile_id = series_id;
+    BoundSql sql;
+    sql.text += "with ";
+    append_profile_ctes(sql, spec, false);
+    sql.text += " select p.rule_smiles_id, rs.smiles, p.value from profile p "
+                "join rule_smiles rs on rs.id = p.rule_smiles_id order by rs.smiles";
+    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(connection, sql.text, std::move(sql.values));
+    for (const auto& row : *rows) {
+        query.members.push_back({row.GetValue<std::string>(1),
+                                 row.GetValue<std::uint64_t>(0),
+                                 row.GetValue<double>(2)});
+    }
+    if (query.members.size() < 2) {
+        throw invalid_series_query(
+            "query_series_id " + std::to_string(series_id) +
+            " has fewer than two members with values for " + property_name);
+    }
+    return query;
 }
 
 // The CTE chain shared by every ranking statement, in the order spec 7.5
-// prescribes: bounded applies the member filter (max_variable_heavy_atoms, with
-// the query's own members exempt) BEFORE anything counts members; eligible then
-// applies the length test on the VALUED members that survived it, the constant
-// floor and the cut count; matched keeps a series only when every query member
-// is valued in it and the values in query order are strictly monotone in the
-// direction (sorted and all distinct). Everything downstream reads bounded, so
-// an oversized member never contributes to a length, a support or a win.
-// FindSimilarSeries spells out its own bounded and eligible on purpose (no query
-// exemption, self-exclusion, projected SMILES); keep the two in step.
-std::string ranking_ctes(std::size_t count, PropertyDirection direction) {
-    const char* order = direction == PropertyDirection::HIGHER_IS_BETTER ? "'DESC'" : "'ASC'";
-    return "with " + ranking_query_cte(count) + ", " + posting_cte() + ", " + member_value_cte(true) + ", "
-        "bounded as ("
-        "select mv.series_id, mv.rule_smiles_id, mv.value from member_value mv "
-        "join rule_smiles rs on rs.id = mv.rule_smiles_id "
-        "where (? = 0 or coalesce(rs.num_heavies, 0) <= ? "
-        "or mv.rule_smiles_id in (select rule_smiles_id from query))), "
-        "eligible as ("
-        "select b.series_id from bounded b "
-        "join series s on s.id = b.series_id "
-        "where s.cut_count = ? and (? = 0 or s.constant_num_heavies >= ?) "
-        "group by b.series_id having count(*) >= ?), "
-        "matched as ("
-        "select b.series_id from bounded b "
-        "join query q on q.rule_smiles_id = b.rule_smiles_id "
-        "join eligible e on e.series_id = b.series_id "
-        "group by b.series_id "
-        "having count(*) = ? "
-        "and list(b.value order by q.position) = list_sort(list(b.value), " + std::string(order) + ") "
-        "and len(list_distinct(list(b.value))) = count(*)), "
-        "best as ("
-        "select b.series_id, b.value as best_value from bounded b "
-        "join query q on q.rule_smiles_id = b.rule_smiles_id where q.position = 1) ";
-}
-
-// Bindings in the order the placeholders of ranking_ctes appear: the k query ids,
-// the posting minimum (k), the property id, the member bound twice, then the
-// eligible and matched bounds.
-duckdb::vector<duckdb::Value> ranking_cte_values(
-    std::uint64_t property_id,
-    const std::vector<QueryMember>& members,
-    unsigned int cut_count,
-    const SeriesSelection& selection
-) {
-    duckdb::vector<duckdb::Value> values;
+// prescribes, over the profile relation: bounded applies the member filter
+// (max_variable_heavy_atoms, with the query's own members exempt) BEFORE anything
+// counts members; eligible then applies the length test on the VALUED members
+// that survived it (the profile already applied the cut count and the constant
+// floor); matched keeps a profile only when every query member is valued in it
+// and the values in query order are strictly monotone in the direction (sorted
+// and all distinct). Everything downstream reads bounded, so an oversized member
+// never contributes to a length, a support or a win. FindSimilarSeries spells
+// out its own bounded and eligible on purpose (no query exemption,
+// self-exclusion, projected SMILES); keep the two in step.
+void append_ranking_ctes(BoundSql& sql, const ProfileSpec& spec, const std::vector<QueryMember>& members,
+                         PropertyDirection direction, const SeriesSelection& selection) {
+    sql.text += "with ";
+    sql.text += ranking_query_cte(members.size());
     for (const QueryMember& member : members) {
-        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+        sql.values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
     }
-    values.push_back(duckdb::Value::UBIGINT(members.size()));
-    values.push_back(duckdb::Value::UBIGINT(property_id));
-    values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(cut_count));
-    values.push_back(duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(selection.min_constant_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(selection.min_series_length));
-    values.push_back(duckdb::Value::UBIGINT(members.size()));
-    return values;
+    sql.text += ", ";
+    append_posting_cte(sql, spec, members.size());
+    sql.text += ", ";
+    append_profile_ctes(sql, spec, true);
+    sql.text += ", bounded as ("
+                "select p.cut_count, p.profile_id, p.rule_smiles_id, p.value from profile p "
+                "where (? = 0 or p.rgroup_num_heavies <= ? "
+                "or p.rule_smiles_id in (select rule_smiles_id from query))), "
+                "eligible as ("
+                "select cut_count, profile_id from bounded "
+                "group by cut_count, profile_id having count(*) >= ?), "
+                "matched as ("
+                "select b.cut_count, b.profile_id from bounded b "
+                "join query q on q.rule_smiles_id = b.rule_smiles_id "
+                "join eligible e on e.cut_count = b.cut_count and e.profile_id = b.profile_id "
+                "group by b.cut_count, b.profile_id "
+                "having count(*) = ? "
+                "and list(b.value order by q.position) = list_sort(list(b.value), ";
+    sql.text += direction == PropertyDirection::HIGHER_IS_BETTER ? "'DESC'" : "'ASC'";
+    sql.text += ") and len(list_distinct(list(b.value))) = count(*)), "
+                "best as ("
+                "select b.cut_count, b.profile_id, b.value as best_value from bounded b "
+                "join query q on q.rule_smiles_id = b.rule_smiles_id where q.position = 1) ";
+    sql.values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
+    sql.values.push_back(duckdb::Value::UINTEGER(selection.max_variable_heavy_atoms));
+    sql.values.push_back(duckdb::Value::UINTEGER(selection.min_series_length));
+    sql.values.push_back(duckdb::Value::UBIGINT(members.size()));
 }
 
 struct CandidateRow {
@@ -516,8 +575,8 @@ const char* win_comparison(PropertyDirection direction) {
 // original_query(rule_smiles_id): one bound row per member of the ORIGINAL
 // canonical query. It is a separate relation from query because shortening
 // narrows query while the exclusion must not narrow with it (spec 7.3). It is
-// appended after the shared chain so ranking_ctes stays reusable by the evidence
-// statement.
+// appended after the shared chain so append_ranking_ctes stays reusable by the
+// evidence statement.
 std::string original_query_cte(std::size_t count) {
     std::string sql = "original_query(rule_smiles_id) as (values ";
     for (std::size_t i = 0; i < count; ++i) {
@@ -531,19 +590,19 @@ std::string original_query_cte(std::size_t count) {
 
 RankingAttempt run_ranking_attempt(
     const std::unique_ptr<duckdb::Connection>& connection,
-    std::uint64_t property_id,
+    const ProfileSpec& spec,
     const std::vector<QueryMember>& members,
     const std::vector<QueryMember>& original_members,
-    unsigned int cut_count,
     PropertyDirection direction,
     const SeriesSelection& selection
 ) {
     RankingAttempt attempt;
-    const std::string ctes = ranking_ctes(members.size(), direction);
     {
-        std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
-            connection, ctes + "select cast(count(*) as bigint) from matched",
-            ranking_cte_values(property_id, members, cut_count, selection));
+        BoundSql sql;
+        append_ranking_ctes(sql, spec, members, direction, selection);
+        sql.text += "select cast(count(*) as bigint) from matched";
+        std::unique_ptr<duckdb::QueryResult> result =
+            execute_prepared(connection, sql.text, std::move(sql.values));
         for (const auto& row : *result) {
             attempt.matched = static_cast<unsigned int>(row.GetValue<std::int64_t>(0));
         }
@@ -552,26 +611,25 @@ RankingAttempt run_ranking_attempt(
     // original query members are excluded here (their exemption in bounded is for
     // the length test). A recommendation must be novel relative to everything the
     // caller supplied, so a member shortening removed from query stays excluded.
-    duckdb::vector<duckdb::Value> candidate_values =
-        ranking_cte_values(property_id, members, cut_count, selection);
-    // The original query ids bind last, after every placeholder of ranking_ctes.
+    BoundSql sql;
+    append_ranking_ctes(sql, spec, members, direction, selection);
+    sql.text += ", ";
+    sql.text += original_query_cte(original_members.size());
     for (const QueryMember& member : original_members) {
-        candidate_values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+        sql.values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
     }
-    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
-        connection,
-        ctes + ", " + original_query_cte(original_members.size()) +
-        "select rs.id, rs.smiles, coalesce(rs.num_heavies, 0), cast(count(*) as bigint), "
-        "cast(sum(case when mv.value " + std::string(win_comparison(direction)) +
-        " b.best_value then 1 else 0 end) as bigint) "
-        "from bounded mv "
-        "join matched m on m.series_id = mv.series_id "
-        "join best b on b.series_id = mv.series_id "
-        "join rule_smiles rs on rs.id = mv.rule_smiles_id "
-        "where mv.rule_smiles_id not in (select rule_smiles_id from original_query) "
-        "group by rs.id, rs.smiles, rs.num_heavies "
-        "order by rs.smiles",
-        std::move(candidate_values));
+    sql.text += "select rs.id, rs.smiles, coalesce(rs.num_heavies, 0), cast(count(*) as bigint), "
+                "cast(sum(case when mv.value ";
+    sql.text += win_comparison(direction);
+    sql.text += " b.best_value then 1 else 0 end) as bigint) "
+                "from bounded mv "
+                "join matched m on m.cut_count = mv.cut_count and m.profile_id = mv.profile_id "
+                "join best b on b.cut_count = mv.cut_count and b.profile_id = mv.profile_id "
+                "join rule_smiles rs on rs.id = mv.rule_smiles_id "
+                "where mv.rule_smiles_id not in (select rule_smiles_id from original_query) "
+                "group by rs.id, rs.smiles, rs.num_heavies "
+                "order by rs.smiles";
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql.text, std::move(sql.values));
     for (const auto& row : *result) {
         CandidateRow candidate;
         candidate.rule_smiles_id = row.GetValue<std::uint64_t>(0);
@@ -584,26 +642,28 @@ RankingAttempt run_ranking_attempt(
     return attempt;
 }
 
-// Distinct-series posting count of every query member for the property, over
-// every series of the store (no selection, any cut count); an unknown R-group
-// (id 0) joins nothing and counts 0.
+// Distinct-profile posting count of every query member for the property, over
+// every profile of the store in the request's variant mode (no other selection:
+// any cut count, no constant floor), spec 9.2; an unknown R-group (id 0) joins
+// nothing and counts 0. The profile relation holds one row per (cut_count,
+// profile_id, rule_smiles_id), so counting its rows per R-group counts profiles.
 std::vector<unsigned int> posting_counts(
     const std::unique_ptr<duckdb::Connection>& connection,
-    std::uint64_t property_id,
+    const ProfileSpec& census,
     const std::vector<QueryMember>& members
 ) {
-    duckdb::vector<duckdb::Value> values;
+    BoundSql sql;
+    sql.text += "with ";
+    sql.text += ranking_query_cte(members.size());
     for (const QueryMember& member : members) {
-        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+        sql.values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
     }
-    values.push_back(duckdb::Value::UBIGINT(property_id));
-    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(
-        connection,
-        "with " + ranking_query_cte(members.size()) + ", " + member_value_cte(false) + " "
-        "select q.rule_smiles_id, cast(count(distinct mv.series_id) as bigint) "
-        "from query q left join member_value mv on mv.rule_smiles_id = q.rule_smiles_id "
-        "group by q.rule_smiles_id",
-        std::move(values));
+    sql.text += ", ";
+    append_profile_ctes(sql, census, false);
+    sql.text += " select q.rule_smiles_id, cast(count(p.profile_id) as bigint) "
+                "from query q left join profile p on p.rule_smiles_id = q.rule_smiles_id "
+                "group by q.rule_smiles_id";
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql.text, std::move(sql.values));
     std::unordered_map<std::uint64_t, unsigned int> by_id;
     for (const auto& row : *result) {
         by_id[row.GetValue<std::uint64_t>(0)] = static_cast<unsigned int>(row.GetValue<std::int64_t>(1));
@@ -627,59 +687,61 @@ std::string reported_cte(std::size_t count) {
     return sql + ") ";
 }
 
-// Evidence for query_used: every query member of every matched series, then the
-// reported candidates present in that series with their win flag. Candidates
+// Evidence for query_used: every query member of every matched profile, then the
+// reported candidates present in that profile with their win flag. Candidates
 // below the support level were not reported, so they never appear.
 std::vector<SubstituentRankingEvidence> load_ranking_evidence(
     const std::unique_ptr<duckdb::Connection>& connection,
-    std::uint64_t property_id,
+    const ProfileSpec& spec,
     const std::vector<QueryMember>& members,
-    unsigned int cut_count,
     PropertyDirection direction,
     const SeriesSelection& selection,
     const std::vector<CandidateRow>& reported
 ) {
-    std::string sql = ranking_ctes(members.size(), direction);
-    duckdb::vector<duckdb::Value> values = ranking_cte_values(property_id, members, cut_count, selection);
+    BoundSql sql;
+    append_ranking_ctes(sql, spec, members, direction, selection);
     if (!reported.empty()) {
-        sql += reported_cte(reported.size());
+        sql.text += reported_cte(reported.size());
         for (const CandidateRow& candidate : reported) {
-            values.push_back(duckdb::Value::UBIGINT(candidate.rule_smiles_id));
+            sql.values.push_back(duckdb::Value::UBIGINT(candidate.rule_smiles_id));
         }
     }
-    sql += "select * from ("
-           "select s.id, c.smiles, 0 as role_rank, q.position, rs.smiles as variable_smiles, "
-           "mv.value, false as win "
-           "from matched m "
-           "join series s on s.id = m.series_id "
-           "join constant_smiles c on c.id = s.constant_id "
-           "cross join query q "
-           "join bounded mv on mv.series_id = m.series_id and mv.rule_smiles_id = q.rule_smiles_id "
-           "join rule_smiles rs on rs.id = q.rule_smiles_id";
+    sql.text += "select * from ("
+                "select m.cut_count, m.profile_id, c.smiles as label, 0 as role_rank, q.position, "
+                "rs.smiles as variable_smiles, mv.value, false as win "
+                "from matched m "
+                "join series s on s.id = m.profile_id "
+                "join constant_smiles c on c.id = s.constant_id "
+                "cross join query q "
+                "join bounded mv on mv.cut_count = m.cut_count and mv.profile_id = m.profile_id "
+                "and mv.rule_smiles_id = q.rule_smiles_id "
+                "join rule_smiles rs on rs.id = q.rule_smiles_id";
     if (!reported.empty()) {
-        sql += " union all "
-               "select s.id, c.smiles, 1, 0, rs.smiles, mv.value, "
-               "mv.value " + std::string(win_comparison(direction)) + " b.best_value "
-               "from matched m "
-               "join series s on s.id = m.series_id "
-               "join constant_smiles c on c.id = s.constant_id "
-               "join bounded mv on mv.series_id = m.series_id "
-               "join reported r on r.rule_smiles_id = mv.rule_smiles_id "
-               "join best b on b.series_id = m.series_id "
-               "join rule_smiles rs on rs.id = mv.rule_smiles_id";
+        sql.text += " union all "
+                    "select m.cut_count, m.profile_id, c.smiles, 1, 0, rs.smiles, mv.value, mv.value ";
+        sql.text += win_comparison(direction);
+        sql.text += " b.best_value "
+                    "from matched m "
+                    "join series s on s.id = m.profile_id "
+                    "join constant_smiles c on c.id = s.constant_id "
+                    "join bounded mv on mv.cut_count = m.cut_count and mv.profile_id = m.profile_id "
+                    "join reported r on r.rule_smiles_id = mv.rule_smiles_id "
+                    "join best b on b.cut_count = m.cut_count and b.profile_id = m.profile_id "
+                    "join rule_smiles rs on rs.id = mv.rule_smiles_id";
     }
-    sql += ") order by 1, 3, 4, 5";
-    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql, std::move(values));
+    // Profile, then role (query before candidate), then position or SMILES.
+    sql.text += ") order by 1, 2, 4, 5, 6";
+    std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql.text, std::move(sql.values));
     std::vector<SubstituentRankingEvidence> rows;
     for (const auto& row : *result) {
         SubstituentRankingEvidence entry;
-        entry.series_id = row.GetValue<std::uint64_t>(0);
-        entry.constant_smiles = row.GetValue<std::string>(1);
-        entry.role = row.GetValue<std::int32_t>(2) == 0 ? "query" : "candidate";
-        entry.position = static_cast<unsigned int>(row.GetValue<std::int32_t>(3));
-        entry.variable_smiles = row.GetValue<std::string>(4);
-        entry.value = row.GetValue<double>(5);
-        entry.win = row.GetValue<bool>(6);
+        entry.series_id = row.GetValue<std::uint64_t>(1);
+        entry.constant_smiles = row.GetValue<std::string>(2);
+        entry.role = row.GetValue<std::int32_t>(3) == 0 ? "query" : "candidate";
+        entry.position = static_cast<unsigned int>(row.GetValue<std::int32_t>(4));
+        entry.variable_smiles = row.GetValue<std::string>(5);
+        entry.value = row.GetValue<double>(6);
+        entry.win = row.GetValue<bool>(7);
         rows.push_back(std::move(entry));
     }
     return rows;
@@ -3963,7 +4025,8 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
             "exactly one of query_series_id and query_variable_smiles with query_values must be given");
     }
     ResolvedQuery query = has_id
-        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name)
+        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name,
+                               request.selection)
         : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
     order_best_first(query.members, request.direction);
     if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
@@ -3971,13 +4034,18 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
             "selection.cut_count " + std::to_string(request.selection.cut_count) +
             " does not match the query's cut count " + std::to_string(query.cut_count));
     }
+    const ProfileSpec spec = query_profile_spec(property_id, query.cut_count, request.selection);
+    // The shortening's commonness measure reads every profile of the store in the
+    // request's variant mode, with no other selection (spec 9.2).
+    ProfileSpec census;
+    census.property_id = property_id;
+    census.include_up_enumerated = request.selection.include_up_enumerated;
 
     SubstituentRankingResult result;
     std::vector<QueryMember> members = query.members;
     while (true) {
         const RankingAttempt attempt = run_ranking_attempt(
-            connection_, property_id, members, query.members, query.cut_count,
-            request.direction, request.selection);
+            connection_, spec, members, query.members, request.direction, request.selection);
         unsigned int level = 0;
         std::vector<CandidateRow> reported;
         for (const unsigned int ladder_level : request.support_ladder) {
@@ -4015,14 +4083,13 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
                 });
             if (request.include_evidence && attempt.matched > 0) {
                 result.evidence = load_ranking_evidence(
-                    connection_, property_id, members, query.cut_count,
-                    request.direction, request.selection, reported);
+                    connection_, spec, members, request.direction, request.selection, reported);
             }
             break;
         }
         // Shorten: drop the member the store has posted in the fewest series;
         // ties by SMILES so the choice is reproducible.
-        const std::vector<unsigned int> counts = posting_counts(connection_, property_id, members);
+        const std::vector<unsigned int> counts = posting_counts(connection_, census, members);
         std::size_t drop = 0;
         for (std::size_t i = 1; i < members.size(); ++i) {
             if (counts[i] < counts[drop] ||
@@ -4061,7 +4128,8 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     // valued R-groups, so tied values and tied medians are legitimate input. The
     // strict-order rule belongs to ranking alone, which applies it separately.
     const ResolvedQuery query = has_id
-        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name)
+        ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name,
+                               request.selection)
         : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
     if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
         throw invalid_series_query(
@@ -4072,64 +4140,66 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     SeriesSimilarityResult result;
     result.query_size = static_cast<unsigned int>(query.members.size());
 
-    // Bindings in placeholder order: the k (id, value) pairs, the posting minimum,
-    // the property id, then the eligible, shared and candidate bounds.
-    duckdb::vector<duckdb::Value> values;
+    const ProfileSpec spec = query_profile_spec(property_id, query.cut_count, request.selection);
+    // posting: the inverted-index prefilter (profiles posting at least
+    // min_overlap of the query's R-groups) ahead of any property aggregation;
+    // bounded: the member filter (spec 7.5 applies it first, to every member, no
+    // exemption in similarity); eligible: the length test on the valued members
+    // that survived it and the exclusion of the query's own profile (the profile
+    // relation already applied the cut count and the constant floor); shared: the
+    // distinct surviving R-groups valued in both; candidate: the mandatory valued
+    // distinct-overlap test.
+    BoundSql sql;
+    sql.text += "with ";
+    sql.text += similarity_query_cte(query.members.size());
     for (const QueryMember& member : query.members) {
-        values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
-        values.push_back(duckdb::Value::DOUBLE(member.value));
+        sql.values.push_back(duckdb::Value::UBIGINT(member.rule_smiles_id));
+        sql.values.push_back(duckdb::Value::DOUBLE(member.value));
     }
-    values.push_back(duckdb::Value::UBIGINT(request.min_overlap));
-    values.push_back(duckdb::Value::UBIGINT(property_id));
-    values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(query.cut_count));
-    values.push_back(duckdb::Value::UINTEGER(request.selection.min_constant_heavy_atoms));
-    values.push_back(duckdb::Value::UINTEGER(request.selection.min_constant_heavy_atoms));
-    values.push_back(duckdb::Value::UBIGINT(request.query_series_id));
-    values.push_back(duckdb::Value::UINTEGER(request.selection.min_series_length));
-    // Same width as the posting minimum above: both compare min_overlap against a
+    sql.text += ", ";
+    append_posting_cte(sql, spec, request.min_overlap);
+    sql.text += ", ";
+    append_profile_ctes(sql, spec, true);
+    sql.text += ", "
+                // Keep in step with append_ranking_ctes: this bounded has no
+                // query-member exemption and projects variable_smiles for the evidence.
+                "bounded as ("
+                "select p.cut_count, p.profile_id, p.rule_smiles_id, p.value, rs.smiles as variable_smiles "
+                "from profile p join rule_smiles rs on rs.id = p.rule_smiles_id "
+                "where (? = 0 or p.rgroup_num_heavies <= ?)), "
+                // Keep in step with append_ranking_ctes: this eligible adds the
+                // exclusion of the query's own profile, which a ranking cannot need.
+                "eligible as ("
+                "select cut_count, profile_id from bounded "
+                "where not (cut_count = ? and profile_id = ?) "
+                "group by cut_count, profile_id having count(*) >= ?), "
+                "shared as ("
+                "select b.cut_count, b.profile_id, q.value as query_value, b.value as candidate_value, "
+                "b.variable_smiles from bounded b "
+                "join query q on q.rule_smiles_id = b.rule_smiles_id "
+                "join eligible e on e.cut_count = b.cut_count and e.profile_id = b.profile_id), "
+                "candidate as (select cut_count, profile_id from shared "
+                "group by cut_count, profile_id having count(*) >= ?) "
+                "select sh.cut_count, sh.profile_id, c.smiles, sh.variable_smiles, sh.query_value, "
+                "sh.candidate_value "
+                "from shared sh "
+                "join candidate cand on cand.cut_count = sh.cut_count and cand.profile_id = sh.profile_id "
+                "join series s on s.id = sh.profile_id "
+                "join constant_smiles c on c.id = s.constant_id "
+                "order by sh.cut_count, sh.profile_id, sh.variable_smiles";
+    sql.values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
+    sql.values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
+    sql.values.push_back(duckdb::Value::UINTEGER(query.cut_count));
+    sql.values.push_back(duckdb::Value::UBIGINT(query.profile_id));
+    sql.values.push_back(duckdb::Value::UINTEGER(request.selection.min_series_length));
+    // Same width as the posting minimum: both compare min_overlap against a
     // BIGINT count, so binding one as UBIGINT and the other as UINTEGER would only
     // invite the two uses to drift apart.
-    values.push_back(duckdb::Value::UBIGINT(request.min_overlap));
-    // posting: the inverted-index prefilter (series posting at least min_overlap
-    // of the query's R-groups) ahead of any property aggregation; bounded: the
-    // member filter (spec 7.5 applies it first, to every member, no exemption in
-    // similarity); eligible: the length test on the valued members that survived
-    // it, the constant floor, the cut count and the exclusion of the query's own
-    // series; shared: the distinct surviving R-groups valued in both; candidate:
-    // the mandatory valued distinct-overlap test.
-    const std::string sql =
-        "with " + similarity_query_cte(query.members.size()) + ", " + posting_cte() + ", " +
-        member_value_cte(true) + ", "
-        // Keep in step with ranking_ctes: this bounded has no query-member exemption
-        // and projects variable_smiles for the evidence rows.
-        "bounded as ("
-        "select mv.series_id, mv.rule_smiles_id, mv.value, rs.smiles as variable_smiles "
-        "from member_value mv join rule_smiles rs on rs.id = mv.rule_smiles_id "
-        "where (? = 0 or coalesce(rs.num_heavies, 0) <= ?)), "
-        // Keep in step with ranking_ctes: this eligible adds the s.id <> ? exclusion
-        // of the query's own series, which a ranking query cannot need.
-        "eligible as ("
-        "select b.series_id from bounded b "
-        "join series s on s.id = b.series_id "
-        "where s.cut_count = ? and (? = 0 or s.constant_num_heavies >= ?) and s.id <> ? "
-        "group by b.series_id having count(*) >= ?), "
-        "shared as ("
-        "select b.series_id, q.value as query_value, b.value as candidate_value, b.variable_smiles "
-        "from bounded b "
-        "join query q on q.rule_smiles_id = b.rule_smiles_id "
-        "join eligible e on e.series_id = b.series_id), "
-        "candidate as (select series_id from shared group by series_id having count(*) >= ?) "
-        "select sh.series_id, c.smiles, s.cut_count, sh.variable_smiles, sh.query_value, sh.candidate_value "
-        "from shared sh "
-        "join candidate cand on cand.series_id = sh.series_id "
-        "join series s on s.id = sh.series_id "
-        "join constant_smiles c on c.id = s.constant_id "
-        "order by sh.series_id, sh.variable_smiles";
-    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(connection_, sql, std::move(values));
+    sql.values.push_back(duckdb::Value::UBIGINT(request.min_overlap));
+    std::unique_ptr<duckdb::QueryResult> rows = execute_prepared(connection_, sql.text, std::move(sql.values));
 
     struct Entry {
+        std::uint64_t profile_id = 0;
         SeriesSimilarity match;
         std::vector<SeriesSimilarityEvidence> shared;
         std::vector<double> query_values;
@@ -4137,17 +4207,20 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     };
     std::vector<Entry> entries;
     for (const auto& row : *rows) {
-        const std::uint64_t series_id = row.GetValue<std::uint64_t>(0);
-        if (entries.empty() || entries.back().match.series_id != series_id) {
+        const std::uint32_t cut_count = row.GetValue<std::uint32_t>(0);
+        const std::uint64_t profile_id = row.GetValue<std::uint64_t>(1);
+        if (entries.empty() || entries.back().match.cut_count != cut_count ||
+            entries.back().profile_id != profile_id) {
             Entry entry;
-            entry.match.series_id = series_id;
-            entry.match.constant_smiles = row.GetValue<std::string>(1);
-            entry.match.cut_count = row.GetValue<std::uint32_t>(2);
+            entry.profile_id = profile_id;
+            entry.match.series_id = profile_id;
+            entry.match.constant_smiles = row.GetValue<std::string>(2);
+            entry.match.cut_count = cut_count;
             entries.push_back(std::move(entry));
         }
         Entry& entry = entries.back();
         SeriesSimilarityEvidence evidence;
-        evidence.series_id = series_id;
+        evidence.series_id = entry.match.series_id;
         evidence.variable_smiles = row.GetValue<std::string>(3);
         evidence.query_value = row.GetValue<double>(4);
         evidence.candidate_value = row.GetValue<double>(5);
@@ -4177,7 +4250,7 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
         if (a.match.overlap != b.match.overlap) {
             return a.match.overlap > b.match.overlap;
         }
-        return a.match.series_id < b.match.series_id;
+        return a.profile_id < b.profile_id;   // The profile id is the tie-break (spec 10.2).
     });
     if (request.top != 0 && entries.size() > request.top) {
         entries.resize(request.top);
