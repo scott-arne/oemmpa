@@ -423,6 +423,10 @@ def _list_metrics(database):
     return {row["metric"]: row["value"] for row in rows}
 
 
+def _without(rows, column):
+    return [{key: value for key, value in row.items() if key != column} for row in rows]
+
+
 @pytest.mark.parametrize("method", ["dmcss", "oemedchem", "wizepairz"])
 def test_build_series_enumerates_series_for_an_mcs_method(tmp_path, method):
     smiles = tmp_path / "phenyl.smi"
@@ -459,6 +463,17 @@ def test_build_series_unlocks_the_fragmentation_flags_for_an_mcs_method(tmp_path
     assert options["max_heavy_atoms"] == 50
 
 
+def test_build_series_unlocks_the_size_flags_without_rdkit(tmp_path):
+    # The size guards need no RDKit, so this still runs where the cut-rgroup test skips.
+    smiles = tmp_path / "phenyl.smi"
+    smiles.write_text(PHENYL_SMILES, encoding="utf-8")
+    database = tmp_path / "rotatable.duckdb"
+    _run_cli("build", "--smiles", str(smiles), "--method", "dmcss", "--series", "--max-rotatable-bonds", "5",
+             "--output", str(database))
+    options = DuckDBStore(database, read_only=True).fragment_options()
+    assert (options["max_heavy_atoms"], options["max_rotatable_bonds"]) == (100, 5)
+
+
 def test_build_series_is_accepted_without_effect_for_the_fragmentation_method(tmp_path):
     smiles = tmp_path / "phenyl.smi"
     smiles.write_text(PHENYL_SMILES, encoding="utf-8")
@@ -479,6 +494,10 @@ def test_series_include_up_enumerated_adds_the_labelled_rows(tmp_path):
     assert header[-1] == "enumeration_label"
     assert {row["enumeration_label"] for row in observed} == {"none"}
     _, labelled = _tsv(_run_cli("series", "--database", str(database), "--include-up-enumerated").stdout)
+    # The flag adds rows rather than replacing them; num_members is left out
+    # because it counts the members guesses add, as Analyzer.series does.
+    assert _without([row for row in labelled if row["enumeration_label"] == "none"], "num_members") == \
+        _without(observed, "num_members")
     guessed = [row for row in labelled if row["enumeration_label"] != "none"]
     assert {row["compound_id"] for row in guessed} == {"iso"}
     assert {row["enumeration_label"] for row in guessed} == {"constant-up", "variable-up"}

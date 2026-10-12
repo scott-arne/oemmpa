@@ -2601,6 +2601,23 @@ def test_fragmentation_flags_rejected_in_non_fragmentation_method(tmp_path):
     assert database_frag2.exists()
 
 
+def test_stateless_mcs_rejection_does_not_suggest_series():
+    # Only build defines --series, so a stateless command must not point at a
+    # flag it would itself reject as unrecognized.
+    result = _run_cli(
+        "refresh-stats",
+        "--smiles", str(DATA_DIR / "mmpa_smiles.smi"),
+        "--properties", str(DATA_DIR / "mmpa_properties.csv"),
+        "--property", "pIC50",
+        "--method", "dmcss",
+        "--cut-rgroup", "*O",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "--cut-rgroup requires --method fragmentation" in result.stderr
+    assert "--series" not in result.stderr
+
+
 def test_fragmentation_flags_detected_from_parsed_args_not_sys_argv(tmp_path):
     """Fix 5: --max-heavies and --max-rotatable-bonds use sentinel defaults.
 

@@ -1038,10 +1038,11 @@ def _build_analyzer(args, *, load_properties=None):
     series = bool(getattr(args, "series", False))
     # The fragmentation-only flags configure the auxiliary series pass of an
     # MCS build, so --series is what makes them meaningful for an MCS method.
-    if method != "fragmentation" and not series:
+    configures_fragmentation = method == "fragmentation" or series
+    if not configures_fragmentation:
         _reject_fragmentation_only_flags(args)
     analyzer = Analyzer(method=method, series=True if series else None)
-    if method == "fragmentation" or series:
+    if configures_fragmentation:
         _configure_fragmentation(analyzer, args)
     if method == "wizepairz":
         _configure_wizepairz(analyzer, args)
@@ -1374,28 +1375,31 @@ def _require_smiles_input(args, command):
 
 
 def _reject_fragmentation_only_flags(args):
-    """Reject fragmentation-only flags for an MCS method built without ``--series``.
+    """Reject fragmentation-only flags that no pass of this run would read.
 
-    When the analysis method is wizepairz/dmcss/oemedchem and ``--series`` is
-    absent, nothing would read these flags, so they must not be silently
-    ignored; with ``--series`` they configure the auxiliary series pass.
+    With an MCS method (wizepairz/dmcss/oemedchem) these flags configure only
+    the auxiliary series pass, so they must not be silently ignored when that
+    pass is off. ``build`` defines ``--series`` and its message names it as
+    the alternative; refresh-stats, predict and generate do not define it, so
+    their message names ``--method fragmentation`` alone.
     """
+    alternative = " or --series" if hasattr(args, "series") else ""
     # --cut-rgroup and --cut-rgroup-file have None default, easy to detect
     for option, value in (
         ("--cut-rgroup", getattr(args, "cut_rgroups", None)),
         ("--cut-rgroup-file", getattr(args, "cut_rgroup_file", None)),
     ):
         if value is not None:
-            raise ValueError(f"{option} requires --method fragmentation or --series")
+            raise ValueError(f"{option} requires --method fragmentation{alternative}")
 
     # --max-heavies and --max-rotatable-bonds use _UNSET sentinel default.
     # Only reject when the flag was explicitly provided (not _UNSET).
     max_heavies = getattr(args, "max_heavies", _UNSET)
     max_rotatable = getattr(args, "max_rotatable_bonds", _UNSET)
     if max_heavies is not _UNSET:
-        raise ValueError("--max-heavies requires --method fragmentation or --series")
+        raise ValueError(f"--max-heavies requires --method fragmentation{alternative}")
     if max_rotatable is not _UNSET:
-        raise ValueError("--max-rotatable-bonds requires --method fragmentation or --series")
+        raise ValueError(f"--max-rotatable-bonds requires --method fragmentation{alternative}")
 
 
 def _reject_persisted_fragmentation_options(args, command):
