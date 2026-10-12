@@ -40,6 +40,10 @@ struct SubstituentRankingRequest {
     unsigned int min_query_length = 3;
     SeriesSelection selection;
     bool include_evidence = false;
+    /// -1 compares stored series; 0 to 5 pools every series of one cut count whose
+    /// constant shares its attachment-environment fingerprint at that radius into
+    /// one profile, valued by the median over distinct compounds (seams spec 10.1).
+    int environment_radius = -1;
 };
 
 /// \brief One candidate next substituent.
@@ -52,15 +56,17 @@ struct SubstituentRanking {
 };
 
 /// \brief One evidence row of a ranking: a query member or a reported
-/// candidate inside one matched series.
+/// candidate inside one matched series or pooled profile.
 struct SubstituentRankingEvidence {
-    std::uint64_t series_id = 0;
-    std::string constant_smiles;
+    std::uint64_t series_id = 0;  ///< 0 for a pooled profile.
+    std::string constant_smiles;  ///< Empty for a pooled profile.
     std::string role;             ///< "query" or "candidate".
     std::string variable_smiles;
     double value = 0.0;
     unsigned int position = 0;    ///< 1-based query position; 0 for candidates.
     bool win = false;             ///< Candidate rows only.
+    std::uint64_t environment_fingerprint_id = 0;  ///< The pooled profile; 0 in series mode.
+    std::string environment_smarts;                ///< The pooled profile's SMARTS; empty in series mode.
 };
 
 /// \brief Output of DuckDBStore::RankNextSubstituents, populated on every path.
@@ -71,6 +77,7 @@ struct SubstituentRankingResult {
     unsigned int matched_series = 0;       ///< Matched series of query_used.
     std::vector<SubstituentRanking> candidates;
     std::vector<SubstituentRankingEvidence> evidence;
+    int environment_radius = -1;           ///< The request's radius, echoed.
 };
 
 /// \brief Inputs of DuckDBStore::FindSimilarSeries (spec 7.4).
@@ -84,25 +91,32 @@ struct SeriesSimilarityRequest {
     unsigned int top = 0;
     SeriesSelection selection;
     bool include_evidence = false;
+    /// -1 compares stored series; 0 to 5 pools them by attachment environment,
+    /// as for SubstituentRankingRequest::environment_radius.
+    int environment_radius = -1;
 };
 
-/// \brief One stored series compared with the query over their shared R-groups.
+/// \brief One stored series or pooled profile compared with the query over their shared R-groups.
 struct SeriesSimilarity {
-    std::uint64_t series_id = 0;
-    std::string constant_smiles;
+    std::uint64_t series_id = 0;  ///< 0 for a pooled profile.
+    std::string constant_smiles;  ///< Empty for a pooled profile.
     unsigned int cut_count = 0;
     unsigned int overlap = 0;
     bool has_spearman = false;    ///< False when either rank vector is constant.
     double spearman = 0.0;
     double centred_rmsd = 0.0;
+    std::uint64_t environment_fingerprint_id = 0;  ///< The pooled profile; 0 in series mode.
+    std::string environment_smarts;                ///< The pooled profile's SMARTS; empty in series mode.
 };
 
-/// \brief One shared R-group of a reported similar series.
+/// \brief One shared R-group of a reported similar series or pooled profile.
 struct SeriesSimilarityEvidence {
-    std::uint64_t series_id = 0;
+    std::uint64_t series_id = 0;  ///< 0 for a pooled profile.
     std::string variable_smiles;
     double query_value = 0.0;
     double candidate_value = 0.0;
+    std::uint64_t environment_fingerprint_id = 0;  ///< The pooled profile; 0 in series mode.
+    std::string environment_smarts;                ///< The pooled profile's SMARTS; empty in series mode.
 };
 
 /// \brief Output of DuckDBStore::FindSimilarSeries.
@@ -110,6 +124,7 @@ struct SeriesSimilarityResult {
     unsigned int query_size = 0;   ///< Valued query R-groups.
     std::vector<SeriesSimilarity> matches;
     std::vector<SeriesSimilarityEvidence> evidence;
+    int environment_radius = -1;   ///< The request's radius, echoed.
 };
 
 /// \brief One explicitly supplied query R-group after canonicalisation.

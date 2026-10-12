@@ -10,6 +10,8 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <duckdb.hpp>
@@ -52,6 +54,19 @@ TEST(SeriesQueryRecords, DefaultsMatchTheSpec) {
     SeriesSimilarityResult similarity_result;
     EXPECT_EQ(similarity_result.query_size, 0U);
     EXPECT_EQ(std::string(SERIES_QUERY_INVALID_PREFIX), "invalid series query: ");
+    EXPECT_EQ(ranking.environment_radius, -1);
+    EXPECT_EQ(similarity.environment_radius, -1);
+    EXPECT_EQ(ranking_result.environment_radius, -1);
+    EXPECT_EQ(similarity_result.environment_radius, -1);
+    const SeriesSimilarity match;
+    EXPECT_EQ(match.environment_fingerprint_id, 0U);
+    EXPECT_TRUE(match.environment_smarts.empty());
+    const SubstituentRankingEvidence ranking_row;
+    EXPECT_EQ(ranking_row.environment_fingerprint_id, 0U);
+    EXPECT_TRUE(ranking_row.environment_smarts.empty());
+    const SeriesSimilarityEvidence similarity_row;
+    EXPECT_EQ(similarity_row.environment_fingerprint_id, 0U);
+    EXPECT_TRUE(similarity_row.environment_smarts.empty());
 }
 
 TEST(SeriesQueryCanonicalisation, RendersEverySpellingLikeTheStoredRuleSmiles) {
@@ -1694,5 +1709,357 @@ TEST(SeriesVariantRows, ShorteningCountsGuessedPostingsOnlyWithTheFlag) {
     EXPECT_EQ(store.RankNextSubstituents(request).dropped, (std::vector<std::string>{"[*:1]I"}));
     request.selection.include_up_enumerated = true;
     EXPECT_EQ(store.RankNextSubstituents(request).dropped, (std::vector<std::string>{"[*:1]Cl"}));
+    std::filesystem::remove(fixture.path);
+}
+
+namespace {
+
+// Eleven compounds whose constants pool at radius 1 (seams spec 9.1; values from
+// the plan-time probe). The six aryl constants [*:1]c1ccc(cc1)C,
+// [*:1]c1ccc(cc1)CC, [*:1]c1ccc(cc1)Cl, [*:1]c1ccc(cc1)F, [*:1]c1ccccc1 and
+// [*:1]c1ccccc1C share one attachment environment and pool into the "aryl"
+// profile: H 4.0, F 2.0, Cl 0.75, Br 4.0, C 2.0, CC 1.0. [*:1]CC and
+// [*:1]CC(C)(C)C pool into "methylene": H 1.0, F 2.0, Cl 3.0 and three aryl
+// R-groups. Toluene reaches the aryl hydrogen cell through the para-tolyl and
+// the ortho-tolyl series, so a median that counted it twice would read 3.0
+// (3, 3, 5) instead of 4.0 (3, 5). At radius 5 no two series share a
+// fingerprint. tests/python/_series_fixture.py (POOLED_COMPOUNDS) holds the same
+// compounds.
+struct PooledStore {
+    std::filesystem::path path;
+    std::map<std::string, std::uint64_t> series_ids;   // Constant SMILES -> series id.
+    std::uint64_t aryl = 0;                            // Radius-1 fingerprint id of the aryl constants.
+    std::uint64_t methylene = 0;                       // Radius-1 fingerprint id of the two methylene constants.
+    std::string aryl_smarts;
+    std::string methylene_smarts;
+};
+
+// The fingerprint id a stored constant has at a radius, read on a connection of
+// its own; the store that wrote the file must be closed.
+std::uint64_t EnvironmentId(const std::filesystem::path& path, const std::string& constant, int radius) {
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    std::unique_ptr<duckdb::MaterializedQueryResult> result = connection.Query(
+        "select ce.environment_fingerprint_id from constant_environment ce "
+        "join constant_smiles c on c.id = ce.constant_id "
+        "where c.smiles = '" + constant + "' and ce.radius = " + std::to_string(radius));
+    EXPECT_FALSE(result->HasError()) << result->GetError();
+    EXPECT_EQ(result->RowCount(), 1U) << constant << " at radius " << radius;
+    return result->RowCount() == 1U ? result->GetValue(0, 0).GetValue<std::uint64_t>() : 0U;
+}
+
+std::string FingerprintSmarts(const std::filesystem::path& path, std::uint64_t id) {
+    duckdb::DuckDB database(path.string());
+    duckdb::Connection connection(database);
+    std::unique_ptr<duckdb::MaterializedQueryResult> result = connection.Query(
+        "select smarts from environment_fingerprint where id = " + std::to_string(id));
+    EXPECT_FALSE(result->HasError()) << result->GetError();
+    EXPECT_EQ(result->RowCount(), 1U) << id;
+    return result->RowCount() == 1U ? result->GetValue(0, 0).GetValue<std::string>() : std::string();
+}
+
+PooledStore MakePooledStore() {
+    PooledStore fixture;
+    fixture.path = TemporaryQueryDatabasePath();
+    {
+        Analyzer analyzer;
+        const std::vector<std::tuple<std::string, std::string, double>> compounds = {
+            {"c1ccccc1C", "A-H", 3.0},       {"Fc1ccc(C)cc1", "A-F", 2.0},  {"Clc1ccc(C)cc1", "A-Cl", 1.0},
+            {"Brc1ccc(C)cc1", "A-Br", 4.0},  {"c1ccccc1CC", "B-H", 5.0},    {"Fc1ccc(CC)cc1", "B-F", 1.0},
+            {"Clc1ccc(CC)cc1", "B-Cl", 0.5}, {"CC(C)(C)C", "N-H", 1.0},     {"FCC(C)(C)C", "N-F", 2.0},
+            {"ClCC(C)(C)C", "N-Cl", 3.0},    {"Cc1ccccc1F", "O-F", 7.0},
+        };
+        for (const auto& [smiles, name, value] : compounds) {
+            analyzer.AddMolecule(smiles, name);
+            analyzer.AddProperty(name, "act", value);
+        }
+        analyzer.Analyze();
+        DuckDBStore store(fixture.path.string());
+        analyzer.SaveTo(store);
+        for (const Series& entry : store.GetSeries()) {
+            fixture.series_ids[entry.GetConstantSmiles()] = entry.GetSeriesId();
+        }
+    }
+    fixture.aryl = EnvironmentId(fixture.path, "[*:1]c1ccc(cc1)C", 1);
+    fixture.methylene = EnvironmentId(fixture.path, "[*:1]CC(C)(C)C", 1);
+    fixture.aryl_smarts = FingerprintSmarts(fixture.path, fixture.aryl);
+    fixture.methylene_smarts = FingerprintSmarts(fixture.path, fixture.methylene);
+    // The pooling the tests rely on, checked here so a fingerprint change fails on
+    // its cause rather than on a value.
+    for (const char* constant : {"[*:1]c1ccc(cc1)CC", "[*:1]c1ccc(cc1)Cl", "[*:1]c1ccc(cc1)F",
+                                 "[*:1]c1ccccc1", "[*:1]c1ccccc1C"}) {
+        EXPECT_EQ(EnvironmentId(fixture.path, constant, 1), fixture.aryl) << constant;
+    }
+    EXPECT_EQ(EnvironmentId(fixture.path, "[*:1]CC", 1), fixture.methylene);
+    EXPECT_NE(fixture.aryl, fixture.methylene);
+    EXPECT_NE(EnvironmentId(fixture.path, "[*:1]c1ccc(cc1)C", 5), EnvironmentId(fixture.path, "[*:1]c1ccc(cc1)CC", 5));
+    return fixture;
+}
+
+// Give the two-cut constant [*:1]C.[*:2]F the aryl fingerprint at radius 1, so
+// one fingerprint id describes a one-cut and a two-cut constant (spec 14.1's
+// composite identity). Two statements, each committed on its own.
+void GiveTheTwoCutConstantTheArylFingerprint(const PooledStore& fixture) {
+    DuckDBStore store(fixture.path.string());
+    store.Execute("delete from constant_environment where radius = 1 and constant_id = "
+                  "(select id from constant_smiles where smiles = '[*:1]C.[*:2]F')");
+    store.Execute("insert into constant_environment (constant_id, radius, environment_fingerprint_id) "
+                  "select id, 1, " + std::to_string(fixture.aryl) + " from constant_smiles "
+                  "where smiles = '[*:1]C.[*:2]F'");
+}
+
+}  // namespace
+
+TEST(SeriesQueryRadius, EveryRequestRejectsARadiusOutsideMinusOneToFive) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    for (const int radius : {-2, 6, 100}) {
+        SubstituentRankingRequest ranking = HigherQuery();
+        ranking.environment_radius = radius;
+        EXPECT_EQ(RejectionMessage(store, ranking),
+                  "invalid series query: environment_radius must be -1 or between 0 and 5") << radius;
+        SeriesSimilarityRequest similarity = SimilarityQuery();
+        similarity.environment_radius = radius;
+        try {
+            store.FindSimilarSeries(similarity);
+            ADD_FAILURE() << "radius " << radius << " must be rejected";
+        } catch (const std::invalid_argument& error) {
+            EXPECT_EQ(std::string(error.what()),
+                      "invalid series query: environment_radius must be -1 or between 0 and 5");
+        }
+    }
+    for (const int radius : {-1, 0, 5}) {
+        SubstituentRankingRequest ranking = HigherQuery();
+        ranking.environment_radius = radius;
+        ranking.support_ladder = {1U};
+        EXPECT_EQ(store.RankNextSubstituents(ranking).environment_radius, radius);
+        SeriesSimilarityRequest similarity = SimilarityQuery();
+        similarity.environment_radius = radius;
+        EXPECT_EQ(store.FindSimilarSeries(similarity).environment_radius, radius);
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledSimilarity, ScaffoldsSharingARadiusOneFingerprintPoolIntoOneProfile) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    SeriesSimilarityRequest request = SimilarityQuery();
+    request.environment_radius = 1;
+    request.include_evidence = true;
+    const SeriesSimilarityResult result = store.FindSimilarSeries(request);
+    EXPECT_EQ(result.environment_radius, 1);
+    EXPECT_EQ(result.query_size, 3U);
+    ASSERT_EQ(result.matches.size(), 2U);
+    const SeriesSimilarity& aryl = result.matches[0];
+    EXPECT_EQ(aryl.environment_fingerprint_id, fixture.aryl);
+    EXPECT_EQ(aryl.environment_smarts, fixture.aryl_smarts);
+    EXPECT_EQ(aryl.series_id, 0U);
+    EXPECT_TRUE(aryl.constant_smiles.empty());
+    EXPECT_EQ(aryl.cut_count, 1U);
+    EXPECT_EQ(aryl.overlap, 3U);
+    EXPECT_TRUE(aryl.has_spearman);
+    EXPECT_DOUBLE_EQ(aryl.spearman, 1.0);
+    // Query (Cl 1, F 2, H 3) against the pooled (0.75, 2.0, 4.0): centred
+    // differences (0.5, 0.25, -0.75), so the centred RMSD is sqrt(0.875 / 3).
+    EXPECT_NEAR(aryl.centred_rmsd, std::sqrt(0.875 / 3.0), 1e-12);
+    const SeriesSimilarity& methylene = result.matches[1];
+    EXPECT_EQ(methylene.environment_fingerprint_id, fixture.methylene);
+    EXPECT_EQ(methylene.environment_smarts, fixture.methylene_smarts);
+    EXPECT_DOUBLE_EQ(methylene.spearman, -1.0);
+    EXPECT_NEAR(methylene.centred_rmsd, std::sqrt(8.0 / 3.0), 1e-12);
+
+    // Evidence names the profile by fingerprint, ordered by fingerprint id then SMILES.
+    ASSERT_EQ(result.evidence.size(), 6U);
+    EXPECT_LT(result.evidence.front().environment_fingerprint_id, result.evidence.back().environment_fingerprint_id);
+    std::vector<std::pair<std::string, double>> aryl_values;
+    for (const SeriesSimilarityEvidence& row : result.evidence) {
+        EXPECT_EQ(row.series_id, 0U);
+        if (row.environment_fingerprint_id == fixture.aryl) {
+            EXPECT_EQ(row.environment_smarts, fixture.aryl_smarts);
+            aryl_values.emplace_back(row.variable_smiles, row.candidate_value);
+        }
+    }
+    // Toluene reaches the hydrogen cell through two pooled series and counts once:
+    // median(3, 5) = 4.0, where counting it twice would give median(3, 3, 5) = 3.0.
+    EXPECT_EQ(aryl_values, (std::vector<std::pair<std::string, double>>{
+        {"[*:1]Cl", 0.75}, {"[*:1]F", 2.0}, {"[*:1][H]", 4.0}}));
+
+    // The same query on stored series: three series, each named by its constant.
+    request.environment_radius = -1;
+    const SeriesSimilarityResult series = store.FindSimilarSeries(request);
+    EXPECT_EQ(series.environment_radius, -1);
+    ASSERT_EQ(series.matches.size(), 3U);
+    for (const SeriesSimilarity& match : series.matches) {
+        EXPECT_NE(match.series_id, 0U);
+        EXPECT_FALSE(match.constant_smiles.empty());
+        EXPECT_EQ(match.environment_fingerprint_id, 0U);
+        EXPECT_TRUE(match.environment_smarts.empty());
+    }
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledSimilarity, RadiusFiveKeepsTheseScaffoldsApartWithSeriesModeValues) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    SeriesSimilarityRequest request = SimilarityQuery();
+    const SeriesSimilarityResult series = store.FindSimilarSeries(request);
+    request.environment_radius = 5;
+    const SeriesSimilarityResult pooled = store.FindSimilarSeries(request);
+    ASSERT_EQ(pooled.matches.size(), 3U);
+    ASSERT_EQ(series.matches.size(), 3U);
+    // At radius 5 every series is a profile of its own, so the values are the
+    // series' values and only the naming differs; ties fall to different ids, so
+    // the comparison is by value, not by position.
+    std::multiset<std::tuple<unsigned int, double, double>> by_series;
+    std::multiset<std::tuple<unsigned int, double, double>> by_profile;
+    for (const SeriesSimilarity& match : series.matches) {
+        by_series.emplace(match.overlap, match.spearman, match.centred_rmsd);
+    }
+    for (const SeriesSimilarity& match : pooled.matches) {
+        EXPECT_EQ(match.series_id, 0U);
+        EXPECT_NE(match.environment_fingerprint_id, 0U);
+        by_profile.emplace(match.overlap, match.spearman, match.centred_rmsd);
+    }
+    EXPECT_EQ(by_profile, by_series);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledRanking, ExplicitQueryRanksOverTheProfileAndEvidenceCarriesTheFingerprint) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    SubstituentRankingRequest request = HigherQuery();
+    request.support_ladder = {1U};
+    request.include_evidence = true;
+    // Stored series: para-tolyl and para-ethylphenyl match H > F > Cl, and only the
+    // tolyl series carries another member, Br 4, which beats its H 3.
+    const SubstituentRankingResult series = store.RankNextSubstituents(request);
+    EXPECT_EQ(series.matched_series, 2U);
+    ASSERT_EQ(series.candidates.size(), 1U);
+    EXPECT_EQ(series.candidates[0].variable_smiles, "[*:1]Br");
+    EXPECT_EQ(series.candidates[0].wins, 1U);
+
+    // Pooled at radius 1: the aryl profile matches (H 4 > F 2 > Cl 0.75; methylene
+    // runs H 1 < F 2 < Cl 3), and its other R-groups Br 4, C 2 and CC 1 are the
+    // candidates; none beats H 4, which Br only ties.
+    request.environment_radius = 1;
+    const SubstituentRankingResult pooled = store.RankNextSubstituents(request);
+    EXPECT_EQ(pooled.environment_radius, 1);
+    EXPECT_EQ(pooled.matched_series, 1U);
+    std::vector<std::string> names;
+    for (const SubstituentRanking& candidate : pooled.candidates) {
+        names.push_back(candidate.variable_smiles);
+        EXPECT_EQ(candidate.support, 1U);
+        EXPECT_EQ(candidate.wins, 0U);
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"[*:1]Br", "[*:1]C", "[*:1]CC"}));
+    ASSERT_EQ(pooled.evidence.size(), 6U);
+    for (const SubstituentRankingEvidence& row : pooled.evidence) {
+        EXPECT_EQ(row.series_id, 0U);
+        EXPECT_TRUE(row.constant_smiles.empty());
+        EXPECT_EQ(row.environment_fingerprint_id, fixture.aryl);
+        EXPECT_EQ(row.environment_smarts, fixture.aryl_smarts);
+    }
+    EXPECT_EQ(pooled.evidence[0].variable_smiles, "[*:1][H]");
+    EXPECT_DOUBLE_EQ(pooled.evidence[0].value, 4.0);
+    EXPECT_EQ(pooled.evidence[3].role, "candidate");
+    EXPECT_EQ(pooled.evidence[3].variable_smiles, "[*:1]Br");
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledQueryById, UsesItsProfileRejectsTiesAndExcludesItself) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    const std::uint64_t tolyl = fixture.series_ids.at("[*:1]c1ccc(cc1)C");
+    // On its own the tolyl series ranks (Br 4, H 3, F 2, Cl 1); its pooled profile
+    // ties Br and H at 4, which a ranking refuses.
+    SubstituentRankingRequest ranking;
+    ranking.property_name = "act";
+    ranking.direction = PropertyDirection::HIGHER_IS_BETTER;
+    ranking.query_series_id = tolyl;
+    ranking.support_ladder = {1U};
+    EXPECT_NO_THROW(store.RankNextSubstituents(ranking));
+    ranking.environment_radius = 1;
+    EXPECT_NE(RejectionMessage(store, ranking).find("tied ranking query values: [*:1]Br and [*:1][H]"),
+              std::string::npos);
+
+    // Similarity by the tolyl series queries the whole aryl profile (six valued
+    // R-groups) and leaves that profile out; methylene shares Cl, F and H with it.
+    SeriesSimilarityRequest similar;
+    similar.property_name = "act";
+    similar.query_series_id = tolyl;
+    similar.environment_radius = 1;
+    const SeriesSimilarityResult by_id = store.FindSimilarSeries(similar);
+    EXPECT_EQ(by_id.query_size, 6U);
+    ASSERT_EQ(by_id.matches.size(), 1U);
+    EXPECT_EQ(by_id.matches[0].environment_fingerprint_id, fixture.methylene);
+    EXPECT_EQ(by_id.matches[0].overlap, 3U);
+    EXPECT_DOUBLE_EQ(by_id.matches[0].spearman, -1.0);
+    // (0.75, 2, 4) against (3, 2, 1): centred differences (-2.5, -0.25, 2.75).
+    EXPECT_NEAR(by_id.matches[0].centred_rmsd, std::sqrt(13.875 / 3.0), 1e-12);
+
+    // The same six values given explicitly meet the aryl profile itself, which the
+    // id query excluded.
+    SeriesSimilarityRequest explicit_query;
+    explicit_query.property_name = "act";
+    explicit_query.query_variable_smiles = {"[*:1]Br", "[*:1]C", "[*:1]CC", "[*:1]Cl", "[*:1]F", "[*:1][H]"};
+    explicit_query.query_values = {4.0, 2.0, 1.0, 0.75, 2.0, 4.0};
+    explicit_query.environment_radius = 1;
+    const SeriesSimilarityResult explicit_result = store.FindSimilarSeries(explicit_query);
+    ASSERT_EQ(explicit_result.matches.size(), 2U);
+    EXPECT_EQ(explicit_result.matches[0].environment_fingerprint_id, fixture.aryl);
+    EXPECT_EQ(explicit_result.matches[0].overlap, 6U);
+    EXPECT_DOUBLE_EQ(explicit_result.matches[0].centred_rmsd, 0.0);
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledProfiles, ConstantFloorExcludesASeriesBeforeItJoinsTheProfile) {
+    const PooledStore fixture = MakePooledStore();
+    DuckDBStore store(fixture.path.string());
+    SeriesSimilarityRequest request = SimilarityQuery();
+    request.environment_radius = 1;
+    request.include_evidence = true;
+    // Only para-ethylphenyl (eight heavy atoms) passes a floor of eight: the aryl
+    // profile keeps its values alone (Cl 0.5, F 1, H 5), and both methylene
+    // constants (two and five heavy atoms) drop out.
+    request.selection.min_constant_heavy_atoms = 8;
+    const SeriesSimilarityResult result = store.FindSimilarSeries(request);
+    ASSERT_EQ(result.matches.size(), 1U);
+    EXPECT_EQ(result.matches[0].environment_fingerprint_id, fixture.aryl);
+    std::vector<double> values;
+    for (const SeriesSimilarityEvidence& row : result.evidence) {
+        values.push_back(row.candidate_value);
+    }
+    EXPECT_EQ(values, (std::vector<double>{0.5, 1.0, 5.0}));
+    std::filesystem::remove(fixture.path);
+}
+
+TEST(PooledProfiles, CutCountsNeverShareAProfileInSimilarity) {
+    const PooledStore fixture = MakePooledStore();
+    GiveTheTwoCutConstantTheArylFingerprint(fixture);
+    DuckDBStore store(fixture.path.string());
+    // The one-cut aryl profile is unchanged by the two-cut rows under its id.
+    SeriesSimilarityRequest one_cut = SimilarityQuery();
+    one_cut.environment_radius = 1;
+    const SeriesSimilarityResult aryl = store.FindSimilarSeries(one_cut);
+    ASSERT_FALSE(aryl.matches.empty());
+    EXPECT_EQ(aryl.matches[0].environment_fingerprint_id, fixture.aryl);
+    EXPECT_EQ(aryl.matches[0].cut_count, 1U);
+    EXPECT_EQ(aryl.matches[0].overlap, 3U);
+    EXPECT_NEAR(aryl.matches[0].centred_rmsd, std::sqrt(0.875 / 3.0), 1e-12);
+    // The two-cut series [*:1]C.[*:2]Cl (linker values 1 and 3) meets a profile of
+    // cut count two under the same id, holding only the two-cut members.
+    SeriesSimilarityRequest two_cut;
+    two_cut.property_name = "act";
+    two_cut.query_series_id = fixture.series_ids.at("[*:1]C.[*:2]Cl");
+    two_cut.environment_radius = 1;
+    two_cut.min_overlap = 2;
+    const SeriesSimilarityResult linker = store.FindSimilarSeries(two_cut);
+    EXPECT_EQ(linker.query_size, 2U);
+    ASSERT_EQ(linker.matches.size(), 1U);
+    EXPECT_EQ(linker.matches[0].environment_fingerprint_id, fixture.aryl);
+    EXPECT_EQ(linker.matches[0].cut_count, 2U);
+    EXPECT_EQ(linker.matches[0].overlap, 2U);
+    EXPECT_FALSE(linker.matches[0].has_spearman);   // The two shared candidate values tie at 2.
+    EXPECT_DOUBLE_EQ(linker.matches[0].centred_rmsd, 1.0);
     std::filesystem::remove(fixture.path);
 }

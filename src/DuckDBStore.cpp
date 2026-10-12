@@ -245,6 +245,14 @@ std::invalid_argument invalid_series_query(const std::string& message) {
     return std::invalid_argument(std::string(SERIES_QUERY_INVALID_PREFIX) + message);
 }
 
+// Spec 10.1: -1 compares stored series, 0 to 5 pools them (the radii every
+// constant_environment row covers).
+void validate_environment_radius(int radius) {
+    if (radius < -1 || radius > 5) {
+        throw invalid_series_query("environment_radius must be -1 or between 0 and 5");
+    }
+}
+
 // One query R-group resolved against the store.
 struct QueryMember {
     std::string variable_smiles;
@@ -256,7 +264,8 @@ struct ResolvedQuery {
     std::vector<QueryMember> members;
     unsigned int cut_count = 0;
     // The query's own profile, which similarity leaves out of its matches: the
-    // series for an id query, 0 for explicit R-groups (no profile has id 0).
+    // series for an id query, the series' fingerprint at the radius when pooled,
+    // 0 for explicit R-groups (no profile has id 0).
     std::uint64_t profile_id = 0;
 };
 
@@ -357,32 +366,47 @@ struct BoundSql {
 struct ProfileSpec {
     std::uint64_t property_id = 0;
     bool include_up_enumerated = false;
+    int environment_radius = -1;                // -1 series mode; 0 to 5 pools by fingerprint.
     unsigned int cut_count = 0;                 // 0 reads every cut count.
     unsigned int min_constant_heavy_atoms = 0;  // 0 is no floor.
     std::uint64_t only_profile_id = 0;          // 0 reads every profile.
 };
 
 // The profile inputs of a ranking or similarity request: the query's cut count
-// with the selection's variant flag and constant floor.
+// with the request's radius and the selection's variant flag and constant floor.
 ProfileSpec query_profile_spec(std::uint64_t property_id, unsigned int cut_count,
-                               const SeriesSelection& selection) {
+                               const SeriesSelection& selection, int environment_radius) {
     ProfileSpec spec;
     spec.property_id = property_id;
     spec.include_up_enumerated = selection.include_up_enumerated;
+    spec.environment_radius = environment_radius;
     spec.cut_count = cut_count;
     spec.min_constant_heavy_atoms = selection.min_constant_heavy_atoms;
     return spec;
 }
 
+// The profile id of a member row: its series in series mode, the fingerprint of
+// its series' constant at the radius in pooled mode, so every series of one cut
+// count sharing that fingerprint lands in one profile (spec 9.1).
+std::string profile_id_column(const ProfileSpec& spec) {
+    return spec.environment_radius < 0 ? "s.id" : "ce.environment_fingerprint_id";
+}
+
 // Rows (cut_count, profile_id, rule_smiles_id, compound_id) of the series members
-// that pass the series-level inputs; in series mode the profile is the series.
-// `join_clause` is a program-chosen join placed before the filters (the query
-// R-groups for the posting set, the posting set for a restricted profile), and
-// ends in a space. distinct makes a compound count once per profile and R-group
-// (spec 9.1); within one series the unique key of series_member already does.
+// that pass the series-level inputs (spec 9.1, 9.2). `join_clause` is a
+// program-chosen join placed before the filters (the query R-groups for the
+// posting set, the posting set for a restricted profile), and ends in a space.
+// distinct makes a compound reached through several series of one pooled
+// profile count once per R-group; within one series the unique key of
+// series_member already does.
 void append_profile_member_rows(BoundSql& sql, const ProfileSpec& spec, const std::string& join_clause) {
-    sql.text += "select distinct s.cut_count, s.id as profile_id, sm.rule_smiles_id, sm.compound_id "
+    const std::string profile_id = profile_id_column(spec);
+    sql.text += "select distinct s.cut_count, " + profile_id + " as profile_id, sm.rule_smiles_id, sm.compound_id "
                 "from series_member sm join series s on s.id = sm.series_id ";
+    if (spec.environment_radius >= 0) {
+        sql.text += "join constant_environment ce on ce.constant_id = s.constant_id and ce.radius = ? ";
+        sql.values.push_back(duckdb::Value::INTEGER(spec.environment_radius));
+    }
     sql.text += join_clause;
     sql.text += "where (? = 0 or s.cut_count = ?) and (? = 0 or s.constant_num_heavies >= ?)";
     sql.values.push_back(duckdb::Value::UINTEGER(spec.cut_count));
@@ -390,7 +414,7 @@ void append_profile_member_rows(BoundSql& sql, const ProfileSpec& spec, const st
     sql.values.push_back(duckdb::Value::UINTEGER(spec.min_constant_heavy_atoms));
     sql.values.push_back(duckdb::Value::UINTEGER(spec.min_constant_heavy_atoms));
     if (spec.only_profile_id != 0) {
-        sql.text += " and s.id = ?";
+        sql.text += " and " + profile_id + " = ?";
         sql.values.push_back(duckdb::Value::UBIGINT(spec.only_profile_id));
     }
     // Program-chosen text rather than a binding, so the observed-only statement
@@ -450,7 +474,9 @@ void append_profile_ctes(BoundSql& sql, const ProfileSpec& spec, bool restricted
     sql.text += "profile_member as (";
     append_profile_member_rows(
         sql, spec,
-        restricted_to_posting ? "join posting p on p.cut_count = s.cut_count and p.profile_id = s.id " : "");
+        restricted_to_posting
+            ? "join posting p on p.cut_count = s.cut_count and p.profile_id = " + profile_id_column(spec) + " "
+            : std::string());
     sql.text += "), profile as ("
                 "select pm.cut_count, pm.profile_id, pm.rule_smiles_id, "
                 "coalesce(rs.num_heavies, 0) as rgroup_num_heavies, median(cp.value) as value "
@@ -462,33 +488,89 @@ void append_profile_ctes(BoundSql& sql, const ProfileSpec& spec, bool restricted
     sql.values.push_back(duckdb::Value::UBIGINT(spec.property_id));
 }
 
-// The query of a stored series: its valued members from the profile relation
-// (seams spec 9.1), restricted to the series itself. The constant floor is not
-// applied: the query is the series the caller named, as at 06ffad1, whatever the
-// selection admits as candidates. The variant flag is: one switch means one
-// thing on every surface (spec 5.4).
+// How a result names a profile (spec 10.3): its series' constant in series mode,
+// its fingerprint's SMARTS in pooled mode. `alias` is the relation whose
+// profile_id the label belongs to.
+struct ProfileLabel {
+    std::string join;
+    std::string column;
+};
+
+ProfileLabel profile_label(const ProfileSpec& spec, const std::string& alias) {
+    if (spec.environment_radius < 0) {
+        return {"join series ls on ls.id = " + alias + ".profile_id "
+                "join constant_smiles lc on lc.id = ls.constant_id ",
+                "lc.smiles"};
+    }
+    return {"join environment_fingerprint lf on lf.id = " + alias + ".profile_id ", "lf.smarts"};
+}
+
+// Fill the identity of a result row (spec 10.3): series mode names the series
+// and its constant; pooled mode leaves series_id 0 and the constant empty and
+// names the fingerprint and its SMARTS instead.
+template <typename Row>
+void assign_profile_identity(Row& row, bool pooled, std::uint64_t profile_id, const std::string& label) {
+    if (pooled) {
+        row.environment_fingerprint_id = profile_id;
+        row.environment_smarts = label;
+    } else {
+        row.series_id = profile_id;
+        row.constant_smiles = label;
+    }
+}
+
+// The query of a stored series (spec 10.2): its valued members from the profile
+// relation, restricted to the query's own profile. In series mode that is the
+// series itself and the constant floor is not applied, so the query is the
+// series the caller named, as at 06ffad1; in pooled mode it is the series'
+// pooled profile, which the floor shapes like every other profile (spec 9.2).
+// Both read the variant flag: one switch means one thing on every surface.
 ResolvedQuery resolve_series_query(
     const std::unique_ptr<duckdb::Connection>& connection,
     std::uint64_t series_id,
     std::uint64_t property_id,
     const std::string& property_name,
-    const SeriesSelection& selection
+    const SeriesSelection& selection,
+    int environment_radius
 ) {
     ResolvedQuery query;
     bool found = false;
-    std::unique_ptr<duckdb::QueryResult> cut = execute_prepared(
-        connection, "select cut_count from series where id = ?", {duckdb::Value::UBIGINT(series_id)});
-    for (const auto& row : *cut) {
-        query.cut_count = row.GetValue<std::uint32_t>(0);
-        found = true;
+    bool has_profile = false;
+    {
+        BoundSql lookup;
+        if (environment_radius < 0) {
+            lookup.text = "select cut_count, id from series where id = ?";
+        } else {
+            lookup.text = "select s.cut_count, ce.environment_fingerprint_id from series s "
+                          "left join constant_environment ce "
+                          "on ce.constant_id = s.constant_id and ce.radius = ? where s.id = ?";
+            lookup.values.push_back(duckdb::Value::INTEGER(environment_radius));
+        }
+        lookup.values.push_back(duckdb::Value::UBIGINT(series_id));
+        std::unique_ptr<duckdb::QueryResult> rows =
+            execute_prepared(connection, lookup.text, std::move(lookup.values));
+        for (const auto& row : *rows) {
+            found = true;
+            query.cut_count = row.GetValue<std::uint32_t>(0);
+            if (!row.GetValue<duckdb::Value>(1).IsNull()) {
+                query.profile_id = row.GetValue<std::uint64_t>(1);
+                has_profile = true;
+            }
+        }
     }
     if (!found) {
         throw invalid_series_query("query_series_id does not exist: " + std::to_string(series_id));
     }
-    query.profile_id = series_id;
-    ProfileSpec spec = query_profile_spec(property_id, query.cut_count, selection);
-    spec.min_constant_heavy_atoms = 0;
-    spec.only_profile_id = series_id;
+    if (!has_profile) {
+        throw invalid_series_query("query_series_id " + std::to_string(series_id) +
+                                   " has no environment fingerprint at radius " +
+                                   std::to_string(environment_radius));
+    }
+    ProfileSpec spec = query_profile_spec(property_id, query.cut_count, selection, environment_radius);
+    if (environment_radius < 0) {
+        spec.min_constant_heavy_atoms = 0;
+    }
+    spec.only_profile_id = query.profile_id;
     BoundSql sql;
     sql.text += "with ";
     append_profile_ctes(sql, spec, false);
@@ -706,25 +788,24 @@ std::vector<SubstituentRankingEvidence> load_ranking_evidence(
             sql.values.push_back(duckdb::Value::UBIGINT(candidate.rule_smiles_id));
         }
     }
-    sql.text += "select * from ("
-                "select m.cut_count, m.profile_id, c.smiles as label, 0 as role_rank, q.position, "
-                "rs.smiles as variable_smiles, mv.value, false as win "
-                "from matched m "
-                "join series s on s.id = m.profile_id "
-                "join constant_smiles c on c.id = s.constant_id "
-                "cross join query q "
+    const ProfileLabel label = profile_label(spec, "m");
+    sql.text += "select * from (select m.cut_count, m.profile_id, ";
+    sql.text += label.column;
+    sql.text += " as label, 0 as role_rank, q.position, rs.smiles as variable_smiles, mv.value, false as win "
+                "from matched m ";
+    sql.text += label.join;
+    sql.text += "cross join query q "
                 "join bounded mv on mv.cut_count = m.cut_count and mv.profile_id = m.profile_id "
                 "and mv.rule_smiles_id = q.rule_smiles_id "
                 "join rule_smiles rs on rs.id = q.rule_smiles_id";
     if (!reported.empty()) {
-        sql.text += " union all "
-                    "select m.cut_count, m.profile_id, c.smiles, 1, 0, rs.smiles, mv.value, mv.value ";
+        sql.text += " union all select m.cut_count, m.profile_id, ";
+        sql.text += label.column;
+        sql.text += ", 1, 0, rs.smiles, mv.value, mv.value ";
         sql.text += win_comparison(direction);
-        sql.text += " b.best_value "
-                    "from matched m "
-                    "join series s on s.id = m.profile_id "
-                    "join constant_smiles c on c.id = s.constant_id "
-                    "join bounded mv on mv.cut_count = m.cut_count and mv.profile_id = m.profile_id "
+        sql.text += " b.best_value from matched m ";
+        sql.text += label.join;
+        sql.text += "join bounded mv on mv.cut_count = m.cut_count and mv.profile_id = m.profile_id "
                     "join reported r on r.rule_smiles_id = mv.rule_smiles_id "
                     "join best b on b.cut_count = m.cut_count and b.profile_id = m.profile_id "
                     "join rule_smiles rs on rs.id = mv.rule_smiles_id";
@@ -732,11 +813,11 @@ std::vector<SubstituentRankingEvidence> load_ranking_evidence(
     // Profile, then role (query before candidate), then position or SMILES.
     sql.text += ") order by 1, 2, 4, 5, 6";
     std::unique_ptr<duckdb::QueryResult> result = execute_prepared(connection, sql.text, std::move(sql.values));
+    const bool pooled = spec.environment_radius >= 0;
     std::vector<SubstituentRankingEvidence> rows;
     for (const auto& row : *result) {
         SubstituentRankingEvidence entry;
-        entry.series_id = row.GetValue<std::uint64_t>(1);
-        entry.constant_smiles = row.GetValue<std::string>(2);
+        assign_profile_identity(entry, pooled, row.GetValue<std::uint64_t>(1), row.GetValue<std::string>(2));
         entry.role = row.GetValue<std::int32_t>(3) == 0 ? "query" : "candidate";
         entry.position = static_cast<unsigned int>(row.GetValue<std::int32_t>(4));
         entry.variable_smiles = row.GetValue<std::string>(5);
@@ -4017,6 +4098,7 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
     if (request.min_query_length < 2) {
         throw invalid_series_query("min_query_length must be at least 2");
     }
+    validate_environment_radius(request.environment_radius);
     const std::uint64_t property_id = require_property_name_id(connection_, request.property_name);
     const bool has_id = request.query_series_id != 0;
     const bool has_explicit = !request.query_variable_smiles.empty() || !request.query_values.empty();
@@ -4026,7 +4108,7 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
     }
     ResolvedQuery query = has_id
         ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name,
-                               request.selection)
+                               request.selection, request.environment_radius)
         : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
     order_best_first(query.members, request.direction);
     if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
@@ -4034,14 +4116,17 @@ SubstituentRankingResult DuckDBStore::RankNextSubstituents(SubstituentRankingReq
             "selection.cut_count " + std::to_string(request.selection.cut_count) +
             " does not match the query's cut count " + std::to_string(query.cut_count));
     }
-    const ProfileSpec spec = query_profile_spec(property_id, query.cut_count, request.selection);
+    const ProfileSpec spec =
+        query_profile_spec(property_id, query.cut_count, request.selection, request.environment_radius);
     // The shortening's commonness measure reads every profile of the store in the
-    // request's variant mode, with no other selection (spec 9.2).
+    // request's mode and variant flag, with no other selection (spec 9.2).
     ProfileSpec census;
     census.property_id = property_id;
     census.include_up_enumerated = request.selection.include_up_enumerated;
+    census.environment_radius = request.environment_radius;
 
     SubstituentRankingResult result;
+    result.environment_radius = request.environment_radius;
     std::vector<QueryMember> members = query.members;
     while (true) {
         const RankingAttempt attempt = run_ranking_attempt(
@@ -4117,6 +4202,7 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     if (request.min_overlap < 2) {
         throw invalid_series_query("min_overlap must be at least 2");
     }
+    validate_environment_radius(request.environment_radius);
     const std::uint64_t property_id = require_property_name_id(connection_, request.property_name);
     const bool has_id = request.query_series_id != 0;
     const bool has_explicit = !request.query_variable_smiles.empty() || !request.query_values.empty();
@@ -4129,7 +4215,7 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
     // strict-order rule belongs to ranking alone, which applies it separately.
     const ResolvedQuery query = has_id
         ? resolve_series_query(connection_, request.query_series_id, property_id, request.property_name,
-                               request.selection)
+                               request.selection, request.environment_radius)
         : resolve_explicit_query(connection_, request.query_variable_smiles, request.query_values);
     if (request.selection.cut_count != 0 && request.selection.cut_count != query.cut_count) {
         throw invalid_series_query(
@@ -4139,8 +4225,10 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
 
     SeriesSimilarityResult result;
     result.query_size = static_cast<unsigned int>(query.members.size());
+    result.environment_radius = request.environment_radius;
 
-    const ProfileSpec spec = query_profile_spec(property_id, query.cut_count, request.selection);
+    const ProfileSpec spec =
+        query_profile_spec(property_id, query.cut_count, request.selection, request.environment_radius);
     // posting: the inverted-index prefilter (profiles posting at least
     // min_overlap of the query's R-groups) ahead of any property aggregation;
     // bounded: the member filter (spec 7.5 applies it first, to every member, no
@@ -4179,14 +4267,15 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
                 "join query q on q.rule_smiles_id = b.rule_smiles_id "
                 "join eligible e on e.cut_count = b.cut_count and e.profile_id = b.profile_id), "
                 "candidate as (select cut_count, profile_id from shared "
-                "group by cut_count, profile_id having count(*) >= ?) "
-                "select sh.cut_count, sh.profile_id, c.smiles, sh.variable_smiles, sh.query_value, "
-                "sh.candidate_value "
+                "group by cut_count, profile_id having count(*) >= ?) ";
+    const ProfileLabel label = profile_label(spec, "sh");
+    sql.text += "select sh.cut_count, sh.profile_id, ";
+    sql.text += label.column;
+    sql.text += ", sh.variable_smiles, sh.query_value, sh.candidate_value "
                 "from shared sh "
-                "join candidate cand on cand.cut_count = sh.cut_count and cand.profile_id = sh.profile_id "
-                "join series s on s.id = sh.profile_id "
-                "join constant_smiles c on c.id = s.constant_id "
-                "order by sh.cut_count, sh.profile_id, sh.variable_smiles";
+                "join candidate cand on cand.cut_count = sh.cut_count and cand.profile_id = sh.profile_id ";
+    sql.text += label.join;
+    sql.text += "order by sh.cut_count, sh.profile_id, sh.variable_smiles";
     sql.values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
     sql.values.push_back(duckdb::Value::UINTEGER(request.selection.max_variable_heavy_atoms));
     sql.values.push_back(duckdb::Value::UINTEGER(query.cut_count));
@@ -4206,6 +4295,7 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
         std::vector<double> candidate_values;
     };
     std::vector<Entry> entries;
+    const bool pooled = spec.environment_radius >= 0;
     for (const auto& row : *rows) {
         const std::uint32_t cut_count = row.GetValue<std::uint32_t>(0);
         const std::uint64_t profile_id = row.GetValue<std::uint64_t>(1);
@@ -4213,14 +4303,15 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
             entries.back().profile_id != profile_id) {
             Entry entry;
             entry.profile_id = profile_id;
-            entry.match.series_id = profile_id;
-            entry.match.constant_smiles = row.GetValue<std::string>(2);
+            assign_profile_identity(entry.match, pooled, profile_id, row.GetValue<std::string>(2));
             entry.match.cut_count = cut_count;
             entries.push_back(std::move(entry));
         }
         Entry& entry = entries.back();
         SeriesSimilarityEvidence evidence;
         evidence.series_id = entry.match.series_id;
+        evidence.environment_fingerprint_id = entry.match.environment_fingerprint_id;
+        evidence.environment_smarts = entry.match.environment_smarts;
         evidence.variable_smiles = row.GetValue<std::string>(3);
         evidence.query_value = row.GetValue<double>(4);
         evidence.candidate_value = row.GetValue<double>(5);
@@ -4262,16 +4353,14 @@ SeriesSimilarityResult DuckDBStore::FindSimilarSeries(SeriesSimilarityRequest re
         }
     }
     // Spec 7.4 orders the evidence by series id then SMILES, not by the rank the
-    // measure gave each series, so a consumer can merge it against an id-sorted
-    // series table the way the ranking evidence is merged. The rows of one series
-    // already arrive SMILES-ordered from the statement; only the series blocks,
-    // appended above in match order, have to be put back into id order.
+    // measure gave each match, so a consumer can merge it against an id-sorted
+    // table; a pooled profile has series id 0 and is ordered by its fingerprint
+    // id instead. The rows of one profile already arrive SMILES-ordered; only the
+    // blocks, appended in match order, have to be put back into id order.
     std::stable_sort(result.evidence.begin(), result.evidence.end(),
         [](const SeriesSimilarityEvidence& a, const SeriesSimilarityEvidence& b) {
-            if (a.series_id != b.series_id) {
-                return a.series_id < b.series_id;
-            }
-            return a.variable_smiles < b.variable_smiles;
+            return std::tie(a.series_id, a.environment_fingerprint_id, a.variable_smiles) <
+                   std::tie(b.series_id, b.environment_fingerprint_id, b.variable_smiles);
         });
     return result;
 }
