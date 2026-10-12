@@ -16,6 +16,10 @@ All public types live in the `OEMMPA` namespace.
 fragmentation method. `Analyzer("fragmentation")` selects the same method
 explicitly. `Analyzer("dmcss")` uses pairwise disconnected maximum common
 substructure analysis, and `Analyzer("oemedchem")` uses OpenEye OEMedChem.
+DMCSS emits at most three cuts, the most the store's environment fingerprint
+represents, and skips a candidate pair whose rendered constant or variable
+SMILES OEChem cannot read back, such as a match that splits an aromatic ring;
+OEChem prints a warning on stderr for each such skipped candidate.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -55,10 +59,17 @@ change site.
 
 `Series` and `SeriesMember` (`include/oemmpa/Series.h`) describe one matched
 molecular series: the constant SMILES, cut count and heavy-atom count, and
-members with their R-group SMILES, heavy-atom count, molecule ids and external
-ids. `SeriesSelection` holds the query-time bounds. `Analyzer::GetSeries()`
-returns the analysed series; `AnalysisMethod::ProducesSeries()` is true for the
-fragmentation method only.
+members with their R-group SMILES, heavy-atom count, molecule ids, external
+ids and per-compound enumeration labels (`None` for an observed compound,
+`ConstantUp` or `VariableUp` for a guessed stereo variant). `SeriesSelection`
+holds the query-time bounds and `include_up_enumerated`.
+`Analyzer::GetSeries()` returns the baseline view (observed compounds only);
+`Analyzer::GetSeries(true)` returns the labelled view, which adds the guesses
+that attach to a series the observed compounds formed.
+`Analyzer::ProducesSeries()` is true for the fragmentation method and for an
+MCS method after `Analyzer::SetSeriesEnumeration(true)`, which adds an
+auxiliary fragmentation pass built from the analyzer's
+`FragmentationSettings` (`include/oemmpa/FragmentationSettings.h`).
 
 `LoadReport` stores accepted IDs and row-level `LoadError` records. It lets
 file-loading code report bad rows without stopping the entire load.
@@ -272,7 +283,10 @@ pseudosmiles, and aggregate values. `GetPairsForRuleEnvironment()` returns the
 matched pairs that contributed to a selected rule environment.
 
 `Analyzer::SaveTo()` persists the analysed series into `series` and
-`series_member` and stamps `dataset.series_source`; a series-producing analysis
+`series_member` and stamps `dataset.series_source` (labelled rows in
+`series_member.enumeration_label`; counts and the default read use the observed
+rows), writes the fragmentation settings to `dataset.fragment_options`
+(`GetFragmentOptions()` reads them back); a series-producing analysis
 saves only into an empty store, and `AddPair()`/`AddPairs()` are refused
 afterwards. Series take no query options, so a save that filters its pairs
 still stores every enumerated series. `GetSeries(SeriesSelection)` reads them

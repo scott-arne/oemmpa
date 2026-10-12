@@ -652,8 +652,10 @@ columns. Values of `*` or blank strings are treated as missing. Row-level
 failures are returned in `LoadReport`, just as they are for molecule loading.
 The database layout follows the main MMPDB matched-pair tables, including
 compounds, properties, rules, constants, and pairs. Schema 5 adds the matched
-molecular series (`series`, `series_member`) and the dataset columns
-`num_series`, `num_series_members` and `series_source`.
+molecular series (`series`, `series_member`, with `enumeration_label`) and the
+dataset columns `num_series`, `num_series_members`,
+`num_series_variant_members` and `series_source`, and fills
+`fragment_options`.
 
 When an analyzed dataset is saved to DuckDB, OEMMPA stores each transformation
 together with the local chemical environment around the attachment point. These

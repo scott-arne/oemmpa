@@ -39,6 +39,11 @@ public:
     const std::string& GetMethodName() const;
 
     /// \brief Transactionally configure fragmentation-method controls.
+    ///
+    /// These controls, like every SetFragmentation and ClearFragmentation
+    /// setter, apply to the fragmentation method, and to an MCS method while
+    /// series enumeration is on (SetSeriesEnumeration(true)), where they
+    /// configure the auxiliary series pass.
     void ConfigureFragmentation(
         bool set_min_cuts,
         unsigned int min_cuts,

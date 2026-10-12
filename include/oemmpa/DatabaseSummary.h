@@ -52,7 +52,7 @@ public:
     /// Up-enumerated series_member rows (labels 'constant-up' and 'variable-up');
     /// GetNumSeriesMembers counts the observed rows only.
     std::uint64_t GetNumSeriesVariantMembers() const;
-    /// 'fragmentation' (the fragmentation method), '<method>+fragmentation' (an MCS
+    /// 'fragmentation' (the fragmentation method), '\<method\>+fragmentation' (an MCS
     /// analysis with series enumeration), 'none' (no series produced) or
     /// 'not-computed' (no analyzer save yet).
     const std::string& GetSeriesSource() const;

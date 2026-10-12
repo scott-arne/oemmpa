@@ -125,9 +125,14 @@ Like the other method flags, `--ring-perception` is rejected by the commands
 that read a prebuilt store.
 
 Fragmentation-only flags — `--cut-rgroup`, `--cut-rgroup-file`, `--max-heavies`,
-and `--max-rotatable-bonds` — require `--method fragmentation` (or no explicit
-method, since fragmentation is the default) and are rejected for the MCS-based
-methods.
+and `--max-rotatable-bonds` — require `--method fragmentation` (the default)
+or, on `build`, `--series`. `--series` makes an MCS build also enumerate matched
+molecular series, through an auxiliary fragmentation pass over the same
+molecules; the fragmentation flags, including the `--max-heavies 100` and
+`--max-rotatable-bonds 10` defaults, then configure that pass, and the pairs
+still come from the MCS method. The store records `series_source` as, for
+example, `dmcss+fragmentation`. `--series` is accepted and changes nothing for
+the fragmentation method.
 
 The variable-fragment size filters — `--min-variable-heavies`,
 `--max-variable-heavies`, `--min-variable-ratio`, and `--max-variable-ratio`,
@@ -212,15 +217,19 @@ rule_environments	18
 rule_environment_statistics	18
 series	1
 series_members	3
+series_variant_members	0
 series_source	fragmentation
 ```
 
-The three new metrics report matched molecular series: `series` counts distinct
-series (constant + cut pattern combinations), `series_members` counts
-`series_member` rows (compound memberships in those series), and `series_source`
-is one of three values: `not-computed` when no analyzer save has reached the
-store yet, `none` when the saved method produces no series, or the name of the
-saved method.
+The series metrics report matched molecular series: `series` counts distinct
+series (constant + cut pattern combinations), `series_members` counts the
+observed `series_member` rows (compound memberships in those series),
+`series_variant_members` counts the up-enumerated rows (guessed stereo
+variants, listed by `oemmpa series --include-up-enumerated`), and
+`series_source` is `not-computed` when no analyzer save has reached the store
+yet, `none` when the saved analysis produces no series, the method name for a
+fragmentation build, or the method name plus `+fragmentation` for an MCS build
+with `--series`.
 
 `list` is accepted as an alias for `summary`. Both open the store read-only, so
 they fail on a DuckDB file that OEMMPA did not create rather than adding the
@@ -304,9 +313,9 @@ No special flag is needed for this mode. If `--property` is omitted,
 ## Matched Molecular Series
 
 Three commands read the series a store carries (schema 5; `oemmpa list` reports
-`series`, `series_members` and `series_source`). All three open the store
-read-only, write TSV to `--output` (or standard output), and refuse an output
-path that names the database.
+`series`, `series_members`, `series_variant_members` and `series_source`). All
+three open the store read-only, write TSV to `--output` (or standard output),
+and refuse an output path that names the database.
 
 `oemmpa series` lists one row per (member, compound):
 
@@ -316,13 +325,18 @@ oemmpa series --database analysis.duckdb --min-length 3 --max-rgroup-heavies 12 
 ```
 
 Columns: `series_id`, `constant`, `cut_count`, `constant_num_heavies`,
-`num_members`, `rgroup`, `rgroup_num_heavies`, `compound_id`. Series are
-ordered by constant SMILES then cut count, members by R-group SMILES, and a
-member's compounds by their numeric compound id. `--min-length`,
-`--max-rgroup-heavies`, `--min-constant-heavies` and `--cut-count` are the
-selection bounds: an omitted `--min-length` means 2 and `--min-length 0` is the
-same as `1`, while zero or an omitted `--max-rgroup-heavies`,
-`--min-constant-heavies` or `--cut-count` means unbounded.
+`num_members`, `rgroup`, `rgroup_num_heavies`, `compound_id`,
+`enumeration_label`. Series are ordered by constant SMILES then cut count,
+members by R-group SMILES, and a member's compounds by their numeric compound
+id. `--min-length`, `--max-rgroup-heavies`, `--min-constant-heavies` and
+`--cut-count` are the selection bounds: an omitted `--min-length` means 2 and
+`--min-length 0` is the same as `1`, while zero or an omitted
+`--max-rgroup-heavies`, `--min-constant-heavies` or `--cut-count` means
+unbounded. `--include-up-enumerated` adds the guessed stereo-variant rows
+(`enumeration_label` `constant-up` or `variable-up`), and each row's
+`num_members` then counts every R-group listed, guess-only members included;
+without it every row is an observed compound (`none`) and `num_members` is the
+stored, observed-only length.
 
 `oemmpa series-rank` ranks candidate next substituents the way Matsy does:
 

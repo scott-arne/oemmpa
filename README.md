@@ -449,8 +449,10 @@ vrzn set 1.0.0
 5.0.0 moves the store to schema version 5. A database built with 4.x is
 refused when opened and must be rebuilt from source; there is no migration.
 Schema 5 adds the matched molecular series tables `series` and
-`series_member`, the dataset columns `num_series`, `num_series_members` and
-`series_source`, and populates `rule_smiles.num_heavies`, which 4.x left NULL.
+`series_member` (with `enumeration_label`), the dataset columns `num_series`,
+`num_series_members`, `num_series_variant_members` and `series_source`, fills
+`dataset.fragment_options` with the fragmentation settings, and populates
+`rule_smiles.num_heavies`, which 4.x left NULL.
 
 Behaviour changes to know about:
 
@@ -472,11 +474,25 @@ Behaviour changes to know about:
 - `Analyzer::GetPairs(QueryOptions)`, `Analyzer::GetTransforms(QueryOptions)`
   and `Analyzer::SaveTo(DuckDBStore&, QueryOptions)` take their options by
   value (source-compatible; the mangled names change).
+- Up-enumerated (guessed stereo-variant) compounds are stored as labelled
+  `series_member` rows; every count and default read uses the observed rows,
+  and `include_up_enumerated` opts in to the guessed ones.
+- Every series constant now has its `constant_environment` rows, not only the
+  constants that carry pairs.
+- DMCSS no longer emits pairs that need more than three cuts or whose fragments
+  cannot be parsed, so its stores can be saved on real data, and its pair count
+  can fall.
 
 New in 5.0.0: `Analyzer.series()`, `DuckDBStore.series()`,
 `DuckDBStore.series_count_refresh_seconds()`, `duckdb_library_version()`,
 `rank_next_substituents`, `find_similar_series`, the `series`, `series-rank`
-and `series-similar` commands, and the series metrics of `oemmpa list`. See
+and `series-similar` commands, `Analyzer(series=...)` and
+`Analyzer.set_series_enumeration()` (series for MCS analyses),
+`Analyzer.series(include_up_enumerated=...)`,
+`SeriesSelectionOptions(include_up_enumerated=...)`,
+`DuckDBStore.fragment_options()`, `oemmpa build --series`,
+`oemmpa series --include-up-enumerated`, and the series metrics of
+`oemmpa list`. See
 [docs/python-api.md](docs/python-api.md) and [docs/cli.md](docs/cli.md).
 
 ### Upgrading To 4.0.0

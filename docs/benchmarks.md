@@ -247,6 +247,31 @@ property, analyse and persist — and the seconds spent rewriting
 `series.num_members`), the query definitions and timings, and
 `all_under_target`. Results live under the git-ignored `benchmarks/results/`.
 
+`--workload mcs` measures what series enumeration costs an MCS build instead.
+It builds the corpus (default `--size 1000`) with `oemmpa build --method dmcss`
+and again with `--series` added, each build a fresh child process, alternating
+the two for `--pairs` pairs (default and minimum 3; plain first in even pairs,
+series first in odd ones) so drift in machine state over the run favours
+neither. Each child's wall seconds are timed from its spawn to its reaping, and
+its peak resident memory comes from its own `os.wait4` record. On Linux a
+child's peak includes the parent's highest resident size up to the spawn,
+because the kernel carries it across `exec`; the bundle records `platform` so a
+reader can tell, and per-child isolation holds on macOS. The JSON (default
+`benchmarks/results/series_mcs_build.json`) keeps every child's figures, each
+mode's median build seconds and maximum peak, the pairs and series each store
+holds, and the two series-over-plain ratios. The two stores are built beside
+the results file as `series_mcs_dmcss_<plain|series>_n<size>.duckdb`, refused
+when they or their write-ahead logs exist unless `--force` is given, and
+checked against the results path and every input as `--store` is. Under
+`--force` a symbolic link at a derived store name is removed, never followed.
+One run at a time is supported per results path. `--store`, `--repeats`,
+`--threads` and `--shortening-length` belong to the query workload and are
+refused under `mcs`, as `--pairs` is under the query workload.
+
+```bash
+python benchmarks/series_queries.py --workload mcs --size 1000 --pairs 3
+```
+
 ## CLI Workflows
 
 ```bash

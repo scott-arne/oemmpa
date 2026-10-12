@@ -25,6 +25,15 @@ cores, per-radius explicit-H SMIRKS, 90% identity threshold, and environment
 radius 1–5 with default 4). `analyzer.method` reports the selected method. Unknown
 method names raise `ValueError`.
 
+`Analyzer(method=..., series=None)` chooses whether the analysis enumerates
+matched molecular series; `None` keeps the method's default (on for
+`fragmentation`, off for the MCS methods). See "Series for MCS analyses" below.
+
+DMCSS emits at most three cuts, the most the store's environment fingerprint
+represents, and skips a candidate pair whose rendered constant or variable
+SMILES OEChem cannot read back, such as a match that splits an aromatic ring;
+OEChem prints a warning on stderr for each such skipped candidate.
+
 WizePairZ supports configuration via `configure_wizepairz()`:
 
 ```python
@@ -897,8 +906,8 @@ least two distinct R-groups over at least two distinct compounds; a compound
 the constant caps to joins the one-cut series as its `[*:1][H]` member. Series
 are computed from the fragmentation records, not from the selected pairs, so
 the pair filters do not shape them and an R-group that never forms a pair is
-still a member. The MCS methods produce no series (`analyzer.produces_series`
-is `False` for them).
+still a member. The MCS methods produce no series unless series enumeration is
+on (see below).
 
 ```python
 analyzer = Analyzer()
@@ -913,8 +922,8 @@ frame = series.to_dataframe()              # one row per (member, compound)
 
 `SeriesQuery` rows carry `series_id` (0 in memory, the stored id after a
 read), `constant`, `cut_count`, `constant_num_heavies`, `num_members`,
-`rgroup`, `rgroup_num_heavies`, `molecule_id` and `compound_id`; `filter()`
-takes `constant`, `cut_count` and `min_length`.
+`rgroup`, `rgroup_num_heavies`, `molecule_id`, `compound_id` and
+`enumeration_label`; `filter()` takes `constant`, `cut_count` and `min_length`.
 
 Saving an analysis persists its series (tables `series` and `series_member`;
 `dataset.series_source` records the method). A series-producing analysis can
@@ -929,6 +938,49 @@ counts the stored series, and `DuckDBStore.series_count_refresh_seconds()`
 reports how long the last refresh spent rewriting `series.num_members` (-1.0
 until one has run). Molecules added to a store after the save are not members
 of any stored series.
+
+### Up-enumerated members
+
+When a cut creates a stereocentre the input left unspecified, the fragmenter
+also emits a guessed record for each configuration. Guesses never decide
+whether a series exists, but a guess whose constant and cut count match a
+series the observed compounds formed attaches to it as a labelled row.
+`analyzer.series()` and `DuckDBStore.series()` return the observed rows, as
+before; `analyzer.series(include_up_enumerated=True)` and
+`DuckDBStore.series(SeriesSelectionOptions(include_up_enumerated=True))` add
+the guessed ones. Every row carries `enumeration_label`: `none` for an
+observed compound, `constant-up` or `variable-up` for a guess. A member only
+guesses realize appears only with the flag. Saving persists every row
+(`series_member.enumeration_label`). Three counts keep the two apart:
+the stored `series.num_members` is the number of distinct R-groups observed
+compounds realize, so a member only guesses realize does not lengthen a
+stored series; the summary's `series_members` is the number of observed
+`series_member` rows (compound memberships); and the summary's
+`series_variant_members` is the number of up-enumerated `series_member` rows.
+A row's `num_members` column is the length of the series as read: the stored
+count in a default read, and every R-group the read returns, guess-only
+members included, under `include_up_enumerated=True`, so a series can read
+longer with the flag than without it. Ranking and similarity read the
+observed rows.
+
+### Series for MCS analyses
+
+`Analyzer(method="dmcss", series=True)`, or `analyzer.set_series_enumeration(True)`,
+adds an auxiliary fragmentation pass to an MCS analysis: `analyze()` runs the
+MCS analysis and then fragments the same molecules with the analyzer's
+fragmentation settings, so `series()` and a saved store carry series while the
+pairs and transforms still come from the MCS method. While the flag is on,
+`configure_fragmentation()` and `set_fragmentation_max_up_enumerations()`
+configure that pass; with it off they raise `ValueError`, as before. Changing
+the flag marks the analysis stale until the next `analyze()`, and the
+fragmentation settings survive the change. For the fragmentation method the
+flag is always on: `series=True` is accepted and `series=False` raises
+`ValueError`. A store saved with the flag records `series_source` as the
+method name plus `+fragmentation` (for example `dmcss+fragmentation`) and,
+like a fragmentation store, is saved only into an empty store and refuses
+direct pair writes afterwards; a later save that records a different series
+source (for example a plain `dmcss` analysis over a `dmcss+fragmentation`
+store) is refused too.
 
 ### Ranking next substituents
 
@@ -1149,6 +1201,17 @@ anything else is written and rebuild the store instead of appending to it.
 Properties can still be loaded into a saved store afterwards; molecules belong
 in a store no analysis is saved into, because molecules added after a save are
 not members of any stored series.
+
+`DuckDBStore.fragment_options()` returns the fragmentation settings saved
+with a series-producing analysis as a dict: `cut_smarts` (a list of SMARTS, or
+`None` for the default cut rule), `max_cut_bonds`, `max_cuts`,
+`max_heavy_atoms` and `max_rotatable_bonds` (`None` when unset),
+`max_up_enumerations`, `min_cuts`, `ring_perception` (`"consulted"` or
+`"strict"`) and `rotatable_smarts`. R-groups passed as `cut_rgroups` or
+`cut_rgroup_file` are recorded as the SMARTS they convert to. A store that
+holds no series-producing analysis returns an empty dict. The column
+`dataset.fragment_options` holds the same record as compact JSON with sorted
+keys.
 
 ```python
 store.save_analyzer(analyzer)
