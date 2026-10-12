@@ -449,3 +449,265 @@ def test_cli_parses_arguments(tiny_smiles, tmp_path, monkeypatch):
     assert calls["out_path"] == tmp_path / "o.json"
     series_queries.main(["--out", str(tmp_path / "o.json")])
     assert calls["shortening_length"] == 6
+
+
+MCS_SMILES = "c1ccccc1 benzene\nCc1ccccc1 toluene\nOc1ccccc1 phenol\nNc1ccccc1 aniline\nClc1ccccc1 chlorobenzene\n"
+
+
+@pytest.fixture
+def mcs_smiles(tmp_path):
+    path = tmp_path / "phenyl.smi"
+    path.write_text(MCS_SMILES, encoding="utf-8")
+    return path
+
+
+def test_the_mcs_workload_times_both_modes_in_child_processes(mcs_smiles, tmp_path):
+    out = tmp_path / "mcs.json"
+    bundle = series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    assert json.loads(out.read_text()) == bundle
+    plain, opted = bundle["builds"]["plain"], bundle["builds"]["series"]
+    assert (plain["series"], opted["series"]) == (False, True)
+    assert (plain["series_source"], plain["series_count"]) == ("none", 0)
+    assert opted["series_source"] == "dmcss+fragmentation"
+    assert opted["series_count"] > 0
+    assert plain["pairs"] == opted["pairs"]   # The auxiliary pass adds series, never pairs.
+    for build in (plain, opted):
+        assert len(build["runs"]) == 1
+        assert build["runs"][0]["build_seconds"] > 0
+        assert build["runs"][0]["peak_rss_bytes"] > 0
+        assert build["median_build_seconds"] == build["runs"][0]["build_seconds"]
+        assert build["max_peak_rss_bytes"] == build["runs"][0]["peak_rss_bytes"]
+        assert Path(build["store"]).exists()
+    assert bundle["meta"]["order"] == ["plain", "series"]
+    assert bundle["meta"]["method"] == "dmcss"
+    assert bundle["meta"]["size"] == 5
+    assert bundle["series_seconds_ratio"] == opted["median_build_seconds"] / plain["median_build_seconds"]
+    assert bundle["series_peak_rss_ratio"] == opted["max_peak_rss_bytes"] / plain["max_peak_rss_bytes"]
+
+
+def test_the_mcs_workload_alternates_the_modes_and_reports_medians_and_peaks(mcs_smiles, tmp_path, monkeypatch):
+    commands = []
+
+    def fake_child(command):
+        commands.append(command)
+        position = len(commands)
+        return float(position), 100 * position   # Distinct seconds and peaks per child.
+
+    monkeypatch.setattr(series_queries, "run_child_build", fake_child)
+    monkeypatch.setattr(series_queries, "_store_summary", lambda store_path: {
+        "pairs": 7, "series": 0 if "plain" in Path(store_path).name else 2, "series_members": 4,
+        "series_source": "none" if "plain" in Path(store_path).name else "dmcss+fragmentation"})
+    bundle = series_queries.run_mcs_series_workload(
+        size=5, smiles_path=mcs_smiles, out_path=tmp_path / "mcs.json", pairs=3)
+    assert bundle["meta"]["order"] == ["plain", "series", "series", "plain", "plain", "series"]
+    assert ["--series" in command for command in commands] == [False, True, True, False, False, True]
+    plain, opted = bundle["builds"]["plain"], bundle["builds"]["series"]
+    assert [run["position"] for run in plain["runs"]] == [0, 3, 4]
+    assert [run["build_seconds"] for run in plain["runs"]] == [1.0, 4.0, 5.0]
+    assert [run["peak_rss_bytes"] for run in opted["runs"]] == [200, 300, 600]
+    assert plain["median_build_seconds"] == 4.0
+    assert opted["median_build_seconds"] == 3.0
+    assert plain["max_peak_rss_bytes"] == 500
+    assert opted["max_peak_rss_bytes"] == 600
+    assert bundle["series_seconds_ratio"] == 3.0 / 4.0
+    assert bundle["series_peak_rss_ratio"] == 600 / 500
+
+
+def test_the_mcs_build_order_alternates_and_needs_a_pair():
+    assert series_queries.mcs_build_order(1) == [False, True]
+    assert series_queries.mcs_build_order(3) == [False, True, True, False, False, True]
+    with pytest.raises(ValueError, match="pairs"):
+        series_queries.mcs_build_order(0)
+
+
+def test_the_mcs_build_command_adds_series_only_when_asked(tmp_path):
+    plain = series_queries.mcs_build_command(tmp_path / "c.smi", tmp_path / "s.duckdb", series=False)
+    opted = series_queries.mcs_build_command(tmp_path / "c.smi", tmp_path / "s.duckdb", series=True)
+    assert plain[:4] == [sys.executable, "-m", "oemmpa", "build"]
+    assert plain[plain.index("--method") + 1] == "dmcss"
+    assert "--force" not in plain   # The workload vets and replaces the store itself.
+    assert "--series" not in plain
+    assert opted == [*plain, "--series"]
+
+
+def test_peak_resident_bytes_reads_kibibytes_off_macos(monkeypatch):
+    monkeypatch.setattr(series_queries.sys, "platform", "linux")
+    assert series_queries.peak_resident_bytes(10) == 10240
+    monkeypatch.setattr(series_queries.sys, "platform", "darwin")
+    assert series_queries.peak_resident_bytes(10) == 10
+
+
+def test_a_failing_child_build_is_an_error():
+    with pytest.raises(RuntimeError, match="exit status 3"):
+        series_queries.run_child_build([sys.executable, "-c", "raise SystemExit(3)"])
+
+
+def test_the_cli_routes_the_mcs_workload_with_its_own_defaults(tmp_path, monkeypatch, capsys):
+    calls = {}
+
+    def fake_mcs(**kwargs):
+        calls.update(kwargs)
+        return {}
+
+    def refuse_queries(**kwargs):
+        pytest.fail("the query workload ran")
+
+    monkeypatch.setattr(series_queries, "run_mcs_series_workload", fake_mcs)
+    monkeypatch.setattr(series_queries, "run_series_query_benchmark", refuse_queries)
+    assert series_queries.main(["--workload", "mcs"]) == 0
+    assert calls["size"] == 1000
+    assert calls["out_path"] == series_queries.DEFAULT_MCS_OUT
+    assert calls["pairs"] == 3
+    assert calls["force"] is False
+    assert series_queries.main(["--workload", "mcs", "--size", "50", "--pairs", "4", "--force",
+                                "--out", str(tmp_path / "m.json")]) == 0
+    assert (calls["size"], calls["pairs"], calls["force"]) == (50, 4, True)
+    assert calls["out_path"] == tmp_path / "m.json"
+    with pytest.raises(SystemExit) as refused:
+        series_queries.main(["--workload", "mcs", "--pairs", "2"])
+    assert refused.value.code == 2
+    assert "--pairs" in capsys.readouterr().err
+
+
+def _refuse_every_workload(monkeypatch):
+    def fail_loudly(**kwargs):
+        raise AssertionError("no workload may run once a flag it does not read was given")
+
+    monkeypatch.setattr(series_queries, "run_mcs_series_workload", fail_loudly)
+    monkeypatch.setattr(series_queries, "run_series_query_benchmark", fail_loudly)
+
+
+def test_the_cli_refuses_the_query_only_flags_under_the_mcs_workload(monkeypatch, capsys):
+    _refuse_every_workload(monkeypatch)
+    for flag, value in (("--store", "s.duckdb"), ("--repeats", "2"), ("--threads", "4"),
+                        ("--shortening-length", "7")):
+        with pytest.raises(SystemExit) as refused:
+            series_queries.main(["--workload", "mcs", flag, value])
+        assert refused.value.code == 2
+        assert f"{flag} applies only to the queries workload" in capsys.readouterr().err
+
+
+def test_the_cli_refuses_pairs_under_the_query_workload(monkeypatch, capsys):
+    _refuse_every_workload(monkeypatch)
+    with pytest.raises(SystemExit) as refused:
+        series_queries.main(["--pairs", "3"])
+    assert refused.value.code == 2
+    assert "--pairs applies only to the mcs workload" in capsys.readouterr().err
+
+
+# The path-safety refusals of the query workload, ported to both derived MCS stores.
+@pytest.mark.parametrize("series", [False, True])
+def test_an_mcs_store_hard_linked_to_the_output_is_refused(mcs_smiles, tmp_path, series):
+    out = tmp_path / "results.json"
+    out.write_text("{}\n", encoding="utf-8")
+    alias = series_queries.mcs_store_path(out, 5, series=series)
+    try:
+        os.link(out, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported here: {exc}")
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
+    assert out.read_text(encoding="utf-8") == "{}\n"
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_an_mcs_results_path_or_derived_store_that_names_the_corpus_is_refused(mcs_smiles, tmp_path, series):
+    corpus = mcs_smiles.read_bytes()
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(
+            size=5, smiles_path=mcs_smiles, out_path=mcs_smiles, pairs=1, force=True)
+    assert mcs_smiles.read_bytes() == corpus
+    out = tmp_path / "out.json"
+    parked = series_queries.mcs_store_path(out, 5, series=series)
+    parked.write_bytes(corpus)   # The corpus sits where this mode's store would be built.
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=parked, out_path=out, pairs=1, force=True)
+    assert parked.read_bytes() == corpus
+    assert not out.exists()
+
+
+def test_an_mcs_results_path_hard_linked_to_the_corpus_is_refused(mcs_smiles, tmp_path):
+    corpus = mcs_smiles.read_bytes()
+    alias = tmp_path / "results-alias.json"
+    try:
+        os.link(mcs_smiles, alias)
+    except OSError as exc:
+        pytest.skip(f"hard links unsupported here: {exc}")
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=alias, pairs=1, force=True)
+    assert mcs_smiles.read_bytes() == corpus
+
+
+def test_an_mcs_results_path_that_names_the_parquet_is_refused_before_the_corpus_is_fetched(tmp_path, monkeypatch):
+    parquet = tmp_path / "source.parquet"
+    parquet.write_bytes(b"not really a parquet")
+
+    def fail_loudly(*args, **kwargs):
+        raise AssertionError("ensure_corpus must not run once the output names an input")
+
+    monkeypatch.setattr(series_queries, "ensure_corpus", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, parquet=str(parquet), out_path=parquet, pairs=1, force=True)
+    assert parquet.read_bytes() == b"not really a parquet"
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_an_mcs_results_path_that_names_a_stores_write_ahead_log_is_refused(mcs_smiles, tmp_path, series):
+    store = series_queries.mcs_store_path(tmp_path / "anchor.json", 5, series=series)
+    store.write_bytes(b"a store mid-persist")
+    wal = store.with_name(store.name + ".wal")
+    wal.write_bytes(b"the log that store needs")
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=wal, pairs=1, force=True)
+    # --force would have unlinked both, so refusing has to come first.
+    assert store.read_bytes() == b"a store mid-persist"
+    assert wal.read_bytes() == b"the log that store needs"
+
+
+@pytest.mark.parametrize("series", [False, True])
+def test_an_mcs_run_that_would_destroy_the_resolved_corpus_source_is_refused(tmp_path, monkeypatch, series):
+    # Without --parquet the source is whatever the resolver finds; ``corpus`` is
+    # the module series_queries imported from.
+    out = tmp_path / "out.json"
+    source = series_queries.mcs_store_path(out, 72, series=series)   # Where this mode's store would go.
+    source.write_bytes(b"the parquet the resolver would find")
+
+    def fail_loudly(*args, **kwargs):
+        raise AssertionError("ensure_corpus must not run once a derived path names an input")
+
+    monkeypatch.setattr(corpus, "DEFAULT_PARQUET", source)
+    monkeypatch.setattr(series_queries, "ensure_corpus", fail_loudly)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=72, out_path=out, pairs=1, force=True)
+    with pytest.raises(ValueError, match="differ"):
+        series_queries.run_mcs_series_workload(size=72, out_path=source, pairs=1, force=True)
+    assert source.read_bytes() == b"the parquet the resolver would find"
+    assert not out.exists()
+
+
+def test_an_existing_mcs_store_is_refused_unless_forced_and_force_takes_its_log(mcs_smiles, tmp_path, monkeypatch):
+    out = tmp_path / "mcs.json"
+    store = series_queries.mcs_store_path(out, 5, series=False)
+    wal = store.with_name(store.name + ".wal")
+    store.write_bytes(b"an earlier store")
+    wal.write_bytes(b"its leftover log")
+    with pytest.raises(FileExistsError, match="force"):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    assert store.read_bytes() == b"an earlier store"
+    assert wal.read_bytes() == b"its leftover log"
+
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def first_child(command):
+        # DuckDB replays any log it finds beside the store it opens, so both must
+        # be gone before the child writes the new store.
+        seen["store"], seen["wal"] = store.exists(), wal.exists()
+        raise Stop
+
+    monkeypatch.setattr(series_queries, "run_child_build", first_child)
+    with pytest.raises(Stop):
+        series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, force=True)
+    assert seen == {"store": False, "wal": False}

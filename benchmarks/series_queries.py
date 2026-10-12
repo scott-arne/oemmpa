@@ -22,6 +22,13 @@ provenance, the linked DuckDB version and the host recorded.
 Usage::
 
     python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
+    python benchmarks/series_queries.py --workload mcs --size 1000 --pairs 3
+
+The ``mcs`` workload times a ``dmcss`` build without and with series
+enumeration, each in its own child process, alternating the two for
+``--pairs`` pairs, and records every child's build seconds and peak resident
+memory, each mode's median seconds and maximum peak, in
+``benchmarks/results/series_mcs_build.json``.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ import json
 import os
 import platform
 import statistics
+import subprocess
 import sys
 import tempfile
 from collections import Counter
@@ -69,6 +77,18 @@ SHORTENING_MIN_QUERY_LENGTH = 3
 # run, and a store where 25 series in a row find candidates at once is a store
 # this workload cannot measure, not one to scan to the end.
 SHORTENING_MAX_SERIES = 25
+# The query workload's defaults, resolved in main because the flags default to
+# None: a flag the chosen workload does not read is refused, not ignored.
+QUERY_SIZE = 10000
+QUERY_REPEATS = 5
+QUERY_THREADS = 1
+# The MCS workload (seams spec 14.4): a dmcss build without and with series
+# enumeration, each in its own child process, on the 1k corpus, in alternating
+# order for MCS_PAIRS pairs so drift over the run favours neither mode.
+MCS_METHOD = "dmcss"
+MCS_SIZE = 1000
+MCS_PAIRS = 3
+DEFAULT_MCS_OUT = REPO_ROOT / "benchmarks" / "results" / "series_mcs_build.json"
 
 
 def _log(message):
@@ -410,6 +430,35 @@ def _corpus_provenance(smiles):
     return {"available": True, "provenance": record}
 
 
+def _write_bundle(bundle, out_path):
+    """Write a results bundle so a reader sees the previous file or the whole new one.
+
+    :param bundle: JSON-serialisable mapping.
+    :param out_path: Results path; its directory must exist.
+    """
+    # Written to a sibling and renamed so a reader of the results path sees either
+    # the previous bundle or the whole new one; a run interrupted mid-write cannot
+    # leave truncated JSON under the name the results are read from.
+    # mkstemp creates that sibling exclusively, under a name it chooses, so staging
+    # can never truncate a file that was already there: a name derived from the
+    # output, such as "<out>.<pid>.tmp", is guessable and an input may be sitting at it.
+    handle, name = tempfile.mkstemp(dir=out_path.parent, prefix=out_path.name + ".", suffix=".tmp")
+    staged = Path(name)
+    replaced = False
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(bundle, indent=2, sort_keys=True) + "\n")
+        # mkstemp stages owner-only, and the rename carries that mode onto the
+        # results path, so a re-run would quietly make a shared results file
+        # unreadable to everyone but its owner.
+        os.chmod(staged, 0o644)
+        os.replace(staged, out_path)
+        replaced = True
+    finally:
+        if not replaced:
+            staged.unlink(missing_ok=True)
+
+
 def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, store_path=None,
                                parquet=None, out_path=DEFAULT_OUT, force=False,
                                shortening_length=SHORTENING_LENGTH):
@@ -524,27 +573,212 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
         "queries": queries,
         "all_under_target": all(query["under_target"] for query in queries) if queries else False,
     }
-    # Written to a sibling and renamed so a reader of the results path sees either
-    # the previous bundle or the whole new one; a run interrupted mid-write cannot
-    # leave truncated JSON under the name the results are read from.
-    # mkstemp creates that sibling exclusively, under a name it chooses, so staging
-    # can never truncate a file that was already there: a name derived from the
-    # output, such as "<out>.<pid>.tmp", is guessable and an input may be sitting at it.
-    handle, name = tempfile.mkstemp(dir=out_path.parent, prefix=out_path.name + ".", suffix=".tmp")
-    staged = Path(name)
-    replaced = False
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            stream.write(json.dumps(bundle, indent=2, sort_keys=True) + "\n")
-        # mkstemp stages owner-only, and the rename carries that mode onto the
-        # results path, so a re-run would quietly make a shared results file
-        # unreadable to everyone but its owner.
-        os.chmod(staged, 0o644)
-        os.replace(staged, out_path)
-        replaced = True
-    finally:
-        if not replaced:
-            staged.unlink(missing_ok=True)
+    _write_bundle(bundle, out_path)
+    _log(f"wrote {out_path}")
+    return bundle
+
+
+def mcs_store_path(out_path, size, *, series, method=MCS_METHOD):
+    """The store one mode of the MCS workload builds, beside the results path.
+
+    :param out_path: Results JSON path.
+    :param size: Corpus size, part of the name so runs of two sizes keep apart.
+    :param series: True for the store built with ``--series``.
+    :param method: MCS analysis method.
+    :returns: The resolved ``series_mcs_<method>_<plain|series>_n<size>.duckdb``.
+    """
+    label = "series" if series else "plain"
+    return (Path(out_path).parent / f"series_mcs_{method}_{label}_n{size}.duckdb").resolve()
+
+
+def _wal_path(store_path):
+    """The write-ahead log DuckDB keeps beside a store.
+
+    :param store_path: Store path.
+    :returns: ``<store_path>.wal`` in the same directory.
+    """
+    return store_path.with_name(store_path.name + ".wal")
+
+
+def _ensure_mcs_paths_are_distinct(out_path, store_paths, inputs):
+    """Refuse a run in which the results, either derived store or its log, or an input name one file.
+
+    The query workload's guard, applied to each derived store, plus the check
+    that the two stores and their logs are four different files.
+
+    :param out_path: Results JSON path.
+    :param store_paths: The plain and the series store.
+    :param inputs: Mapping of description to a path the run only reads; ``None``
+        values are the arguments that were not given.
+    :raises ValueError: When any two of those paths name one file.
+    """
+    for store_path in store_paths:
+        _ensure_distinct_paths(out_path, store_path, inputs)
+    plain, opted = store_paths
+    for left in (plain, _wal_path(plain)):
+        for right in (opted, _wal_path(opted)):
+            if _same_path(left, right):
+                raise ValueError(f"the two MCS stores must differ: {left} and {right} name one file")
+
+
+def mcs_build_order(pairs):
+    """The order of the MCS workload's builds: alternating, plain first in even pairs.
+
+    :param pairs: Number of (plain, series) pairs.
+    :returns: One ``series`` flag per build, two per pair.
+    :raises ValueError: When ``pairs`` is below 1.
+    """
+    if pairs < 1:
+        raise ValueError(f"pairs must be at least 1, got {pairs}")
+    order = []
+    for index in range(pairs):
+        order.extend((False, True) if index % 2 == 0 else (True, False))
+    return order
+
+
+def mcs_build_command(smiles_path, store_path, *, series, method=MCS_METHOD):
+    """The ``oemmpa build`` child command of one MCS workload build.
+
+    No ``--force``: the workload vets the store path and removes an earlier
+    store and its log itself before the child runs.
+
+    :param smiles_path: Whitespace ``SMILES id`` corpus.
+    :param store_path: Store the child writes.
+    :param series: Add ``--series``, which runs the auxiliary fragmentation pass.
+    :param method: MCS analysis method.
+    :returns: The argument vector.
+    """
+    command = [sys.executable, "-m", "oemmpa", "build", "--smiles", str(smiles_path),
+               "--method", method, "--output", str(store_path)]
+    if series:
+        command.append("--series")
+    return command
+
+
+def peak_resident_bytes(ru_maxrss):
+    """Convert ``ru_maxrss`` to bytes.
+
+    :param ru_maxrss: The ``ru_maxrss`` field of a ``struct rusage``; macOS
+        reports it in bytes, Linux in kibibytes.
+    :returns: The peak resident set size in bytes.
+    """
+    return int(ru_maxrss) if sys.platform == "darwin" else int(ru_maxrss) * 1024
+
+
+def run_child_build(command):
+    """Run one build in a child process; return its wall seconds and peak resident bytes.
+
+    ``os.wait4`` returns the child's own ``struct rusage``, the record that
+    ``resource.getrusage(RUSAGE_CHILDREN)`` aggregates over every child, so one
+    build's peak cannot hide behind another's.
+
+    :param command: Argument vector of the child.
+    :returns: ``(seconds, peak resident bytes)``.
+    :raises RuntimeError: When the child exits non-zero.
+    """
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        entry for entry in (str(REPO_ROOT / "python"), env.get("PYTHONPATH", "")) if entry)
+    start = perf_counter()
+    process = subprocess.Popen(command, env=env)
+    _, status, usage = os.wait4(process.pid, 0)
+    seconds = perf_counter() - start
+    process.returncode = os.waitstatus_to_exitcode(status)
+    if process.returncode != 0:
+        raise RuntimeError(f"child build failed with exit status {process.returncode}: {' '.join(command)}")
+    return seconds, peak_resident_bytes(usage.ru_maxrss)
+
+
+def _store_summary(store_path):
+    """Read the summary of a store a child build wrote, without the writer lock.
+
+    :param store_path: Store the child wrote.
+    :returns: The store's ``DuckDBStore.summary()`` mapping.
+    """
+    return oemmpa.DuckDBStore(store_path, read_only=True).summary()
+
+
+def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, out_path=DEFAULT_MCS_OUT,
+                            method=MCS_METHOD, pairs=MCS_PAIRS, force=False):
+    """Time an MCS build without and with series enumeration and write the bundle.
+
+    Every build is a fresh ``oemmpa build`` child. The two modes alternate, plain
+    first in even pairs and series first in odd ones, so a drift in machine
+    state over the run (thermal, caches, background load) favours neither; each
+    mode reports the median of its build seconds and the maximum of its
+    per-child peaks, and every child's own figures are kept beside them.
+
+    :param size: Corpus size requested from ``ensure_corpus`` when no
+        ``smiles_path`` is given.
+    :param smiles_path: Corpus override; bypasses ``ensure_corpus``.
+    :param parquet: SureChEMBL parquet override for ``ensure_corpus``.
+    :param out_path: Results JSON path; the two stores are built beside it
+        (see :func:`mcs_store_path`).
+    :param method: MCS analysis method.
+    :param pairs: Number of (plain, series) build pairs.
+    :param force: Replace derived stores left by an earlier run, logs included.
+    :returns: The bundle that was written.
+    :raises ValueError: When ``pairs`` is below 1, or the results path, a derived
+        store or its log names an input or one another; before anything is
+        fetched, created, built or removed.
+    :raises FileExistsError: When a derived store exists and ``force`` is false.
+    :raises RuntimeError: When a child build fails.
+    """
+    order = mcs_build_order(pairs)
+    out_path = Path(out_path)
+    stores = {series: mcs_store_path(out_path, size, series=series, method=method) for series in (False, True)}
+    store_paths = (stores[False], stores[True])
+    # ensure_corpus reads a source of its own when --parquet is omitted, so the
+    # guard asks which file that would be; checked before the fetch, and again
+    # with the corpus ensure_corpus produced, exactly as the query workload does.
+    source = resolve_corpus_source(parquet) if smiles_path is None else None
+    _ensure_mcs_paths_are_distinct(out_path, store_paths,
+                                   {"--parquet": parquet, "--smiles": smiles_path, "the corpus source": source})
+    for store_path in store_paths:
+        if store_path.exists() and not force:
+            raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
+    smiles = Path(smiles_path) if smiles_path is not None else ensure_corpus(size, parquet=parquet)
+    _ensure_mcs_paths_are_distinct(out_path, store_paths, {"the SMILES corpus": smiles})
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    runs = {False: [], True: []}
+    for position, series in enumerate(order):
+        store_path = stores[series]
+        # Vetted above, so the store and its log are this run's to replace;
+        # DuckDB would replay a stale log into the store the child writes.
+        store_path.unlink(missing_ok=True)
+        _wal_path(store_path).unlink(missing_ok=True)
+        label = "series" if series else "plain"
+        _log(f"build {position + 1} of {len(order)}: {label} {method} store for {smiles} at {store_path}")
+        seconds, peak = run_child_build(mcs_build_command(smiles, store_path, series=series, method=method))
+        runs[series].append({"position": position, "build_seconds": seconds, "peak_rss_bytes": peak})
+
+    builds = {}
+    for series in (False, True):
+        summary = _store_summary(stores[series])
+        mode_runs = runs[series]
+        builds["series" if series else "plain"] = {
+            "series": series, "store": str(stores[series]), "runs": mode_runs,
+            "median_build_seconds": statistics.median([run["build_seconds"] for run in mode_runs]),
+            "max_peak_rss_bytes": max(run["peak_rss_bytes"] for run in mode_runs),
+            "pairs": int(summary["pairs"]), "series_count": int(summary["series"]),
+            "series_members": int(summary["series_members"]), "series_source": str(summary["series_source"]),
+        }
+    plain, opted = builds["plain"], builds["series"]
+    bundle = {
+        "meta": {
+            "size": size, "smiles": str(smiles), "method": method, "pairs": pairs,
+            "order": ["series" if series else "plain" for series in order],
+            "corpus_provenance": _corpus_provenance(smiles),
+            "duckdb_library_version": oemmpa.duckdb_library_version(),
+            "git_revision": _git_revision(), "python": sys.version.split()[0],
+            "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
+        },
+        "builds": builds,
+        "series_seconds_ratio": opted["median_build_seconds"] / plain["median_build_seconds"],
+        "series_peak_rss_ratio": opted["max_peak_rss_bytes"] / plain["max_peak_rss_bytes"],
+    }
+    _write_bundle(bundle, out_path)
     _log(f"wrote {out_path}")
     return bundle
 
@@ -556,25 +790,61 @@ def main(argv=None):
     :returns: The process exit status.
     """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--size", type=int, default=10000, help="Corpus size (built on demand through ensure_corpus).")
-    parser.add_argument("--repeats", type=int, default=5, help="Warm runs per query after one discarded cold run.")
-    parser.add_argument("--threads", type=int, default=1, help="Analyzer threads for the store build.")
+    parser.add_argument("--workload", choices=["queries", "mcs"], default="queries",
+                        help="queries (default): time the series queries on a store built from the corpus; "
+                             f"mcs: time a {MCS_METHOD} build without and with series enumeration, each in "
+                             "its own child process, in alternating order.")
+    parser.add_argument("--size", type=int, default=None,
+                        help=f"Corpus size, built on demand through ensure_corpus "
+                             f"(default {QUERY_SIZE} for queries, {MCS_SIZE} for mcs).")
+    parser.add_argument("--repeats", type=int, default=None,
+                        help=f"queries only: warm runs per query after one discarded cold run "
+                             f"(default {QUERY_REPEATS}).")
+    parser.add_argument("--pairs", type=int, default=None,
+                        help=f"mcs only: alternating (plain, series) build pairs, at least {MCS_PAIRS} "
+                             f"(default {MCS_PAIRS}).")
+    parser.add_argument("--threads", type=int, default=None,
+                        help=f"queries only: analyzer threads for the store build (default {QUERY_THREADS}).")
     parser.add_argument("--parquet", default=None, help="SureChEMBL parquet path override for ensure_corpus.")
-    parser.add_argument("--store", default=None, help="Where to build the store (default beside the output).")
-    parser.add_argument("--force", action="store_true", help="Replace an existing store at --store.")
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT, help="Results JSON path.")
-    parser.add_argument("--shortening-length", type=int, default=SHORTENING_LENGTH,
-                        help=f"Members of the ranking query that has to shorten (default {SHORTENING_LENGTH}; "
-                             f"more than {SHORTENING_MIN_QUERY_LENGTH}).")
+    parser.add_argument("--store", default=None,
+                        help="queries only: where to build the store (default beside the output).")
+    parser.add_argument("--force", action="store_true",
+                        help="Replace an existing store (--store, or the mcs workload's two derived stores).")
+    parser.add_argument("--out", type=Path, default=None,
+                        help="Results JSON path (default benchmarks/results/series_queries.json, "
+                             "or series_mcs_build.json for the mcs workload).")
+    parser.add_argument("--shortening-length", type=int, default=None,
+                        help=f"queries only: members of the ranking query that has to shorten "
+                             f"(default {SHORTENING_LENGTH}; more than {SHORTENING_MIN_QUERY_LENGTH}).")
     args = parser.parse_args(argv)
+    if args.workload == "mcs":
+        # Refused rather than ignored, so a bundle never sits beside a command line
+        # that asked for a setting the run did not use.
+        for flag, value in (("--store", args.store), ("--repeats", args.repeats), ("--threads", args.threads),
+                            ("--shortening-length", args.shortening_length)):
+            if value is not None:
+                parser.error(f"{flag} applies only to the queries workload")
+        pairs = MCS_PAIRS if args.pairs is None else args.pairs
+        if pairs < MCS_PAIRS:
+            parser.error(f"--pairs must be at least {MCS_PAIRS}, got {pairs}")
+        run_mcs_series_workload(size=MCS_SIZE if args.size is None else args.size, parquet=args.parquet,
+                                out_path=DEFAULT_MCS_OUT if args.out is None else args.out,
+                                pairs=pairs, force=args.force)
+        return 0
+    if args.pairs is not None:
+        parser.error("--pairs applies only to the mcs workload")
+    shortening_length = SHORTENING_LENGTH if args.shortening_length is None else args.shortening_length
     try:
-        check_shortening_length(args.shortening_length)
+        check_shortening_length(shortening_length)
     except ValueError:
         parser.error(f"--shortening-length must be longer than min_query_length {SHORTENING_MIN_QUERY_LENGTH}, "
-                     f"got {args.shortening_length}")
-    run_series_query_benchmark(size=args.size, repeats=args.repeats, threads=args.threads,
-                               parquet=args.parquet, store_path=args.store, out_path=args.out, force=args.force,
-                               shortening_length=args.shortening_length)
+                     f"got {shortening_length}")
+    run_series_query_benchmark(size=QUERY_SIZE if args.size is None else args.size,
+                               repeats=QUERY_REPEATS if args.repeats is None else args.repeats,
+                               threads=QUERY_THREADS if args.threads is None else args.threads,
+                               parquet=args.parquet, store_path=args.store,
+                               out_path=DEFAULT_OUT if args.out is None else args.out, force=args.force,
+                               shortening_length=shortening_length)
     return 0
 
 
