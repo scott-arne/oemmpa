@@ -219,6 +219,47 @@ jobs:
           # Guard against silently shipping a wheel without DuckDB storage.
           /opt/venv/bin/python -c "import oemmpa; assert oemmpa.duckdb_available(), 'wheel built without DuckDB storage'; print('DuckDB storage: available')"
 
+      # The suites gate the release: collect-wheels needs this job, and publish
+      # needs collect-wheels, so a failure here stops the upload. They run on
+      # x86_64 only -- the aarch64 runner is slower and scarcer, and a test that
+      # fails there but not here would be a genuine surprise worth a separate
+      # investigation rather than a doubled cost on every release.
+      #
+      # These build from source rather than exercising the wheel installed
+      # above: tests/python/conftest.py puts the worktree package ahead of
+      # anything installed, so pytest imports what cmake copies into python/,
+      # not dist/. The wheel itself is covered by the smoke test above and by
+      # the abi3-smoke job.
+      - name: Build the test suites
+        if: matrix.arch == 'x86_64'
+        run: |
+          cmake -S . -B build-tests -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOEMMPA_BUILD_TESTS=ON \
+            -DOEMMPA_BUILD_DUCKDB=ON \
+            -DOPENEYE_ROOT=/opt/openeye \
+            -DPython3_EXECUTABLE=/opt/venv/bin/python \
+            -DPython3_FIND_STRATEGY=LOCATION
+          cmake --build build-tests -j "$(nproc)"
+          cmake --build build-tests -j "$(nproc)" --target oemmpa_python
+
+      - name: C++ tests
+        if: matrix.arch == 'x86_64'
+        env:
+          LD_LIBRARY_PATH: /opt/duckdb/lib
+        run: ctest --test-dir build-tests --output-on-failure
+
+      - name: Python tests
+        if: matrix.arch == 'x86_64'
+        env:
+          LD_LIBRARY_PATH: /opt/duckdb/lib
+        run: |
+          /opt/venv/bin/pip install pytest duckdb scipy
+          # Doxygen is not installed here, and the docs build hangs often enough
+          # that it is not worth gating a release on; every other test runs.
+          /opt/venv/bin/python -m pytest tests/python \
+            --deselect tests/python/test_docs_build.py::test_strict_docs_build
+
       - name: List built artifacts
         run: |
           ls -la dist/

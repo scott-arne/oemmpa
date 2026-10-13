@@ -1,0 +1,234 @@
+name: CI
+
+# Continuous integration for ordinary development. build-wheels.yml packages
+# releases and runs only on a v* tag, so before this workflow existed nothing
+# compiled the project between tags: RingPerceptionPolicy::STRICT collided with
+# the windows.h STRICT macro from 4.0.0 until 5.0.0 and no run noticed, because
+# 4.0.0 was never pushed as a tag. Linux carries the test suites here; Windows
+# is compiled because it is the platform that rots unseen. macOS is left to the
+# release build, whose arm64 runners queue badly enough to cancel jobs.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run pointless; stop it rather
+# than pay for it, particularly on the Windows runner.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GCS_BUCKET: openeye-sdks
+  # These three pins MUST stay in step with build-wheels.yml. CI that builds a
+  # different toolchain from the release is worse than no CI, because it reports
+  # green for something nobody ships. Change them in both files together.
+  OPENEYE_VERSION: "2026.1.0"
+  DUCKDB_VERSION: "1.5.4"
+  PIP_DEFAULT_TIMEOUT: "60"
+  PIP_RETRIES: "10"
+
+jobs:
+
+  # Linux is the cheap, uncontended runner, so it carries the real verification:
+  # the C++ suite and the Python suite against a freshly built extension.
+  linux-tests:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: ubuntu-latest
+    container: rockylinux:8
+
+    steps:
+      - name: Install prerequisites
+        run: |
+          dnf install -y epel-release
+          dnf config-manager --set-enabled powertools
+          dnf install -y --allowerasing \
+            git curl unzip gcc gcc-c++ cmake ninja-build \
+            python3.11 python3.11-devel \
+            zlib-devel cairo findutils
+
+      - uses: actions/checkout@v6
+
+      - name: Setup Python environment
+        run: |
+          python3.11 -m venv /opt/venv
+          echo "/opt/venv/bin" >> $GITHUB_PATH
+          /opt/venv/bin/pip install --upgrade pip setuptools wheel
+          /opt/venv/bin/pip install ninja cmake swig
+          # duckdb and scipy are test-time only: the suites compare the store
+          # and the statistics against independent implementations.
+          /opt/venv/bin/pip install pytest duckdb scipy
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p /opt/openeye
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/OpenEye-toolkits-${{ env.OPENEYE_VERSION }}-redhat-RHEL8-g++8.5-x64.tar.gz" \
+            -o /tmp/sdk.tar.gz
+          tar -xzf /tmp/sdk.tar.gz -C /opt/openeye --strip-components=2
+          rm /tmp/sdk.tar.gz
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/oe_license.txt" \
+            -o /opt/openeye/oe_license.txt
+          echo "OE_LICENSE=/opt/openeye/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          /opt/venv/bin/pip install openeye-toolkits==${{ env.OPENEYE_VERSION }} \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          /opt/venv/bin/python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Download DuckDB C++ library
+        run: |
+          mkdir -p /opt/duckdb/include /opt/duckdb/lib
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-linux-amd64.zip" \
+            -o /tmp/libduckdb.zip
+          unzip -o /tmp/libduckdb.zip -d /tmp/libduckdb
+          cp /tmp/libduckdb/duckdb.h /tmp/libduckdb/duckdb.hpp /opt/duckdb/include/
+          cp /tmp/libduckdb/libduckdb.so /opt/duckdb/lib/
+          rm -rf /tmp/libduckdb.zip /tmp/libduckdb
+          echo "DUCKDB_ROOT=/opt/duckdb" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOEMMPA_BUILD_TESTS=ON \
+            -DOEMMPA_BUILD_DUCKDB=ON \
+            -DOPENEYE_ROOT=/opt/openeye \
+            -DPython3_EXECUTABLE=/opt/venv/bin/python \
+            -DPython3_FIND_STRATEGY=LOCATION
+          # A wheel built without DuckDB storage still passes most of the suite,
+          # so fail loudly here rather than silently testing a lesser build.
+          grep -q "OEMMPA_BUILD_DUCKDB:BOOL=ON" build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: C++ tests
+        env:
+          LD_LIBRARY_PATH: /opt/duckdb/lib
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Build the Python extension
+        run: cmake --build build -j "$(nproc)" --target oemmpa_python
+
+      - name: Python tests
+        env:
+          LD_LIBRARY_PATH: /opt/duckdb/lib
+        run: |
+          # test_strict_docs_build shells out to Doxygen, which is not installed
+          # here and which hangs often enough that the release docs are built
+          # separately; every other test runs.
+          /opt/venv/bin/python -m pytest tests/python \
+            --deselect tests/python/test_docs_build.py::test_strict_docs_build
+
+  # Windows is compiled, not tested: the failure this workflow exists to catch
+  # is a compile error, and the Windows runner is the expensive one. The build
+  # goes through scripts/build_python.py so it exercises the same path the
+  # release uses rather than a configuration only CI ever sees.
+  windows-build:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # ilammy/msvc-dev-cmd still ships with `using: node20`; opt in to Node.js 24
+      # so the action keeps working past GitHub's June 2 2026 cutover without
+      # waiting on an upstream release.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install scikit-build-core ninja cmake build swig
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p "${RUNNER_TEMP}/openeye-extract"
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/OpenEye-toolkits-${{ env.OPENEYE_VERSION }}-win-x64-MD.zip" \
+            -o "${RUNNER_TEMP}/sdk.zip"
+          unzip -q "${RUNNER_TEMP}/sdk.zip" -d "${RUNNER_TEMP}/openeye-extract"
+          sdk_inner=$(find "${RUNNER_TEMP}/openeye-extract" -maxdepth 1 -mindepth 1 -type d | head -n1)
+          echo "OPENEYE_ROOT=${sdk_inner}" >> $GITHUB_ENV
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/oe_license.txt" \
+            -o "${RUNNER_TEMP}/oe_license.txt"
+          echo "OE_LICENSE=${RUNNER_TEMP}/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          pip install "openeye-toolkits==${{ env.OPENEYE_VERSION }}" \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Download DuckDB C++ library
+        run: |
+          DUCKDB_ROOT="${RUNNER_TEMP}/duckdb"
+          mkdir -p "$DUCKDB_ROOT/include" "$DUCKDB_ROOT/lib"
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-windows-amd64.zip" \
+            -o "${RUNNER_TEMP}/libduckdb.zip"
+          unzip -q -o "${RUNNER_TEMP}/libduckdb.zip" -d "${RUNNER_TEMP}/libduckdb"
+          cp "${RUNNER_TEMP}/libduckdb/duckdb.h" "${RUNNER_TEMP}/libduckdb/duckdb.hpp" "$DUCKDB_ROOT/include/"
+          cp "${RUNNER_TEMP}/libduckdb/duckdb.lib" "$DUCKDB_ROOT/lib/"
+          echo "DUCKDB_ROOT=${DUCKDB_ROOT}" >> $GITHUB_ENV
+
+      - name: Build wheel
+        run: |
+          python scripts/build_python.py \
+            --openeye-root "${OPENEYE_ROOT}" \
+            --python "$(which python)" \
+            --verbose
