@@ -44,6 +44,16 @@ target_link_libraries(oemmpa_tests
         GTest::gtest_main
 )
 
+# GCC before 9 keeps std::filesystem in its own library. test_duckdb_store.cpp
+# and test_series_query.cpp use it, and the release wheels are built on
+# RHEL 8 / GCC 8, so without this the suite cannot be built on the very
+# toolchain that ships the product -- which went unnoticed while the release
+# configured OEMMPA_BUILD_TESTS=OFF. The library itself uses no std::filesystem,
+# so this stays on the test target.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+    target_link_libraries(oemmpa_tests PRIVATE stdc++fs)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(oemmpa_tests)
 
