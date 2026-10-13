@@ -350,6 +350,9 @@ def test_network_is_the_union_of_find_similar_series_selections(tmp_path, radius
     threshold = 0.0 if measure == "spearman" else 3.0
     network = series_network(store, "act", measure=measure, min_overlap=min_overlap, top=top, threshold=threshold,
                              environment_radius=radius, selection=selection, threads=4)
+    _, want_nodes = oracle.network(selection, measure=measure, min_overlap=min_overlap, top=top,
+                                   threshold=threshold)
+    assert network.nodes.to_dicts() == want_nodes, "the network's nodes are every eligible profile"
     profiles = oracle.profiles(selection)
     expected = {}
     for node in network.nodes.to_dicts():
@@ -456,7 +459,7 @@ def test_variant_rows_reach_every_query_only_with_the_flag(tmp_path):
     assert any("[*:1]I" in entry["values"] for entry in guessed.entries.values())
     assert not any("[*:1]I" in entry["values"] for entry in plain.entries.values())
     similar_query = [("[*:1]I", 5.0), ("[*:1][H]", 3.0), ("[*:1]F", 2.0)]
-    ranking_query = [("[*:1][H]", 3.0), ("[*:1]F", 2.0)]
+    ranking_query = [("[*:1]C", 3.0), ("[*:1][H]", 2.0)]
     fields = ("series_id", "overlap", "spearman", "centred_rmsd")
     for flag, oracle in ((False, plain), (True, guessed)):
         selection = SeriesSelectionOptions(include_up_enumerated=flag)
@@ -469,6 +472,7 @@ def test_variant_rows_reach_every_query_only_with_the_flag(tmp_path):
         assert network.nodes.to_dicts() == nodes, flag
         assert network.to_dicts() == edges, flag
         want = oracle.rank(ranking_query, "higher", support_ladder=(1,), min_query_length=2, selection=selection)
+        assert want["candidates"], flag
         got = rank_next_substituents(store, "act", "higher", rgroups=ranking_query, support_ladder=(1,),
                                      min_query_length=2, selection=selection)
         assert [(row["rgroup"], row["support"], row["wins"]) for row in got.to_dicts()] == [

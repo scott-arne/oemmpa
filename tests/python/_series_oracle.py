@@ -101,7 +101,13 @@ def _ordered(rows, measure):
         rows.sort(key=lambda row: (row["spearman"] is None, -(row["spearman"] or 0.0), -row["overlap"],
                                    row["profile_id"]))
     else:
-        rows.sort(key=lambda row: (row["centred_rmsd"], -row["overlap"], row["profile_id"]))
+        # The store orders an overflowed (NaN) centred RMSD last, then breaks ties by
+        # overlap and profile id like any other row. NaN never compares equal, so it
+        # is replaced by 0.0 in the second key element: the flag in the first element
+        # already separates the NaN rows, and the tie-breaks must still reach them.
+        rows.sort(key=lambda row: (math.isnan(row["centred_rmsd"]),
+                                   0.0 if math.isnan(row["centred_rmsd"]) else row["centred_rmsd"],
+                                   -row["overlap"], row["profile_id"]))
     return rows
 
 
