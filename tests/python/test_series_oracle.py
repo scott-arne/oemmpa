@@ -416,14 +416,8 @@ def test_pooled_similarity_matches_the_oracle(tmp_path, seed, radius):
 def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
     path = _closed_random_store(tmp_path / f"pr{seed}.duckdb", seed, CORES[: 5 + seed % 3], replicates=True)
     store, oracle = _open_with_oracle(path, radius)
-    rng = random.Random(500 + seed)
-    for direction, ladder, shorten in itertools.product(("higher", "lower"), ((20, 10, 5), (1,)), (True, False)):
-        query = _random_query(rng, rng.randint(2, 4), distinct=True)
-        selection = SeriesSelectionOptions(
-            min_series_length=rng.choice([0, 2, 3]),
-            max_variable_heavy_atoms=rng.choice([0, 1, 2]),
-            min_constant_heavy_atoms=rng.choice([0, 7, 8]),
-        )
+
+    def check(query, direction, ladder, shorten, selection):
         expected = oracle.rank(query, direction, support_ladder=ladder, shorten=shorten, min_query_length=2,
                                selection=selection)
         actual = rank_next_substituents(store, "act", direction, rgroups=query, support_ladder=ladder,
@@ -441,6 +435,32 @@ def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
         evidence = actual.evidence.to_dicts()
         assert all(row["series_id"] == 0 and row["constant"] == "" for row in evidence), case
         assert len({row["environment_fingerprint_id"] for row in evidence}) == expected["matched_series"], case
+        return expected, actual
+
+    rng = random.Random(500 + seed)
+    for direction, ladder, shorten in itertools.product(("higher", "lower"), ((20, 10, 5), (1,)), (True, False)):
+        query = _random_query(rng, rng.randint(2, 4), distinct=True)
+        selection = SeriesSelectionOptions(
+            min_series_length=rng.choice([0, 2, 3]),
+            max_variable_heavy_atoms=rng.choice([0, 1, 2]),
+            min_constant_heavy_atoms=rng.choice([0, 7, 8]),
+        )
+        check(query, direction, ladder, shorten, selection)
+
+    # The generated queries are mostly unmatched on these small stores (a whole
+    # parametrisation can compare empty to empty), so one fixed query that matches
+    # a pooled profile in every (seed, radius) pair runs through the same checks
+    # and must return rows.
+    anchor_query = [("[*:1]Br", 3.0), ("[*:1][H]", 2.0)]
+    expected, actual = check(anchor_query, "higher", (1,), True, SeriesSelectionOptions())
+    assert expected["candidates"], "the anchor must return candidates"
+    if radius == 1:
+        # Pooling must change the answer, not just echo the radius: at radius 1 the aryl
+        # environments merge and the anchor gains candidates. At radius 5 the environments
+        # are specific enough that this query pools nothing, so the control would match.
+        control = rank_next_substituents(store, "act", "higher", rgroups=anchor_query, support_ladder=(1,),
+                                         min_query_length=2, selection=SeriesSelectionOptions(), evidence=True)
+        assert [row["rgroup"] for row in actual.to_dicts()] != [row["rgroup"] for row in control.to_dicts()]
 
 
 def test_variant_rows_reach_every_query_only_with_the_flag(tmp_path):
