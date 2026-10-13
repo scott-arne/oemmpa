@@ -190,9 +190,9 @@ file contains non-numeric columns such as input SMILES.
 
 ## Series Queries
 
-`benchmarks/series_queries.py` times the two matched-molecular-series queries
-on a store built from the SureChEMBL corpus (`ensure_corpus`, see the
-prerequisites above). The corpus carries no assay data, and a physical
+`benchmarks/series_queries.py` times the matched-molecular-series queries and
+similarity network on a store built from the SureChEMBL corpus (`ensure_corpus`,
+see the prerequisites above). The corpus carries no assay data, and a physical
 descriptor such as molecular weight orders the same R-groups identically in
 every series, so the script loads a deterministic pseudo-random value derived
 from each compound id as the property `synthetic` (uniform on [0, 100),

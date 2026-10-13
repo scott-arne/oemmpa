@@ -26,8 +26,8 @@ summarize property changes using MMPDB-style statistic names, use those
 statistics for simple transform predictions, and attach predicted changes to
 generated products. Fragmentation analyses also enumerate matched molecular
 series, persisted with the store and queried for next-substituent ranking
-(Matsy) and series similarity. Disconnected multi-cut product generation is
-planned for later work.
+(Matsy), series similarity and similarity networks. Disconnected multi-cut
+product generation is planned for later work.
 
 ## Quick Example
 

@@ -1031,8 +1031,9 @@ level that produced the candidates; an empty result reports the last level
 tried, or 0 when no series matched at all. Values of a member realized by
 several compounds are combined by their median; members without a finite value
 are ignored. Candidates are sorted by fraction, then support, then heavy atoms,
-then SMILES, while the evidence rows are ordered by series id, then role (query
-before candidate), then query position or R-group SMILES. With
+then SMILES, while the evidence rows are ordered by series id (the
+`environment_fingerprint_id` when pooled), then role (query before candidate),
+then query position or R-group SMILES. With
 `environment_radius` the rows are pooled profiles (next section).
 
 `direction` is `"higher"` or `"lower"` — case-insensitive, and the
@@ -1067,12 +1068,14 @@ The full signature is
 `measure="crmsd"` (also `"centred_rmsd"` or
 `"centered_rmsd"`, or `_oemmpa.SimilarityMeasure_CENTRED_RMSD`) sorts by the
 centred RMSD ascending instead of `_oemmpa.SimilarityMeasure_SPEARMAN`
-descending, and both break ties by descending overlap then series id. `top`
-truncates the sorted output rather than the work, and `None` or 0 keeps every
-match; a stored query series never lists itself; a `min_overlap` above the
+descending, and both break ties by descending overlap then series id (the
+`environment_fingerprint_id` when pooled). `top` truncates the sorted output
+rather than the work, and `None` or 0 keeps every match; a stored query series
+never lists itself; a `min_overlap` above the
 number of valued query R-groups is not an error, it simply matches nothing. The
 evidence rows are ordered by series id then R-group SMILES rather than in match
-order, so consumers join them to the matches on `series_id`.
+order, so consumers join them to the matches on `series_id`; pooled rows all
+report `series_id` 0, so the join key there is `environment_fingerprint_id`.
 `store.find_similar_series(...)` is the method form.
 
 ### Pooling and guessed rows in the queries
@@ -1139,20 +1142,22 @@ or `"crmsd"`), `top`, `threshold` and `environment_radius`;
 
 ### Series result collections
 
-Both helpers return list-like collections with `to_dicts()`,
-`to_dataframe(library, molecules)` and a `filter(...)` that keeps the query
-metadata. `SubstituentRankingCollection` carries the tuples `query_used` and
-`dropped` alongside `support_level`, `matched_series` and `evidence`;
+The ranking and similarity helpers return list-like collections with
+`to_dicts()`, `to_dataframe(library, molecules)` and a `filter(...)` that keeps
+the query metadata. `SubstituentRankingCollection` carries the tuples
+`query_used` and `dropped` alongside `support_level`, `matched_series` and
+`evidence`;
 `SeriesSimilarityCollection` carries `query_size` and `evidence`, and its
 `top(n)` shortens a result in hand (`top(0)` is empty, unlike the helper's
-`top=0`, which keeps every match). Both result collections are exported at
+`top=0`, which keeps every match). Those two result collections are exported at
 package scope; the two evidence collections,
 `oemmpa._series.RankingEvidenceCollection` and
 `oemmpa._series.SimilarityEvidenceCollection`, are importable from
 `oemmpa._series` only. `SeriesNetworkCollection`, exported at package scope too,
 carries `nodes`, `measure`, `top`, `threshold` and `environment_radius`; its
 node collection, `oemmpa._series.SeriesNetworkNodeCollection`, is importable
-from `oemmpa._series` only.
+from `oemmpa._series` only. Both network collections are list-like with
+`to_dicts()` and `to_dataframe(library, molecules)`, and have no `filter(...)`.
 
 Every argument failure the Python layer can see raises `ValueError` before the
 store is called: a missing or doubled query source, a non-numeric or non-finite

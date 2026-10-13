@@ -368,9 +368,10 @@ floor (at least 2). A member the shortening dropped is still a query member, so
 it is never reported as a candidate. `--evidence FILE` writes one row per query
 member and reported candidate of every matched series (`series_id`, `constant`,
 `role`, `rgroup`, `value`, `position`, `win`, `environment_fingerprint_id`,
-`environment`), ordered by series id, then role (query before candidate), then
-query position or R-group SMILES. An empty result is not an error: the comment
-line and the header are written and the exit code is 0.
+`environment`), ordered by series id (`environment_fingerprint_id` when pooled),
+then role (query before candidate), then query position or R-group SMILES. An
+empty result is not an error: the comment line and the header are written and
+the exit code is 0.
 
 `oemmpa series-similar` finds stored series that order their shared R-groups
 like the query:
@@ -386,9 +387,10 @@ undefined, which sorts last), `centred_rmsd`, `environment_fingerprint_id` and
 `--top` limits the rows after sorting; a `--series-id` query never lists
 itself. `--evidence FILE` writes one row per shared R-group of every reported
 series (`series_id`, `rgroup`, `query_value`, `candidate_value`,
-`environment_fingerprint_id`, `environment`), ordered by series id then
-R-group SMILES, so it is joined to the rows on `series_id` rather than by
-position.
+`environment_fingerprint_id`, `environment`), ordered by series id
+(`environment_fingerprint_id` when pooled) then R-group SMILES, so it is
+joined to the rows on `series_id` rather than by position; pooled rows all
+report `series_id` 0, so the join key there is `environment_fingerprint_id`.
 
 Both query commands take `--environment-radius R` (0 to 5), which pools every
 series of one cut count whose constant shares its attachment environment at
@@ -421,8 +423,8 @@ standard output.
 
 Request-validation errors (an unknown property, tied ranking values, duplicate
 or unlabelled R-groups, a nonexistent series id, a `--min-overlap` below 2, an
-`--environment-radius` outside 0 to 5, a `series-network` `--top` below 1, a
-non-finite `--threshold`) exit with code 2 and the store's message; database
+`--environment-radius` outside 0 to 5, a `series-network` `--top` or
+`--threads` below 1, a non-finite `--threshold`) exit with code 2 and the store's message; database
 failures exit with code 1. A `--query-file` that names the same file as
 `--output` or `--evidence` is refused before anything is read or written, and so
 is `--evidence -` while the report also goes to standard output, which would run

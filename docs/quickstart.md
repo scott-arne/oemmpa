@@ -732,11 +732,11 @@ The OEMedChem method currently handles native single-cut matched pairs and
 returns the same constant and variable fields as the other methods. OEMedChem
 deduplicates identical structures upstream, so a re-registered duplicate
 contributes no pairs under that method. DuckDB storage can save molecules,
-properties, and matched pairs; persist matched molecular series and answer
-next-substituent ranking and series-similarity queries over them; load SMILES
-and property files; refresh rule-environment property statistics; and read
-stored pairs and rule-environment statistics back into the usual result
-objects.
+properties, and matched pairs; persist matched molecular series, answer
+next-substituent ranking and series-similarity queries over them and build
+their similarity networks; load SMILES and property files; refresh
+rule-environment property statistics; and read stored pairs and
+rule-environment statistics back into the usual result objects.
 Transformation statistics, property-change predictions, product generation,
 cut R-group fragmentation workflows, and the command-line tools are available
 now. Separate fragment databases remain deferred until there is a concrete need
