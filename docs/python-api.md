@@ -67,7 +67,7 @@ needs it. `strict` asks RDKit's question of every molecule first and skips
 the ones the search rejects in every method, as MMPDB does when
 `Chem.MolFromSmiles` returns `None`; it costs one ring search per molecule and
 rejects structures OEChem itself perceives without difficulty. The constants
-`_oemmpa.RingPerceptionPolicy_CONSULTED` and `_oemmpa.RingPerceptionPolicy_STRICT`
+`_oemmpa.RingPerceptionPolicy_CONSULTED` and `_oemmpa.RingPerceptionPolicy_VALIDATED`
 are accepted too, and `_oemmpa.perceives_rings(mol)` answers the strict test for
 one OEChem molecule.
 

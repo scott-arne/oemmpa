@@ -344,7 +344,7 @@ class Analyzer:
 
     _RING_PERCEPTION_POLICIES: ClassVar[dict[str, int]] = {
         "consulted": _oemmpa.RingPerceptionPolicy_CONSULTED,
-        "strict": _oemmpa.RingPerceptionPolicy_STRICT,
+        "strict": _oemmpa.RingPerceptionPolicy_VALIDATED,
     }
 
     def set_ring_perception_policy(self, policy):

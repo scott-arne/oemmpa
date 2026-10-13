@@ -283,7 +283,7 @@ void OEMedChemMethod::Analyze(unsigned int /*threads*/) {
 
     OEMedChem::OEMatchedPairAnalyzer analyzer(make_analyzer_options());
     std::unordered_map<unsigned int, const MoleculeRecord*> records_by_id;
-    const bool strict = GetRingPerceptionPolicy() == RingPerceptionPolicy::STRICT;
+    const bool strict = GetRingPerceptionPolicy() == RingPerceptionPolicy::VALIDATED;
     for (const MoleculeRecord& record : molecules_) {
         // Under the strict policy a molecule the ported search rejects is kept
         // out of the native analyzer altogether, so it can reach no pair.

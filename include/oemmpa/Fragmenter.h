@@ -57,7 +57,7 @@ public:
     ///
     /// CONSULTED (the default) leaves the decision to the stereo cleanup, which
     /// consults the ported search only for a tetrahedral tag on a nitrogen and
-    /// skips the molecule when it fails there. STRICT validates the parent's
+    /// skips the molecule when it fails there. VALIDATED checks the parent's
     /// complete ring topology before fragmenting and skips every molecule the
     /// search rejects, as mmpdb does when RDKit refuses to parse one. Either way
     /// a skipped molecule yields no records and no error, like one over
@@ -89,7 +89,7 @@ public:
     /// \returns One record per retained cut combination and role assignment, or
     ///          no records at all when the molecule is skipped: over a size
     ///          limit, or rejected by ring perception. Which rejections count is
-    ///          the ring-perception policy's decision. Under STRICT, every
+    ///          the ring-perception policy's decision. Under VALIDATED, every
     ///          molecule the ported search rejects. Under CONSULTED (the
     ///          default), only one whose stereo cleanup consulted ring
     ///          perception (it does so for any tetrahedrally tagged nitrogen, in

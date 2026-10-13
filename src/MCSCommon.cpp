@@ -129,7 +129,7 @@ const std::vector<MoleculeRecord>& admitted_under_policy(
     RingPerceptionPolicy policy,
     std::vector<MoleculeRecord>& owned
 ) {
-    if (policy != RingPerceptionPolicy::STRICT) {
+    if (policy != RingPerceptionPolicy::VALIDATED) {
         return records;
     }
     owned = admitted_molecules(records);

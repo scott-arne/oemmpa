@@ -653,8 +653,8 @@ TEST(FragmenterTest, StrictPolicySkipsEveryMoleculeTheSearchRejects) {
     }
     Fragmenter fragmenter = MakeAcyclicHeavyAtomFragmenter();
     EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED);
-    fragmenter.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
-    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    fragmenter.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
+    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED);
 
     // Unforced, strict changes nothing: the search accepts all four.
     EXPECT_FALSE(fragmenter.Fragment(61, tagged_ring).empty());
@@ -672,14 +672,14 @@ TEST(FragmenterTest, StrictPolicySkipsEveryMoleculeTheSearchRejects) {
     // the copy assignment carry it. Fragmenter writes both by hand (the
     // strategy is cloned), so each is its own line to forget.
     const Fragmenter copy(fragmenter);
-    EXPECT_EQ(copy.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(copy.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED);
     EXPECT_TRUE(copy.Fragment(63, untagged_ring).empty());
 
     Fragmenter assigned = MakeAcyclicHeavyAtomFragmenter();
     EXPECT_EQ(assigned.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED);
     EXPECT_FALSE(assigned.Fragment(63, untagged_ring).empty());
     assigned = fragmenter;
-    EXPECT_EQ(assigned.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(assigned.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED);
     EXPECT_TRUE(assigned.Fragment(63, untagged_ring).empty());
 }
 
@@ -687,12 +687,12 @@ TEST(FragmenterTest, StrictPolicySkipsEveryMoleculeTheSearchRejects) {
 // front of them: the strategy check still comes first. The default constructor
 // installs a strategy, so the only fragmenter without one is a moved-from
 // object -- which is exactly the state the strategy check exists to report.
-// Under STRICT with the bound forced, that error still wins over the skip.
+// Under VALIDATED with the bound forced, that error still wins over the skip.
 TEST(FragmenterTest, StrictPolicyDoesNotPreemptTheStrategyCheck) {
     OEChem::OEGraphMol ring = MolFromSmiles("CN1CCCCC1");
     OEChem::OESuppressHydrogens(ring);
     Fragmenter source = MakeAcyclicHeavyAtomFragmenter();
-    source.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    source.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
     const Fragmenter moved_to(std::move(source));
     ASSERT_FALSE(moved_to.Fragment(75, ring).empty());
 

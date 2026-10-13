@@ -41,16 +41,16 @@ std::size_t ring_search_queue_bound();
 /// bridgehead rule -- a tetrahedral tag on a nitrogen -- and skips the molecule
 /// or the candidate pair only when the search fails there, so a structure whose
 /// cleanup never consults it is fragmented although RDKit would not parse it.
-/// STRICT validates every molecule's complete ring topology once before it
+/// VALIDATED checks every molecule's complete ring topology once before it
 /// takes part in an analysis and skips the ones the search rejects in every
 /// backend, which is what mmpdb sees when Chem.MolFromSmiles returns None.
 /// OEChem's own perception handles those structures, so which answer is right
 /// depends on what the index is for; the caller decides.
-enum class RingPerceptionPolicy { CONSULTED, STRICT };
+enum class RingPerceptionPolicy { CONSULTED, VALIDATED };
 
 /// \brief Whether the ported ring perception accepts `mol`.
 ///
-/// The STRICT policy's test, and the only question a caller can ask without
+/// The VALIDATED policy's test, and the only question a caller can ask without
 /// wanting the rings: true when symmetrized_sssr() would return, false when it
 /// would throw RingPerceptionError. Any other exception propagates.
 ///

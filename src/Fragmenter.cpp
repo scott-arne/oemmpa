@@ -1869,7 +1869,7 @@ std::vector<Fragmentation> Fragmenter::BuildFragmentations(
     // they drop for free never pays for a ring search, and after the strategy
     // check so that a misconfigured fragmenter still says so. Skipped like one
     // over max_heavy_atoms_: no records, no error.
-    if (ring_perception_policy_ == RingPerceptionPolicy::STRICT && !perceives_rings(mol)) {
+    if (ring_perception_policy_ == RingPerceptionPolicy::VALIDATED && !perceives_rings(mol)) {
         return {};
     }
 

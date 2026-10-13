@@ -131,7 +131,7 @@ std::string fragment_options_json(const FragmentationSettings& settings) {
     json += ",\"max_up_enumerations\":" + std::to_string(settings.max_up_enumerations);
     json += ",\"min_cuts\":" + std::to_string(settings.min_cuts);
     json += std::string(",\"ring_perception\":") +
-        (settings.ring_perception == RingPerceptionPolicy::STRICT ? "\"strict\"" : "\"consulted\"");
+        (settings.ring_perception == RingPerceptionPolicy::VALIDATED ? "\"strict\"" : "\"consulted\"");
     json += ",\"rotatable_smarts\":" + json_string(settings.rotatable_smarts);
     json += "}";
     return json;

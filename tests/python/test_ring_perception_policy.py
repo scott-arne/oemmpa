@@ -16,7 +16,7 @@ METHODS = ("fragmentation", "dmcss", "wizepairz", "oemedchem")
 
 
 def test_binding_constants_are_distinct_and_named_like_scoring_modes():
-    assert _oemmpa.RingPerceptionPolicy_CONSULTED != _oemmpa.RingPerceptionPolicy_STRICT
+    assert _oemmpa.RingPerceptionPolicy_CONSULTED != _oemmpa.RingPerceptionPolicy_VALIDATED
 
 
 @pytest.mark.parametrize("method", METHODS)
@@ -33,9 +33,9 @@ def test_policy_round_trips_through_every_method(method):
     assert analyzer.get_ring_perception_policy() == "strict"
     analyzer.set_ring_perception_policy("Consulted")
     assert analyzer.get_ring_perception_policy() == "consulted"
-    analyzer.set_ring_perception_policy(_oemmpa.RingPerceptionPolicy_STRICT)
+    analyzer.set_ring_perception_policy(_oemmpa.RingPerceptionPolicy_VALIDATED)
     assert analyzer.get_ring_perception_policy() == "strict"
-    assert analyzer.raw.GetRingPerceptionPolicy() == _oemmpa.RingPerceptionPolicy_STRICT
+    assert analyzer.raw.GetRingPerceptionPolicy() == _oemmpa.RingPerceptionPolicy_VALIDATED
 
 
 def test_an_unknown_policy_is_a_value_error():

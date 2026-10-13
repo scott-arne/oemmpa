@@ -293,7 +293,7 @@ std::vector<MoleculeRecord> admitted_molecules(const std::vector<MoleculeRecord>
 /// \brief The records an MCS method may pair under `policy`.
 ///
 /// Under CONSULTED that is `records` itself, untouched and uncopied; under
-/// STRICT it is the admitted subset, which is built into `owned` so the
+/// VALIDATED it is the admitted subset, which is built into `owned` so the
 /// returned reference stays valid for as long as `owned` does.
 ///
 /// The strict policy asks RDKit's question of every molecule once, here,
@@ -304,7 +304,7 @@ std::vector<MoleculeRecord> admitted_molecules(const std::vector<MoleculeRecord>
 /// \param policy The method's ring-perception policy.
 /// \param owned Storage the caller owns for the admitted subset; it must
 ///     outlive every use of the returned reference.
-/// \returns The records to pair: `records` under CONSULTED, `owned` under STRICT.
+/// \returns The records to pair: `records` under CONSULTED, `owned` under VALIDATED.
 const std::vector<MoleculeRecord>& admitted_under_policy(
     const std::vector<MoleculeRecord>& records,
     RingPerceptionPolicy policy,

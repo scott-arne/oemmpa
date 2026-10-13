@@ -726,7 +726,7 @@ _RAW_BINDING_EXPORTS = (
     "QueryEnvironmentVector",
     "QueryOptions",
     "RingPerceptionPolicy_CONSULTED",
-    "RingPerceptionPolicy_STRICT",
+    "RingPerceptionPolicy_VALIDATED",
     "RuleEnvironmentStatistics",
     "RuleEnvironmentStatisticsVector",
     "ScoringMode_FewerCutsThenHeavyAtomChange",

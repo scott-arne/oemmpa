@@ -488,6 +488,15 @@ Behaviour changes to know about:
 - DMCSS no longer emits pairs that need more than three cuts or whose fragments
   cannot be parsed, so a save no longer refuses its pairs, and its pair count
   can fall.
+- `RingPerceptionPolicy::STRICT` is renamed `RingPerceptionPolicy::VALIDATED`
+  (`RingPerceptionPolicy_STRICT` becomes `RingPerceptionPolicy_VALIDATED` in
+  Python). `windows.h` defines `STRICT` as a macro, so the old name could not
+  compile on Windows at all. The `"strict"` spelling that
+  `set_ring_perception_policy` takes, and the one stored in
+  `dataset.fragment_options`, are unchanged.
+- The `detail` report prints a compound id of 100000 or more as an exact
+  integer rather than in `%.5g` form (`1.2346e+06`), now that the id columns
+  are classified as integers.
 
 New in 5.0.0: `Analyzer.series()`, `DuckDBStore.series()`,
 `DuckDBStore.series_count_refresh_seconds()`, `duckdb_library_version()`,

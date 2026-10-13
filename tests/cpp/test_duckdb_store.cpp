@@ -4692,7 +4692,7 @@ TEST(DuckDBStoreFragmentOptions, EveryFieldSetIsRecordedExactly) {
     analyzer.ConfigureFragmentation(
         true, 2, true, 2, true, 15, true, 50, false, true, 8, false, true, "[#6]-[#6]", true, "[C:1]-[O:2]");
     analyzer.SetFragmentationMaxUpEnumerations(7);
-    analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+    analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
     analyzer.AddMolecule("CCOCC", "diethyl-ether");
     analyzer.AddMolecule("CCOC", "methyl-ethyl-ether");
     analyzer.Analyze();

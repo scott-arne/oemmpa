@@ -406,8 +406,8 @@ void ExpectPolicyChangeInvalidatesTheAnalysis(const char* name) {
     method.Analyze(1);
     EXPECT_FALSE(method.GetPairs(QueryOptions()).empty()) << name;
 
-    method.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
-    EXPECT_EQ(method.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT) << name;
+    method.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
+    EXPECT_EQ(method.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED) << name;
     EXPECT_THROW(method.GetPairs(QueryOptions()), AnalysisStateError) << name;
     method.Analyze(1);
     EXPECT_FALSE(method.GetPairs(QueryOptions()).empty()) << name;
@@ -523,8 +523,8 @@ TEST(AnalyzerTest, RingPerceptionPolicyRoundTripsThroughEveryMethod) {
     for (const char* method : {"fragmentation", "dmcss", "wizepairz", "oemedchem"}) {
         Analyzer analyzer(method);
         EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED) << method;
-        analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
-        EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT) << method;
+        analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
+        EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED) << method;
         analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::CONSULTED);
         EXPECT_EQ(analyzer.GetRingPerceptionPolicy(), RingPerceptionPolicy::CONSULTED) << method;
     }
@@ -538,7 +538,7 @@ TEST(AnalyzerTest, StrictPolicySkipsEveryRejectedMoleculeInEveryMethod) {
     for (const char* method : {"fragmentation", "dmcss", "wizepairz", "oemedchem"}) {
         auto run = [method](unsigned int threads) {
             Analyzer analyzer(method);
-            analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+            analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
             AddStrictPolicyCorpus(analyzer);
             analyzer.Analyze(threads);
             return analyzer.GetPairs();
@@ -583,7 +583,7 @@ template <typename Method>
 void ExpectInvalidRecordFailsStrictAnalysis(const char* name) {
     for (const unsigned int threads : {1u, 4u}) {
         Method method;
-        method.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT);
+        method.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED);
         method.AddMolecule(MoleculeRecord::FromSmiles(1, "Cc1ccccc1", "tol"));
         method.AddMolecule(MoleculeRecord::FromSmiles(2, "Oc1ccccc1", "phenol"));
         method.AddMolecule(MoleculeRecord());
@@ -1689,7 +1689,7 @@ TEST(FragmentationSettings, MakeFragmenterAppliesEverySettingAndCaptureReadsItBa
     settings.max_rotatable_bonds = 8U;
     settings.rotatable_smarts = "[#6]-[#6]";
     settings.cut_smarts = std::vector<std::string>{"[C:1]-[O:2]"};
-    settings.ring_perception = RingPerceptionPolicy::STRICT;
+    settings.ring_perception = RingPerceptionPolicy::VALIDATED;
     const Fragmenter fragmenter = make_fragmenter(settings);
     EXPECT_EQ(fragmenter.GetMinCuts(), 2U);
     EXPECT_EQ(fragmenter.GetMaxCuts(), 2U);
@@ -1700,7 +1700,7 @@ TEST(FragmentationSettings, MakeFragmenterAppliesEverySettingAndCaptureReadsItBa
     EXPECT_TRUE(fragmenter.HasMaxRotatableBonds());
     EXPECT_EQ(fragmenter.GetMaxRotatableBonds(), 8U);
     EXPECT_EQ(fragmenter.GetRotatableSmarts(), "[#6]-[#6]");
-    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::STRICT);
+    EXPECT_EQ(fragmenter.GetRingPerceptionPolicy(), RingPerceptionPolicy::VALIDATED);
     EXPECT_EQ(fragment_options_json(capture_fragmentation_settings(fragmenter, settings.cut_smarts)),
               fragment_options_json(settings));
 
@@ -1978,7 +1978,7 @@ TEST(AnalyzerSeriesEnumeration, FragmentationSettersNeedTheFlagOnAnMcsMethod) {
     analyzer.SetSeriesEnumeration(false);
     EXPECT_THROW(analyzer.SetFragmentationMaxCuts(2), InvalidQueryError);
     // Ring perception was never fragmentation-only.
-    EXPECT_NO_THROW(analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::STRICT));
+    EXPECT_NO_THROW(analyzer.SetRingPerceptionPolicy(RingPerceptionPolicy::VALIDATED));
 }
 
 TEST(AnalyzerSeriesEnumeration, ClearDiscardsTheAuxiliaryPassButKeepsTheFlagAndTheSettings) {
