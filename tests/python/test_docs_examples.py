@@ -11,6 +11,8 @@ query and the series network call that docs/python-api.md shows.
 
 from __future__ import annotations
 
+from collections import Counter
+
 import pytest
 
 pytestmark = pytest.mark.skipif(
@@ -115,6 +117,24 @@ def test_documented_pooled_query_runs(tmp_path, analyzer):
     assert all(
         row["series_id"] == 0 and row["environment"] for row in pooled.to_dicts()
     )
+
+    # The fixture's constants share one attachment environment through radius 4
+    # and split at 5, so only there does pooled evidence have several profiles
+    # whose order and join key can be checked.
+    split = find_similar_series(
+        store, "pIC50", rgroups=QUERY, environment_radius=5, evidence=True
+    )
+    evidence = split.evidence.to_dicts()
+    keys = [(row["environment_fingerprint_id"], row["rgroup"]) for row in evidence]
+    assert len({fingerprint for fingerprint, _ in keys}) > 1
+    assert all(row["series_id"] == 0 for row in evidence)
+    # Ordered by fingerprint id, then R-group: each profile's rows are one block.
+    assert keys == sorted(keys)
+    # Pooled rows all report series_id 0, so the fingerprint id is the join key.
+    shared = {
+        row["environment_fingerprint_id"]: row["overlap"] for row in split.to_dicts()
+    }
+    assert dict(Counter(fingerprint for fingerprint, _ in keys)) == shared
 
 
 def test_documented_network_call_runs(tmp_path, analyzer):

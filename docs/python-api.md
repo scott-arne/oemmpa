@@ -1071,11 +1071,12 @@ centred RMSD ascending instead of `_oemmpa.SimilarityMeasure_SPEARMAN`
 descending, and both break ties by descending overlap then series id (the
 `environment_fingerprint_id` when pooled). `top` truncates the sorted output
 rather than the work, and `None` or 0 keeps every match; a stored query series
-never lists itself; a `min_overlap` above the
-number of valued query R-groups is not an error, it simply matches nothing. The
-evidence rows are ordered by series id then R-group SMILES rather than in match
-order, so consumers join them to the matches on `series_id`; pooled rows all
-report `series_id` 0, so the join key there is `environment_fingerprint_id`.
+never lists itself; a `min_overlap` above the number of valued query R-groups
+is not an error, it simply matches nothing. The evidence rows are ordered by
+series id (`environment_fingerprint_id` when pooled) then R-group SMILES
+rather than in match order, so consumers join them to the matches on
+`series_id`; pooled rows all report `series_id` 0, so the join key there is
+`environment_fingerprint_id`.
 `store.find_similar_series(...)` is the method form.
 
 ### Pooling and guessed rows in the queries
@@ -1134,11 +1135,14 @@ never meet, and an edge's `source_id` is always below its `target_id`. The
 nodes are every profile with at least two valued R-groups, and at least
 `selection.min_series_length`, after `max_variable_heavy_atoms`; a node's `id`
 is the series id (the fingerprint id when pooled), its `label` the constant
-SMILES (the SMARTS when pooled) and its `size` its valued R-groups. The network
-is scored in C++ on `threads` workers (`None` uses every CPU), and the result
-does not depend on that number. The collection carries `measure` (`"spearman"`
-or `"crmsd"`), `top`, `threshold` and `environment_radius`;
-`store.series_network(...)` is the method form.
+SMILES (the SMARTS when pooled) and its `size` its valued R-groups. A node is
+identified by `(cut_count, id)`, and an edge's endpoints are the nodes at
+`(cut_count, source_id)` and `(cut_count, target_id)`: series ids are unique,
+but nothing promises that a pooled fingerprint id belongs to one cut count, so
+join on `cut_count` as well. The network is scored in C++ on `threads` workers
+(`None` uses every CPU), and the result does not depend on that number. The
+collection carries `measure` (`"spearman"` or `"crmsd"`), `top`, `threshold` and
+`environment_radius`; `store.series_network(...)` is the method form.
 
 ### Series result collections
 

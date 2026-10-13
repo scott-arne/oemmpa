@@ -415,7 +415,11 @@ or above it, or centred RMSD at or below it); the edges are the union of those
 choices. Edge rows: `cut_count`, `source_id`, `target_id` (`source_id` below
 `target_id`), `overlap`, `spearman` (empty when undefined) and `centred_rmsd`.
 `--nodes FILE` writes `cut_count`, `id`, `label` (the constant SMILES, or the
-SMARTS when pooled) and `size`. The selection flags apply (`--cut-count` 0 or
+SMARTS when pooled) and `size`. `id` is the series id (the fingerprint id when
+pooled), and a node is identified by `(cut_count, id)`: an edge's endpoints are
+the nodes at `(cut_count, source_id)` and `(cut_count, target_id)`, because
+series ids are unique but nothing promises that a pooled fingerprint id belongs
+to one cut count. The selection flags apply (`--cut-count` 0 or
 omitted reads every cut count), `--include-up-enumerated` reads the guessed
 rows, `--threads` sets the scoring threads (default: every CPU) without
 changing the result, and `--nodes -` is refused while the edges also go to
