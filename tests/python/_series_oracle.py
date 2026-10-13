@@ -1,9 +1,17 @@
 """Brute-force oracle for the series queries.
 
 Everything is recomputed with plain Python from the store's own reads: the
-series with their members and compounds (``store.series``) and one property
-value per compound (``store.get_molecule_property``). Nothing here shares code
-or SQL with the store's query methods.
+series with their members and compounds (``store.series``), one property value
+per compound (``store.get_molecule_property``) and, for pooling, each
+constant's environment fingerprint from the function the save itself uses
+(``ComputeConstantEnvironmentFingerprints``), keyed to the stored ids read with
+the ``duckdb`` package. Nothing here shares SQL with the store's query methods.
+Checks whose answer turns on exact ties (the network's top-k, pooled
+similarity) pass :data:`BINDING_MEASURES`, the store's own arithmetic through
+the binding: the Python measures agree with it only to rounding, and a
+last-bit difference could reorder a tie that both sides otherwise decide the
+same way. The medians need no such care: ``statistics.median`` matches
+DuckDB's ``median`` bit for bit.
 """
 
 from __future__ import annotations
@@ -12,7 +20,7 @@ import math
 from itertools import pairwise
 from statistics import median
 
-from oemmpa import SeriesSelectionOptions
+from oemmpa import SeriesSelectionOptions, _oemmpa
 
 
 def average_ranks(values):
@@ -46,41 +54,175 @@ def centred_rmsd(x, y):
     return math.sqrt(sum(((a - mx) - (b - my)) ** 2 for a, b in zip(x, y, strict=True)) / len(x))
 
 
-class SeriesOracle:
-    """Series with per-R-group medians, read once from a store."""
+def binding_spearman(x, y):
+    """Spearman through the binding (the store's arithmetic); ``None`` when undefined."""
+    result = _oemmpa.spearman_correlation(list(x), list(y))
+    return float(result.rho) if result.defined else None
 
-    def __init__(self, entries):
-        self.entries = entries   # series_id -> dict(constant, cut_count, constant_heavies, values, heavies)
+
+def binding_centred_rmsd(x, y):
+    """Centred RMSD through the binding (the store's arithmetic)."""
+    return float(_oemmpa.centred_rmsd(list(x), list(y)))
+
+
+PYTHON_MEASURES = (spearman, centred_rmsd)
+BINDING_MEASURES = (binding_spearman, binding_centred_rmsd)
+
+
+def fingerprint_ids(database_path):
+    """Map every stored environment fingerprint to its id.
+
+    Read with the ``duckdb`` package (a test-time dependency), so no OEMMPA
+    handle may hold the file while it runs.
+
+    :param database_path: Store file.
+    :returns: ``{(smarts, pseudosmiles, parent_smarts): id}``.
+    """
+    import duckdb  # type: ignore[import-not-found]
+
+    connection = duckdb.connect(str(database_path), read_only=True)
+    try:
+        rows = connection.execute(
+            "select smarts, pseudosmiles, parent_smarts, id from environment_fingerprint").fetchall()
+    finally:
+        connection.close()
+    return {(smarts, pseudo, parent): int(identifier) for smarts, pseudo, parent, identifier in rows}
+
+
+def environment_key(constant, radius):
+    """Return the ``(smarts, pseudosmiles, parent_smarts)`` of a constant's fingerprint at ``radius``."""
+    fingerprint = _oemmpa.ComputeConstantEnvironmentFingerprints(constant, radius, radius)[0]
+    return (str(fingerprint.GetSmarts()), str(fingerprint.GetPseudoSmiles()), str(fingerprint.GetParentSmarts()))
+
+
+def _ordered(rows, measure):
+    """Sort similarity rows in the store's order: the measure, then overlap, then profile id."""
+    if measure == "spearman":
+        rows.sort(key=lambda row: (row["spearman"] is None, -(row["spearman"] or 0.0), -row["overlap"],
+                                   row["profile_id"]))
+    else:
+        rows.sort(key=lambda row: (row["centred_rmsd"], -row["overlap"], row["profile_id"]))
+    return rows
+
+
+class SeriesOracle:
+    """Series read once from a store, with their profiles built per selection (seams spec 9.1).
+
+    ``entries`` is the series-mode view the original differential tests read:
+    ``series_id -> {constant, cut_count, constant_heavies, values, heavies}``.
+    """
+
+    def __init__(self, series, values, *, environment_radius=None, fingerprint_ids=None):
+        self.series = series          # series_id -> {constant, cut_count, constant_heavies, members}
+        self.values = values          # molecule id -> finite value
+        self.environment_radius = environment_radius
+        self._pooled_identity = {}    # series_id -> (fingerprint id, SMARTS) at the radius
+        if environment_radius is not None:
+            for series_id, row in series.items():
+                key = environment_key(row["constant"], environment_radius)
+                self._pooled_identity[series_id] = (fingerprint_ids[key], key[0])
+        self.entries = {
+            series_id: {
+                "constant": row["constant"],
+                "cut_count": row["cut_count"],
+                "constant_heavies": row["constant_heavies"],
+                "values": self._medians(row["members"]),
+                "heavies": {rgroup: heavies for rgroup, (heavies, _) in row["members"].items()},
+            }
+            for series_id, row in series.items()
+        }
+        self._census = None
 
     @classmethod
-    def from_store(cls, store, property_name):
-        entries = {}
-        for series in store.series(SeriesSelectionOptions(min_series_length=0)):
-            values = {}
-            heavies = {}
-            for member in series.GetMembers():
-                observed = []
+    def from_store(cls, store, property_name, *, include_up_enumerated=False, environment_radius=None,
+                   fingerprint_ids=None):
+        """Read the series (the guessed rows too when asked) and every member compound's value.
+
+        :param store: Open :class:`oemmpa.DuckDBStore`.
+        :param property_name: Property the queries use.
+        :param include_up_enumerated: Read the guessed rows, as the queries do with the flag.
+        :param environment_radius: Pool by fingerprint at this radius, or ``None`` for series mode.
+        :param fingerprint_ids: :func:`fingerprint_ids` of the store; required when pooled.
+        :returns: A new :class:`SeriesOracle`.
+        :raises ValueError: When pooled without ``fingerprint_ids``.
+        """
+        if environment_radius is not None and fingerprint_ids is None:
+            raise ValueError("a pooled oracle needs the stored fingerprint ids")
+        selection = SeriesSelectionOptions(min_series_length=0, include_up_enumerated=include_up_enumerated)
+        series = {}
+        values = {}
+        for entry in store.series(selection):
+            members = {}
+            for member in entry.GetMembers():
+                ids = []
                 for molecule_id in member.GetMoleculeIds():
-                    try:
-                        value = store.get_molecule_property(int(molecule_id), property_name)
-                    except RuntimeError:
-                        continue
-                    if math.isfinite(value):
-                        observed.append(value)
-                if observed:
-                    values[str(member.GetVariableSmiles())] = median(observed)
-                heavies[str(member.GetVariableSmiles())] = int(member.GetHeavyAtomCount())
-            entries[int(series.GetSeriesId())] = {
-                "constant": str(series.GetConstantSmiles()),
-                "cut_count": int(series.GetCutCount()),
-                "constant_heavies": int(series.GetConstantHeavyAtomCount()),
-                "values": values,
-                "heavies": heavies,
+                    identifier = int(molecule_id)
+                    if identifier not in values:
+                        try:
+                            values[identifier] = store.get_molecule_property(identifier, property_name)
+                        except RuntimeError:
+                            values[identifier] = math.nan
+                    ids.append(identifier)
+                members[str(member.GetVariableSmiles())] = (int(member.GetHeavyAtomCount()), frozenset(ids))
+            series[int(entry.GetSeriesId())] = {
+                "constant": str(entry.GetConstantSmiles()),
+                "cut_count": int(entry.GetCutCount()),
+                "constant_heavies": int(entry.GetConstantHeavyAtomCount()),
+                "members": members,
             }
-        return cls(entries)
+        finite = {identifier: value for identifier, value in values.items() if math.isfinite(value)}
+        return cls(series, finite, environment_radius=environment_radius, fingerprint_ids=fingerprint_ids)
+
+    def _medians(self, members):
+        """Return each valued R-group's median over its distinct compounds with a finite value."""
+        medians = {}
+        for rgroup, (_, ids) in members.items():
+            observed = [self.values[identifier] for identifier in sorted(ids) if identifier in self.values]
+            if observed:
+                medians[rgroup] = median(observed)
+        return medians
+
+    def profiles(self, selection=None, *, census=False):
+        """Return ``{(cut_count, profile_id): profile}`` under the series-level inputs (spec 9.2).
+
+        A profile is a series, or when pooled every series of one cut count whose
+        constant shares the fingerprint at the radius. It holds ``label`` (the
+        constant, or the fingerprint SMARTS), ``series`` (its member series ids,
+        ascending), ``values`` (each valued R-group's median over the distinct
+        compounds of all those series) and ``heavies``. ``census`` drops the
+        constant floor, as the shortening's posting count does.
+        """
+        selection = selection or SeriesSelectionOptions()
+        floor = 0 if census else selection.min_constant_heavy_atoms
+        merged = {}
+        for series_id in sorted(self.series):
+            row = self.series[series_id]
+            if floor and row["constant_heavies"] < floor:
+                continue
+            if self.environment_radius is None:
+                profile_id, label = series_id, row["constant"]
+            else:
+                profile_id, label = self._pooled_identity[series_id]
+            profile = merged.setdefault((row["cut_count"], profile_id), {"label": label, "series": [], "members": {}})
+            profile["series"].append(series_id)
+            for rgroup, (heavies, ids) in row["members"].items():
+                known = profile["members"].get(rgroup, (heavies, frozenset()))
+                profile["members"][rgroup] = (heavies, known[1] | ids)
+        return {
+            key: {
+                "label": profile["label"],
+                "series": profile["series"],
+                "values": self._medians(profile["members"]),
+                "heavies": {rgroup: heavies for rgroup, (heavies, _) in profile["members"].items()},
+            }
+            for key, profile in merged.items()
+        }
 
     def posting_count(self, rgroup):
-        return sum(1 for entry in self.entries.values() if rgroup in entry["values"])
+        """Profiles of the whole store (no floor, any cut count) in which ``rgroup`` is valued."""
+        if self._census is None:
+            self._census = self.profiles(census=True)
+        return sum(1 for profile in self._census.values() if rgroup in profile["values"])
 
     @staticmethod
     def _surviving(entry, selection, exempt=()):
@@ -92,16 +234,14 @@ class SeriesOracle:
         }
 
     def _eligible(self, cut_count, selection, exempt=()):
-        """Yield ``(series_id, entry, surviving_values)`` for the series that pass every bound but the match."""
-        for series_id, entry in self.entries.items():
-            if entry["cut_count"] != cut_count:
+        """Yield ``(profile_id, profile, surviving_values)`` for the profiles that pass every bound but the match."""
+        for (profile_cut, profile_id), profile in sorted(self.profiles(selection).items()):
+            if profile_cut != cut_count:
                 continue
-            if selection.min_constant_heavy_atoms and entry["constant_heavies"] < selection.min_constant_heavy_atoms:
-                continue
-            surviving = self._surviving(entry, selection, exempt)
+            surviving = self._surviving(profile, selection, exempt)
             if len(surviving) < selection.min_series_length:
                 continue
-            yield series_id, entry, surviving
+            yield profile_id, profile, surviving
 
     def rank(self, query, direction, *, support_ladder=(20, 10, 5), shorten=True, min_query_length=3,
              selection=None, cut_count=1):
@@ -118,14 +258,14 @@ class SeriesOracle:
         while True:
             names = [name for name, _ in members]
             matched = []
-            for series_id, entry, surviving in self._eligible(cut_count, selection, exempt=names):
+            for profile_id, profile, surviving in self._eligible(cut_count, selection, exempt=names):
                 if not all(name in surviving for name in names):
                     continue
                 sequence = [surviving[name] for name in names]
                 if all(better(a, b) for a, b in pairwise(sequence)):
-                    matched.append((series_id, entry, surviving))
+                    matched.append((profile_id, profile, surviving))
             tally = {}
-            for series_id, entry, surviving in matched:
+            for _, _, surviving in matched:
                 best = surviving[names[0]]
                 for rgroup, value in surviving.items():   # Already bounded; original query members excluded below.
                     if rgroup in original:
@@ -142,8 +282,8 @@ class SeriesOracle:
             can_shorten = shorten and len(members) > min_query_length
             if reported or not can_shorten:
                 heavies = {}
-                for _, entry, _ in matched:
-                    heavies.update(entry["heavies"])
+                for _, profile, _ in matched:
+                    heavies.update(profile["heavies"])
                 candidates = sorted(
                     (
                         {"rgroup": rgroup, "rgroup_num_heavies": heavies[rgroup], "wins": w,
@@ -165,12 +305,15 @@ class SeriesOracle:
             del members[victim]
 
     def similar(self, query, *, min_overlap=3, measure="spearman", top=0, selection=None,
-                cut_count=1, exclude_series_id=0):
+                cut_count=1, exclude_profile_id=0, measures=PYTHON_MEASURES):
+        """Compare like spec 7.4; rows carry the store's columns plus ``profile_id`` and ``shared``."""
         selection = selection or SeriesSelectionOptions()
+        rank_measure, rmsd_measure = measures
+        pooled = self.environment_radius is not None
         query_values = dict(query)
         rows = []
-        for series_id, entry, surviving in self._eligible(cut_count, selection):   # No exemption in similarity.
-            if series_id == exclude_series_id:
+        for profile_id, profile, surviving in self._eligible(cut_count, selection):   # No exemption in similarity.
+            if profile_id == exclude_profile_id:
                 continue
             shared = sorted(rgroup for rgroup in surviving if rgroup in query_values)
             if len(shared) < min_overlap:
@@ -178,15 +321,67 @@ class SeriesOracle:
             x = [query_values[rgroup] for rgroup in shared]
             y = [surviving[rgroup] for rgroup in shared]
             rows.append({
-                "series_id": series_id, "constant": entry["constant"], "cut_count": entry["cut_count"],
-                "overlap": len(shared), "spearman": spearman(x, y), "centred_rmsd": centred_rmsd(x, y),
+                "profile_id": profile_id,
+                "series_id": 0 if pooled else profile_id,
+                "constant": "" if pooled else profile["label"],
+                "environment_fingerprint_id": profile_id if pooled else 0,
+                "environment": profile["label"] if pooled else "",
+                "cut_count": cut_count,
+                "overlap": len(shared),
+                "spearman": rank_measure(x, y),
+                "centred_rmsd": rmsd_measure(x, y),
                 # The evidence of spec 7.4 for this match, already in its own
-                # order (SMILES within the series), so a differential can compare
+                # order (SMILES within the profile), so a differential can compare
                 # the store's evidence rows without recomputing the shared set.
                 "shared": list(zip(shared, x, y, strict=True)),
             })
-        if measure == "spearman":
-            rows.sort(key=lambda row: (row["spearman"] is None, -(row["spearman"] or 0.0), -row["overlap"], row["series_id"]))
-        else:
-            rows.sort(key=lambda row: (row["centred_rmsd"], -row["overlap"], row["series_id"]))
+        _ordered(rows, measure)
         return rows[:top] if top else rows
+
+    def network(self, selection=None, *, measure="spearman", min_overlap=3, top=10, threshold=None,
+                measures=BINDING_MEASURES):
+        """Spec 11.2 by brute force: each profile's thresholded top ``top``, unioned into undirected edges.
+
+        :returns: ``(edges, nodes)`` shaped like the store's network rows: edges
+            by (cut_count, source_id, target_id), nodes by (cut_count, id).
+        """
+        selection = selection or SeriesSelectionOptions()
+        rank_measure, rmsd_measure = measures
+        floor = max(2, selection.min_series_length)
+        eligible = {}
+        for key, profile in sorted(self.profiles(selection).items()):
+            if selection.cut_count and key[0] != selection.cut_count:
+                continue
+            surviving = self._surviving(profile, selection)
+            if len(surviving) >= floor:
+                eligible[key] = (profile, surviving)
+        edges = {}
+        for (cut_count, source), (_, source_values) in eligible.items():
+            rows = []
+            for (other_cut, target), (_, target_values) in eligible.items():
+                if other_cut != cut_count or target == source:
+                    continue
+                shared = sorted(set(source_values) & set(target_values))
+                if len(shared) < min_overlap:
+                    continue
+                x = [source_values[rgroup] for rgroup in shared]
+                y = [target_values[rgroup] for rgroup in shared]
+                row = {"profile_id": target, "overlap": len(shared), "spearman": rank_measure(x, y),
+                       "centred_rmsd": rmsd_measure(x, y)}
+                if threshold is not None:
+                    passes = ((row["spearman"] is not None and row["spearman"] >= threshold)
+                              if measure == "spearman" else row["centred_rmsd"] <= threshold)
+                    if not passes:
+                        continue
+                rows.append(row)
+            for row in _ordered(rows, measure)[:top]:
+                low, high = sorted((source, row["profile_id"]))
+                edges.setdefault((cut_count, low, high), {
+                    "cut_count": cut_count, "source_id": low, "target_id": high, "overlap": row["overlap"],
+                    "spearman": row["spearman"], "centred_rmsd": row["centred_rmsd"],
+                })
+        nodes = [
+            {"cut_count": cut_count, "id": profile_id, "label": profile["label"], "size": len(surviving)}
+            for (cut_count, profile_id), (profile, surviving) in eligible.items()
+        ]
+        return [edges[key] for key in sorted(edges)], nodes

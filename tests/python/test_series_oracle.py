@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import itertools
 import math
 import random
@@ -15,13 +16,20 @@ from oemmpa import (
     SeriesSelectionOptions,
     find_similar_series,
     rank_next_substituents,
+    series_network,
 )
 
 # tests/python is not a package, and site-packages ships an unrelated ``tests``
 # package that wins the dotted lookup, so the oracle is imported the way
 # _duckdb_dump is imported by its users.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _series_oracle import SeriesOracle, centred_rmsd, spearman
+from _series_oracle import (
+    BINDING_MEASURES,
+    SeriesOracle,
+    centred_rmsd,
+    fingerprint_ids,
+    spearman,
+)
 
 SUBSTITUENTS = {
     "[*:1][H]": "", "[*:1]C": "C", "[*:1]O": "O", "[*:1]N": "N", "[*:1]F": "F", "[*:1]Cl": "Cl",
@@ -267,7 +275,7 @@ def test_similarity_matches_the_oracle_on_random_stores(tmp_path, seed):
     # deterministically, so the tail can never silently skip.
     query_id, entry = _first_series(oracle, lambda values: len(values) >= 2)
     assert query_id is not None, f"seed {seed} must hold a one-cut series with two valued members"
-    expected = oracle.similar(list(entry["values"].items()), min_overlap=2, exclude_series_id=query_id)
+    expected = oracle.similar(list(entry["values"].items()), min_overlap=2, exclude_profile_id=query_id)
     actual = find_similar_series(store, "act", series_id=query_id, min_overlap=2).to_dicts()
     assert [row["series_id"] for row in actual] == [row["series_id"] for row in expected]
 
@@ -286,3 +294,182 @@ def test_spearman_with_ties_agrees_with_scipy():
         else:
             assert ours == pytest.approx(theirs)
     assert centred_rmsd([3.0, 2.0, 1.0], [1.0, 2.0, 3.0]) == pytest.approx((8.0 / 3.0) ** 0.5)
+
+
+def _closed_random_store(path, seed, cores, *, replicates):
+    """Build a random store and close it, so the duckdb package can read the file next."""
+    store = _random_store(path, seed, cores, replicates=replicates)
+    del store
+    gc.collect()
+    return path
+
+
+def _open_with_oracle(path, radius, **kwargs):
+    """Return ``(store, oracle)`` on a closed store file, pooled at ``radius`` (``None`` for series mode)."""
+    ids = fingerprint_ids(path) if radius is not None else None
+    store = DuckDBStore(path, read_only=True)
+    return store, SeriesOracle.from_store(store, "act", environment_radius=radius, fingerprint_ids=ids, **kwargs)
+
+
+@pytest.mark.parametrize("seed", [11, 12])
+@pytest.mark.parametrize("radius", [None, 1, 5])
+def test_network_matches_the_oracle_on_random_stores(tmp_path, seed, radius):
+    path = _closed_random_store(tmp_path / f"n{seed}.duckdb", seed, CORES, replicates=True)
+    store, oracle = _open_with_oracle(path, radius)
+    assert oracle.network(SeriesSelectionOptions(), min_overlap=2)[0], "the store must hold some edges"
+    rng = random.Random(300 + seed)
+    for measure in ("spearman", "crmsd"):
+        for _ in range(4):
+            min_overlap = rng.choice([2, 3])
+            top = rng.choice([1, 2, 10])
+            threshold = rng.choice([None, 0.5 if measure == "spearman" else 2.0])
+            selection = SeriesSelectionOptions(
+                min_series_length=rng.choice([2, 3]),
+                max_variable_heavy_atoms=rng.choice([0, 1, 4]),
+                min_constant_heavy_atoms=rng.choice([0, 8]),
+                cut_count=rng.choice([0, 1]),
+            )
+            want_edges, want_nodes = oracle.network(selection, measure=measure, min_overlap=min_overlap,
+                                                    top=top, threshold=threshold)
+            got = series_network(store, "act", measure=measure, min_overlap=min_overlap, top=top,
+                                 threshold=threshold, environment_radius=radius, selection=selection,
+                                 threads=rng.choice([1, 2, 8]))
+            case = (measure, min_overlap, top, threshold, selection)
+            assert got.nodes.to_dicts() == want_nodes, case
+            assert got.to_dicts() == want_edges, case
+
+
+@pytest.mark.parametrize("radius", [None, 1])
+@pytest.mark.parametrize("measure", ["spearman", "crmsd"])
+def test_network_is_the_union_of_find_similar_series_selections(tmp_path, radius, measure):
+    """Spec 11.3: each profile's selections are its first ``top`` thresholded similarity matches."""
+    path = _closed_random_store(tmp_path / "union.duckdb", 21, CORES, replicates=True)
+    store, oracle = _open_with_oracle(path, radius)
+    selection = SeriesSelectionOptions(max_variable_heavy_atoms=4)
+    top, min_overlap = 2, 2
+    threshold = 0.0 if measure == "spearman" else 3.0
+    network = series_network(store, "act", measure=measure, min_overlap=min_overlap, top=top, threshold=threshold,
+                             environment_radius=radius, selection=selection, threads=4)
+    profiles = oracle.profiles(selection)
+    expected = {}
+    for node in network.nodes.to_dicts():
+        cut_count, profile_id = node["cut_count"], node["id"]
+        # Any member series of a pooled profile queries that profile.
+        query_series = profiles[(cut_count, profile_id)]["series"][0]
+        per_node = SeriesSelectionOptions(max_variable_heavy_atoms=4, cut_count=cut_count)
+        matches = find_similar_series(store, "act", series_id=query_series, min_overlap=min_overlap,
+                                      measure=measure, selection=per_node, environment_radius=radius).to_dicts()
+        kept = [
+            match for match in matches
+            if ((match["spearman"] is not None and match["spearman"] >= threshold) if measure == "spearman"
+                else match["centred_rmsd"] <= threshold)
+        ][:top]
+        for match in kept:
+            target = match["series_id"] if radius is None else match["environment_fingerprint_id"]
+            low, high = sorted((profile_id, target))
+            expected.setdefault((cut_count, low, high), match)
+    edges = network.to_dicts()
+    assert edges, "the store must hold some edges"
+    assert [(edge["cut_count"], edge["source_id"], edge["target_id"]) for edge in edges] == sorted(expected)
+    for edge in edges:
+        match = expected[(edge["cut_count"], edge["source_id"], edge["target_id"])]
+        assert (edge["overlap"], edge["spearman"], edge["centred_rmsd"]) == (
+            match["overlap"], match["spearman"], match["centred_rmsd"])
+
+
+@pytest.mark.parametrize("seed", [4, 5])
+@pytest.mark.parametrize("radius", [1, 5])
+def test_pooled_similarity_matches_the_oracle(tmp_path, seed, radius):
+    path = _closed_random_store(tmp_path / f"ps{seed}.duckdb", seed, CORES, replicates=True)
+    store, oracle = _open_with_oracle(path, radius)
+    rng = random.Random(400 + seed)
+    fields = ("series_id", "constant", "environment_fingerprint_id", "environment", "overlap", "spearman",
+              "centred_rmsd")
+    for measure in ("spearman", "crmsd"):
+        for _ in range(4):
+            query = _random_query(rng, rng.randint(2, 5), distinct=False)
+            min_overlap = rng.choice([2, 3])
+            selection = SeriesSelectionOptions(max_variable_heavy_atoms=rng.choice([0, 1, 4]),
+                                               min_constant_heavy_atoms=rng.choice([0, 8]))
+            expected = oracle.similar(query, min_overlap=min_overlap, measure=measure, selection=selection,
+                                      measures=BINDING_MEASURES)
+            result = find_similar_series(store, "act", rgroups=query, min_overlap=min_overlap, measure=measure,
+                                         selection=selection, environment_radius=radius, evidence=True)
+            case = (measure, query, selection)
+            assert result.environment_radius == radius
+            assert [tuple(row[field] for field in fields) for row in result.to_dicts()] == [
+                tuple(row[field] for field in fields) for row in expected], case
+            shared = [
+                (match["environment_fingerprint_id"], rgroup, query_value, candidate_value)
+                for match in sorted(expected, key=lambda match: match["environment_fingerprint_id"])
+                for rgroup, query_value, candidate_value in match["shared"]
+            ]
+            assert [(row["environment_fingerprint_id"], row["rgroup"], row["query_value"], row["candidate_value"])
+                    for row in result.evidence.to_dicts()] == shared, case
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+@pytest.mark.parametrize("radius", [1, 5])
+def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
+    path = _closed_random_store(tmp_path / f"pr{seed}.duckdb", seed, CORES[: 5 + seed % 3], replicates=True)
+    store, oracle = _open_with_oracle(path, radius)
+    rng = random.Random(500 + seed)
+    for direction, ladder, shorten in itertools.product(("higher", "lower"), ((20, 10, 5), (1,)), (True, False)):
+        query = _random_query(rng, rng.randint(2, 4), distinct=True)
+        selection = SeriesSelectionOptions(
+            min_series_length=rng.choice([0, 2, 3]),
+            max_variable_heavy_atoms=rng.choice([0, 1, 2]),
+            min_constant_heavy_atoms=rng.choice([0, 7, 8]),
+        )
+        expected = oracle.rank(query, direction, support_ladder=ladder, shorten=shorten, min_query_length=2,
+                               selection=selection)
+        actual = rank_next_substituents(store, "act", direction, rgroups=query, support_ladder=ladder,
+                                        shorten=shorten, min_query_length=2, selection=selection,
+                                        environment_radius=radius, evidence=True)
+        case = (direction, ladder, shorten, query, selection)
+        assert actual.environment_radius == radius
+        assert actual.query_used == expected["query_used"], case
+        assert actual.dropped == expected["dropped"], case
+        assert actual.support_level == expected["support_level"], case
+        assert actual.matched_series == expected["matched_series"], case
+        assert [(row["rgroup"], row["support"], row["wins"], row["rgroup_num_heavies"]) for row in actual.to_dicts()] == [
+            (row["rgroup"], row["support"], row["wins"], row["rgroup_num_heavies"]) for row in expected["candidates"]
+        ], case
+        evidence = actual.evidence.to_dicts()
+        assert all(row["series_id"] == 0 and row["constant"] == "" for row in evidence), case
+        assert len({row["environment_fingerprint_id"] for row in evidence}) == expected["matched_series"], case
+
+
+def test_variant_rows_reach_every_query_only_with_the_flag(tmp_path):
+    store = _random_store(tmp_path / "variants.duckdb", 31, CORES, replicates=True)
+    # A guessed [*:1]I row beside every bromine member, carried by that compound and
+    # labelled constant-up: the shape the enumeration writes for a guessed stereo
+    # variant, inserted directly so a random store holds some.
+    store.raw.Execute("insert into rule_smiles (id, smiles, num_heavies) select max(id) + 1, '[*:1]I', 1 from rule_smiles")
+    store.raw.Execute(
+        "insert into series_member (id, series_id, rule_smiles_id, compound_id, enumeration_label) "
+        "select (select max(id) from series_member) + row_number() over (order by sm.series_id, sm.compound_id), "
+        "sm.series_id, (select id from rule_smiles where smiles = '[*:1]I'), sm.compound_id, 'constant-up' "
+        "from series_member sm join rule_smiles rs on rs.id = sm.rule_smiles_id where rs.smiles = '[*:1]Br'")
+    plain = SeriesOracle.from_store(store, "act")
+    guessed = SeriesOracle.from_store(store, "act", include_up_enumerated=True)
+    assert any("[*:1]I" in entry["values"] for entry in guessed.entries.values())
+    assert not any("[*:1]I" in entry["values"] for entry in plain.entries.values())
+    similar_query = [("[*:1]I", 5.0), ("[*:1][H]", 3.0), ("[*:1]F", 2.0)]
+    ranking_query = [("[*:1][H]", 3.0), ("[*:1]F", 2.0)]
+    fields = ("series_id", "overlap", "spearman", "centred_rmsd")
+    for flag, oracle in ((False, plain), (True, guessed)):
+        selection = SeriesSelectionOptions(include_up_enumerated=flag)
+        expected = oracle.similar(similar_query, min_overlap=2, selection=selection, measures=BINDING_MEASURES)
+        actual = find_similar_series(store, "act", rgroups=similar_query, min_overlap=2, selection=selection)
+        assert [tuple(row[field] for field in fields) for row in actual.to_dicts()] == [
+            tuple(row[field] for field in fields) for row in expected], flag
+        edges, nodes = oracle.network(selection, min_overlap=2, top=3)
+        network = series_network(store, "act", min_overlap=2, top=3, selection=selection, threads=2)
+        assert network.nodes.to_dicts() == nodes, flag
+        assert network.to_dicts() == edges, flag
+        want = oracle.rank(ranking_query, "higher", support_ladder=(1,), min_query_length=2, selection=selection)
+        got = rank_next_substituents(store, "act", "higher", rgroups=ranking_query, support_ladder=(1,),
+                                     min_query_length=2, selection=selection)
+        assert [(row["rgroup"], row["support"], row["wins"]) for row in got.to_dicts()] == [
+            (row["rgroup"], row["support"], row["wins"]) for row in want["candidates"]], flag
