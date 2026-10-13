@@ -258,7 +258,9 @@ jobs:
         env:
           LD_LIBRARY_PATH: /opt/duckdb/lib
         run: |
-          /opt/venv/bin/pip install pytest duckdb scipy
+          # The dev extra (pytest, rich, rich-click) plus the test-time-only
+          # comparison libraries; ci.yml installs the same set.
+          /opt/venv/bin/pip install pytest rich rich-click duckdb scipy rdkit
           # Doxygen is not installed here, and the docs build hangs often enough
           # that it is not worth gating a release on; every other test runs.
           /opt/venv/bin/python -m pytest tests/python \

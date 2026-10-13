@@ -61,9 +61,11 @@ jobs:
           echo "/opt/venv/bin" >> $GITHUB_PATH
           /opt/venv/bin/pip install --upgrade pip setuptools wheel
           /opt/venv/bin/pip install ninja cmake swig
-          # duckdb and scipy are test-time only: the suites compare the store
-          # and the statistics against independent implementations.
-          /opt/venv/bin/pip install pytest duckdb scipy
+          # pytest, rich and rich-click are the project's own dev extra, which
+          # the CLI tests import. duckdb, scipy and rdkit are test-time only:
+          # the suites check the store, the statistics and the fragmentation
+          # against independent implementations rather than against themselves.
+          /opt/venv/bin/pip install pytest rich rich-click duckdb scipy rdkit
 
       - name: Authenticate to Google Cloud
         id: gcp-auth
