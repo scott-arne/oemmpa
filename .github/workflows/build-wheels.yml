@@ -262,12 +262,9 @@ jobs:
             sphinx breathe exhale myst-parser sphinx-rtd-theme \
             sphinx-autodoc-typehints
           # Doxygen is not installed here, and the docs build hangs often enough
-          # that it is not worth gating a release on. The golden-store test is
-          # the same quarantine as ci.yml, where the comment carries the detail;
-          # both exclusions come out together with the fix.
+          # that it is not worth gating a release on; every other test runs.
           /opt/venv/bin/python -m pytest tests/python \
-            --deselect tests/python/test_docs_build.py::test_strict_docs_build \
-            --deselect tests/python/test_duckdb_bulk_equivalence.py::test_bulk_save_matches_golden
+            --deselect tests/python/test_docs_build.py::test_strict_docs_build
 
       - name: List built artifacts
         run: |

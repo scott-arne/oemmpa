@@ -479,6 +479,15 @@ std::vector<LocalAtomRecord> make_local_atom_order(
         ordered_atoms.push_back(record);
     }
 
+    // original_idx is the last key, and it is what makes this a strict total
+    // order rather than merely a weak one. Atoms in the same refinement orbit
+    // -- the symmetric carbons of a benzene ring, say -- tie on every chemical
+    // key here, and std::sort leaves equivalent elements in an unspecified
+    // order. libstdc++ and libc++ then chose different permutations, which
+    // renumbered the ring and changed the serialized bond list, so the same
+    // molecule fingerprinted differently on Linux and macOS and the value is
+    // persisted as a pooling key. Indices are unique within an environment, so
+    // this leaves no ties for the sort to resolve on its own.
     std::sort(
         ordered_atoms.begin(),
         ordered_atoms.end(),
@@ -488,13 +497,15 @@ std::vector<LocalAtomRecord> make_local_atom_order(
                 left.shell,
                 left.atom_token,
                 left.neighbor_signature,
-                left.refinement_rank
+                left.refinement_rank,
+                left.original_idx
             ) < std::tie(
                 right.nearest_attachment_label,
                 right.shell,
                 right.atom_token,
                 right.neighbor_signature,
-                right.refinement_rank
+                right.refinement_rank,
+                right.original_idx
             );
         }
     );
