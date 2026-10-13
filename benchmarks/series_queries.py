@@ -14,8 +14,14 @@ candidates on the 10k corpus without being able to shorten, so a fourth ranking
 query is taken from a stored series' own members (``--shortening-length`` of
 them, default 6) and kept only when its run drops at least one member, which
 times the shortening loop. The similarity queries are the three largest series,
-top 20. Each query runs once cold (discarded) and ``repeats`` times warm; the
-median is reported against a one-second target.
+top 20. Four more records cover the plan-2 query options: the first ranking
+query pooled by attachment environment at radius 1 (``rank-pooled``), the
+largest series' similarity query pooled at radius 1 (``similar-pooled``) and
+with the guessed stereo-variant rows (``similar-variants``), and one network
+build over every series (``network``: top 10, Spearman, 8 threads), timed once
+cold and twice warm against a 60-second target. The store record also carries
+the persist time alone. Each query runs once cold (discarded) and ``repeats``
+times warm; the median is reported against a one-second target.
 Results go to ``benchmarks/results/series_queries.json`` with the corpus
 provenance, the linked DuckDB version and the host recorded.
 
@@ -82,6 +88,14 @@ SHORTENING_MAX_SERIES = 25
 QUERY_SIZE = 10000
 QUERY_REPEATS = 5
 QUERY_THREADS = 1
+# The plan-2 records (seams spec 14.4): pooled ranking and similarity at radius
+# 1, similarity with the guessed rows, and one network build timed once cold and
+# twice warm against a target of its own.
+POOLED_RADIUS = 1
+NETWORK_TOP = 10
+NETWORK_THREADS = 8
+NETWORK_WARM_RUNS = 2
+NETWORK_TARGET_SECONDS = 60.0
 # The MCS workload (seams spec 14.4): a dmcss build without and with series
 # enumeration, each in its own child process, on the 1k corpus, in alternating
 # order for MCS_PAIRS pairs so drift over the run favours neither mode.
@@ -131,8 +145,10 @@ def build_store(smiles_path, store_path, *, threads=1, force=False):
     :param threads: Analyzer worker threads (the persist itself is serial).
     :param force: Replace an existing store instead of refusing it.
     :returns: Mapping with the molecule, series and member-row counts, the build
-        seconds (parse, load the property, analyse and persist) and the seconds
-        the persist spent rewriting ``series.num_members``.
+        seconds (parse, load the property, analyse and persist), the persist
+        seconds alone (the save, environment rows of every series constant
+        included) and the seconds the persist spent rewriting
+        ``series.num_members``.
     :raises FileExistsError: When ``store_path`` exists and ``force`` is false; nothing is touched.
     """
     store_path = Path(store_path)
@@ -154,7 +170,9 @@ def build_store(smiles_path, store_path, *, threads=1, force=False):
         analyzer.add_property(identifier, PROPERTY, value)
     analyzer.analyze(threads)
     store = oemmpa.DuckDBStore(store_path)
+    persist_start = perf_counter()
     store.save_analyzer(analyzer, max_variable_heavies=10)
+    persist_seconds = perf_counter() - persist_start
     elapsed = perf_counter() - start
     summary = store.summary()
     return {
@@ -162,6 +180,7 @@ def build_store(smiles_path, store_path, *, threads=1, force=False):
         "series": int(summary["series"]),
         "series_members": int(summary["series_members"]),
         "build_seconds": elapsed,
+        "persist_seconds": persist_seconds,
         "series_count_refresh_seconds": store.series_count_refresh_seconds(),
     }
 
@@ -462,7 +481,7 @@ def _write_bundle(bundle, out_path):
 def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, store_path=None,
                                parquet=None, out_path=DEFAULT_OUT, force=False,
                                shortening_length=SHORTENING_LENGTH):
-    """Build the store, time both query kinds on it, and write the results bundle.
+    """Build the store, time every query kind on it, and write the results bundle.
 
     :param size: Corpus size requested from ``ensure_corpus`` when no
         ``smiles_path`` is given.
@@ -545,7 +564,8 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
         "support_level": ranking.support_level, "median_seconds": median_seconds, "runs": runs,
         "under_target": median_seconds < TARGET_SECONDS,
     })
-    for entry in largest_series(store, count=3):
+    largest = largest_series(store, count=3)
+    for entry in largest:
         def run_similar(entry=entry):
             return oemmpa.find_similar_series(store, PROPERTY, series_id=entry["series_id"], top=20)
         median_seconds, runs, similar = time_query(run_similar, repeats=repeats)
@@ -555,12 +575,60 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
             "query_size": similar.query_size, "matches": len(similar),
             "under_target": median_seconds < TARGET_SECONDS,
         })
+    pooled_order = orders[0]
+
+    def run_rank_pooled():
+        return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=pooled_order["values"],
+                                             support_ladder=SUPPORT_LADDER, environment_radius=POOLED_RADIUS)
+    median_seconds, runs, ranking = time_query(run_rank_pooled, repeats=repeats)
+    queries.append({
+        "kind": "rank-pooled", "query": pooled_order["rgroups"], "values": pooled_order["values"],
+        "environment_radius": POOLED_RADIUS, "direction": "higher", "ladder": list(SUPPORT_LADDER),
+        "median_seconds": median_seconds, "runs": runs, "matched_series": ranking.matched_series,
+        "support_level": ranking.support_level, "dropped": list(ranking.dropped), "candidates": len(ranking),
+        "under_target": median_seconds < TARGET_SECONDS,
+    })
+    widest = largest[0]
+
+    def run_similar_pooled():
+        return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
+                                          environment_radius=POOLED_RADIUS)
+    median_seconds, runs, similar = time_query(run_similar_pooled, repeats=repeats)
+    queries.append({
+        "kind": "similar-pooled", "series_id": widest["series_id"], "constant": widest["constant"],
+        "num_members": widest["num_members"], "top": 20, "environment_radius": POOLED_RADIUS,
+        "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
+        "under_target": median_seconds < TARGET_SECONDS,
+    })
+
+    def run_similar_variants():
+        return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
+                                          selection=oemmpa.SeriesSelectionOptions(include_up_enumerated=True))
+    median_seconds, runs, similar = time_query(run_similar_variants, repeats=repeats)
+    queries.append({
+        "kind": "similar-variants", "series_id": widest["series_id"], "constant": widest["constant"],
+        "num_members": widest["num_members"], "top": 20, "include_up_enumerated": True,
+        "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
+        "under_target": median_seconds < TARGET_SECONDS,
+    })
+
+    def run_network():
+        return oemmpa.series_network(store, PROPERTY, measure="spearman", min_overlap=3, top=NETWORK_TOP,
+                                     threads=NETWORK_THREADS)
+    median_seconds, runs, network = time_query(run_network, repeats=NETWORK_WARM_RUNS)
+    queries.append({
+        "kind": "network", "measure": "spearman", "min_overlap": 3, "top": NETWORK_TOP,
+        "threads": NETWORK_THREADS, "nodes": len(network.nodes), "edges": len(network),
+        "median_seconds": median_seconds, "runs": runs, "target_seconds": NETWORK_TARGET_SECONDS,
+        "under_target": median_seconds < NETWORK_TARGET_SECONDS,
+    })
     bundle = {
         "meta": {
             "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
             "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
             "query_rgroups": query_rgroups, "query_rgroup_count": len(query_rgroups),
             "shortening_length": shortening_length,
+            "network_threads": NETWORK_THREADS, "pooled_radius": POOLED_RADIUS,
             "corpus_provenance": _corpus_provenance(smiles),
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "duckdb_python_version": _duckdb_python_version(),
@@ -570,6 +638,7 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
         },
         "store": build,
         "target_seconds": TARGET_SECONDS,
+        "network_target_seconds": NETWORK_TARGET_SECONDS,
         "queries": queries,
         "all_under_target": all(query["under_target"] for query in queries) if queries else False,
     }

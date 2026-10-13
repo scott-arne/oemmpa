@@ -104,6 +104,7 @@ def test_build_store_and_query_selection(tiny_smiles, tmp_path):
     assert report["molecules"] == 72
     assert report["series"] > 0 and report["series_members"] > 0
     assert report["build_seconds"] >= 0 and report["series_count_refresh_seconds"] >= 0
+    assert 0 <= report["persist_seconds"] <= report["build_seconds"]
     store = series_queries.open_store(tmp_path / "tiny.duckdb")
     commonest = series_queries.commonest_rgroups(store, count=4)
     assert len(commonest) == 4 and "[*:1][H]" in commonest
@@ -278,7 +279,8 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert meta["query_rgroups"] == meta["commonest_rgroups"] and meta["query_rgroup_count"] == 4
     assert meta["shortening_length"] == 6
     assert bundle["target_seconds"] == 1.0
-    assert {query["kind"] for query in bundle["queries"]} == {"rank", "rank-shorten", "similar"}
+    assert {query["kind"] for query in bundle["queries"]} == {
+        "rank", "rank-shorten", "similar", "rank-pooled", "similar-pooled", "similar-variants", "network"}
     assert sum(1 for query in bundle["queries"] if query["kind"] == "rank") == 3
     assert sum(1 for query in bundle["queries"] if query["kind"] == "similar") == 3
     [shortening] = [query for query in bundle["queries"] if query["kind"] == "rank-shorten"]
@@ -289,13 +291,27 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     assert {"series_id", "candidates", "support_level", "matched_series"} <= set(shortening)
     for query in bundle["queries"]:
         assert query["median_seconds"] >= 0
-        assert len(query["runs"]) == 1
+        assert len(query["runs"]) == (series_queries.NETWORK_WARM_RUNS if query["kind"] == "network" else 1)
         assert isinstance(query["under_target"], bool)
     ranks = [query for query in bundle["queries"] if query["kind"] == "rank"]
     assert all(rank["direction"] == "higher" and rank["ladder"] == [20, 10, 5] for rank in ranks)
     assert all("matched_series" in rank and "candidates" in rank for rank in ranks)
     similars = [query for query in bundle["queries"] if query["kind"] == "similar"]
     assert all(similar["top"] == 20 and "matches" in similar for similar in similars)
+    [rank_pooled] = [query for query in bundle["queries"] if query["kind"] == "rank-pooled"]
+    assert rank_pooled["environment_radius"] == 1 and rank_pooled["query"] == ranks[0]["query"]
+    [similar_pooled] = [query for query in bundle["queries"] if query["kind"] == "similar-pooled"]
+    [similar_variants] = [query for query in bundle["queries"] if query["kind"] == "similar-variants"]
+    assert similar_pooled["environment_radius"] == 1 and similar_variants["include_up_enumerated"] is True
+    assert similar_pooled["series_id"] == similar_variants["series_id"] == similars[0]["series_id"]
+    [network] = [query for query in bundle["queries"] if query["kind"] == "network"]
+    assert (network["measure"], network["top"], network["threads"], network["min_overlap"]) == ("spearman", 10, 8, 3)
+    assert network["nodes"] > 0 and network["edges"] > 0
+    assert network["target_seconds"] == 60.0
+    assert network["under_target"] == (network["median_seconds"] < 60.0)
+    assert bundle["network_target_seconds"] == 60.0
+    assert meta["network_threads"] == 8 and meta["pooled_radius"] == 1
+    assert 0 <= bundle["store"]["persist_seconds"] <= bundle["store"]["build_seconds"]
     assert bundle["all_under_target"] == all(query["under_target"] for query in bundle["queries"])
     with pytest.raises(ValueError, match="differ"):
         series_queries.run_series_query_benchmark(
