@@ -20,8 +20,17 @@ public:
     explicit Fragmenter(const FragmentationStrategy& strategy);
     Fragmenter(const Fragmenter& other);
     Fragmenter& operator=(const Fragmenter& other);
-    Fragmenter(Fragmenter&& other) noexcept = default;
-    Fragmenter& operator=(Fragmenter&& other) noexcept = default;
+    // Not noexcept: rotatable_subsearch_ is an OESubSearch, which declares a
+    // copy constructor and a destructor but no move constructor, so moving a
+    // Fragmenter has to copy it and that allocation can throw. Saying noexcept
+    // here made the implicit exception specification incompatible with the
+    // declared one, which defines an explicitly defaulted function as deleted
+    // -- and a deleted defaulted move constructor is ignored by overload
+    // resolution, so every std::move silently selected the deep-cloning copy
+    // constructor instead. GCC 8 did exactly that; clang did not, which is why
+    // only Linux saw it.
+    Fragmenter(Fragmenter&& other) = default;
+    Fragmenter& operator=(Fragmenter&& other) = default;
 
     void SetStrategy(const FragmentationStrategy& strategy);
     void SetMinCuts(unsigned int min_cuts);

@@ -247,11 +247,7 @@ jobs:
         if: matrix.arch == 'x86_64'
         env:
           LD_LIBRARY_PATH: /opt/duckdb/lib
-        # Same quarantine as ci.yml, for the same reason; the comment there
-        # carries the detail. Both exclusions come out together with the fix.
-        run: |
-          ctest --test-dir build-tests --output-on-failure \
-            -E '^FragmenterTest\.StrictPolicyDoesNotPreemptTheStrategyCheck$'
+        run: ctest --test-dir build-tests --output-on-failure
 
       - name: Python tests
         if: matrix.arch == 'x86_64'

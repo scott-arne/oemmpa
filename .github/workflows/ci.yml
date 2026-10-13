@@ -138,21 +138,7 @@ jobs:
       - name: C++ tests
         env:
           LD_LIBRARY_PATH: /opt/duckdb/lib
-        # QUARANTINED, 2026-10-13: StrictPolicyDoesNotPreemptTheStrategyCheck
-        # fails here and passes on macOS against both OpenEye 2025.2.3 and
-        # 2026.1.0, so it is platform-specific rather than an SDK difference.
-        # It asserts that a moved-from Fragmenter throws, which needs the move
-        # to null strategy_; CI reports no throw, so on this toolchain the
-        # source keeps its strategy. The likeliest mechanism is that the
-        # defaulted move constructor is deleted here -- a deleted defaulted
-        # move constructor is ignored by overload resolution, so std::move
-        # silently binds to the deep-cloning copy constructor. That is
-        # unproven: it needs a GCC 8 box to confirm, and if true it means
-        # Fragmenter copies where it claims to move. Remove this exclusion
-        # with the fix; do not let it outlive the investigation.
-        run: |
-          ctest --test-dir build --output-on-failure \
-            -E '^FragmenterTest\.StrictPolicyDoesNotPreemptTheStrategyCheck$'
+        run: ctest --test-dir build --output-on-failure
 
       - name: Build the Python extension
         run: cmake --build build -j "$(nproc)" --target oemmpa_python

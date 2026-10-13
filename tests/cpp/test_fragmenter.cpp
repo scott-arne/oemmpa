@@ -683,6 +683,29 @@ TEST(FragmenterTest, StrictPolicySkipsEveryMoleculeTheSearchRejects) {
     EXPECT_TRUE(assigned.Fragment(63, untagged_ring).empty());
 }
 
+// Moving a Fragmenter must hand the strategy over rather than clone it. This
+// is pinned directly because the failure mode is silent: a defaulted move
+// constructor whose noexcept is incompatible with its implicit exception
+// specification is defined as deleted, and a deleted defaulted move
+// constructor is ignored by overload resolution, so std::move quietly selects
+// the copy constructor. GCC 8 did that here while clang did not, so only the
+// Linux wheels were affected and only this assertion distinguishes the two.
+TEST(FragmenterTest, MovingHandsOverTheStrategyRatherThanCloningIt) {
+    OEChem::OEGraphMol mol = MolFromSmiles("CCOCC");
+    OEChem::OESuppressHydrogens(mol);
+
+    Fragmenter source = MakeAcyclicHeavyAtomFragmenter();
+    const Fragmenter moved_to(std::move(source));
+    EXPECT_FALSE(moved_to.Fragment(11, mol).empty());
+    EXPECT_THROW(source.Fragment(12, mol), FragmentationError);
+
+    Fragmenter assigned_source = MakeAcyclicHeavyAtomFragmenter();
+    Fragmenter assigned_to;
+    assigned_to = std::move(assigned_source);
+    EXPECT_FALSE(assigned_to.Fragment(13, mol).empty());
+    EXPECT_THROW(assigned_source.Fragment(14, mol), FragmentationError);
+}
+
 // The strict check is one more skip among the fragmenter's own, not a gate in
 // front of them: the strategy check still comes first. The default constructor
 // installs a strategy, so the only fragmenter without one is a moved-from
