@@ -434,7 +434,7 @@ def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
         ], case
         evidence = actual.evidence.to_dicts()
         assert all(row["series_id"] == 0 and row["constant"] == "" for row in evidence), case
-        assert len({row["environment_fingerprint_id"] for row in evidence}) == expected["matched_series"], case
+        assert sorted({row["environment_fingerprint_id"] for row in evidence}) == expected["matched_profile_ids"], case
         return expected, actual
 
     rng = random.Random(500 + seed)
@@ -450,17 +450,20 @@ def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
     # The generated queries are mostly unmatched on these small stores (a whole
     # parametrisation can compare empty to empty), so one fixed query that matches
     # a pooled profile in every (seed, radius) pair runs through the same checks
-    # and must return rows.
+    # and must return rows: it is what makes the evidence assertions run on rows.
     anchor_query = [("[*:1]Br", 3.0), ("[*:1][H]", 2.0)]
-    expected, actual = check(anchor_query, "higher", (1,), True, SeriesSelectionOptions())
+    expected, _ = check(anchor_query, "higher", (1,), True, SeriesSelectionOptions())
     assert expected["candidates"], "the anchor must return candidates"
-    if radius == 1:
-        # Pooling must change the answer, not just echo the radius: at radius 1 the aryl
-        # environments merge and the anchor gains candidates. At radius 5 the environments
-        # are specific enough that this query pools nothing, so the control would match.
-        control = rank_next_substituents(store, "act", "higher", rgroups=anchor_query, support_ladder=(1,),
-                                         min_query_length=2, selection=SeriesSelectionOptions(), evidence=True)
-        assert [row["rgroup"] for row in actual.to_dicts()] != [row["rgroup"] for row in control.to_dicts()]
+
+    # That anchor proves the pooled formatting but, at radius 5, pools nothing. This
+    # query's pooled list differs from series mode at both radii on both seeds, so an
+    # implementation that skipped the aggregation and only echoed the radius would
+    # match the control and fail.
+    pooling_query = [("[*:1]CC", 3.0), ("[*:1]Br", 2.0)]
+    _, pooled = check(pooling_query, "higher", (1,), True, SeriesSelectionOptions())
+    control = rank_next_substituents(store, "act", "higher", rgroups=pooling_query, support_ladder=(1,),
+                                     min_query_length=2, selection=SeriesSelectionOptions())
+    assert [row["rgroup"] for row in pooled.to_dicts()] != [row["rgroup"] for row in control.to_dicts()]
 
 
 def test_variant_rows_reach_every_query_only_with_the_flag(tmp_path):

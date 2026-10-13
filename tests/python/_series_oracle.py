@@ -251,7 +251,11 @@ class SeriesOracle:
 
     def rank(self, query, direction, *, support_ladder=(20, 10, 5), shorten=True, min_query_length=3,
              selection=None, cut_count=1):
-        """Rank like spec 7.3. ``query`` is a list of ``(rgroup, value)``; ``direction`` is 'higher' or 'lower'."""
+        """Rank like spec 7.3. ``query`` is a list of ``(rgroup, value)``; ``direction`` is 'higher' or 'lower'.
+
+        ``matched_profile_ids`` lists the profiles that matched: the environment
+        fingerprint ids when pooled, the series ids otherwise.
+        """
         selection = selection or SeriesSelectionOptions()
         better = (lambda a, b: a > b) if direction == "higher" else (lambda a, b: a < b)
         members = sorted(query, key=lambda item: item[1], reverse=(direction == "higher"))
@@ -303,6 +307,7 @@ class SeriesOracle:
                     "dropped": tuple(dropped),
                     "support_level": level if reported else (0 if not matched else support_ladder[-1]),
                     "matched_series": len(matched),
+                    "matched_profile_ids": sorted(profile_id for profile_id, _, _ in matched),
                     "candidates": candidates,
                 }
             counts = [(self.posting_count(name), name) for name in names]
