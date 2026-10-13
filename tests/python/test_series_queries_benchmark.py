@@ -299,7 +299,7 @@ def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     similars = [query for query in bundle["queries"] if query["kind"] == "similar"]
     assert all(similar["top"] == 20 and "matches" in similar for similar in similars)
     [rank_pooled] = [query for query in bundle["queries"] if query["kind"] == "rank-pooled"]
-    assert rank_pooled["environment_radius"] == 1 and rank_pooled["query"] == ranks[0]["query"]
+    assert rank_pooled["environment_radius"] == 1 and rank_pooled["query"] == ranks[1]["query"]
     [similar_pooled] = [query for query in bundle["queries"] if query["kind"] == "similar-pooled"]
     [similar_variants] = [query for query in bundle["queries"] if query["kind"] == "similar-variants"]
     assert similar_pooled["environment_radius"] == 1 and similar_variants["include_up_enumerated"] is True

@@ -575,7 +575,12 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
             "query_size": similar.query_size, "matches": len(similar),
             "under_target": median_seconds < TARGET_SECONDS,
         })
-    pooled_order = orders[0]
+    # The first timed order matches no pooled profile at radius 1 on the 10k
+    # corpus, so timing it would record an empty match as a pooled ranking. The
+    # second order does match; the owner approved this departure from D13's
+    # "first timed order". The selection above always returns three orders (it
+    # raises instead), so the index needs no guard.
+    pooled_order = orders[1]
 
     def run_rank_pooled():
         return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=pooled_order["values"],
