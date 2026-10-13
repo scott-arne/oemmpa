@@ -25,8 +25,11 @@ from oemmpa import (
     rank_next_substituents,
     read_rgroup_file,
     rgroups_to_recursive_smarts,
+    series_network,
 )
 from oemmpa._series import (
+    NETWORK_EDGE_COLUMNS,
+    NETWORK_NODE_COLUMNS,
     RANKING_EVIDENCE_COLUMNS,
     RANKING_ROW_COLUMNS,
     SIMILARITY_EVIDENCE_COLUMNS,
@@ -187,6 +190,10 @@ INTEGER_COLUMNS = {
     "overlap",
     "position",
     "environment_fingerprint_id",
+    "source_id",
+    "target_id",
+    "id",
+    "size",
 }
 BOOLEAN_COLUMNS = frozenset({"win"})
 
@@ -563,21 +570,22 @@ def _ensure_report_outputs_are_distinct(*paths):
         seen.append(path)
 
 
-def _ensure_evidence_stream_is_not_shared(output_path, evidence_path):
-    """Refuse evidence on standard output while the report is written there too.
+def _ensure_evidence_stream_is_not_shared(output_path, evidence_path, flag="--evidence"):
+    """Refuse a second table on standard output while the report is written there too.
 
     Two tables on one stream cannot be told apart by a reader, so the caller has
     to send one of them to a file.
 
     :param output_path: Report path, or ``None`` or ``"-"`` for standard output.
-    :param evidence_path: Evidence path, or ``None`` when no evidence is written.
+    :param evidence_path: Second table's path, or ``None`` when it is not written.
+    :param flag: The second table's option, named in the message.
     :raises ValueError: If both tables would go to standard output.
     """
     if evidence_path is None or str(evidence_path) != "-":
         return
     if output_path is None or str(output_path) == "-":
         raise ValueError(
-            "--evidence cannot share standard output with the report; give one of them a file path"
+            f"{flag} cannot share standard output with the report; give one of them a file path"
         )
 
 
@@ -1242,7 +1250,11 @@ def _series_selection_from_args(args):
     )
 
 
-def _add_series_selection_arguments(parser, *, with_cut_count):
+_GUESSED_ROWS_HELP = ("Also read the guessed stereo-variant rows (enumeration_label constant-up or "
+                      "variable-up) as members.")
+
+
+def _add_series_selection_arguments(parser, *, with_cut_count, include_help):
     parser.add_argument("--min-length", type=int, default=None,
                         help="Minimum members a series keeps after the member filter (default 2).")
     parser.add_argument("--max-rgroup-heavies", type=int, default=None,
@@ -1251,6 +1263,14 @@ def _add_series_selection_arguments(parser, *, with_cut_count):
                         help="Drop series whose constant has fewer heavy atoms than this.")
     if with_cut_count:
         parser.add_argument("--cut-count", type=int, default=None, help="Keep only series of this cut count.")
+    parser.add_argument("--include-up-enumerated", action="store_true", help=include_help)
+
+
+def _add_environment_radius_argument(parser):
+    parser.add_argument("--environment-radius", type=int, default=None,
+                        help="Pool every series of one cut count whose constant shares its attachment "
+                             "environment at this radius (0 to 5) into one profile; omitted compares "
+                             "stored series.")
 
 
 def _add_series_query_arguments(parser, *, with_candidate_exclusion):
@@ -1297,7 +1317,7 @@ def _series_rank(args):
         store, args.property, args.direction, series_id=series_id, rgroups=rgroups,
         support_ladder=_parse_support_ladder(args.support_ladder), shorten=not args.no_shorten,
         min_query_length=args.min_query_length, selection=_series_selection_from_args(args),
-        evidence=args.evidence is not None,
+        environment_radius=args.environment_radius, evidence=args.evidence is not None,
     )
     comment = (
         f"query_used={','.join(ranking.query_used)}\tdropped={','.join(ranking.dropped)}"
@@ -1320,11 +1340,28 @@ def _series_similar(args):
     similar = find_similar_series(
         store, args.property, series_id=series_id, rgroups=rgroups, min_overlap=args.min_overlap,
         measure=args.measure, top=args.top, selection=_series_selection_from_args(args),
-        evidence=args.evidence is not None,
+        environment_radius=args.environment_radius, evidence=args.evidence is not None,
     )
     _write_tsv_output(similar.to_dicts(), list(SIMILARITY_ROW_COLUMNS), args.output)
     if args.evidence is not None:
         _write_tsv_output(similar.evidence.to_dicts(), list(SIMILARITY_EVIDENCE_COLUMNS), args.evidence)
+    return 0
+
+
+def _series_network(args):
+    _ensure_report_output_is_not_database(args.database, args.output)
+    _ensure_report_output_is_not_database(args.database, args.nodes)
+    _ensure_report_outputs_are_distinct(args.output, args.nodes)
+    _ensure_evidence_stream_is_not_shared(args.output, args.nodes, flag="--nodes")
+    store = _open_store_read_only(args.database)
+    network = series_network(
+        store, args.property, measure=args.measure, min_overlap=args.min_overlap, top=args.top,
+        threshold=args.threshold, environment_radius=args.environment_radius,
+        selection=_series_selection_from_args(args), threads=args.threads,
+    )
+    _write_tsv_output(network.to_dicts(), list(NETWORK_EDGE_COLUMNS), args.output)
+    if args.nodes is not None:
+        _write_tsv_output(network.nodes.to_dicts(), list(NETWORK_NODE_COLUMNS), args.nodes)
     return 0
 
 
@@ -1858,11 +1895,10 @@ def _build_parser():
     series_parser = subparsers.add_parser(
         "series", help="List the matched molecular series of a persistent DuckDB store.")
     series_parser.add_argument("--database", required=True, help="DuckDB database path.")
-    _add_series_selection_arguments(series_parser, with_cut_count=True)
+    _add_series_selection_arguments(
+        series_parser, with_cut_count=True,
+        include_help="Also list the guessed stereo-variant rows (enumeration_label constant-up or variable-up).")
     series_parser.add_argument("--constant", default=None, help="Keep only the series of this constant SMILES.")
-    series_parser.add_argument(
-        "--include-up-enumerated", action="store_true",
-        help="Also list the guessed stereo-variant rows (enumeration_label constant-up or variable-up).")
     series_parser.add_argument("--output", default=None,
                                help="Optional TSV output path, or '-' for standard output. Use .gz for gzip output.")
     series_parser.set_defaults(func=_series)
@@ -1877,7 +1913,8 @@ def _build_parser():
     rank_parser.add_argument("--no-shorten", action="store_true",
                              help="Do not drop the least common query member when no candidate reaches the last level.")
     rank_parser.add_argument("--min-query-length", type=int, default=3, help="Floor of the shortening (at least 2).")
-    _add_series_selection_arguments(rank_parser, with_cut_count=False)
+    _add_environment_radius_argument(rank_parser)
+    _add_series_selection_arguments(rank_parser, with_cut_count=False, include_help=_GUESSED_ROWS_HELP)
     rank_parser.set_defaults(func=_series_rank)
 
     similar_parser = subparsers.add_parser(
@@ -1888,8 +1925,34 @@ def _build_parser():
                                 help="Sort by Spearman (descending) or centred RMSD (ascending).")
     similar_parser.add_argument("--top", type=int, default=None,
                                 help="Keep this many matches after sorting; 0 or omitted keeps every match.")
-    _add_series_selection_arguments(similar_parser, with_cut_count=False)
+    _add_environment_radius_argument(similar_parser)
+    _add_series_selection_arguments(similar_parser, with_cut_count=False, include_help=_GUESSED_ROWS_HELP)
     similar_parser.set_defaults(func=_series_similar)
+
+    network_parser = subparsers.add_parser(
+        "series-network",
+        help="Build the all-pairs similarity network of the stored series or pooled profiles.")
+    network_parser.add_argument("--database", required=True, help="DuckDB database path.")
+    network_parser.add_argument("--property", required=True, help="Stored property name.")
+    network_parser.add_argument("--measure", choices=["spearman", "crmsd"], default="spearman",
+                                help="Rank each profile's neighbours by Spearman (descending) or centred RMSD "
+                                     "(ascending).")
+    network_parser.add_argument("--min-overlap", type=int, default=3,
+                                help="Minimum shared valued R-groups (at least 2).")
+    network_parser.add_argument("--top", type=int, default=10,
+                                help="Neighbours each profile keeps before the undirected union (at least 1).")
+    network_parser.add_argument("--threshold", type=float, default=None,
+                                help="Keep only pairs whose Spearman is at least this (spearman) or whose centred "
+                                     "RMSD is at most this (crmsd).")
+    _add_environment_radius_argument(network_parser)
+    network_parser.add_argument("--threads", type=int, default=None, help="Scoring threads (default: every CPU).")
+    network_parser.add_argument("--output", default=None,
+                                help="Optional edge TSV path, or '-' for standard output. Use .gz for gzip output.")
+    network_parser.add_argument("--nodes", default=None,
+                                help="Optional node TSV path, or '-' for standard output when the edges go to a "
+                                     "file. Use .gz for gzip output.")
+    _add_series_selection_arguments(network_parser, with_cut_count=True, include_help=_GUESSED_ROWS_HELP)
+    network_parser.set_defaults(func=_series_network)
 
     stats_parser = subparsers.add_parser(
         "refresh-stats",

@@ -14,7 +14,7 @@ from oemmpa import Analyzer, DuckDBStore
 # package that wins the dotted lookup, so the shared fixture is imported the way
 # test_series_oracle.py imports _series_oracle.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _series_fixture import CREATED_STEREOCENTRE, without_column
+from _series_fixture import CREATED_STEREOCENTRE, POOLED_COMPOUNDS, without_column
 
 PYTHON_ROOT = Path(__file__).resolve().parents[2] / "python"
 CORES = ["C", "CC", "OC", "N", "C#N"]
@@ -209,6 +209,7 @@ def test_series_similar_rows_measures_top_and_evidence(database, tmp_path):
 
 RANK_QUERY = ["--property", "act", "--direction", "higher", "--rgroup", "[*:1][H]=3", "--rgroup", "[*:1]F=2"]
 SIMILAR_QUERY = ["--property", "act", "--rgroup", "[*:1][H]=3", "--rgroup", "[*:1]F=2", "--rgroup", "[*:1]Cl=1"]
+NETWORK_QUERY = ["--property", "act"]
 
 
 @pytest.mark.parametrize(
@@ -244,6 +245,18 @@ SIMILAR_QUERY = ["--property", "act", "--rgroup", "[*:1][H]=3", "--rgroup", "[*:
         ("series-similar", ["--property", "act"], [], "exactly one"),
         ("series-rank", ["--property", "act", "--direction", "higher"], ["--series-id", "999999"], "does not exist"),
         ("series-similar", ["--property", "nope"] + SIMILAR_QUERY[2:], [], "nope"),
+        ("series-network", NETWORK_QUERY, ["--method", "dmcss"], "unrecognized arguments"),
+        ("series-network", NETWORK_QUERY, ["--output", "DATABASE"], "must differ from database"),
+        ("series-network", NETWORK_QUERY, ["--nodes", "DATABASE"], "must differ from database"),
+        ("series-network", NETWORK_QUERY, ["--output", "SAME", "--nodes", "SAME"], "distinct"),
+        ("series-network", NETWORK_QUERY, ["--top", "0"], "top must be at least 1"),
+        ("series-network", NETWORK_QUERY, ["--min-overlap", "1"], "min_overlap"),
+        ("series-network", NETWORK_QUERY, ["--threshold", "nan"], "threshold must be a finite number"),
+        ("series-network", NETWORK_QUERY, ["--environment-radius", "6"], "environment_radius"),
+        ("series-network", NETWORK_QUERY, ["--threads", "0"], "threads must be at least 1"),
+        ("series-network", ["--property", "nope"], [], "nope"),
+        ("series-rank", RANK_QUERY, ["--environment-radius", "6"], "environment_radius"),
+        ("series-similar", SIMILAR_QUERY, ["--environment-radius", "-1"], "environment_radius"),
     ],
 )
 def test_every_command_rejects_the_documented_mistakes(database, tmp_path, command, query, extra, message):
@@ -344,6 +357,8 @@ def test_evidence_may_not_share_standard_output_with_the_report(database, tmp_pa
         ("series-rank", RANK_QUERY, "--evidence"),
         ("series-similar", SIMILAR_QUERY, "--output"),
         ("series-similar", SIMILAR_QUERY, "--evidence"),
+        ("series-network", NETWORK_QUERY, "--output"),
+        ("series-network", NETWORK_QUERY, "--nodes"),
     ],
 )
 def test_database_hard_link_alias_is_refused_as_a_report_sink(database, tmp_path, command, query, sink):
@@ -391,6 +406,7 @@ def test_read_commands_open_the_store_read_only(database, tmp_path):
         assert _run_cli("series-rank", "--database", str(frozen), *RANK_ARGS, "--support-ladder", "5").returncode == 0
         assert _run_cli("series-similar", "--database", str(frozen), "--property", "act",
                         "--rgroup", "[*:1][H]=3", "--rgroup", "[*:1]F=2", "--rgroup", "[*:1]Cl=1").returncode == 0
+        assert _run_cli("series-network", "--database", str(frozen), *NETWORK_QUERY).returncode == 0
     finally:
         frozen.chmod(stat.S_IRUSR | stat.S_IWUSR)
     assert hashlib.blake2b(frozen.read_bytes()).hexdigest() == before
@@ -504,3 +520,81 @@ def test_series_include_up_enumerated_adds_the_labelled_rows(tmp_path):
     metrics = _list_metrics(database)
     assert int(metrics["series_variant_members"]) == len(guessed)
     assert int(metrics["series_members"]) == len(observed)
+
+
+def test_series_network_writes_edges_and_nodes(database, tmp_path):
+    nodes = tmp_path / "nodes.tsv"
+    result = _run_cli("series-network", "--database", str(database), *NETWORK_QUERY, "--nodes", str(nodes))
+    header, edges = _tsv(result.stdout)
+    assert header == ["cut_count", "source_id", "target_id", "overlap", "spearman", "centred_rmsd"]
+    node_header, node_rows = _tsv(nodes.read_text(encoding="utf-8"))
+    assert node_header == ["cut_count", "id", "label", "size"]
+    known = {(row["cut_count"], row["id"]) for row in node_rows}
+    assert edges
+    assert all((row["cut_count"], row["source_id"]) in known and (row["cut_count"], row["target_id"]) in known
+               for row in edges)
+    assert all(int(row["source_id"]) < int(row["target_id"]) for row in edges)
+    _, members = _tsv(_run_cli("series", "--database", str(database), "--constant", "[*:1]c1ccc(cc1)C").stdout)
+    labels = {row["id"]: row["label"] for row in node_rows}
+    assert labels[members[0]["series_id"]] == "[*:1]c1ccc(cc1)C"
+
+
+def test_series_network_options_reach_the_helper(database, tmp_path):
+    base = ["series-network", "--database", str(database), *NETWORK_QUERY]
+    _, everything = _tsv(_run_cli(*base, "--min-overlap", "2", "--top", "50").stdout)
+    _, top_one = _tsv(_run_cli(*base, "--min-overlap", "2", "--top", "1").stdout)
+    assert 0 < len(top_one) < len(everything)
+    # The para series correlate at most 0.8 with each other (the bromine value moves),
+    # and a threshold keeps only defined correlations at or above it.
+    _, strict = _tsv(_run_cli(*base, "--min-overlap", "2", "--top", "50", "--threshold", "0.5").stdout)
+    assert strict and len(strict) < len(everything)
+    assert all(row["spearman"] != "" and float(row["spearman"]) >= 0.5 for row in strict)
+    # The flat reverse series (every compound of one substituent shares its value)
+    # centre to zero against each other.
+    _, flat = _tsv(_run_cli(*base, "--measure", "crmsd", "--threshold", "0").stdout)
+    assert flat and all(float(row["centred_rmsd"]) == 0.0 for row in flat)
+    pooled_nodes = tmp_path / "pooled-nodes.tsv"
+    _run_cli(*base, "--environment-radius", "1", "--nodes", str(pooled_nodes))
+    _, pooled = _tsv(pooled_nodes.read_text(encoding="utf-8"))
+    assert pooled and all(row["label"].startswith("A{") for row in pooled)   # Fingerprint SMARTS, not SMILES.
+    two_cut_nodes = tmp_path / "two-cut-nodes.tsv"
+    _run_cli(*base, "--cut-count", "2", "--min-overlap", "2", "--nodes", str(two_cut_nodes))
+    _, two_cut = _tsv(two_cut_nodes.read_text(encoding="utf-8"))
+    assert two_cut and all(row["cut_count"] == "2" for row in two_cut)
+    one_thread = _run_cli(*base, "--min-overlap", "2", "--threads", "1").stdout
+    assert _run_cli(*base, "--min-overlap", "2", "--threads", "4").stdout == one_thread
+    # The fixture holds no guessed rows, so the flag is accepted and changes nothing.
+    assert _run_cli(*base, "--min-overlap", "2", "--include-up-enumerated").stdout == one_thread
+
+
+def test_nodes_may_not_share_standard_output_with_the_edges(database, tmp_path):
+    implicit = _run_cli("series-network", "--database", str(database), *NETWORK_QUERY, "--nodes", "-", check=False)
+    assert implicit.returncode == 2, implicit.stdout
+    assert "--nodes cannot share standard output with the report" in implicit.stderr
+    edges = tmp_path / "edges.tsv"
+    accepted = _run_cli("series-network", "--database", str(database), *NETWORK_QUERY, "--output", str(edges),
+                        "--nodes", "-")
+    assert _tsv(accepted.stdout)[0] == ["cut_count", "id", "label", "size"]
+    assert edges.read_text(encoding="utf-8").startswith("cut_count\tsource_id\ttarget_id")
+
+
+def test_rank_and_similar_pool_on_request(tmp_path):
+    analyzer = Analyzer()
+    for smiles, name, value in POOLED_COMPOUNDS:
+        analyzer.add_molecule(smiles, id=name)
+        analyzer.add_property(name, "act", value)
+    analyzer.analyze()
+    path = tmp_path / "pooled.duckdb"
+    DuckDBStore(path).save_analyzer(analyzer)
+    similar = _run_cli("series-similar", "--database", str(path), *SIMILAR_QUERY, "--environment-radius", "1")
+    header, rows = _tsv(similar.stdout)
+    assert header[-2:] == ["environment_fingerprint_id", "environment"]
+    assert [row["series_id"] for row in rows] == ["0", "0"]
+    assert all(row["constant"] == "" and row["environment"].startswith("A{") for row in rows)
+    assert all(int(row["environment_fingerprint_id"]) > 0 for row in rows)
+    ranked = _run_cli("series-rank", "--database", str(path), *RANK_ARGS, "--support-ladder", "1",
+                      "--environment-radius", "1")
+    assert [row["rgroup"] for row in _tsv(ranked.stdout)[1]] == ["[*:1]Br", "[*:1]C", "[*:1]CC"]
+    # No guessed rows in this store either: the flag is accepted and changes nothing.
+    plain = _run_cli("series-similar", "--database", str(path), *SIMILAR_QUERY).stdout
+    assert _run_cli("series-similar", "--database", str(path), *SIMILAR_QUERY, "--include-up-enumerated").stdout == plain
