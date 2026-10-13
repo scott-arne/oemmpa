@@ -318,9 +318,9 @@ No special flag is needed for this mode. If `--property` is omitted,
 
 ## Matched Molecular Series
 
-Three commands read the series a store carries (schema 5; `oemmpa list` reports
+Four commands read the series a store carries (schema 5; `oemmpa list` reports
 `series`, `series_members`, `series_variant_members` and `series_source`). All
-three open the store read-only, write TSV to `--output` (or standard output),
+four open the store read-only, write TSV to `--output` (or standard output),
 and refuse an output path that names the database.
 
 `oemmpa series` lists one row per (member, compound):
@@ -367,10 +367,10 @@ reports the last level tried, or 0 when no series matched at all.
 floor (at least 2). A member the shortening dropped is still a query member, so
 it is never reported as a candidate. `--evidence FILE` writes one row per query
 member and reported candidate of every matched series (`series_id`, `constant`,
-`role`, `rgroup`, `value`, `position`, `win`), ordered by series id, then role
-(query before candidate), then query position or R-group SMILES. An empty
-result is not an error: the comment line and the header are written and the
-exit code is 0.
+`role`, `rgroup`, `value`, `position`, `win`, `environment_fingerprint_id`,
+`environment`), ordered by series id, then role (query before candidate), then
+query position or R-group SMILES. An empty result is not an error: the comment
+line and the header are written and the exit code is 0.
 
 `oemmpa series-similar` finds stored series that order their shared R-groups
 like the query:
@@ -381,20 +381,52 @@ oemmpa series-similar --database analysis.duckdb --property pIC50 --series-id 42
 ```
 
 Rows: `series_id`, `constant`, `cut_count`, `overlap`, `spearman` (empty when
-undefined, which sorts last) and `centred_rmsd`. `--measure crmsd` sorts by the
-centred RMSD ascending instead; `--top` limits the rows after sorting; a
-`--series-id` query never lists itself. `--evidence FILE` writes one row per
-shared R-group of every reported series (`series_id`, `rgroup`, `query_value`,
-`candidate_value`), ordered by series id then R-group SMILES, so it is joined
-to the rows on `series_id` rather than by position.
+undefined, which sorts last), `centred_rmsd`, `environment_fingerprint_id` and
+`environment`. `--measure crmsd` sorts by the centred RMSD ascending instead;
+`--top` limits the rows after sorting; a `--series-id` query never lists
+itself. `--evidence FILE` writes one row per shared R-group of every reported
+series (`series_id`, `rgroup`, `query_value`, `candidate_value`,
+`environment_fingerprint_id`, `environment`), ordered by series id then
+R-group SMILES, so it is joined to the rows on `series_id` rather than by
+position.
+
+Both query commands take `--environment-radius R` (0 to 5), which pools every
+series of one cut count whose constant shares its attachment environment at
+that radius into one profile, and `--include-up-enumerated`, which reads the
+guessed stereo-variant rows as members. Pooled rows report `series_id` 0 and an
+empty `constant` and name the profile in the last two columns,
+`environment_fingerprint_id` and `environment` (its SMARTS); the
+`series-similar` rows and both evidence files end with those two columns.
+
+`oemmpa series-network` builds the bounded all-pairs similarity network:
+
+```bash
+oemmpa series-network --database analysis.duckdb --property pIC50 --top 10 --threads 8 \
+    --output edges.tsv --nodes nodes.tsv
+```
+
+Each series (or pooled profile, with `--environment-radius`) keeps its `--top`
+best neighbours (default 10) by `--measure` (`spearman`, the default, or
+`crmsd`) among the series of its cut count sharing at least `--min-overlap`
+valued R-groups (default 3), after `--threshold` when it is given (Spearman at
+or above it, or centred RMSD at or below it); the edges are the union of those
+choices. Edge rows: `cut_count`, `source_id`, `target_id` (`source_id` below
+`target_id`), `overlap`, `spearman` (empty when undefined) and `centred_rmsd`.
+`--nodes FILE` writes `cut_count`, `id`, `label` (the constant SMILES, or the
+SMARTS when pooled) and `size`. The selection flags apply (`--cut-count` 0 or
+omitted reads every cut count), `--include-up-enumerated` reads the guessed
+rows, `--threads` sets the scoring threads (default: every CPU) without
+changing the result, and `--nodes -` is refused while the edges also go to
+standard output.
 
 Request-validation errors (an unknown property, tied ranking values, duplicate
-or unlabelled R-groups, a nonexistent series id, a `--min-overlap` below 2)
-exit with code 2 and the store's message; database failures exit with code 1.
-A `--query-file` that names the same file as `--output` or `--evidence` is
-refused before anything is read or written, and so is `--evidence -` while the
-report also goes to standard output, which would run the two tables together on
-one stream.
+or unlabelled R-groups, a nonexistent series id, a `--min-overlap` below 2, an
+`--environment-radius` outside 0 to 5, a `series-network` `--top` below 1, a
+non-finite `--threshold`) exit with code 2 and the store's message; database
+failures exit with code 1. A `--query-file` that names the same file as
+`--output` or `--evidence` is refused before anything is read or written, and so
+is `--evidence -` while the report also goes to standard output, which would run
+the two tables together on one stream.
 
 ## Detail Reports
 

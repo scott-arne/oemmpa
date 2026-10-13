@@ -966,9 +966,9 @@ A row's `num_members` column is the number of R-groups the read returns for
 its series: observed members only without the flag, which equals the stored
 count unless a member bound (`max_variable_heavy_atoms`) trims the series, and
 guess-only members too under `include_up_enumerated=True`, so a series can
-read longer with the flag than without it. Ranking and similarity read the
-guessed rows too when their `selection` sets `include_up_enumerated=True`,
-and the observed rows otherwise.
+read longer with the flag than without it. Ranking, similarity and the network
+read the guessed rows too when their `selection` sets
+`include_up_enumerated=True`, and the observed rows otherwise.
 
 ### Series for MCS analyses
 
@@ -1014,7 +1014,7 @@ ranking.evidence.to_dataframe()    # per matched series: query members and repor
 ```
 
 The full signature is
-`rank_next_substituents(store, property_name, direction, *, series_id=None, rgroups=None, support_ladder=(20, 10, 5), shorten=True, min_query_length=3, selection=None, evidence=False)`.
+`rank_next_substituents(store, property_name, direction, *, series_id=None, rgroups=None, support_ladder=(20, 10, 5), shorten=True, min_query_length=3, selection=None, evidence=False, environment_radius=None)`.
 Exactly one of
 `series_id` and `rgroups` is given; `rgroups` is a mapping of R-group SMILES to
 value or a sequence of `(smiles, value)` pairs.
@@ -1032,7 +1032,8 @@ tried, or 0 when no series matched at all. Values of a member realized by
 several compounds are combined by their median; members without a finite value
 are ignored. Candidates are sorted by fraction, then support, then heavy atoms,
 then SMILES, while the evidence rows are ordered by series id, then role (query
-before candidate), then query position or R-group SMILES.
+before candidate), then query position or R-group SMILES. With
+`environment_radius` the rows are pooled profiles (next section).
 
 `direction` is `"higher"` or `"lower"` — case-insensitive, and the
 `higher_is_better` spellings and dashes are accepted — or
@@ -1057,12 +1058,12 @@ here.
 from oemmpa import find_similar_series
 
 similar = find_similar_series(store, "pIC50", series_id=42, top=20, evidence=True)
-similar.to_dataframe()             # series_id, constant, cut_count, overlap, spearman, centred_rmsd
-similar.evidence.to_dataframe()    # series_id, rgroup, query_value, candidate_value
+similar.to_dataframe()             # series_id, constant, cut_count, overlap, spearman, centred_rmsd, environment_fingerprint_id, environment
+similar.evidence.to_dataframe()    # series_id, rgroup, query_value, candidate_value, environment_fingerprint_id, environment
 ```
 
 The full signature is
-`find_similar_series(store, property_name, *, series_id=None, rgroups=None, min_overlap=3, measure="spearman", top=None, selection=None, evidence=False)`.
+`find_similar_series(store, property_name, *, series_id=None, rgroups=None, min_overlap=3, measure="spearman", top=None, selection=None, evidence=False, environment_radius=None)`.
 `measure="crmsd"` (also `"centred_rmsd"` or
 `"centered_rmsd"`, or `_oemmpa.SimilarityMeasure_CENTRED_RMSD`) sorts by the
 centred RMSD ascending instead of `_oemmpa.SimilarityMeasure_SPEARMAN`
@@ -1073,6 +1074,68 @@ number of valued query R-groups is not an error, it simply matches nothing. The
 evidence rows are ordered by series id then R-group SMILES rather than in match
 order, so consumers join them to the matches on `series_id`.
 `store.find_similar_series(...)` is the method form.
+
+### Pooling and guessed rows in the queries
+
+Ranking, similarity and the network below read one shared definition of a
+series' values, so they agree on pooling and on guessed rows.
+`environment_radius` (0 to 5) pools every series of one cut count whose
+constant has the same attachment-environment fingerprint at that radius into
+one profile: each R-group is valued by the median over its distinct compounds
+across the pooled series, so a compound reached through two of them counts
+once. Pooled rows report `series_id` 0 and an empty `constant`, and name the
+profile by `environment_fingerprint_id` and `environment` (its SMARTS); rows of
+stored series report `environment_fingerprint_id` 0 and an empty
+`environment`. A `series_id` query uses that series' pooled profile, which
+similarity then leaves out, and `min_constant_heavy_atoms` removes a series
+before it can join a profile. The collections' `environment_radius` echoes the
+request (`None` for stored series).
+
+```python
+from oemmpa import SeriesSelectionOptions, find_similar_series
+
+pooled = find_similar_series(store, "pIC50", rgroups={"[*:1][H]": 6.1, "[*:1]C": 6.8, "[*:1]Cl": 7.4},
+                             environment_radius=1)
+guessed = find_similar_series(store, "pIC50", series_id=42,
+                              selection=SeriesSelectionOptions(include_up_enumerated=True))
+```
+
+`SeriesSelectionOptions(include_up_enumerated=True)` makes ranking,
+similarity and the network read the guessed stereo-variant rows as members,
+exactly as `DuckDBStore.series()` lists them with the same option.
+
+### Series networks
+
+`series_network` builds the bounded all-pairs similarity network of the stored
+series, or of the pooled profiles: each one keeps its `top` best neighbours by
+the measure among those of its cut count that share at least `min_overlap`
+valued R-groups with it, after the optional threshold, and the edges are the
+union of those choices. Each profile's choices are the first `top` matches
+`find_similar_series` returns for it with the same settings, so a profile that
+many others choose can have more than `top` edges.
+
+```python
+from oemmpa import series_network
+
+network = series_network(store, "pIC50", top=10, threads=8)
+network.to_dataframe()           # cut_count, source_id, target_id, overlap, spearman, centred_rmsd
+network.nodes.to_dataframe()     # cut_count, id, label, size
+```
+
+The full signature is
+`series_network(store, property_name, *, measure="spearman", min_overlap=3, top=10, threshold=None, environment_radius=None, selection=None, threads=None)`.
+`threshold` keeps pairs whose Spearman is defined and at least the threshold
+(`measure="spearman"`), or whose centred RMSD is at most it (`"crmsd"`).
+`selection.cut_count` 0 reads every cut count, profiles of different cut counts
+never meet, and an edge's `source_id` is always below its `target_id`. The
+nodes are every profile with at least two valued R-groups, and at least
+`selection.min_series_length`, after `max_variable_heavy_atoms`; a node's `id`
+is the series id (the fingerprint id when pooled), its `label` the constant
+SMILES (the SMARTS when pooled) and its `size` its valued R-groups. The network
+is scored in C++ on `threads` workers (`None` uses every CPU), and the result
+does not depend on that number. The collection carries `measure` (`"spearman"`
+or `"crmsd"`), `top`, `threshold` and `environment_radius`;
+`store.series_network(...)` is the method form.
 
 ### Series result collections
 
@@ -1086,7 +1149,10 @@ metadata. `SubstituentRankingCollection` carries the tuples `query_used` and
 package scope; the two evidence collections,
 `oemmpa._series.RankingEvidenceCollection` and
 `oemmpa._series.SimilarityEvidenceCollection`, are importable from
-`oemmpa._series` only.
+`oemmpa._series` only. `SeriesNetworkCollection`, exported at package scope too,
+carries `nodes`, `measure`, `top`, `threshold` and `environment_radius`; its
+node collection, `oemmpa._series.SeriesNetworkNodeCollection`, is importable
+from `oemmpa._series` only.
 
 Every argument failure the Python layer can see raises `ValueError` before the
 store is called: a missing or doubled query source, a non-numeric or non-finite
@@ -1100,10 +1166,13 @@ starting with `invalid series query:`) also becomes `ValueError`; every other
 ### Raw bindings
 
 The typed records live on the binding module: `_oemmpa.SubstituentRankingRequest`,
-`_oemmpa.SubstituentRankingResult`, `_oemmpa.SeriesSimilarityRequest` and
-`_oemmpa.SeriesSimilarityResult`, consumed and produced by
-`_oemmpa.DuckDBStore.RankNextSubstituents` and
-`_oemmpa.DuckDBStore.FindSimilarSeries`. Both release the GIL and copy the
+`_oemmpa.SubstituentRankingResult`, `_oemmpa.SeriesSimilarityRequest`,
+`_oemmpa.SeriesSimilarityResult`, `_oemmpa.SeriesNetworkRequest` and
+`_oemmpa.SeriesNetworkResult` (with `SeriesNetworkNode` and
+`SeriesNetworkEdge`), consumed and produced by
+`_oemmpa.DuckDBStore.RankNextSubstituents`,
+`_oemmpa.DuckDBStore.FindSimilarSeries` and
+`_oemmpa.DuckDBStore.BuildSeriesNetwork`. All three release the GIL and copy the
 request before doing so; one `DuckDBStore` instance is still not safe to use
 from several threads at once, so use one store per thread, as for every other
 store call (see DuckDB Storage). Raw calls raise `RuntimeError` for every
@@ -1114,9 +1183,9 @@ the binding also exposes as `_oemmpa.cvar.SERIES_QUERY_INVALID_PREFIX`.
 Every vector member of these records is copy-on-access: assigning a Python
 sequence copies it into the record, and reading one returns a new tuple of
 copies, so a result's vectors outlive the result object but each read costs
-O(n) — bind one to a name instead of re-reading it. `request.selection` is the
-exception: it is a live view onto the request's own `_oemmpa.SeriesSelection`,
-and its getter keeps the request alive. The enum constants are
+O(n) — bind one to a name instead of re-reading it. `request.selection` (on all
+three requests) is the exception: it is a live view onto the request's own
+`_oemmpa.SeriesSelection`, and its getter keeps the request alive. The enum constants are
 `_oemmpa.PropertyDirection_HIGHER_IS_BETTER`,
 `_oemmpa.PropertyDirection_LOWER_IS_BETTER`,
 `_oemmpa.SimilarityMeasure_SPEARMAN` and
@@ -1197,7 +1266,8 @@ fragmentation records.
 One `DuckDBStore` instance is not safe to use from several threads at once,
 readers included: every call shares the instance's single DuckDB connection,
 including the calls that release the GIL (`save_analyzer()`, the two file
-loaders, `series()`, `rank_next_substituents()` and `find_similar_series()`).
+loaders, `series()`, `rank_next_substituents()`, `find_similar_series()` and
+`series_network()`).
 Use one store per thread; `DuckDBStore(path, read_only=True)` lets several
 readers open the same database file at once.
 

@@ -14,14 +14,14 @@ candidates on the 10k corpus without being able to shorten, so a fourth ranking
 query is taken from a stored series' own members (``--shortening-length`` of
 them, default 6) and kept only when its run drops at least one member, which
 times the shortening loop. The similarity queries are the three largest series,
-top 20. Four more records cover the plan-2 query options: the first ranking
+top 20. Four more records cover the plan-2 query options: the second ranking
 query pooled by attachment environment at radius 1 (``rank-pooled``), the
 largest series' similarity query pooled at radius 1 (``similar-pooled``) and
 with the guessed stereo-variant rows (``similar-variants``), and one network
 build over every series (``network``: top 10, Spearman, 8 threads), timed once
 cold and twice warm against a 60-second target. The store record also carries
-the persist time alone. Each query runs once cold (discarded) and ``repeats``
-times warm; the median is reported against a one-second target.
+the persist time alone. Each single query runs once cold (discarded) and
+``repeats`` times warm; the median is reported against a one-second target.
 Results go to ``benchmarks/results/series_queries.json`` with the corpus
 provenance, the linked DuckDB version and the host recorded.
 

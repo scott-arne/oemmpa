@@ -5,7 +5,8 @@ a fresh store and only then load files into it. Schema 5 refuses a
 series-producing analysis into a store that already holds compounds, pairs or
 series, so that order is load-bearing: an example that returns to the old
 load-then-save order fails when it is run. These tests pin that order from both
-sides; they do not parse the documents.
+sides; they do not parse the documents. Two more run the pooled similarity
+query and the series network call that docs/python-api.md shows.
 """
 
 from __future__ import annotations
@@ -99,3 +100,33 @@ def test_loading_molecules_before_a_series_producing_save_is_refused(
 
     assert store.row_count("pair") == 0
     assert store.row_count("series") == 0
+
+
+def test_documented_pooled_query_runs(tmp_path, analyzer):
+    from oemmpa import DuckDBStore, find_similar_series
+
+    store = DuckDBStore(tmp_path / "analysis.duckdb")
+    store.save_analyzer(analyzer)
+
+    pooled = find_similar_series(store, "pIC50", rgroups=QUERY, environment_radius=1)
+
+    assert pooled.environment_radius == 1
+    assert len(pooled) > 0
+    assert all(
+        row["series_id"] == 0 and row["environment"] for row in pooled.to_dicts()
+    )
+
+
+def test_documented_network_call_runs(tmp_path, analyzer):
+    from oemmpa import DuckDBStore, series_network
+
+    store = DuckDBStore(tmp_path / "analysis.duckdb")
+    store.save_analyzer(analyzer)
+
+    network = series_network(store, "pIC50", top=10, threads=8)
+
+    assert len(network) > 0 and len(network.nodes) > 0
+    assert (
+        store.series_network("pIC50", top=10, threads=8).to_dicts()
+        == network.to_dicts()
+    )

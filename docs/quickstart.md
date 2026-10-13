@@ -685,11 +685,11 @@ contributed to that environment's statistics.
 
 Every fragmentation analysis also enumerates matched molecular series: one
 constant with all the R-groups the set realizes at its attachment points.
-The store saved above keeps them, and two queries use them with a stored
-property:
+The store saved above keeps them, and two queries and a similarity network use
+them with a stored property:
 
 ```python
-from oemmpa import DuckDBStore, find_similar_series, rank_next_substituents
+from oemmpa import DuckDBStore, find_similar_series, rank_next_substituents, series_network
 
 store = DuckDBStore("analysis.duckdb")
 print(store.series().filter(min_length=3).to_dicts()[:3])
@@ -701,12 +701,16 @@ print(ranking.to_dicts())          # candidate next substituents with support, w
 
 similar = find_similar_series(store, "pIC50", series_id=1, top=10)
 print(similar.to_dicts())          # series that order their shared R-groups like series 1
+
+pooled = find_similar_series(store, "pIC50", series_id=1, environment_radius=1)
+network = series_network(store, "pIC50", top=10)
+print(network.to_dicts()[:5])      # similarity edges between series
 ```
 
-`oemmpa series`, `oemmpa series-rank` and `oemmpa series-similar` are the
-command-line forms. See the Matched Molecular Series section of
-[docs/python-api.md](python-api.md) for the full argument set and
-[docs/cli.md](cli.md) for the commands.
+`oemmpa series`, `oemmpa series-rank`, `oemmpa series-similar` and
+`oemmpa series-network` are the command-line forms. See the Matched Molecular
+Series section of [docs/python-api.md](python-api.md) for the full argument set
+and [docs/cli.md](cli.md) for the commands.
 
 ## Current Capabilities
 

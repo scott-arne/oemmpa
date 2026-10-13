@@ -322,9 +322,30 @@ OEMMPA::SeriesSimilarityResult matches = saved.FindSimilarSeries(similar);
 
 Both take their request by value, validate it (`std::invalid_argument`
 prefixed with `SERIES_QUERY_INVALID_PREFIX`) and run prepared SQL over
-`series`, `series_member`, `rule_smiles`, `constant_smiles`, `compound_property`
-and `property_name`. `canonicalize_query_rgroup`, `spearman_correlation` and
-`centred_rmsd` are the reusable pieces.
+`series`, `series_member`, `rule_smiles`, `constant_smiles`,
+`compound_property`, `property_name`, and, when pooling, `constant_environment`
+and `environment_fingerprint`. `canonicalize_query_rgroup`,
+`spearman_correlation` and `centred_rmsd` are the reusable pieces.
+
+Both requests take `environment_radius` (-1, the default, compares stored
+series; 0 to 5 pools the series whose constants share their
+`constant_environment` fingerprint at that radius) and read the guessed rows
+when `selection.include_up_enumerated` is set. They share one SQL profile
+relation with `BuildSeriesNetwork`, which loads it once and scores every pair
+in C++ on `request.threads` work-stealing workers (`for_each_index` in
+`include/oemmpa/ThreadSupport.h`):
+
+```cpp
+OEMMPA::SeriesNetworkRequest network;
+network.property_name = "pIC50";
+network.top = 10;
+network.threads = 8;
+OEMMPA::SeriesNetworkResult graph = saved.BuildSeriesNetwork(network);
+```
+
+`graph.nodes` lists every eligible series (or pooled profile) and `graph.edges`
+the union of each one's `top` best neighbours; the result is the same for any
+thread count.
 
 `DuckDBStore::GetLibraryVersion()` is a static accessor for the version string
 of the DuckDB library the build links, which is the version the queries run on

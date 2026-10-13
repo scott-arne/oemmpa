@@ -135,8 +135,9 @@ struct SeriesSelection {
     /// observed rows; true reads the labelled view: members carry their labels,
     /// members only guesses realize appear, and the length test counts every
     /// R-group read. Every DuckDBStore read and query that takes a selection
-    /// honours it (GetSeries, RankNextSubstituents, FindSimilarSeries), so one
-    /// selection means the same rows on every surface (seams spec 5.4).
+    /// honours it (GetSeries, RankNextSubstituents, FindSimilarSeries,
+    /// BuildSeriesNetwork), so one selection means the same rows on every
+    /// surface (seams spec 5.4).
     bool include_up_enumerated = false;
 };
 

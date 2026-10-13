@@ -491,14 +491,17 @@ Behaviour changes to know about:
 
 New in 5.0.0: `Analyzer.series()`, `DuckDBStore.series()`,
 `DuckDBStore.series_count_refresh_seconds()`, `duckdb_library_version()`,
-`rank_next_substituents`, `find_similar_series`, the `series`, `series-rank`
-and `series-similar` commands, `Analyzer(series=...)` and
+`rank_next_substituents`, `find_similar_series`, `series_network` (and
+`DuckDBStore.series_network()`), queries pooled by attachment environment
+(`environment_radius=`), the `series`, `series-rank`, `series-similar` and
+`series-network` commands (with `--environment-radius` and
+`--include-up-enumerated` on the queries), `Analyzer(series=...)` and
 `Analyzer.set_series_enumeration()` (series for MCS analyses),
 `Analyzer.series(include_up_enumerated=...)`,
-`SeriesSelectionOptions(include_up_enumerated=...)`,
-`DuckDBStore.fragment_options()`, `oemmpa build --series`,
-`oemmpa series --include-up-enumerated`, and the series metrics of
-`oemmpa list`. See
+`SeriesSelectionOptions(include_up_enumerated=...)` (read by the series reads
+and by all three queries), `DuckDBStore.fragment_options()`,
+`oemmpa build --series`, `oemmpa series --include-up-enumerated`, and the
+series metrics of `oemmpa list`. See
 [docs/python-api.md](docs/python-api.md) and [docs/cli.md](docs/cli.md).
 
 ### Upgrading To 4.0.0

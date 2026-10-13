@@ -207,6 +207,23 @@ recorded as `query_rgroups` (with `query_rgroup_count`) beside the
 `commonest_rgroups` it was taken from, and each ranking result repeats it as
 `query`. Similarity queries are the three largest series with `top=20`.
 
+Four more records cover the query options: `rank-pooled` repeats the second
+ranking query at `environment_radius` 1 (the first matches no pooled profile at
+that radius on the 10k corpus), `similar-pooled` and `similar-variants` repeat
+the largest series' similarity query pooled at radius 1 and with the guessed
+stereo-variant rows (`include_up_enumerated`), and `network` builds the whole
+similarity network (`top` 10, Spearman, `min_overlap` 3, 8 threads), timed once
+cold and twice warm against its own 60-second target (`network_target_seconds`;
+it counts toward `all_under_target`), while the single queries keep the
+one-second target. The store record adds `persist_seconds`, the save alone,
+which includes the environment rows written for every series constant. On the
+10,000-compound corpus (revision e94a278, DuckDB v1.5.6), the network over
+29,004 series built 22,678 edges in 0.3 s (median of two warm runs, 8 threads);
+the pooled ranking took 0.05 s (it matched 4 profiles and returned no
+candidates, as every other ranking record does at this size), the pooled and
+variant similarity queries 0.16 s and 0.18 s, and the persist took 457 s of a
+484 s build.
+
 The recorded 10k ranking queries — the three commonest R-groups — match stored
 series but yield no candidates at that corpus size, and a three-member query is
 already at `min_query_length`, so each of their medians covers a single attempt
@@ -227,9 +244,9 @@ posting scan), `query_used`, `matched_series`, `candidates` and
 run drops nothing. The similarity queries are productive, so their medians do
 cover a full result.
 
-Every query runs once cold (discarded) and `--repeats` times warm; the median is
-compared with the one-second target, and every query counts toward
-`all_under_target`.
+Every query other than the network runs once cold (discarded) and `--repeats`
+times warm; the median is compared with the one-second target, and every query
+counts toward `all_under_target`.
 
 ```bash
 python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
