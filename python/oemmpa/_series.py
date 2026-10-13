@@ -403,7 +403,8 @@ class SubstituentRankingCollection(_RowCollection):
     :ivar query_used: Final query R-groups, best first.
     :ivar dropped: R-groups removed by shortening, in order.
     :ivar support_level: Ladder level that produced the candidates (see the spec for empty results).
-    :ivar matched_series: Matched series of ``query_used``.
+    :ivar matched_series: Matched series of ``query_used``; matched pooled profiles when
+        ``environment_radius`` is set.
     :ivar evidence: :class:`RankingEvidenceCollection` (empty unless requested).
     :ivar environment_radius: Pooling radius of the query, or ``None`` for stored series.
     """
@@ -458,7 +459,8 @@ class SubstituentRankingCollection(_RowCollection):
     def filter(self, *, min_support=None, min_fraction=None, max_rgroup_heavies=None):
         """Return the candidates meeting every given bound; the metadata is kept.
 
-        :param min_support: Minimum matched series the candidate appears in.
+        :param min_support: Minimum matched series (pooled profiles, when pooled) the candidate
+            appears in.
         :param min_fraction: Minimum win fraction.
         :param max_rgroup_heavies: Maximum heavy atoms of the candidate R-group.
         :returns: A new :class:`SubstituentRankingCollection`.

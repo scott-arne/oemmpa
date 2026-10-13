@@ -74,7 +74,9 @@ struct SubstituentRankingResult {
     std::vector<std::string> query_used;   ///< Final query, best first.
     std::vector<std::string> dropped;      ///< Members removed by shortening, in order.
     unsigned int support_level = 0;        ///< Level that produced the candidates; see spec 7.3 for the empty cases.
-    unsigned int matched_series = 0;       ///< Matched series of query_used.
+    /// Matched series of query_used; the matched pooled profiles when
+    /// environment_radius is set.
+    unsigned int matched_series = 0;
     std::vector<SubstituentRanking> candidates;
     std::vector<SubstituentRankingEvidence> evidence;
     int environment_radius = -1;           ///< The request's radius, echoed.

@@ -997,7 +997,10 @@ finds every stored series of the same cut count in which all query R-groups
 have values ordered exactly like the query (a strict subsequence match), and
 reports the other members of those series as candidates: `support` is the
 number of matched series containing the candidate, `wins` the number in which
-the candidate beats the query's best member, `fraction` their ratio.
+the candidate beats the query's best member, `fraction` their ratio. With
+`environment_radius` set, `support`, `wins`, `matched_series` and the
+shortening's count of the series a query member is found in all count pooled
+profiles instead of stored series.
 
 ```python
 from oemmpa import DuckDBStore, rank_next_substituents
@@ -1019,22 +1022,22 @@ Exactly one of
 `series_id` and `rgroups` is given; `rgroups` is a mapping of R-group SMILES to
 value or a sequence of `(smiles, value)` pairs.
 
-Defaults and rules: the ladder `(20, 10, 5)` reports the candidates of the
-first level that at least one candidate's support reaches; when none reaches
-the last level and `shorten` is true, the query member found in the fewest
-series is dropped (recorded in `dropped`) and the ladder is retried, never
-below `min_query_length` (default 3). A query R-group the store never saw
-cannot match and is dropped first. A candidate is never a member of the
-original query, not even one that shortening dropped, so a stored query series
-matches itself without recommending its own member back. `support_level` is the
-level that produced the candidates; an empty result reports the last level
-tried, or 0 when no series matched at all. Values of a member realized by
+Defaults and rules: the ladder `(20, 10, 5)` reports the candidates of the first
+level that at least one candidate's support reaches; when none reaches the last
+level and `shorten` is true, the query member found in the fewest series is
+dropped (recorded in `dropped`) and the ladder is retried, never below
+`min_query_length` (default 3). A query R-group the store never saw cannot match
+and is dropped first. A candidate is never a member of the original query, not
+even one that shortening dropped, so a stored query series matches itself
+without recommending its own member back. `support_level` is the level that
+produced the candidates; an empty result reports the last level tried, or 0 when
+no series (or pooled profile) matched at all. Values of a member realized by
 several compounds are combined by their median; members without a finite value
 are ignored. Candidates are sorted by fraction, then support, then heavy atoms,
 then SMILES, while the evidence rows are ordered by series id (the
 `environment_fingerprint_id` when pooled), then role (query before candidate),
-then query position or R-group SMILES. With
-`environment_radius` the rows are pooled profiles (next section).
+then query position or R-group SMILES. With `environment_radius` the rows are
+pooled profiles (next section).
 
 `direction` is `"higher"` or `"lower"` — case-insensitive, and the
 `higher_is_better` spellings and dashes are accepted — or

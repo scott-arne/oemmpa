@@ -748,10 +748,11 @@ RankingAttempt run_ranking_attempt(
 }
 
 // Distinct-profile posting count of every query member for the property, over
-// every profile of the store in the request's variant mode (no other selection:
-// any cut count, no constant floor), spec 9.2; an unknown R-group (id 0) joins
-// nothing and counts 0. The profile relation holds one row per (cut_count,
-// profile_id, rule_smiles_id), so counting its rows per R-group counts profiles.
+// every profile of the store in the request's variant mode and at its radius
+// (no other selection: any cut count, no constant floor), spec 9.2; an unknown
+// R-group (id 0) joins nothing and counts 0. The profile relation holds one row
+// per (cut_count, profile_id, rule_smiles_id), so counting its rows per R-group
+// counts profiles.
 std::vector<unsigned int> posting_counts(
     const std::unique_ptr<duckdb::Connection>& connection,
     const ProfileSpec& census,

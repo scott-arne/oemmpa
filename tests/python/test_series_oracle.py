@@ -455,10 +455,11 @@ def test_pooled_ranking_matches_the_oracle(tmp_path, seed, radius):
     expected, _ = check(anchor_query, "higher", (1,), True, SeriesSelectionOptions())
     assert expected["candidates"], "the anchor must return candidates"
 
-    # That anchor proves the pooled formatting but, at radius 5, pools nothing. This
-    # query's pooled list differs from series mode at both radii on both seeds, so an
-    # implementation that skipped the aggregation and only echoed the radius would
-    # match the control and fail.
+    # That anchor proves the pooled formatting, not the aggregation: at radius 5 its one
+    # matched profile is a single stored series on seed 2, and its two matched profiles
+    # hold two series each on seed 1. This query's pooled list differs from series mode
+    # at both radii on both seeds, so an implementation that skipped the aggregation and
+    # only echoed the radius would match the control and fail.
     pooling_query = [("[*:1]CC", 3.0), ("[*:1]Br", 2.0)]
     _, pooled = check(pooling_query, "higher", (1,), True, SeriesSelectionOptions())
     control = rank_next_substituents(store, "act", "higher", rgroups=pooling_query, support_ladder=(1,),
