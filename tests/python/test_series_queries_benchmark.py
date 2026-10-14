@@ -99,6 +99,66 @@ def test_force_takes_the_write_ahead_log_with_the_store_it_replaces(tiny_smiles,
     assert seen == {"store": False, "wal": False}
 
 
+@pytest.mark.parametrize("dangling", [False, True], ids=["target", "dangling"])
+def test_a_store_name_that_is_a_link_is_replaced_never_followed(tiny_smiles, tmp_path, dangling):
+    # --force replaces whatever sits at --store; following a link there would
+    # delete, and then build over, a file the run was never pointed at. A link
+    # to nothing still occupies the name, so it is refused like any other entry.
+    # This is the guard the MCS workload applies to its derived store names.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    sentinel = outside / "sentinel.bin"
+    if not dangling:
+        sentinel.write_bytes(b"a file this run does not own")
+    link = tmp_path / "store.duckdb"
+    try:
+        link.symlink_to(sentinel)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unsupported here: {exc}")
+
+    with pytest.raises(FileExistsError, match="force"):
+        series_queries.build_store(tiny_smiles, link, threads=1)
+    assert link.is_symlink() and link.readlink() == sentinel
+    assert sentinel.exists() is not dangling
+
+    report = series_queries.build_store(tiny_smiles, link, threads=1, force=True)
+    assert report["molecules"] == 72
+    assert not link.is_symlink() and link.is_file()
+    assert sentinel.exists() is not dangling
+    if not dangling:
+        assert sentinel.read_bytes() == b"a file this run does not own"
+
+
+def test_the_query_workload_keeps_the_store_name_lexical(tiny_smiles, tmp_path, monkeypatch):
+    # Resolving --store before the build would hand build_store the link's
+    # target, putting the guard above out of reach and the target under --force.
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    sentinel = outside / "sentinel.bin"
+    sentinel.write_bytes(b"a file this run does not own")
+    link = tmp_path / "store.duckdb"
+    try:
+        link.symlink_to(sentinel)
+    except OSError as exc:
+        pytest.skip(f"symbolic links unsupported here: {exc}")
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def probe(smiles_path, store_path, **kwargs):
+        seen["store"] = Path(store_path)
+        raise Stop
+
+    monkeypatch.setattr(series_queries, "build_store", probe)
+    with pytest.raises(Stop):
+        series_queries.run_series_query_benchmark(
+            size=5, repeats=1, smiles_path=tiny_smiles, store_path=link,
+            out_path=tmp_path / "results" / "queries.json", force=True)
+    assert seen["store"] == link
+    assert sentinel.read_bytes() == b"a file this run does not own"
+
+
 def test_build_store_and_query_selection(tiny_smiles, tmp_path):
     report = series_queries.build_store(tiny_smiles, tmp_path / "tiny.duckdb", threads=1)
     assert report["molecules"] == 72

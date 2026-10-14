@@ -152,7 +152,11 @@ def build_store(smiles_path, store_path, *, threads=1, force=False):
     :raises FileExistsError: When ``store_path`` exists and ``force`` is false; nothing is touched.
     """
     store_path = Path(store_path)
-    if store_path.exists() and not force:
+    # lexists, because a link occupies the name even when its target is gone,
+    # and exists() would read a dangling one as a free name and then build over
+    # whatever it points at. Forced, unlink removes the link itself -- never its
+    # target, which this run was not pointed at and does not own.
+    if os.path.lexists(store_path) and not force:
         raise FileExistsError(f"{store_path} exists; pass force=True (--force) to replace it")
     if force:
         store_path.unlink(missing_ok=True)
@@ -506,9 +510,11 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     check_shortening_length(shortening_length)
     out_path = Path(out_path)
     store_path = Path(store_path) if store_path is not None else out_path.parent / f"series_queries_n{size}.duckdb"
-    # Resolved so the bundle names the store the way it names the corpus, whatever
-    # directory the run was started from.
-    store_path = store_path.resolve()
+    # The directory is resolved so the bundle names the store the same way whatever
+    # directory the run was started from; the file name stays lexical, because
+    # resolving it would follow a link at that name and hand build_store the
+    # link's target, putting that target rather than the link under --force.
+    store_path = store_path.parent.resolve() / store_path.name
     # ensure_corpus reads a source of its own when --parquet is omitted, so the guard
     # asks it which file that would be rather than trusting the argument it was given.
     # Checked before the fetch, so a run whose output names that source is refused
