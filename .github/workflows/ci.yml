@@ -5,8 +5,8 @@ name: CI
 # compiled the project between tags: RingPerceptionPolicy::STRICT collided with
 # the windows.h STRICT macro from 4.0.0 until 5.0.0 and no run noticed, because
 # 4.0.0 was never pushed as a tag. Linux carries the test suites here; Windows
-# is compiled because it is the platform that rots unseen. macOS is left to the
-# release build, whose arm64 runners queue badly enough to cancel jobs.
+# is compiled because it is the platform that rots unseen. macOS carries the
+# suites too: it is where the work is done and where the goldens were captured.
 
 on:
   push:
@@ -151,6 +151,118 @@ jobs:
           # here and which hangs often enough that the release docs are built
           # separately; every other test runs.
           /opt/venv/bin/python -m pytest tests/python \
+            --deselect tests/python/test_docs_build.py::test_strict_docs_build
+
+  # macOS runs the same two suites as Linux. It is where development happens and
+  # so where a regression is introduced, and it is where the golden fixtures were
+  # captured -- test_bulk_save_matches_golden is the macOS-authored oracle Linux
+  # is checked against -- yet nothing automated ran the suite here: the release
+  # build only imports the macOS wheel and calls --help. The setup steps are the
+  # release build's, which is what keeps this job honest about the toolchain the
+  # macOS wheel ships.
+  macos-tests:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          brew install swig
+          pip install --upgrade pip setuptools wheel
+          pip install ninja cmake
+          # The same direct imports the Linux job installs; see the note there.
+          pip install \
+            pytest rich rich-click invoke \
+            duckdb scipy rdkit pandas \
+            sphinx breathe exhale myst-parser sphinx-rtd-theme \
+            sphinx-autodoc-typehints
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p ${{ runner.temp }}/openeye
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/OpenEye-toolkits-${{ env.OPENEYE_VERSION }}-macOS-14-clang++16-universal.tar.gz" \
+            -o /tmp/sdk.tar.gz
+          tar -xzf /tmp/sdk.tar.gz -C ${{ runner.temp }}/openeye --strip-components=2
+          rm /tmp/sdk.tar.gz
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/oe_license.txt" \
+            -o ${{ runner.temp }}/openeye/oe_license.txt
+          echo "OE_LICENSE=${{ runner.temp }}/openeye/oe_license.txt" >> $GITHUB_ENV
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          pip install openeye-toolkits==${{ env.OPENEYE_VERSION }} \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Download DuckDB C++ library
+        run: |
+          DUCKDB_ROOT="${{ runner.temp }}/duckdb"
+          mkdir -p "$DUCKDB_ROOT/include" "$DUCKDB_ROOT/lib"
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-osx-universal.zip" \
+            -o "${{ runner.temp }}/libduckdb.zip"
+          unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
+          cp "${{ runner.temp }}/libduckdb/duckdb.h" "${{ runner.temp }}/libduckdb/duckdb.hpp" "$DUCKDB_ROOT/include/"
+          cp "${{ runner.temp }}/libduckdb/libduckdb.dylib" "$DUCKDB_ROOT/lib/"
+          # Absolute install name, as in the release build. Here it also removes
+          # the need for DYLD_LIBRARY_PATH, which System Integrity Protection
+          # strips from the test binary's children anyway: every target that
+          # links the dylib records this path and resolves it unaided.
+          install_name_tool -id "$DUCKDB_ROOT/lib/libduckdb.dylib" "$DUCKDB_ROOT/lib/libduckdb.dylib"
+          rm -rf "${{ runner.temp }}/libduckdb.zip" "${{ runner.temp }}/libduckdb"
+          echo "DUCKDB_ROOT=$DUCKDB_ROOT" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOEMMPA_BUILD_TESTS=ON \
+            -DOEMMPA_BUILD_DUCKDB=ON \
+            -DOPENEYE_ROOT=${{ runner.temp }}/openeye \
+            -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" \
+            -DPython3_FIND_STRATEGY=LOCATION
+          grep -q "OEMMPA_BUILD_DUCKDB:BOOL=ON" build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)"
+
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Build the Python extension
+        run: cmake --build build -j "$(sysctl -n hw.ncpu)" --target oemmpa_python
+
+      - name: Python tests
+        run: |
+          # Doxygen is absent here as it is on the Linux runner; see that job.
+          python -m pytest tests/python \
             --deselect tests/python/test_docs_build.py::test_strict_docs_build
 
   # Windows is compiled, not tested: the failure this workflow exists to catch
