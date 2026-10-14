@@ -53,6 +53,7 @@ from pathlib import Path
 from time import perf_counter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CHILD_RUSAGE_LAUNCHER = Path(__file__).resolve().parent / "_child_rusage.py"
 if str(REPO_ROOT / "python") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "python"))
 if str(REPO_ROOT / "benchmarks") not in sys.path:
@@ -746,8 +747,7 @@ def peak_resident_bytes(ru_maxrss):
     """Convert ``ru_maxrss`` to bytes.
 
     :param ru_maxrss: The ``ru_maxrss`` field of a ``struct rusage``; macOS
-        reports it in bytes, Linux in kibibytes. On Linux a child's figure
-        is at least its parent's highest resident size up to the spawn.
+        reports it in bytes, Linux in kibibytes.
     :returns: The peak resident set size in bytes.
     """
     return int(ru_maxrss) if sys.platform == "darwin" else int(ru_maxrss) * 1024
@@ -756,29 +756,42 @@ def peak_resident_bytes(ru_maxrss):
 def run_child_build(command):
     """Run one build in a child process; return its wall seconds and peak resident bytes.
 
-    ``os.wait4`` returns the child's own ``struct rusage``, the record that
-    ``resource.getrusage(RUSAGE_CHILDREN)`` aggregates over every child, so one
-    build's peak cannot hide behind another's. That isolation is exact on
-    macOS only: on Linux the reported peak is at least the parent's highest
-    resident size up to the spawn, because the kernel carries that high-water
-    mark across ``exec`` into the child.
+    The build is spawned through :mod:`benchmarks._child_rusage`, which reaps it
+    with ``os.wait4`` and so reads the build's own ``struct rusage`` rather than
+    the ``RUSAGE_CHILDREN`` total: one build's peak cannot hide behind another's.
+    The indirection buys the other half of that isolation. Linux copies the
+    forking process's resident high-water mark into the child and records it as
+    the child's own at ``exec``, so a build spawned from this module directly
+    would report this harness's footprint -- measured at 225 MB for an idle
+    child of a harness that had touched 200 MB -- and the mark being a
+    high-water mark, freeing memory first does not shed it. Forking from an
+    isolated interpreter that imports only the standard library leaves a floor
+    of about 10 MB instead, below any build worth measuring. macOS never had the
+    problem and reports the same figures either way.
 
     :param command: Argument vector of the child.
     :returns: ``(seconds, peak resident bytes)``.
-    :raises RuntimeError: When the child exits non-zero.
+    :raises RuntimeError: When the child exits non-zero, or the measurement itself fails.
     """
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         entry for entry in (str(REPO_ROOT / "python"), env.get("PYTHONPATH", "")) if entry)
-    start = perf_counter()
-    process = subprocess.Popen(command, env=env)
-    _, status, usage = os.wait4(process.pid, 0)
-    seconds = perf_counter() - start
-    # Marks the child reaped, so Popen neither warns that it is still running nor polls its pid again.
-    process.returncode = os.waitstatus_to_exitcode(status)
-    if process.returncode != 0:
-        raise RuntimeError(f"child build failed with exit status {process.returncode}: {' '.join(command)}")
-    return seconds, peak_resident_bytes(usage.ru_maxrss)
+    with tempfile.TemporaryDirectory() as scratch:
+        report_path = Path(scratch) / "rusage.json"
+        # -I and -S keep the launcher as small as the floor it sets: no site
+        # packages, no inherited PYTHONPATH, no script directory on sys.path.
+        launcher = subprocess.Popen(
+            [sys.executable, "-I", "-S", str(CHILD_RUSAGE_LAUNCHER), str(report_path), *command],
+            env=env,
+        )
+        if launcher.wait() != 0:
+            raise RuntimeError(
+                f"measuring the child build failed with exit status {launcher.returncode}: "
+                f"{' '.join(command)}")
+        usage = json.loads(report_path.read_text(encoding="utf-8"))
+    if usage["status"] != 0:
+        raise RuntimeError(f"child build failed with exit status {usage['status']}: {' '.join(command)}")
+    return usage["seconds"], peak_resident_bytes(usage["maxrss"])
 
 
 def _store_summary(store_path):
@@ -876,8 +889,6 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
             "duckdb_library_version": oemmpa.duckdb_library_version(),
             "git_revision": _git_revision(), "python": sys.version.split()[0],
             "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
-            # Read with the peaks: on Linux each one is floored at the parent's
-            # highest resident size up to the spawn (see run_child_build).
             "platform": sys.platform,
         },
         "builds": builds,

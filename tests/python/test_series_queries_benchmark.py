@@ -937,10 +937,20 @@ def test_a_derived_mcs_store_name_linked_to_the_corpus_is_refused(mcs_smiles, tm
     assert mcs_smiles.read_bytes() == corpus
 
 
-@pytest.mark.skipif(sys.platform != "darwin",
-                    reason="on Linux a child's peak resident size is at least the parent's highest resident "
-                           "size up to the spawn, so an idle child cannot report a peak below the parent's and "
-                           "the test cannot discriminate a per-child peak from a cumulative one")
+def test_a_child_build_reports_its_own_peak_and_not_this_process_s():
+    # On Linux a forked child inherits the parent's resident high-water mark and
+    # exec records it as the child's own, so a build measured straight from this
+    # harness reports the harness's footprint instead. The mark is a high-water
+    # mark: freeing the ballast first does not clear it, which is why the fix is
+    # the lean trampoline the child is spawned through rather than the parent
+    # being small by the time it spawns.
+    ballast = bytearray(200 * 1024 * 1024)
+    ballast[::4096] = b"x" * len(ballast[::4096])   # Touched, so resident.
+    del ballast
+    _, idle_peak = series_queries.run_child_build([sys.executable, "-c", "pass"])
+    assert idle_peak < 100 * 1024 * 1024
+
+
 def test_each_child_build_reports_its_own_peak_not_the_largest_so_far():
     # RUSAGE_CHILDREN keeps the largest peak of every child reaped so far, so a
     # figure read from it would hand the idle child the large child's peak.
