@@ -2180,5 +2180,53 @@ TEST(AnalyzerTest, DMCSSSkipsCandidatesWhoseFragmentsCannotBeParsed) {
     }
 }
 
+TEST(AnalyzerTest, WizePairZEmitsAtMostThreeCuts) {
+    // The DMCSS cap's fixture, under an identity fraction low enough for
+    // WizePairZ to pair molecules that differ at four positions: the store
+    // could not fingerprint a four-label constant, and the throw would roll
+    // back the whole save rather than lose the one pair.
+    Analyzer analyzer("wizepairz");
+    analyzer.SetWizePairZIdentityFraction(0.5);
+    analyzer.AddMolecule("Cc1c(C)c(C)c(C)cc1", "tetramethyl");
+    analyzer.AddMolecule("Oc1c(O)c(O)c(O)cc1", "tetrol");
+    analyzer.AddMolecule("Cc1cccc(C)c1C", "trimethyl");
+    analyzer.AddMolecule("Oc1cccc(O)c1O", "triol");
+    analyzer.AddMolecule("Cc1ccccc1", "toluene");
+    analyzer.AddMolecule("Oc1ccccc1", "phenol");
+    analyzer.Analyze();
+    for (const MatchedPair& pair : analyzer.GetPairs()) {
+        EXPECT_LE(pair.GetCutCount(), 3U) << pair.GetConstantSmiles();
+    }
+    EXPECT_FALSE(HasUnorderedPair(analyzer.GetPairs(), "tetramethyl", "tetrol"));
+    EXPECT_TRUE(HasUnorderedPair(analyzer.GetPairs(), "trimethyl", "triol"))
+        << "the three-cut pair must survive the limit";
+    EXPECT_TRUE(HasUnorderedPair(analyzer.GetPairs(), "toluene", "phenol"))
+        << "the one-cut pair must survive the limit";
+}
+
+TEST(AnalyzerTest, WizePairZSkipsCandidatesWhoseFragmentsCannotBeParsed) {
+    // Two public SureChEMBL compounds whose maximum common substructure cuts
+    // across a pyridine, rendering "[*:1][cH]cn[*:2]" and a constant OEChem
+    // cannot read back. Unguarded, a build over the thousand-molecule corpus
+    // aborts on exactly this candidate and writes no store at all.
+    for (const unsigned int threads : {1u, 2u}) {
+        Analyzer analyzer("wizepairz");
+        analyzer.AddMolecule("O=C(Nc1cccc(Nc2nccc(-c3cccnc3)n2)c1)c1ccncc1", "S1430");
+        analyzer.AddMolecule("O=C(Nc1cccc(Nc2nccc(-c3cccnc3)n2)c1)c1ccccn1", "S1442");
+        analyzer.AddMolecule("Cc1ccccc1", "toluene");
+        analyzer.AddMolecule("Oc1ccccc1", "phenol");
+        analyzer.Analyze(threads);
+        const std::vector<MatchedPair> pairs = analyzer.GetPairs();
+        EXPECT_FALSE(HasUnorderedPair(pairs, "S1430", "S1442")) << "threads " << threads;
+        EXPECT_TRUE(HasUnorderedPair(pairs, "toluene", "phenol")) << "threads " << threads;
+        for (const MatchedPair& pair : pairs) {
+            EXPECT_TRUE(count_variable_heavy_atoms(pair.GetSourceVariableSmiles()).has_value())
+                << "threads " << threads << ": " << pair.GetSourceVariableSmiles();
+            EXPECT_TRUE(count_variable_heavy_atoms(pair.GetTargetVariableSmiles()).has_value())
+                << "threads " << threads << ": " << pair.GetTargetVariableSmiles();
+        }
+    }
+}
+
 }  // namespace test
 }  // namespace OEMMPA

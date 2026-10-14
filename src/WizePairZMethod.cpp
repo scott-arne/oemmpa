@@ -1,5 +1,6 @@
 #include "oemmpa/WizePairZMethod.h"
 
+#include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MCSCommon.h"
 #include "oemmpa/RingPerception.h"
@@ -23,6 +24,13 @@ namespace OEMMPA {
 namespace {
 
 using AtomIndexSet = std::set<unsigned int>;
+
+// Same bound, and the same reason, as DMCSS: the store's environment
+// fingerprint represents a constant with at most MAX_ATTACHMENT_LABELS
+// attachment labels, and a relation needing more is dropped here rather than
+// at save, where the fingerprint's throw would roll back the whole store
+// instead of losing the one pair.
+constexpr std::size_t MAX_WIZEPAIRZ_CUTS = MAX_ATTACHMENT_LABELS;
 
 // Radius-1 "changed" MCS atoms: MCS atoms in mol_a whose local environment
 // differs from their mapped counterpart in mol_b. A substitution can perturb an
@@ -415,6 +423,10 @@ void add_wizepairz_pair_if_valid(
             return;  // the paper does not encode multi-cut hydrogen changes
         }
     }
+    if (std::max(source_boundaries.size(), target_boundaries.size()) >
+        MAX_WIZEPAIRZ_CUTS) {
+        return;  // more labels than a stored constant can carry
+    }
 
     // Constant region: rendered from the HEAVY side so the attachment carbon
     // shows its true substituted valence. Rendering the hydrogen side instead
@@ -439,8 +451,14 @@ void add_wizepairz_pair_if_valid(
     const std::string target_variable_smiles = target_is_hydrogen
         ? mcs::render_hydrogen_variable_smiles(hydrogen_label)
         : mcs::build_region_smiles(target_mol, target_variable, target_boundaries, false);
+    // A fragment OEChem cannot read back -- a match cutting across an aromatic
+    // ring renders them -- could not be stored, and the save refuses the whole
+    // store rather than the one pair, so the candidate is skipped here as
+    // DMCSS skips its own.
     if (constant_smiles.empty() || source_variable_smiles.empty() ||
-        target_variable_smiles.empty() || source_variable_smiles == target_variable_smiles) {
+        target_variable_smiles.empty() || source_variable_smiles == target_variable_smiles ||
+        !mcs::fragments_parse_as_smiles(
+            constant_smiles, source_variable_smiles, target_variable_smiles)) {
         return;
     }
 
