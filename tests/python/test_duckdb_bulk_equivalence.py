@@ -15,6 +15,7 @@ records, row by row, what the schema-5 regeneration changed.
 from __future__ import annotations
 
 import csv
+import math
 import sys
 from pathlib import Path
 
@@ -77,13 +78,59 @@ def golden_store_connection(tmp_path_factory):
         con.close()
 
 
+def _fields_match(actual: str, golden: str) -> bool:
+    """Whether one dumped field matches the golden, allowing libm's last digits.
+
+    Structural fields -- SMILES, SMARTS, counts, ids -- must be equal exactly,
+    and are, because string equality is tried first. The exception is a derived
+    floating-point statistic: ``p_value`` comes out of the incomplete beta
+    function, whose ``lgamma``/``exp``/``log`` are not bit-identical between
+    libm implementations, so macOS and Linux disagree in the last two digits
+    (0.3910022189557707 against 0.3910022189557709) from bit-identical inputs --
+    ``paired_t``, the value fed to it, matches exactly. No amount of care in
+    this codebase makes a transcendental function reproducible across platforms,
+    so the comparison allows a relative difference far below anything that could
+    change a decision, and nothing else.
+
+    :param actual: Field as dumped from the store under test.
+    :param golden: Field as recorded in the golden TSV.
+    :returns: Whether the two represent the same value.
+    """
+    if actual == golden:
+        return True
+    try:
+        return math.isclose(float(actual), float(golden), rel_tol=1e-12, abs_tol=1e-12)
+    except ValueError:
+        return False
+
+
 def test_bulk_save_matches_golden(golden_store_connection):
     con = golden_store_connection
     for table in dump.TABLES:
         actual = _actual_as_strings(dump.natural_key_rows(con, table))
         golden = _load_golden(table)
-        # Multiset comparison: sorted lists, duplicates preserved.
-        assert sorted(actual) == sorted(golden), f"table {table} differs from golden"
+        # Multiset comparison: sorted lists, duplicates preserved. Sorting by
+        # the string tuple keeps matching rows aligned because every table's
+        # leading columns are structural and compare exactly; only trailing
+        # statistics can differ, and then only in their last digits.
+        actual_sorted, golden_sorted = sorted(actual), sorted(golden)
+        assert len(actual_sorted) == len(golden_sorted), (
+            f"table {table} differs from golden: "
+            f"{len(actual_sorted)} rows against {len(golden_sorted)}"
+        )
+        for row_number, (actual_row, golden_row) in enumerate(
+            zip(actual_sorted, golden_sorted, strict=True)
+        ):
+            assert len(actual_row) == len(golden_row), (
+                f"table {table} row {row_number} differs from golden in width"
+            )
+            for column, (actual_field, golden_field) in enumerate(
+                zip(actual_row, golden_row, strict=True)
+            ):
+                assert _fields_match(actual_field, golden_field), (
+                    f"table {table} row {row_number} column {column} differs from "
+                    f"golden: {actual_field!r} against {golden_field!r}"
+                )
     # Explicit row-count guards (independent of tuple comparison). pair is
     # now normalized to one physical row per (compound1, compound2, rule,
     # constant); its golden is the per-radius fanned view, so guard the
