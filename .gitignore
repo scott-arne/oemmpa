@@ -318,3 +318,4 @@ dhu_glu_ymin.smi
 benchmarks/private/
 *.private.csv
 *.private.tsv
+python/oemmpa/_build_type.txt

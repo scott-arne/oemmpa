@@ -43,6 +43,24 @@ if existing_oemmpa is not None and not _is_worktree_package_file(
 pytest.importorskip("openeye.oechem", reason="OpenEye Toolkits not installed")
 
 
+def pytest_report_header():
+    """Name the build the suite is about to exercise.
+
+    build-debug and build-release copy their extension into this one package
+    directory, so the tree that built last owns what the suite imports. The
+    two are not interchangeable for anything numeric: a debug build answers a
+    statistics query a few ULP away from a release one, which is enough for an
+    acceptance digest to disagree with itself and read as a non-reproducible
+    build. Saying which one is loaded costs a line and removes the guesswork.
+    """
+    extension = WORKTREE_PACKAGE_ROOT / "oemmpa" / "_oemmpa.so"
+    if not extension.exists():
+        return "oemmpa extension: not built in the worktree"
+    marker = WORKTREE_PACKAGE_ROOT / "oemmpa" / "_build_type.txt"
+    build_type = marker.read_text(encoding="utf-8").strip() if marker.exists() else "unknown"
+    return f"oemmpa extension: {build_type} build, {extension.stat().st_size} bytes"
+
+
 @pytest.fixture
 def aspirin_mol():
     """Create an aspirin molecule (C9H8O4) for testing."""
