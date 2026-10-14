@@ -170,7 +170,7 @@ AttachmentByLabel collect_attachment_atoms(const OEChem::OEMolBase& mol) {
             "constant SMILES must contain at least one attachment label"
         );
     }
-    if (attachments.size() > 3) {
+    if (attachments.size() > MAX_ATTACHMENT_LABELS) {
         throw EnvironmentFingerprintError(
             "constant SMILES may contain at most three attachment labels"
         );

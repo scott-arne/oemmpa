@@ -1,5 +1,6 @@
 #include "oemmpa/DMCSSMethod.h"
 
+#include "oemmpa/EnvironmentFingerprint.h"
 #include "oemmpa/Error.h"
 #include "oemmpa/MCSCommon.h"
 #include "oemmpa/RingPerception.h"
@@ -20,7 +21,10 @@ namespace {
 // constant with at most three attachment labels, and three is the fragmentation
 // method's default max_cuts. A DMCSS relation that needs more cuts is dropped
 // here rather than at save, so the in-memory pairs and the stored ones agree.
-constexpr std::size_t MAX_DMCSS_CUTS = 3;
+// The bound is MAX_ATTACHMENT_LABELS rather than a three of its own: the two
+// were independent literals until now, and raising one without the other is
+// how DMCSS came to emit constants that every save refused.
+constexpr std::size_t MAX_DMCSS_CUTS = MAX_ATTACHMENT_LABELS;
 
 void add_mcs_pair_if_valid(
     const MoleculeRecord& source_record,

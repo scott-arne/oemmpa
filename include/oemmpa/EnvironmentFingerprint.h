@@ -3,10 +3,20 @@
 
 #include "oemmpa/Error.h"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
 namespace OEMMPA {
+
+/// Most attachment labels a constant fragment may carry.
+///
+/// This is the storage limit: a constant with more labels has no environment
+/// fingerprint and so cannot be saved. Anything that produces pairs has to
+/// respect it, which is why the MCS methods cap their cut count here rather
+/// than at a number of their own -- DMCSS emitted four- to eight-cut constants
+/// for a year and every such pair was refused at save time.
+constexpr std::size_t MAX_ATTACHMENT_LABELS = 3;
 
 class EnvironmentFingerprint {
 public:

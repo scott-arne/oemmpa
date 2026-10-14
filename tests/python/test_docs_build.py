@@ -92,6 +92,12 @@ def test_strict_docs_build(tmp_path):
         text=True,
         capture_output=True,
         env=env,
+        # Doxygen 1.18.0 hangs here every so often, and without a bound the
+        # whole suite waits on it rather than this one test. A full build is
+        # well under two minutes even on a slow machine, so ten is a hang and
+        # not a slow run. Reported rather than skipped: a silent skip on an
+        # intermittent hang is how a real docs break stops being noticed.
+        timeout=600,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr

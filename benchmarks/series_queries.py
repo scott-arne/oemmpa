@@ -622,7 +622,11 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
                                      threads=NETWORK_THREADS)
     median_seconds, runs, network = time_query(run_network, repeats=NETWORK_WARM_RUNS)
     queries.append({
+        # environment_radius is recorded even though the network runs in series
+        # mode: the pooled records carry it, so a reader comparing them should
+        # not have to infer this one's mode from the key being absent.
         "kind": "network", "measure": "spearman", "min_overlap": 3, "top": NETWORK_TOP,
+        "environment_radius": None,
         "threads": NETWORK_THREADS, "nodes": len(network.nodes), "edges": len(network),
         "median_seconds": median_seconds, "runs": runs, "target_seconds": NETWORK_TARGET_SECONDS,
         "under_target": median_seconds < NETWORK_TARGET_SECONDS,
