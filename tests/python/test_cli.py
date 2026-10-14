@@ -2682,3 +2682,72 @@ def test_fragmentation_flags_detected_from_parsed_args_not_sys_argv(tmp_path):
     ])
     assert exit_code == 0
     assert database_default.exists()
+
+
+def _is_case_insensitive(directory):
+    """Whether `directory` holds one file under two spellings, probed directly."""
+    probe = directory / "OeMmPa_CaSe_PrObE"
+    probe.write_text("", encoding="utf-8")
+    try:
+        return (directory / "oemmpa_case_probe").exists()
+    finally:
+        probe.unlink()
+
+
+def test_report_outputs_that_differ_only_in_case_are_refused_when_they_collide(tmp_path):
+    """Two spellings of one file must not pass the distinctness guard.
+
+    On a case-insensitive filesystem `edges.tsv` and `EDGES.tsv` are the same
+    file, so writing both means the second silently replaces the first. Neither
+    exists when the guard runs, so there is no inode to compare and the check
+    has to decide from the names and the filesystem.
+    """
+    from oemmpa.cli import _ensure_report_outputs_are_distinct
+
+    first = tmp_path / "edges.tsv"
+    second = tmp_path / "EDGES.tsv"
+
+    if _is_case_insensitive(tmp_path):
+        with pytest.raises(ValueError, match="must be distinct"):
+            _ensure_report_outputs_are_distinct(first, second)
+    else:
+        # Genuinely two files here; refusing them would be a false alarm.
+        _ensure_report_outputs_are_distinct(first, second)
+
+
+def test_report_output_is_refused_for_the_database_sidecars(tmp_path):
+    """`<db>.wal` and `<db>.tmp` belong to the database, not to the caller.
+
+    Writing a report over an uncheckpointed write-ahead log destroys committed
+    transactions, and the guard compared only the main database path.
+    """
+    from oemmpa.cli import _ensure_report_output_is_not_database
+
+    database = tmp_path / "analysis.duckdb"
+
+    for sidecar in (f"{database}.wal", f"{database}.tmp"):
+        with pytest.raises(ValueError, match="must differ from database"):
+            _ensure_report_output_is_not_database(database, sidecar)
+
+    # A report that merely starts with the database's name is the caller's.
+    _ensure_report_output_is_not_database(database, f"{database}.report.tsv")
+    _ensure_report_output_is_not_database(database, tmp_path / "analysis.tsv")
+
+
+def test_second_table_is_refused_on_standard_output_however_it_is_spelled(tmp_path):
+    """`/dev/stdout` is standard output under another name.
+
+    The guard tested the literal `-`, so a second table aimed at `/dev/stdout`
+    joined the report on one stream and the two became unreadable.
+    """
+    from oemmpa.cli import _ensure_evidence_stream_is_not_shared
+
+    for spelling in ("-", "/dev/stdout"):
+        with pytest.raises(ValueError, match="cannot share standard output"):
+            _ensure_evidence_stream_is_not_shared(None, spelling, flag="--nodes")
+        with pytest.raises(ValueError, match="cannot share standard output"):
+            _ensure_evidence_stream_is_not_shared("-", spelling, flag="--nodes")
+
+    # With the report in a file there is no collision, whatever the spelling.
+    _ensure_evidence_stream_is_not_shared(tmp_path / "report.tsv", "-")
+    _ensure_evidence_stream_is_not_shared(tmp_path / "report.tsv", "/dev/stdout")

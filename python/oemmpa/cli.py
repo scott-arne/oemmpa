@@ -522,12 +522,85 @@ def _read_rgroups_from_stream(stream, source_name):
     return rgroups
 
 
+# The spellings a platform gives standard output. /proc/self/fd/1 is Linux's,
+# /dev/fd/1 is what both macOS and Linux resolve /dev/stdout to.
+_STANDARD_OUTPUT_NAMES = frozenset({"/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"})
+
+
+def _is_standard_output(path):
+    """Whether `path` names this process's standard output.
+
+    ``-`` is the documented spelling, but `/dev/stdout` and `/dev/fd/1` reach
+    the same stream, and a reader handed two tables down one pipe cannot tell
+    where the first ends. Identity is settled by stat rather than by matching
+    names, so any spelling the platform provides is caught; a path that cannot
+    be stat'ed is simply not standard output.
+
+    Descriptor 1 is the subject, not ``sys.stdout``: the descriptor is what
+    these names resolve through, and it stays right when ``sys.stdout`` has
+    been replaced by something without a descriptor of its own.
+
+    :param path: Path to test, or ``"-"``.
+    :returns: Whether writing to it would write to standard output.
+    """
+    text = str(path)
+    if text == "-":
+        return True
+
+    # The platform's own names for the stream. These need matching by name
+    # rather than by stat: macOS reports /dev/stdout through devfs, so it
+    # carries a different st_dev from the file descriptor it forwards to and
+    # compares unequal despite being the very same stream.
+    if text in _STANDARD_OUTPUT_NAMES or os.path.realpath(text) in _STANDARD_OUTPUT_NAMES:
+        return True
+
+    # Catches the redirected spelling -- `oemmpa ... > report.tsv` with
+    # `--evidence report.tsv` -- where both tables land in one file by two
+    # different routes. Here stat identity is exactly the right question.
+    try:
+        target = os.stat(text)
+        stream = os.fstat(1)
+    except OSError:
+        return False
+    return (target.st_dev, target.st_ino) == (stream.st_dev, stream.st_ino)
+
+
+def _directory_is_case_insensitive(directory):
+    """Whether `directory` stores one file under several spellings.
+
+    Asked of the filesystem rather than of the platform: a macOS machine can
+    carry a case-sensitive volume and a Linux one a case-insensitive mount, so
+    guessing from ``sys.platform`` is wrong on exactly the systems where it
+    matters. The probe writes a uniquely named empty file and looks for it
+    under a different case.
+
+    :param directory: Directory to probe. Need not exist.
+    :returns: Whether the directory holds one file under two spellings, and
+        False when it cannot be probed (missing, or not writable).
+    """
+    try:
+        with tempfile.NamedTemporaryFile(prefix="oemmpa_Case", dir=directory) as probe:
+            name = os.path.basename(probe.name)
+            swapped = name.swapcase()
+            if swapped == name:
+                return False
+            return os.path.exists(os.path.join(directory, swapped))
+    except OSError:
+        return False
+
+
 def _same_file(left, right):
-    """Whether two paths name one file: equal after resolution, or the same inode when both exist.
+    """Whether two paths name one file: equal after resolution, the same inode, or one spelling apart.
 
     Resolution alone misses hard links (two names, one inode), so an existing
-    pair is also compared with ``os.path.samefile``. Neither check raises for a
-    missing path, so a not-yet-written report can be compared safely.
+    pair is also compared with ``os.path.samefile``. It also misses the case
+    where neither file exists yet and the filesystem is case-insensitive:
+    ``resolve`` keeps whatever spelling the caller typed, so ``edges.tsv`` and
+    ``EDGES.tsv`` compare unequal although writing both would leave one file.
+    That pair is the dangerous one, because the guards run before anything is
+    written and there is no inode to compare. The filesystem is asked directly
+    instead of assumed, so a case-sensitive volume still treats them as the two
+    distinct files they are there.
 
     :param left: First path.
     :param right: Second path.
@@ -535,16 +608,30 @@ def _same_file(left, right):
     """
     left_path = Path(left).expanduser()
     right_path = Path(right).expanduser()
-    if left_path.resolve(strict=False) == right_path.resolve(strict=False):
+    left_resolved = left_path.resolve(strict=False)
+    right_resolved = right_path.resolve(strict=False)
+    if left_resolved == right_resolved:
         return True
     if left_path.exists() and right_path.exists():
         return os.path.samefile(left_path, right_path)
-    return False
+    if str(left_resolved).casefold() != str(right_resolved).casefold():
+        return False
+    return _directory_is_case_insensitive(left_resolved.parent)
 
 
 def _ensure_report_output_is_not_database(database_path, output_path):
     if output_path is None or str(output_path) == "-":
         return
+
+    # The write-ahead log and the temporary directory belong to the database as
+    # much as the file named on the command line does: a report written over an
+    # uncheckpointed `.wal` destroys committed transactions, and the store has
+    # no way to tell that from a corrupt log afterwards.
+    database = Path(database_path).expanduser()
+    for suffix in (".wal", ".tmp"):
+        sidecar = database.with_name(database.name + suffix)
+        if _same_file(sidecar, output_path):
+            raise ValueError(f"output path must differ from database: {output_path}")
 
     if _same_file(database_path, output_path):
         raise ValueError(f"output path must differ from database: {output_path}")
@@ -581,9 +668,9 @@ def _ensure_evidence_stream_is_not_shared(output_path, evidence_path, flag="--ev
     :param flag: The second table's option, named in the message.
     :raises ValueError: If both tables would go to standard output.
     """
-    if evidence_path is None or str(evidence_path) != "-":
+    if evidence_path is None or not _is_standard_output(evidence_path):
         return
-    if output_path is None or str(output_path) == "-":
+    if output_path is None or _is_standard_output(output_path):
         raise ValueError(
             f"{flag} cannot share standard output with the report; give one of them a file path"
         )
