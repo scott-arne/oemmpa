@@ -267,7 +267,8 @@ MatchedPair make_matched_pair(
 /// renders such a fragment (for example "[*:1][cH]c(c[*:2])F"), so a method
 /// that calls this skips the candidate rather than emit a pair it could not
 /// store. It is DMCSS's guard for now. The check stops at the first fragment
-/// that fails, and OEChem prints its parse warning for that one.
+/// that fails, and parses quietly: a rejection is an expected outcome here, so
+/// OEChem's warning would be noise on a build's stderr, once per candidate.
 ///
 /// \param constant_smiles SMILES of the constant region with attachment labels.
 /// \param source_variable_smiles SMILES of the source variable region.

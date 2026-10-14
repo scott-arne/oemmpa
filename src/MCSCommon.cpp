@@ -107,8 +107,14 @@ bool transfer_one_double_bond(
 }
 
 bool parses_as_smiles(const std::string& smiles) {
+    // Quiet because a rejection here is an expected outcome, not a fault: the
+    // caller probes a candidate it knows may be unreadable, from every worker
+    // thread, and OEChem's default handler would write a kekulization warning
+    // to stderr for each one. The option travels with the call, unlike
+    // OEThrow's level, which is process-wide state no worker may touch.
+    const OEChem::OEParseSmilesOptions quiet_options(false, false, true, false);
     OEChem::OEGraphMol mol;
-    return OEChem::OESmilesToMol(mol, smiles);
+    return OEChem::OEParseSmiles(mol, smiles, quiet_options);
 }
 
 }  // namespace

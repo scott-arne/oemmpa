@@ -427,3 +427,16 @@ TEST(MCSCommonTest, FragmentsParseAsSmilesRejectsAnUnreadableTargetVariable) {
     EXPECT_FALSE(OEMMPA::mcs::fragments_parse_as_smiles(
         PARSABLE_CONSTANT, PARSABLE_SOURCE_VARIABLE, RING_SPLIT_FRAGMENT));
 }
+
+TEST(MCSCommonTest, FragmentsParseAsSmilesRejectsQuietly) {
+    // The guard rejects a candidate on purpose and runs on every worker
+    // thread, so a rejection that writes OEChem's kekulization warning to
+    // stderr buries a real build's output. OEThrow counts what it emits, so
+    // the count standing still is the assertion; no stream is redirected and
+    // no global level is touched.
+    const unsigned int before =
+        OESystem::OEThrow.Count(OESystem::OEErrorLevel::Warning);
+    EXPECT_FALSE(OEMMPA::mcs::fragments_parse_as_smiles(
+        RING_SPLIT_FRAGMENT, PARSABLE_SOURCE_VARIABLE, PARSABLE_TARGET_VARIABLE));
+    EXPECT_EQ(OESystem::OEThrow.Count(OESystem::OEErrorLevel::Warning), before);
+}
