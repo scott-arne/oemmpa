@@ -68,8 +68,12 @@ install(FILES
 # already up to date, leaving the other tree's extension in place. This target
 # is a custom target, so it is always out of date and always restages; the
 # copies are copy_if_different, so the cost when nothing moved is a stat.
+#
+# The marker's own name carries the configuration: a multi-config generator
+# evaluates file(GENERATE) once per configuration, and CMake rejects one
+# output path that would hold different content in each.
 file(GENERATE
-    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/_build_type.txt
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/_build_type_$<CONFIG>.txt
     CONTENT "$<CONFIG>\n"
 )
 add_custom_target(oemmpa_python_stage ALL
@@ -77,8 +81,8 @@ add_custom_target(oemmpa_python_stage ALL
         $<TARGET_FILE:oemmpa_python>
         ${CMAKE_SOURCE_DIR}/python/oemmpa/$<TARGET_FILE_NAME:oemmpa_python>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_CURRENT_BINARY_DIR}/_build_type.txt
+        ${CMAKE_CURRENT_BINARY_DIR}/_build_type_$<CONFIG>.txt
         ${CMAKE_SOURCE_DIR}/python/oemmpa/_build_type.txt
     DEPENDS oemmpa_python
-    COMMENT "Staging the ${CMAKE_BUILD_TYPE} extension into python/oemmpa"
+    COMMENT "Staging the $<CONFIG> extension into python/oemmpa"
 )
