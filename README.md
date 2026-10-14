@@ -446,6 +446,33 @@ vrzn bump minor
 vrzn set 1.0.0
 ```
 
+### Upgrading To 5.0.1
+
+5.0.1 is a fix release: schema 5 is unchanged, no API changed, and a store
+built by 5.0.0 is read without complaint. Two fixes change what an analysis
+produces for the same input.
+
+- Environment fingerprints built on Linux change. The atoms of a symmetric
+  environment -- the equivalent carbons of a benzene ring -- tied on every key
+  of the fingerprint's sort, and the result was whatever permutation the
+  platform's `std::sort` happened to leave, so the same molecule fingerprinted
+  as `5:7,6:8` on macOS and `5:8,6:7` on Linux. The comparator is now a total
+  order and both platforms agree. macOS output is byte-identical to 5.0.0;
+  **a store built on Linux by 5.0.0 should be rebuilt**, because its
+  fingerprints will not match newly written ones and the fingerprint is the
+  pooling key for `environment_radius`.
+- The WizePairZ method drops a candidate whose constant needs more than three
+  attachment labels, or whose fragments OEChem cannot read back, as DMCSS
+  already did. Such a pair could never be stored: the save refused the whole
+  store over it, so `oemmpa build --method wizepairz` failed outright on any
+  corpus containing one. It now completes, with those candidates absent from
+  both the stored pairs and `Analyzer.pairs()`.
+
+Also fixed: `oemmpa` no longer writes a report over its own database's `.wal`
+or `.tmp` sidecar, over a case-variant spelling of the database on a
+case-insensitive filesystem, or over the database when the report is aimed at
+`/dev/stdout` and stdout is redirected there.
+
 ### Upgrading To 5.0.0
 
 5.0.0 moves the store to schema version 5. A database built with 4.x is
