@@ -52,6 +52,21 @@ openeye_add_swig_module(
     EXTRA_BUILD_INFO "DUCKDB_LINKAGE = \"${OEMMPA_DUCKDB_LINKAGE}\""
 )
 
+# An editable build loads the extension from python/oemmpa, and the RPATH that
+# openeye_add_swig_module() sets covers only that directory and the OpenEye
+# runtime. Homebrew's libduckdb records its absolute install name, but the
+# libduckdb.so in DuckDB's release archive has the bare SONAME libduckdb.so, so
+# on Linux the import fails unless DuckDB's directory is on the RPATH. The entry
+# goes on the target, not into the staged copy, because oemmpa_python_stage
+# below re-copies the build-tree module over python/oemmpa on every build.
+# Wheels are excluded: auditwheel and delocate vendor DuckDB and rewrite the
+# RPATH, and a build machine's absolute path does not belong in a wheel.
+if(NOT SKBUILD AND NOT WIN32 AND OEMMPA_DUCKDB_LINKAGE STREQUAL "SHARED")
+    get_filename_component(_OEMMPA_DUCKDB_LIB_DIR "${DuckDB_LIBRARY}" DIRECTORY)
+    set_property(TARGET oemmpa_python APPEND PROPERTY
+        INSTALL_RPATH "${_OEMMPA_DUCKDB_LIB_DIR}")
+endif()
+
 # Cutting the extension's exports to its init symbol is the other half of the
 # static link: an archive's symbols are still exported from the module that
 # absorbs them, and an exported DuckDB symbol can be coalesced with the pip
