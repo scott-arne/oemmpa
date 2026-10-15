@@ -722,6 +722,14 @@ pairwise disconnected maximum common substructure analysis:
 analyzer = Analyzer(method="dmcss")
 ```
 
+`wizepairz` implements the WizePairZ MCS method, which records the changing
+region's environment as a SMIRKS per radius:
+
+```python
+analyzer = Analyzer(method="wizepairz")
+analyzer.configure_wizepairz(identity_fraction=0.9, max_environment_radius=3)
+```
+
 `oemedchem` is available for analysis through OpenEye OEMedChem:
 
 ```python

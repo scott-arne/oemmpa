@@ -15,12 +15,15 @@ All public types live in the `OEMMPA` namespace.
 `Analyzer` is the main C++ entry point. The default constructor uses the
 fragmentation method. `Analyzer("fragmentation")` selects the same method
 explicitly. `Analyzer("dmcss")` uses pairwise disconnected maximum common
-substructure analysis, and `Analyzer("oemedchem")` uses OpenEye OEMedChem.
-DMCSS emits pairs of at most three cuts, the most the store's environment
-fingerprint represents, and skips a candidate pair whose rendered constant or
-variable SMILES OEChem cannot read back, such as a match that splits an
-aromatic ring; OEChem prints a warning on stderr for each such skipped
-candidate.
+substructure analysis, `Analyzer("wizepairz")` uses the WizePairZ MCS method,
+and `Analyzer("oemedchem")` uses OpenEye OEMedChem.
+Both MCS methods, DMCSS and WizePairZ, emit pairs of at most three cuts -- the
+most the store's environment fingerprint represents -- and skip a candidate
+pair whose rendered constant or variable SMILES OEChem cannot read back, such
+as a match that splits an aromatic ring. Such a pair could not be stored: the
+save refuses the whole store rather than the one pair, so the candidate is
+dropped during analysis instead, and the in-memory pairs match the stored
+ones. The parse is quiet, so a skipped candidate produces no output.
 
 ```cpp
 OEMMPA::Analyzer analyzer;
@@ -182,8 +185,23 @@ honors the common symmetric and heavy-atom filters. The current implementation
 is intentionally conservative: it emits heavy-atom substitutions where both
 variables have matching attachment counts. It emits pairs of at most three
 cuts and, through `mcs::fragments_parse_as_smiles`, skips a candidate whose
-rendered constant or variable SMILES OEChem cannot read back; OEChem prints a
-warning on stderr for each skipped candidate.
+rendered constant or variable SMILES OEChem cannot read back. The parse is
+quiet, so a skipped candidate produces no output.
+
+`WizePairZMethod` implements the WizePairZ MCS method. It finds the maximum
+common substructure of a molecule pair, keeps the match when the two sides
+agree on their attachment counts, and encodes the changing region's
+environment as the paper's `.`-joined reactant/product SMIRKS, recorded per
+radius. Its identity threshold and maximum environment radius are set with
+`Analyzer::SetWizePairZIdentityFraction()` and
+`Analyzer::SetWizePairZMaxEnvironmentRadius()`. Like `DMCSSMethod` it caps
+cuts at three and skips candidates whose fragments cannot be read back.
+
+`Analyzer::SetRingPerceptionPolicy()` takes a `RingPerceptionPolicy`:
+`CONSULTED` (the default) perceives rings for the methods that need them,
+while `VALIDATED` additionally drops any molecule whose ring perception the
+ported RDKit algorithm rejects. The enumerator was named `STRICT` before
+5.0.0; `windows.h` defines `STRICT` as a macro, so it could not compile there.
 
 `OEMedChemMethod` wraps OpenEye's native matched-pair analyzer and converts
 native mapped pair SMILES into the same `MatchedPair` and `Transform` objects.
@@ -423,7 +441,8 @@ selected rule-environment row for pair inspection.
 
 ## Current Scope
 
-The fragmentation, DMCSS, and initial OEMedChem methods are available now.
+The fragmentation, DMCSS, WizePairZ, and initial OEMedChem methods are
+available now.
 Explicit unimolecular SMIRKS application and observed-transform application for
 connected one- to three-attachment changing groups, including multi-atom
 variables, are available through `TransformApplicator`. DuckDB storage can save

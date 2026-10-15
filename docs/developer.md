@@ -37,6 +37,92 @@ Install the documentation dependency set from the docs requirements file:
 python -m invoke docs-deps
 ```
 
+## Building With DuckDB
+
+DuckDB-backed storage is optional and off by default; configure with
+`-DOEMMPA_BUILD_DUCKDB=ON` to enable it. `cmake/FindDuckDB.cmake` looks under
+`DUCKDB_ROOT` (variable or environment) and then in the usual Homebrew and
+`/usr/local` prefixes.
+
+On macOS the build links DuckDB **statically**, and `OEMMPA_DUCKDB_STATIC`
+defaults to `ON` there. This is not a size or speed preference: the pip
+`duckdb` package carries its own copy of the DuckDB C++ runtime and exports
+its symbols, and dyld coalesces C++ weak symbols -- vtables, typeinfo, inline
+bodies -- across images whatever namespace they were linked in. A process
+holding both copies gives them one shared set, and a mismatched pair
+dispatches one release's vtables on the other's objects, which made every
+store write fail inside DuckDB. Linking statically, and cutting the
+extension's exports to its module init symbol, leaves nothing of oemmpa's
+DuckDB in the dynamic symbol table to coalesce.
+
+That needs the static archives rather than the shared library. DuckDB ships
+them prebuilt as `static-libs-osx-arm64.zip` on each release; note that this
+archive contains `duckdb.h` but not `duckdb.hpp`, so the headers still come
+from `libduckdb-osx-universal.zip`. Homebrew's `duckdb` formula installs both
+the archives and the dylib, so a Homebrew prefix needs nothing extra.
+
+Linux and Windows keep the shared library: CPython loads extension modules
+with `RTLD_LOCAL` on Linux, so the pip package's symbols never reach the
+global namespace. Configure with `-DOEMMPA_DUCKDB_STATIC=OFF` to force the
+shared library on macOS; the package then guards its own import instead, and
+refuses to load when a mismatched `duckdb` is already in the process.
+
+The linkage is recorded as `DUCKDB_LINKAGE` in the generated
+`oemmpa/_build_info.py`, which is what the import guard reads to decide
+whether it applies.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push to `master`, on pull requests,
+and on demand:
+
+| Job | Platform | What it does |
+| --- | --- | --- |
+| `linux-tests` | `rockylinux:8` container | Full ctest and pytest suites |
+| `macos-tests` | `macos-latest` | Full ctest and pytest suites, static DuckDB |
+| `windows-build` | `windows-latest` | Compiles through `scripts/build_python.py` |
+
+Windows is compiled rather than tested because the failure this catches is a
+compile error and the runner is the expensive one. Both test jobs pin the pip
+`duckdb` package to `DUCKDB_VERSION` so the suite exercises the version the
+wheel ships rather than whatever is newest.
+
+`OPENEYE_VERSION` and `DUCKDB_VERSION` appear in both `ci.yml` and
+`build-wheels.yml` and **must be changed together**: CI that builds a
+different toolchain from the release reports green for something nobody
+ships.
+
+`test_strict_docs_build` is deselected in CI because Doxygen is not installed
+on the runners. Run it locally before changing anything under `docs/`.
+
+## Releases
+
+Versions are managed with [`vrzn`](https://pypi.org/project/vrzn/), which
+keeps the number in step across `pyproject.toml`, `python/pyproject.toml`,
+`python/oemmpa/__init__.py`, `CMakeLists.txt`, `include/oemmpa/oemmpa.h`,
+`swig/oemmpa.i` and `tests/python/test_oemmpa.py`. Never hand-edit a version
+string:
+
+```bash
+vrzn get             # show every source and whether they agree
+vrzn bump patch -y   # or minor / major
+```
+
+The release sequence is:
+
+1. Add an `Upgrading To X.Y.Z` section to `README.md` describing anything that
+   changes for an existing store or an existing caller.
+2. `vrzn bump patch -y`, then commit exactly the files it changed as
+   `release: vX.Y.Z: <summary> (tag target)`.
+3. Push `master` and **wait for CI to pass**. Pushing the tag is what triggers
+   `build-wheels.yml`, and that workflow publishes to PyPI.
+4. Create an annotated tag whose message is the release notes -- there is no
+   separate changelog file -- and push it.
+
+`build-wheels.yml` builds macOS, Windows and two Linux architectures, runs the
+full suites on Linux x86_64, smoke-tests every wheel under several Python
+versions, and only then publishes.
+
 ## Verification Gate
 
 Before completing a phase, run:

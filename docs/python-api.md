@@ -29,11 +29,13 @@ method names raise `ValueError`.
 matched molecular series; `None` keeps the method's default (on for
 `fragmentation`, off for the MCS methods). See "Series for MCS analyses" below.
 
-DMCSS emits pairs of at most three cuts, the most the store's environment
-fingerprint represents, and skips a candidate pair whose rendered constant or
-variable SMILES OEChem cannot read back, such as a match that splits an
-aromatic ring; OEChem prints a warning on stderr for each such skipped
-candidate.
+Both MCS methods, DMCSS and WizePairZ, emit pairs of at most three cuts -- the
+most the store's environment fingerprint represents -- and skip a candidate
+pair whose rendered constant or variable SMILES OEChem cannot read back, such
+as a match that splits an aromatic ring. Such a pair could not be stored: the
+save refuses the whole store rather than the one pair, so the candidate is
+dropped during analysis instead, and the in-memory pairs match the stored
+ones. The parse is quiet, so a skipped candidate produces no output.
 
 WizePairZ supports configuration via `configure_wizepairz()`:
 
@@ -290,6 +292,34 @@ from oemmpa import open as open_oemmpa
 store = open_oemmpa("analysis.oemmpa.duckdb")
 store.summary()
 ```
+
+`open_store` is the same function under a name that does not shadow the
+builtin, so `from oemmpa import open_store` needs no alias. Both take
+`read_only=True` to open a store without taking the writer lock.
+
+### Small Helpers
+
+```python
+import oemmpa
+
+oemmpa.duckdb_available()          # was this build compiled with storage?
+oemmpa.duckdb_library_version()    # the DuckDB the extension links, "vX.Y.Z"
+oemmpa.calculate_molecular_weight(mol)   # an OEMolBase's molecular weight
+
+# Environments of a query molecule, without a store or an analysis. The result
+# is a sequence of QueryEnvironmentResult, each carrying radius, smarts,
+# pseudosmiles, constant_smiles and cut_count, with to_dict() per entry.
+environments = oemmpa.compute_query_environments("Cc1ccccc1", min_radius=0, max_radius=5)
+[entry.radius for entry in environments]
+
+# A property delta for a transform, selected straight from a store:
+oemmpa.predict_property_delta(store, "[*:1]C>>[*:1]O", "pIC50", value=6.4)
+```
+
+`duckdb_library_version()` reports the library the extension links, which is
+not necessarily the version of any `duckdb` Python package installed beside
+it. On macOS the two are fully independent: the extension absorbs DuckDB
+statically, so the versions need not agree (see the developer guide).
 
 The lower-level rule-environment helpers accept `Selection`, a shorter
 user-facing name for structured persisted-rule selection:

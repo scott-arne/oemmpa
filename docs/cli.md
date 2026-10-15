@@ -4,6 +4,17 @@ The `oemmpa` command runs file-based MMPA workflows without writing a
 Python script. The workflow builds a persistent OEMMPA DuckDB store, then reads
 that store for reports, predictions, generated products, and detail reports.
 
+`--debug` is accepted before the subcommand and prints a full traceback for an
+unexpected runtime error instead of the one-line message:
+
+```bash
+oemmpa --debug build --smiles molecules.smi --output store.duckdb
+```
+
+Every command that reads a property CSV -- `build`, `refresh-stats`, `predict`
+and `generate` -- takes `--id-column` to name the molecule ID column when it is
+not one of `id`, `ID`, `Name` or `name`.
+
 ## Build A Store
 
 ```bash
@@ -148,10 +159,11 @@ to lift that default. The heavy-atom change filters (`--max-heavies-transf`,
 `--max-frac-trans`) and the orientation option (`--symmetric`) apply to every
 method as well.
 
-`--method dmcss` emits pairs of at most three cuts and skips a candidate pair
-whose fragments OEChem cannot read back, such as a match that splits an
-aromatic ring; OEChem prints a warning on stderr for each such skipped
-candidate.
+`--method dmcss` and `--method wizepairz` both emit pairs of at most three
+cuts and skip a candidate pair whose fragments OEChem cannot read back, such
+as a match that splits an aromatic ring. Such a pair could not be stored -- a
+save refuses the whole store over one -- so it is dropped during analysis
+instead. The parse is quiet, so a skipped candidate produces no output.
 
 ### Salt And Solvent Removal
 
@@ -237,7 +249,7 @@ yet, `none` for an analysis without series enumeration (an MCS build without
 series), or the method name plus `+fragmentation` for an MCS build with
 `--series`.
 
-`list` is accepted as an alias for `summary`. Both open the store read-only, so
+`summary` is accepted as an alias for `list`. Both open the store read-only, so
 they fail on a DuckDB file that OEMMPA did not create rather than adding the
 OEMMPA schema to it.
 
@@ -260,7 +272,8 @@ rule_environment_id	transform	property	aggregation	predicted_delta	predicted_val
 ```
 
 Selection options include `--aggregation`, `--min-pairs`, `--score`, and
-`--where`.
+`--where`. `--min-evidence N` (default 1) additionally requires N
+property-bearing pairs behind a transform before it is used.
 
 Persisted `predict` uses the fragmentation settings that were applied when the
 store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
@@ -287,7 +300,9 @@ smiles	transform	property	aggregation	predicted_delta	evidence_count	rule_enviro
 ```
 
 Selection options include `--transform`, `--aggregation`, `--min-pairs`,
-`--score`, and `--where`.
+`--score`, and `--where`, plus `--min-evidence N` (default 1) for the minimum
+property-bearing pairs behind a transform. `--strict` turns an unsupported
+observed transform into a failure instead of a skipped row.
 
 Persisted `generate` uses the fragmentation settings that were applied when the
 store was built. Use `--cut-rgroup` or `--cut-rgroup-file` only with `build` or
@@ -484,7 +499,9 @@ prediction.tsv`, or `--output products.tsv` to write a report file; when the
 output path ends in `.gz`, OEMMPA writes gzip-compressed TSV. Use `--output -`
 to write TSV to standard output explicitly.
 
-`refresh-stats` is accepted as an alias for `stats`.
+`stats` is accepted as an alias for `refresh-stats`. It takes `--min-evidence
+N` (default 1) for the minimum property-bearing pairs a transform needs before
+it is reported.
 
 Stateless commands accept the same `--cut-rgroup` and `--cut-rgroup-file`
 controls as `build`, because they construct an in-memory analyzer from the file
@@ -537,7 +554,10 @@ et al. 2012 for sigma_exp estimation).
 
 ## Roadmap Boundaries
 
-Phase 17 adds build-time and stateless R-group fragmentation controls plus the
-small `rgroup2smarts` inspection command to the Phase 14b CLI reporting surface.
+The CLI covers building a store, reading summary metrics from it, the four
+matched-molecular-series commands, predictions and product generation from
+stored or stateless statistics, and the uncertainty-aware statistics flags.
+
 Performance, scale, benchmarking, timing comparisons, memory profiling, and
-large-dataset fixtures remain outside this CLI compatibility slice.
+large-dataset fixtures stay out of the CLI: they are the benchmark harness's
+job, documented in [benchmarks.md](benchmarks.md).
