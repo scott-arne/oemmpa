@@ -52,6 +52,26 @@ def release_triple(version):
     return tuple(int(part) for part in match.groups())
 
 
+def links_shared_duckdb():
+    """Whether this build's DuckDB symbols can be coalesced with another copy's.
+
+    A build that absorbed DuckDB from static archives, and exports only its
+    module init symbol, has nothing in the dynamic symbol table to coalesce; a
+    build linking the shared library does. The answer is recorded at configure
+    time because the alternative is reading the extension's load commands on
+    every import.
+
+    :returns: True when the linkage is shared, or when this build predates the
+        record and cannot say -- the guard costs an informative error at worst,
+        and skipping it on an unknown would be the expensive way to be wrong.
+    """
+    try:
+        from . import _build_info
+    except ImportError:
+        return True
+    return getattr(_build_info, "DUCKDB_LINKAGE", "SHARED") == "SHARED"
+
+
 def conflict(ours, theirs):
     """The message for a mismatched pair of DuckDB runtimes, if there is one.
 
@@ -84,6 +104,8 @@ def check(library_version):
         on a platform where the two collide.
     """
     if sys.platform != "darwin":
+        return
+    if not links_shared_duckdb():
         return
     loaded = sys.modules.get("duckdb")
     if loaded is None:

@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import oemmpa
+import pytest
 from oemmpa import _duckdb_runtime
 
 _PACKAGE_PARENT = str(Path(_duckdb_runtime.__file__).resolve().parents[1])
@@ -42,12 +43,13 @@ def test_a_mismatched_runtime_is_reported_with_both_versions():
     assert "import oemmpa" in message
 
 
-def test_importing_oemmpa_after_a_mismatched_duckdb_follows_the_platform():
+def test_importing_oemmpa_after_a_mismatched_duckdb_follows_the_build():
     # End to end in a child process: a stub module named duckdb, claiming a
-    # version that cannot match, is imported first. macOS must refuse the
-    # import; Linux and Windows must not, because CPython loads extension
-    # modules RTLD_LOCAL there and the two copies never interact -- refusing
-    # would fail an import that works.
+    # version that cannot match, is imported first. Refusal is owed only where
+    # the two copies can actually collide -- macOS, and a build that links
+    # DuckDB as a shared library. Linux and Windows load extension modules
+    # RTLD_LOCAL, and a static build exports no DuckDB symbols at all, so
+    # refusing in either case would fail an import that works.
     script = (
         "import sys, types\n"
         "stub = types.ModuleType('duckdb')\n"
@@ -60,7 +62,7 @@ def test_importing_oemmpa_after_a_mismatched_duckdb_follows_the_platform():
         [sys.executable, "-c", script], check=False, capture_output=True, text=True,
         cwd=_PACKAGE_PARENT,
     )
-    if sys.platform == "darwin":
+    if sys.platform == "darwin" and _duckdb_runtime.links_shared_duckdb():
         assert result.returncode != 0, result.stdout
         assert "0.0.1" in result.stderr
         assert oemmpa.duckdb_library_version().lstrip("v") in result.stderr
@@ -88,3 +90,37 @@ def test_importing_oemmpa_first_is_always_allowed():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "ok True" in result.stdout
+
+
+def test_a_static_build_exports_no_duckdb_symbols():
+    # The invariant the static link exists for: nothing of DuckDB's is in the
+    # extension's dynamic symbol table, so the loader has nothing of ours to
+    # coalesce with the pip package's copy. Exports, not dependencies: an
+    # archive's symbols are absorbed into the module and would be exported from
+    # it by default, which collides exactly as a shared library does.
+    if _duckdb_runtime.links_shared_duckdb():
+        pytest.skip("this build links DuckDB as a shared library")
+    if sys.platform != "darwin":
+        pytest.skip("symbol export is read with otool/nm, and only macOS coalesces")
+    extension = Path(oemmpa.__file__).resolve().parent / "_oemmpa.so"
+    assert extension.exists(), extension
+    listing = subprocess.run(
+        ["nm", "-gU", str(extension)], check=False, capture_output=True, text=True,
+    )
+    if listing.returncode != 0:
+        pytest.skip(f"nm unavailable: {listing.stderr.strip()}")
+    exported = [line for line in listing.stdout.splitlines() if "duckdb" in line]
+    assert exported == [], exported[:5]
+
+
+def test_the_build_records_how_duckdb_was_linked():
+    # The guard reads this to decide whether it applies at all; a build that
+    # stopped recording it would silently re-arm the guard on every wheel.
+    from oemmpa import _build_info
+
+    assert _build_info.DUCKDB_LINKAGE in {"STATIC", "SHARED", "NONE"}
+    if sys.platform == "darwin" and oemmpa.duckdb_available():
+        assert _build_info.DUCKDB_LINKAGE == "STATIC", (
+            "macOS must link DuckDB statically: a shared copy is coalesced with "
+            "the pip duckdb package's"
+        )

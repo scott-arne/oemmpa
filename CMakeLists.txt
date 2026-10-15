@@ -17,6 +17,21 @@ option(OEMMPA_UNIVERSAL2 "Build universal2 binary for macOS" OFF)
 option(OEMMPA_USE_STABLE_ABI "Use Python stable ABI" ON)
 option(OEMMPA_BUILD_DUCKDB "Build optional DuckDB-backed storage when DuckDB is available" OFF)
 
+# Static DuckDB, default on macOS. The pip duckdb package carries its own copy
+# of the DuckDB C++ runtime and exports its symbols, and dyld coalesces C++
+# weak symbols -- vtables, typeinfo, inline bodies -- across images whatever
+# namespace they were linked in. A process holding both copies therefore gives
+# them one shared set, and a mismatched pair dispatches one release's vtables
+# on the other's objects: importing pip duckdb before oemmpa made every store
+# write fail inside DuckDB. Linked statically and with the extension's exports
+# cut to its init symbol, oemmpa's copy is not in the dynamic symbol table at
+# all and cannot be coalesced with anything.
+#
+# Off elsewhere: CPython loads extension modules RTLD_LOCAL on Linux, so the
+# pip copy's symbols never reach the global namespace and the shared library is
+# both safe and much smaller.
+option(OEMMPA_DUCKDB_STATIC "Link DuckDB statically so its symbols cannot be coalesced with another copy's" ${APPLE})
+
 if(APPLE AND OEMMPA_UNIVERSAL2)
     set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures" FORCE)
 elseif(APPLE)

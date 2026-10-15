@@ -19,6 +19,7 @@
       [EXTRA_INSTALL_TARGETS <targets...>]
       [EXPECTED_LIB_VARS <vars...>]
       [INIT_PY <path>]
+      [EXTRA_BUILD_INFO <"NAME = value"...>]
   )
 #]============================================================================]
 
@@ -26,7 +27,7 @@ function(openeye_add_swig_module)
     # Parse arguments
     set(_OPTIONS "")
     set(_ONE_VALUE_ARGS NAME SWIG_FILE PYTHON_OUTPUT_DIR STABLE_ABI INIT_PY)
-    set(_MULTI_VALUE_ARGS LINK_LIBS SWIG_FLAGS COMPILE_DEFS EXTRA_INSTALL_TARGETS EXPECTED_LIB_VARS)
+    set(_MULTI_VALUE_ARGS LINK_LIBS SWIG_FLAGS COMPILE_DEFS EXTRA_INSTALL_TARGETS EXPECTED_LIB_VARS EXTRA_BUILD_INFO)
     cmake_parse_arguments(ARG "${_OPTIONS}" "${_ONE_VALUE_ARGS}" "${_MULTI_VALUE_ARGS}" ${ARGN})
 
     # Validate required arguments
@@ -396,6 +397,12 @@ OPENEYE_BUILD_VERSION = \"${_BUILD_INFO_VERSION}\"
 OPENEYE_LIBRARY_TYPE = \"${OpenEye_LIBRARY_TYPE}\"
 OPENEYE_EXPECTED_LIBS = [${_EXPECTED_LIBS}]
 ")
+    # Caller-supplied facts about this build, one assignment per entry. The
+    # caller writes them verbatim, so anything the generated module should say
+    # that this helper has no business knowing goes here.
+    foreach(_EXTRA ${ARG_EXTRA_BUILD_INFO})
+        string(APPEND _BUILD_INFO_CONTENT "${_EXTRA}\n")
+    endforeach()
     file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/_build_info.py "${_BUILD_INFO_CONTENT}")
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/_build_info.py
         DESTINATION ${ARG_NAME}

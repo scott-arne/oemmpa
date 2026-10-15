@@ -27,6 +27,18 @@ else()
     list(APPEND OEMMPA_SWIG_FLAGS "-DOEMMPA_HAS_OEMEDCHEM=0")
 endif()
 
+# Recorded in _build_info.py so the package can tell, at import, whether its
+# DuckDB symbols could be coalesced with another copy's. A statically linked
+# build exports none and is immune; a shared one is not, and the import guard
+# only applies there (see python/oemmpa/_duckdb_runtime.py).
+if(OEMMPA_HAS_DUCKDB AND OEMMPA_DUCKDB_STATIC)
+    set(OEMMPA_DUCKDB_LINKAGE "STATIC")
+elseif(OEMMPA_HAS_DUCKDB)
+    set(OEMMPA_DUCKDB_LINKAGE "SHARED")
+else()
+    set(OEMMPA_DUCKDB_LINKAGE "NONE")
+endif()
+
 openeye_add_swig_module(
     NAME oemmpa
     SWIG_FILE oemmpa.i
@@ -37,7 +49,22 @@ openeye_add_swig_module(
     EXPECTED_LIB_VARS
         ${OEMMPA_SWIG_EXPECTED_LIB_VARS}
     INIT_PY ${CMAKE_SOURCE_DIR}/python/oemmpa/__init__.py
+    EXTRA_BUILD_INFO "DUCKDB_LINKAGE = \"${OEMMPA_DUCKDB_LINKAGE}\""
 )
+
+# Cutting the extension's exports to its init symbol is the other half of the
+# static link: an archive's symbols are still exported from the module that
+# absorbs them, and an exported DuckDB symbol can be coalesced with the pip
+# duckdb package's copy exactly as a dylib's can. Nothing dlopens anything out
+# of this module, so one export is all it needs.
+if(APPLE AND OEMMPA_HAS_DUCKDB AND OEMMPA_DUCKDB_STATIC)
+    file(GENERATE
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/exported_symbols.txt
+        CONTENT "_PyInit_$<TARGET_FILE_BASE_NAME:oemmpa_python>\n"
+    )
+    target_link_options(oemmpa_python PRIVATE
+        -Wl,-exported_symbols_list,${CMAKE_CURRENT_BINARY_DIR}/exported_symbols.txt)
+endif()
 
 install(FILES
     ${CMAKE_SOURCE_DIR}/python/oemmpa/__main__.py

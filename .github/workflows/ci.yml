@@ -236,17 +236,25 @@ jobs:
         run: |
           DUCKDB_ROOT="${{ runner.temp }}/duckdb"
           mkdir -p "$DUCKDB_ROOT/include" "$DUCKDB_ROOT/lib"
+          # Headers come from the shared bundle: the static-libs archive ships
+          # duckdb.h but not duckdb.hpp, and oemmpa uses the C++ API.
           curl -fsSL \
             "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/libduckdb-osx-universal.zip" \
             -o "${{ runner.temp }}/libduckdb.zip"
           unzip -o "${{ runner.temp }}/libduckdb.zip" -d "${{ runner.temp }}/libduckdb"
           cp "${{ runner.temp }}/libduckdb/duckdb.h" "${{ runner.temp }}/libduckdb/duckdb.hpp" "$DUCKDB_ROOT/include/"
-          cp "${{ runner.temp }}/libduckdb/libduckdb.dylib" "$DUCKDB_ROOT/lib/"
-          # Absolute install name, as in the release build. Here it also removes
-          # the need for DYLD_LIBRARY_PATH, which System Integrity Protection
-          # strips from the test binary's children anyway: every target that
-          # links the dylib records this path and resolves it unaided.
-          install_name_tool -id "$DUCKDB_ROOT/lib/libduckdb.dylib" "$DUCKDB_ROOT/lib/libduckdb.dylib"
+          # The archives, not the dylib: the extension absorbs DuckDB so that
+          # none of its symbols reach the dynamic symbol table, where dyld
+          # would coalesce them with the pip duckdb package's copy. Copied by
+          # discovery, because which archives DuckDB splits its build into
+          # changes between releases.
+          curl -fsSL \
+            "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/static-libs-osx-arm64.zip" \
+            -o "${{ runner.temp }}/duckdb-static.zip"
+          unzip -o "${{ runner.temp }}/duckdb-static.zip" -d "${{ runner.temp }}/duckdb-static"
+          find "${{ runner.temp }}/duckdb-static" -name '*.a' -exec cp {} "$DUCKDB_ROOT/lib/" \;
+          test -f "$DUCKDB_ROOT/lib/libduckdb_static.a"
+          rm -rf "${{ runner.temp }}/duckdb-static.zip" "${{ runner.temp }}/duckdb-static"
           rm -rf "${{ runner.temp }}/libduckdb.zip" "${{ runner.temp }}/libduckdb"
           echo "DUCKDB_ROOT=$DUCKDB_ROOT" >> $GITHUB_ENV
 
@@ -260,6 +268,11 @@ jobs:
             -DPython3_EXECUTABLE="$(python -c 'import sys; print(sys.executable)')" \
             -DPython3_FIND_STRATEGY=LOCATION
           grep -q "OEMMPA_BUILD_DUCKDB:BOOL=ON" build/CMakeCache.txt
+          # Falling back to a shared DuckDB here would still pass the suite and
+          # still ship a wheel whose symbols collide with the pip package's, so
+          # the linkage this platform depends on is asserted rather than hoped
+          # for.
+          grep -q "DuckDB_LIBRARY:FILEPATH=.*libduckdb_static\.a" build/CMakeCache.txt
 
       - name: Build
         run: cmake --build build -j "$(sysctl -n hw.ncpu)"
