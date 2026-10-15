@@ -258,7 +258,7 @@ jobs:
           # imports directly; ci.yml installs the same set and explains why.
           /opt/venv/bin/pip install \
             pytest rich rich-click invoke \
-            duckdb scipy rdkit pandas \
+            duckdb==${DUCKDB_VERSION} scipy rdkit pandas \
             sphinx breathe exhale myst-parser sphinx-rtd-theme \
             sphinx-autodoc-typehints
           # Doxygen is not installed here, and the docs build hangs often enough

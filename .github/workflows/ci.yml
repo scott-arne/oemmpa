@@ -68,9 +68,18 @@ jobs:
           # duckdb, scipy, rdkit and pandas back the tests that check the store,
           # the statistics and the fragmentation against independent
           # implementations rather than against themselves.
+          #
+          # duckdb is pinned to the version the extension links, not left to
+          # resolve to the newest release. The pip package carries its own
+          # statically linked copy of DuckDB and exports its C++ symbols, so a
+          # process holding both copies coalesces one set of vtables across the
+          # two: on macOS, importing a different-versioned pip duckdb before
+          # oemmpa makes every store write fail inside DuckDB. Testing a
+          # version the wheel does not ship would measure a combination nobody
+          # runs.
           /opt/venv/bin/pip install \
             pytest rich rich-click invoke \
-            duckdb scipy rdkit pandas \
+            duckdb==${DUCKDB_VERSION} scipy rdkit pandas \
             sphinx breathe exhale myst-parser sphinx-rtd-theme \
             sphinx-autodoc-typehints
 
@@ -181,10 +190,12 @@ jobs:
           brew install swig
           pip install --upgrade pip setuptools wheel
           pip install ninja cmake
-          # The same direct imports the Linux job installs; see the note there.
+          # The same direct imports, and the same duckdb pin, as the Linux job;
+          # see the note there. The pin matters most here: macOS is the platform
+          # where two DuckDB copies in one process collide.
           pip install \
             pytest rich rich-click invoke \
-            duckdb scipy rdkit pandas \
+            duckdb==${DUCKDB_VERSION} scipy rdkit pandas \
             sphinx breathe exhale myst-parser sphinx-rtd-theme \
             sphinx-autodoc-typehints
 
