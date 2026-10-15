@@ -184,7 +184,9 @@ storage notes.
 - OpenEye C++ SDK headers and libraries.
 - OpenEye Python Toolkits.
 - CMake >= 3.16.
-- SWIG >= 4.0.
+- SWIG >= 4.4.1. CI builds with SWIG 4.5.1 (`pip install swig==4.5.1`). SWIG
+  4.4.0, which Ubuntu 26.04 ships as `/usr/bin/swig`, generates stable-ABI
+  wrappers that do not compile against Python 3.13 or newer.
 - Python >= 3.11.
 - DuckDB C++ library and headers, 1.5.4 or newer, for optional
   persistent-storage development.
