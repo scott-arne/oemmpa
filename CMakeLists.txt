@@ -64,7 +64,7 @@ set(OEDESALT_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     oedesalt
     GIT_REPOSITORY https://github.com/scott-arne/oedesalt.git
-    GIT_TAG v0.1.0
+    GIT_TAG v0.1.3
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(oedesalt)
