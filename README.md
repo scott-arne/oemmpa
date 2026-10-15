@@ -446,6 +446,35 @@ vrzn bump minor
 vrzn set 1.0.0
 ```
 
+### Using oemmpa Alongside The pip `duckdb` Package
+
+On macOS, import `oemmpa` before `duckdb`.
+
+Both packages carry their own copy of the DuckDB C++ runtime: oemmpa links the
+shared library its wheel bundles, and the pip `duckdb` package has DuckDB
+statically linked into its extension module. Each exports roughly 26,000 DuckDB
+symbols, and the dynamic loader coalesces C++ weak symbols -- vtables, typeinfo,
+inline function bodies -- across images whatever namespace they were linked in,
+so a process holding both gives them one shared set. When the two are different
+releases, one release's vtables dispatch calls on the other's objects and every
+store write fails inside DuckDB:
+
+```
+RuntimeError: DuckDB query failed: FATAL Error: Failed to create checkpoint:
+  INTERNAL Error: Internal system catalog does not have storage
+```
+
+Importing `oemmpa` first leaves its own copy in charge and the combination
+works, whatever version of `duckdb` is installed. Installing a `duckdb` that
+matches the version oemmpa links -- `oemmpa.duckdb_library_version()` reports
+it -- also works, in either order. Importing oemmpa after a mismatched `duckdb`
+is refused at import with a message naming both versions, rather than left to
+fail later inside the store.
+
+Linux and Windows are unaffected: CPython loads extension modules with
+`RTLD_LOCAL` on Linux, so the pip package's symbols never reach the global
+namespace, and the two never interact.
+
 ### Upgrading To 5.0.1
 
 5.0.1 is a fix release: schema 5 is unchanged, no API changed, and a store

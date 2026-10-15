@@ -870,6 +870,14 @@ from ._series import (
     series_network,
 )
 from ._storage import DuckDBStore, duckdb_available, duckdb_library_version
+
+# After the extension and its DuckDB are loaded, and before any caller can
+# reach a store: a second DuckDB runtime already in the process makes every
+# write fail with an error that names nothing actionable.
+if duckdb_available():
+    from . import _duckdb_runtime
+
+    _duckdb_runtime.check(duckdb_library_version)
 from ._transform import (
     apply_pair_transform,
     apply_transform_smirks,
