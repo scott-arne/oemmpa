@@ -22,7 +22,7 @@ concurrency:
 
 env:
   GCS_BUCKET: openeye-sdks
-  # These three pins MUST stay in step with build-wheels.yml. CI that builds a
+  # These pins MUST stay in step with build-wheels.yml. CI that builds a
   # different toolchain from the release is worse than no CI, because it reports
   # green for something nobody ships. Change them in both files together.
   OPENEYE_VERSION: "2026.1.0"
