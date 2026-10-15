@@ -11,6 +11,7 @@
             "binaryDir": "${sourceDir}/build-release",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
+                "OPENEYE_USE_SHARED": "ON",
                 "OPENEYE_ROOT": {"type": "PATH", "value": "$env{OPENEYE_ROOT}"},
                 "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"}
             }
@@ -20,6 +21,7 @@
             "binaryDir": "${sourceDir}/build-debug",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
+                "OPENEYE_USE_SHARED": "ON",
                 "OPENEYE_ROOT": {"type": "PATH", "value": "$env{OPENEYE_ROOT}"},
                 "Python3_EXECUTABLE": {"type": "PATH", "value": "$env{Python3_EXECUTABLE}"},
                 "OEMMPA_BUILD_DUCKDB": "ON"
