@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "oemmpa"
-version = "5.0.1"
+version = "5.0.2"
 description = "Enhanced matched molecular pair capabilities with the OpenEye Toolkits"
 # The wheel is not purely MIT: src/RingPerception.cpp is derived from RDKit and
 # stays under RDKit's BSD 3-Clause terms, so the compiled extension is covered by

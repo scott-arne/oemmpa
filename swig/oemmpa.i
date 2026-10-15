@@ -395,7 +395,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oemmpa_is_oereceptor, "Exp
 // ============================================================================
 #define OEMMPA_VERSION_MAJOR 5
 #define OEMMPA_VERSION_MINOR 0
-#define OEMMPA_VERSION_PATCH 1
+#define OEMMPA_VERSION_PATCH 2
 
 // ============================================================================
 // GIL release opt-ins (MUST precede the %include of Analyzer.h / DuckDBStore.h)
