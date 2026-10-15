@@ -42,23 +42,31 @@ def test_a_mismatched_runtime_is_reported_with_both_versions():
     assert "import oemmpa" in message
 
 
-def test_importing_oemmpa_after_a_mismatched_duckdb_is_refused():
-    # The whole point, exercised end to end in a child process: a stub module
-    # named duckdb, claiming a version that cannot match, is imported first.
+def test_importing_oemmpa_after_a_mismatched_duckdb_follows_the_platform():
+    # End to end in a child process: a stub module named duckdb, claiming a
+    # version that cannot match, is imported first. macOS must refuse the
+    # import; Linux and Windows must not, because CPython loads extension
+    # modules RTLD_LOCAL there and the two copies never interact -- refusing
+    # would fail an import that works.
     script = (
         "import sys, types\n"
         "stub = types.ModuleType('duckdb')\n"
         "stub.__version__ = '0.0.1'\n"
         "sys.modules['duckdb'] = stub\n"
         "import oemmpa\n"
+        "print('imported')\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", script], check=False, capture_output=True, text=True,
         cwd=_PACKAGE_PARENT,
     )
-    assert result.returncode != 0, result.stdout
-    assert "0.0.1" in result.stderr
-    assert oemmpa.duckdb_library_version().lstrip("v") in result.stderr
+    if sys.platform == "darwin":
+        assert result.returncode != 0, result.stdout
+        assert "0.0.1" in result.stderr
+        assert oemmpa.duckdb_library_version().lstrip("v") in result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "imported" in result.stdout
 
 
 def test_importing_oemmpa_first_is_always_allowed():
