@@ -448,6 +448,34 @@ vrzn bump minor
 vrzn set 1.0.0
 ```
 
+### Upgrading To 5.0.3
+
+A build and documentation release. Schema 5 is unchanged, no API changed, and
+nothing a stored database holds is affected. The library's behaviour is the
+same as 5.0.2; what changed is how it is built and what is written down.
+
+Building from source now requires **SWIG 4.4.1 or newer** when the stable-ABI
+bindings are on, which is the default. Earlier SWIG miscompiles the bindings
+against Python 3.13+ headers. Configure fails with a message naming the
+version it found if yours is older, and `build-system.requires` asks for
+`swig>=4.4.1`. Both CI workflows now pin SWIG 4.5.1 on every platform, so the
+wheels are built with one known SWIG rather than whatever was newest that day.
+
+Editable and other non-wheel builds changed in two ways, neither of which
+touches a wheel. They link the `openeye-toolkits` shared libraries the way
+wheels already do, instead of carrying a second static copy of OEChem. And on
+platforms that link DuckDB shared -- Linux, and macOS when configured with
+`-DOEMMPA_DUCKDB_STATIC=OFF` -- DuckDB's directory is added to the extension's
+RPATH, because the release archive's `libduckdb.so` carries a bare SONAME and
+an editable import would otherwise fail to find it.
+
+The bundled `oedesalt` moves from v0.1.0 to v0.1.3; between those releases only
+its version strings change.
+
+For anyone running the benchmarks: a run now removes the store it built when it
+finishes, because the store is a byproduct and the 30,000-molecule one was
+20 GB. Pass `--keep-store` to hold on to it.
+
 ### Upgrading To 5.0.2
 
 5.0.2 is a fix release: schema 5 is unchanged, no API changed, and a store
