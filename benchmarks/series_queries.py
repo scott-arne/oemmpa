@@ -485,7 +485,7 @@ def _write_bundle(bundle, out_path):
 
 def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, store_path=None,
                                parquet=None, out_path=DEFAULT_OUT, force=False,
-                               shortening_length=SHORTENING_LENGTH):
+                               shortening_length=SHORTENING_LENGTH, keep_store=False):
     """Build the store, time every query kind on it, and write the results bundle.
 
     :param size: Corpus size requested from ``ensure_corpus`` when no
@@ -533,134 +533,143 @@ def run_series_query_benchmark(*, size, repeats, threads=1, smiles_path=None, st
     out_path.parent.mkdir(parents=True, exist_ok=True)
     _log(f"building the store for {smiles} at {store_path}")
     build = build_store(smiles, store_path, threads=threads, force=force)
-    store = open_store(store_path)
-    commonest, query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
-    shortening = select_shortening_query(store, PROPERTY, length=shortening_length)
-    queries = []
-    for order in orders:
-        def run_rank(order=order):
-            return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=order["values"],
-                                                 support_ladder=SUPPORT_LADDER)
-        median_seconds, runs, ranking = time_query(run_rank, repeats=repeats)
+    try:
+        store = open_store(store_path)
+        commonest, query_rgroups, orders = select_query_rgroups(store, PROPERTY, commonest=4, minimum=3, count=3)
+        shortening = select_shortening_query(store, PROPERTY, length=shortening_length)
+        queries = []
+        for order in orders:
+            def run_rank(order=order):
+                return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=order["values"],
+                                                     support_ladder=SUPPORT_LADDER)
+            median_seconds, runs, ranking = time_query(run_rank, repeats=repeats)
+            queries.append({
+                "kind": "rank", "query": order["rgroups"], "values": order["values"], "series_with_order": order["count"],
+                "direction": "higher", "ladder": list(SUPPORT_LADDER), "median_seconds": median_seconds, "runs": runs,
+                "matched_series": ranking.matched_series, "support_level": ranking.support_level,
+                "dropped": list(ranking.dropped), "candidates": len(ranking),
+                "under_target": median_seconds < TARGET_SECONDS,
+            })
+
+        def run_shortening():
+            return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=shortening["values"],
+                                                 support_ladder=SUPPORT_LADDER, shorten=True,
+                                                 min_query_length=SHORTENING_MIN_QUERY_LENGTH)
+        median_seconds, runs, ranking = time_query(run_shortening, repeats=repeats)
+        # The workload exists to time the shortening loop; a median of a run that
+        # never shortened would be reported as that measurement and mean nothing.
+        if not ranking.dropped:
+            raise RuntimeError(
+                f"the shortening query from series {shortening['series_id']} dropped nothing when timed, "
+                "so its median would not cover the shortening loop")
         queries.append({
-            "kind": "rank", "query": order["rgroups"], "values": order["values"], "series_with_order": order["count"],
-            "direction": "higher", "ladder": list(SUPPORT_LADDER), "median_seconds": median_seconds, "runs": runs,
-            "matched_series": ranking.matched_series, "support_level": ranking.support_level,
-            "dropped": list(ranking.dropped), "candidates": len(ranking),
+            "kind": "rank-shorten", "series_id": shortening["series_id"], "constant": shortening["constant"],
+            "query": shortening["rgroups"], "values": shortening["values"],
+            "query_length": shortening["query_length"], "direction": "higher", "ladder": list(SUPPORT_LADDER),
+            "min_query_length": SHORTENING_MIN_QUERY_LENGTH, "dropped": list(ranking.dropped),
+            "attempts": len(ranking.dropped) + 1, "query_used": list(ranking.query_used),
+            "matched_series": ranking.matched_series, "candidates": len(ranking),
+            "support_level": ranking.support_level, "median_seconds": median_seconds, "runs": runs,
+            "under_target": median_seconds < TARGET_SECONDS,
+        })
+        largest = largest_series(store, count=3)
+        for entry in largest:
+            def run_similar(entry=entry):
+                return oemmpa.find_similar_series(store, PROPERTY, series_id=entry["series_id"], top=20)
+            median_seconds, runs, similar = time_query(run_similar, repeats=repeats)
+            queries.append({
+                "kind": "similar", "series_id": entry["series_id"], "constant": entry["constant"],
+                "num_members": entry["num_members"], "top": 20, "median_seconds": median_seconds, "runs": runs,
+                "query_size": similar.query_size, "matches": len(similar),
+                "under_target": median_seconds < TARGET_SECONDS,
+            })
+        # The first timed order matches no pooled profile at radius 1 on the 10k
+        # corpus, so timing it would record an empty match as a pooled ranking. The
+        # second order does match; the owner approved this departure from D13's
+        # "first timed order". The selection above always returns three orders (it
+        # raises instead), so the index needs no guard.
+        pooled_order = orders[1]
+
+        def run_rank_pooled():
+            return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=pooled_order["values"],
+                                                 support_ladder=SUPPORT_LADDER, environment_radius=POOLED_RADIUS)
+        median_seconds, runs, ranking = time_query(run_rank_pooled, repeats=repeats)
+        queries.append({
+            "kind": "rank-pooled", "query": pooled_order["rgroups"], "values": pooled_order["values"],
+            "environment_radius": POOLED_RADIUS, "direction": "higher", "ladder": list(SUPPORT_LADDER),
+            "median_seconds": median_seconds, "runs": runs, "matched_series": ranking.matched_series,
+            "support_level": ranking.support_level, "dropped": list(ranking.dropped), "candidates": len(ranking),
+            "under_target": median_seconds < TARGET_SECONDS,
+        })
+        widest = largest[0]
+
+        def run_similar_pooled():
+            return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
+                                              environment_radius=POOLED_RADIUS)
+        median_seconds, runs, similar = time_query(run_similar_pooled, repeats=repeats)
+        queries.append({
+            "kind": "similar-pooled", "series_id": widest["series_id"], "constant": widest["constant"],
+            "num_members": widest["num_members"], "top": 20, "environment_radius": POOLED_RADIUS,
+            "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
             "under_target": median_seconds < TARGET_SECONDS,
         })
 
-    def run_shortening():
-        return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=shortening["values"],
-                                             support_ladder=SUPPORT_LADDER, shorten=True,
-                                             min_query_length=SHORTENING_MIN_QUERY_LENGTH)
-    median_seconds, runs, ranking = time_query(run_shortening, repeats=repeats)
-    # The workload exists to time the shortening loop; a median of a run that
-    # never shortened would be reported as that measurement and mean nothing.
-    if not ranking.dropped:
-        raise RuntimeError(
-            f"the shortening query from series {shortening['series_id']} dropped nothing when timed, "
-            "so its median would not cover the shortening loop")
-    queries.append({
-        "kind": "rank-shorten", "series_id": shortening["series_id"], "constant": shortening["constant"],
-        "query": shortening["rgroups"], "values": shortening["values"],
-        "query_length": shortening["query_length"], "direction": "higher", "ladder": list(SUPPORT_LADDER),
-        "min_query_length": SHORTENING_MIN_QUERY_LENGTH, "dropped": list(ranking.dropped),
-        "attempts": len(ranking.dropped) + 1, "query_used": list(ranking.query_used),
-        "matched_series": ranking.matched_series, "candidates": len(ranking),
-        "support_level": ranking.support_level, "median_seconds": median_seconds, "runs": runs,
-        "under_target": median_seconds < TARGET_SECONDS,
-    })
-    largest = largest_series(store, count=3)
-    for entry in largest:
-        def run_similar(entry=entry):
-            return oemmpa.find_similar_series(store, PROPERTY, series_id=entry["series_id"], top=20)
-        median_seconds, runs, similar = time_query(run_similar, repeats=repeats)
+        def run_similar_variants():
+            return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
+                                              selection=oemmpa.SeriesSelectionOptions(include_up_enumerated=True))
+        median_seconds, runs, similar = time_query(run_similar_variants, repeats=repeats)
         queries.append({
-            "kind": "similar", "series_id": entry["series_id"], "constant": entry["constant"],
-            "num_members": entry["num_members"], "top": 20, "median_seconds": median_seconds, "runs": runs,
-            "query_size": similar.query_size, "matches": len(similar),
+            "kind": "similar-variants", "series_id": widest["series_id"], "constant": widest["constant"],
+            "num_members": widest["num_members"], "top": 20, "include_up_enumerated": True,
+            "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
             "under_target": median_seconds < TARGET_SECONDS,
         })
-    # The first timed order matches no pooled profile at radius 1 on the 10k
-    # corpus, so timing it would record an empty match as a pooled ranking. The
-    # second order does match; the owner approved this departure from D13's
-    # "first timed order". The selection above always returns three orders (it
-    # raises instead), so the index needs no guard.
-    pooled_order = orders[1]
 
-    def run_rank_pooled():
-        return oemmpa.rank_next_substituents(store, PROPERTY, "higher", rgroups=pooled_order["values"],
-                                             support_ladder=SUPPORT_LADDER, environment_radius=POOLED_RADIUS)
-    median_seconds, runs, ranking = time_query(run_rank_pooled, repeats=repeats)
-    queries.append({
-        "kind": "rank-pooled", "query": pooled_order["rgroups"], "values": pooled_order["values"],
-        "environment_radius": POOLED_RADIUS, "direction": "higher", "ladder": list(SUPPORT_LADDER),
-        "median_seconds": median_seconds, "runs": runs, "matched_series": ranking.matched_series,
-        "support_level": ranking.support_level, "dropped": list(ranking.dropped), "candidates": len(ranking),
-        "under_target": median_seconds < TARGET_SECONDS,
-    })
-    widest = largest[0]
-
-    def run_similar_pooled():
-        return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
-                                          environment_radius=POOLED_RADIUS)
-    median_seconds, runs, similar = time_query(run_similar_pooled, repeats=repeats)
-    queries.append({
-        "kind": "similar-pooled", "series_id": widest["series_id"], "constant": widest["constant"],
-        "num_members": widest["num_members"], "top": 20, "environment_radius": POOLED_RADIUS,
-        "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
-        "under_target": median_seconds < TARGET_SECONDS,
-    })
-
-    def run_similar_variants():
-        return oemmpa.find_similar_series(store, PROPERTY, series_id=widest["series_id"], top=20,
-                                          selection=oemmpa.SeriesSelectionOptions(include_up_enumerated=True))
-    median_seconds, runs, similar = time_query(run_similar_variants, repeats=repeats)
-    queries.append({
-        "kind": "similar-variants", "series_id": widest["series_id"], "constant": widest["constant"],
-        "num_members": widest["num_members"], "top": 20, "include_up_enumerated": True,
-        "median_seconds": median_seconds, "runs": runs, "query_size": similar.query_size, "matches": len(similar),
-        "under_target": median_seconds < TARGET_SECONDS,
-    })
-
-    def run_network():
-        return oemmpa.series_network(store, PROPERTY, measure="spearman", min_overlap=3, top=NETWORK_TOP,
-                                     threads=NETWORK_THREADS)
-    median_seconds, runs, network = time_query(run_network, repeats=NETWORK_WARM_RUNS)
-    queries.append({
-        # environment_radius is recorded even though the network runs in series
-        # mode: the pooled records carry it, so a reader comparing them should
-        # not have to infer this one's mode from the key being absent.
-        "kind": "network", "measure": "spearman", "min_overlap": 3, "top": NETWORK_TOP,
-        "environment_radius": None,
-        "threads": NETWORK_THREADS, "nodes": len(network.nodes), "edges": len(network),
-        "median_seconds": median_seconds, "runs": runs, "target_seconds": NETWORK_TARGET_SECONDS,
-        "under_target": median_seconds < NETWORK_TARGET_SECONDS,
-    })
-    bundle = {
-        "meta": {
-            "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY,
-            "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
-            "query_rgroups": query_rgroups, "query_rgroup_count": len(query_rgroups),
-            "shortening_length": shortening_length,
-            "network_threads": NETWORK_THREADS, "pooled_radius": POOLED_RADIUS,
-            "corpus_provenance": _corpus_provenance(smiles),
-            "duckdb_library_version": oemmpa.duckdb_library_version(),
-            "duckdb_python_version": _duckdb_python_version(),
-            "git_revision": _git_revision(), "python": sys.version.split()[0],
-            "hostname": platform.node(), "machine": platform.machine(),
-            "processor": platform.processor() or None, "cpu_count": os.cpu_count() or 1,
-        },
-        "store": build,
-        "target_seconds": TARGET_SECONDS,
-        "network_target_seconds": NETWORK_TARGET_SECONDS,
-        "queries": queries,
-        "all_under_target": all(query["under_target"] for query in queries) if queries else False,
-    }
-    _write_bundle(bundle, out_path)
-    _log(f"wrote {out_path}")
-    return bundle
+        def run_network():
+            return oemmpa.series_network(store, PROPERTY, measure="spearman", min_overlap=3, top=NETWORK_TOP,
+                                         threads=NETWORK_THREADS)
+        median_seconds, runs, network = time_query(run_network, repeats=NETWORK_WARM_RUNS)
+        queries.append({
+            # environment_radius is recorded even though the network runs in series
+            # mode: the pooled records carry it, so a reader comparing them should
+            # not have to infer this one's mode from the key being absent.
+            "kind": "network", "measure": "spearman", "min_overlap": 3, "top": NETWORK_TOP,
+            "environment_radius": None,
+            "threads": NETWORK_THREADS, "nodes": len(network.nodes), "edges": len(network),
+            "median_seconds": median_seconds, "runs": runs, "target_seconds": NETWORK_TARGET_SECONDS,
+            "under_target": median_seconds < NETWORK_TARGET_SECONDS,
+        })
+        bundle = {
+            "meta": {
+                "size": size, "smiles": str(smiles), "store": str(store_path), "property": PROPERTY, "store_removed": not keep_store,
+                "repeats": repeats, "threads": threads, "commonest_rgroups": commonest,
+                "query_rgroups": query_rgroups, "query_rgroup_count": len(query_rgroups),
+                "shortening_length": shortening_length,
+                "network_threads": NETWORK_THREADS, "pooled_radius": POOLED_RADIUS,
+                "corpus_provenance": _corpus_provenance(smiles),
+                "duckdb_library_version": oemmpa.duckdb_library_version(),
+                "duckdb_python_version": _duckdb_python_version(),
+                "git_revision": _git_revision(), "python": sys.version.split()[0],
+                "hostname": platform.node(), "machine": platform.machine(),
+                "processor": platform.processor() or None, "cpu_count": os.cpu_count() or 1,
+            },
+            "store": build,
+            "target_seconds": TARGET_SECONDS,
+            "network_target_seconds": NETWORK_TARGET_SECONDS,
+            "queries": queries,
+            "all_under_target": all(query["under_target"] for query in queries) if queries else False,
+        }
+        _write_bundle(bundle, out_path)
+        _log(f"wrote {out_path}")
+        return bundle
+    finally:
+        # The store is dropped before it is unlinked so DuckDB closes it and
+        # writes no log beside a file that is already gone. In a finally
+        # because a run that fell over must not leave 20 GB behind either.
+        store = None
+        if not keep_store:
+            remove_store(store_path)
+            _log(f"removed the store at {store_path}")
 
 
 def mcs_store_path(out_path, size, *, series, method=MCS_METHOD):
@@ -753,6 +762,21 @@ def peak_resident_bytes(ru_maxrss):
     return int(ru_maxrss) if sys.platform == "darwin" else int(ru_maxrss) * 1024
 
 
+def remove_store(store_path):
+    """Delete a store this run built, and the log DuckDB keeps beside it.
+
+    The store is a byproduct: every figure a run produces lands in the results
+    bundle, nothing reads the database afterwards, and a leftover one blocks
+    the next run, which refuses a store it did not build itself. At 30k the
+    file was 20 GB.
+
+    :param store_path: The store to remove; missing is not an error.
+    """
+    store_path = Path(store_path)
+    store_path.unlink(missing_ok=True)
+    _wal_path(store_path).unlink(missing_ok=True)
+
+
 def run_child_build(command):
     """Run one build in a child process; return its wall seconds and peak resident bytes.
 
@@ -804,7 +828,7 @@ def _store_summary(store_path):
 
 
 def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, out_path=DEFAULT_MCS_OUT,
-                            method=MCS_METHOD, pairs=MCS_PAIRS, force=False):
+                            method=MCS_METHOD, pairs=MCS_PAIRS, force=False, keep_store=False):
     """Time an MCS build without and with series enumeration and write the bundle.
 
     Every build is a fresh ``oemmpa build`` child. The two modes alternate, plain
@@ -856,48 +880,56 @@ def run_mcs_series_workload(*, size=MCS_SIZE, smiles_path=None, parquet=None, ou
     _ensure_mcs_paths_are_distinct(out_path, store_paths, {"the SMILES corpus": smiles})
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    runs = {False: [], True: []}
-    for position, series in enumerate(order):
-        store_path = stores[series]
-        # Vetted above, so the store and its log are this run's to replace;
-        # the child renames its store into place, and DuckDB would replay a
-        # stale log when that store is next opened, as _store_summary does.
-        store_path.unlink(missing_ok=True)
-        _wal_path(store_path).unlink(missing_ok=True)
-        label = "series" if series else "plain"
-        _log(f"build {position + 1} of {len(order)}: {label} {method} store for {smiles} at {store_path}")
-        seconds, peak = run_child_build(mcs_build_command(smiles, store_path, series=series, method=method))
-        runs[series].append({"position": position, "build_seconds": seconds, "peak_rss_bytes": peak})
+    try:
+        runs = {False: [], True: []}
+        for position, series in enumerate(order):
+            store_path = stores[series]
+            # Vetted above, so the store and its log are this run's to replace;
+            # the child renames its store into place, and DuckDB would replay a
+            # stale log when that store is next opened, as _store_summary does.
+            store_path.unlink(missing_ok=True)
+            _wal_path(store_path).unlink(missing_ok=True)
+            label = "series" if series else "plain"
+            _log(f"build {position + 1} of {len(order)}: {label} {method} store for {smiles} at {store_path}")
+            seconds, peak = run_child_build(mcs_build_command(smiles, store_path, series=series, method=method))
+            runs[series].append({"position": position, "build_seconds": seconds, "peak_rss_bytes": peak})
 
-    builds = {}
-    for series in (False, True):
-        summary = _store_summary(stores[series])
-        mode_runs = runs[series]
-        builds["series" if series else "plain"] = {
-            "series": series, "store": str(stores[series]), "runs": mode_runs,
-            "median_build_seconds": statistics.median([run["build_seconds"] for run in mode_runs]),
-            "max_peak_rss_bytes": max(run["peak_rss_bytes"] for run in mode_runs),
-            "pairs": int(summary["pairs"]), "series_count": int(summary["series"]),
-            "series_members": int(summary["series_members"]), "series_source": str(summary["series_source"]),
+        builds = {}
+        for series in (False, True):
+            summary = _store_summary(stores[series])
+            mode_runs = runs[series]
+            builds["series" if series else "plain"] = {
+                "series": series, "store": str(stores[series]), "runs": mode_runs,
+                "median_build_seconds": statistics.median([run["build_seconds"] for run in mode_runs]),
+                "max_peak_rss_bytes": max(run["peak_rss_bytes"] for run in mode_runs),
+                "pairs": int(summary["pairs"]), "series_count": int(summary["series"]),
+                "series_members": int(summary["series_members"]), "series_source": str(summary["series_source"]),
+            }
+        plain, opted = builds["plain"], builds["series"]
+        bundle = {
+            "meta": {
+                "size": size, "smiles": str(smiles), "method": method, "pairs": pairs,
+                "order": ["series" if series else "plain" for series in order],
+                "corpus_provenance": _corpus_provenance(smiles),
+                "duckdb_library_version": oemmpa.duckdb_library_version(),
+                "git_revision": _git_revision(), "python": sys.version.split()[0],
+                "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
+                "platform": sys.platform,
+            },
+            "builds": builds,
+            "series_seconds_ratio": opted["median_build_seconds"] / plain["median_build_seconds"],
+            "series_peak_rss_ratio": opted["max_peak_rss_bytes"] / plain["max_peak_rss_bytes"],
         }
-    plain, opted = builds["plain"], builds["series"]
-    bundle = {
-        "meta": {
-            "size": size, "smiles": str(smiles), "method": method, "pairs": pairs,
-            "order": ["series" if series else "plain" for series in order],
-            "corpus_provenance": _corpus_provenance(smiles),
-            "duckdb_library_version": oemmpa.duckdb_library_version(),
-            "git_revision": _git_revision(), "python": sys.version.split()[0],
-            "hostname": platform.node(), "machine": platform.machine(), "cpu_count": os.cpu_count() or 1,
-            "platform": sys.platform,
-        },
-        "builds": builds,
-        "series_seconds_ratio": opted["median_build_seconds"] / plain["median_build_seconds"],
-        "series_peak_rss_ratio": opted["max_peak_rss_bytes"] / plain["max_peak_rss_bytes"],
-    }
-    _write_bundle(bundle, out_path)
-    _log(f"wrote {out_path}")
-    return bundle
+        _write_bundle(bundle, out_path)
+        _log(f"wrote {out_path}")
+        return bundle
+    finally:
+        # Both derived stores go the same way the query workload's does: the
+        # bundle holds every figure, and a leftover blocks the next run.
+        if not keep_store:
+            for store_path in store_paths:
+                remove_store(store_path)
+            _log("removed the derived stores")
 
 
 def main(argv=None):
@@ -927,6 +959,10 @@ def main(argv=None):
                         help="queries only: where to build the store (default beside the output).")
     parser.add_argument("--force", action="store_true",
                         help="Replace an existing store (--store, or the mcs workload's two derived stores).")
+    parser.add_argument("--keep-store", action="store_true",
+                        help="Keep the store a run builds instead of removing it afterwards. The bundle holds "
+                             "every figure the run produced and nothing reads the database again, so the "
+                             "default is to delete it; at 30k it was 20 GB.")
     parser.add_argument("--out", type=Path, default=None,
                         help="Results JSON path (default benchmarks/results/series_queries.json, "
                              "or series_mcs_build.json for the mcs workload).")
@@ -946,7 +982,7 @@ def main(argv=None):
             parser.error(f"--pairs must be at least {MCS_PAIRS}, got {pairs}")
         run_mcs_series_workload(size=MCS_SIZE if args.size is None else args.size, parquet=args.parquet,
                                 out_path=DEFAULT_MCS_OUT if args.out is None else args.out,
-                                pairs=pairs, force=args.force)
+                                pairs=pairs, force=args.force, keep_store=args.keep_store)
         return 0
     if args.pairs is not None:
         parser.error("--pairs applies only to the mcs workload")
@@ -961,7 +997,7 @@ def main(argv=None):
                                threads=QUERY_THREADS if args.threads is None else args.threads,
                                parquet=args.parquet, store_path=args.store,
                                out_path=DEFAULT_OUT if args.out is None else args.out, force=args.force,
-                               shortening_length=shortening_length)
+                               shortening_length=shortening_length, keep_store=args.keep_store)
     return 0
 
 

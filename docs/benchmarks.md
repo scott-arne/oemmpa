@@ -252,6 +252,16 @@ counts toward `all_under_target`.
 python benchmarks/series_queries.py --size 10000 --repeats 5 --out benchmarks/results/series_queries.json
 ```
 
+**A run removes the store it built when it finishes.** Every figure the run
+produced is in the results JSON, nothing reads the database afterwards, and a
+leftover blocks the next run, which refuses a store it did not build itself.
+The size is the reason this is the default rather than a convenience: the
+30,000-molecule store was 20 GB. Pass `--keep-store` to hold on to it -- to
+query it by hand, say -- and the bundle's `meta.store_removed` records which
+happened. Removal is in a `finally`, so a run that fails partway does not
+leave the file behind either. The MCS workload treats its two derived stores
+the same way.
+
 An existing `--store` path is refused unless `--force` is given, and `--store`
 must differ from `--out`. A run is also refused before it builds anything when
 `--out` or `--store` names an input — the corpus, or the source a corpus would

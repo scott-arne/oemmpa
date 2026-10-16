@@ -323,6 +323,65 @@ def test_the_run_fails_closed_when_the_timed_shortening_query_drops_nothing(tiny
     assert not out.exists()
 
 
+def test_the_query_workload_removes_its_store_when_it_finishes(tiny_smiles, tmp_path):
+    # The store is a byproduct: every number the run produces is in the bundle,
+    # and the 30k store was 20 GB. Keeping it costs disk and blocks the next
+    # run, which refuses a store it did not build this time.
+    store = tmp_path / "bench.duckdb"
+    out = tmp_path / "out.json"
+    bundle = series_queries.run_series_query_benchmark(
+        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=store, out_path=out)
+    assert not store.exists()
+    assert not store.with_name(store.name + ".wal").exists()
+    assert out.exists()
+    # The bundle still names where it was built, and says it is not there.
+    assert bundle["meta"]["store"] == str(store)
+    assert bundle["meta"]["store_removed"] is True
+
+
+def test_keep_store_leaves_the_store_behind(tiny_smiles, tmp_path):
+    store = tmp_path / "bench.duckdb"
+    bundle = series_queries.run_series_query_benchmark(
+        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=store,
+        out_path=tmp_path / "out.json", keep_store=True)
+    assert store.exists()
+    assert bundle["meta"]["store_removed"] is False
+
+
+def test_a_run_that_fails_still_removes_its_store(tiny_smiles, tmp_path, monkeypatch):
+    # A failed 30k run must not leave 20 GB behind either, so the removal is a
+    # finally, not a last statement.
+    store = tmp_path / "bench.duckdb"
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("the queries fell over")
+
+    monkeypatch.setattr(series_queries, "select_query_rgroups", explode)
+    with pytest.raises(RuntimeError, match="fell over"):
+        series_queries.run_series_query_benchmark(
+            size=72, repeats=1, threads=1, smiles_path=tiny_smiles, store_path=store,
+            out_path=tmp_path / "out.json")
+    assert not store.exists()
+
+
+def test_the_mcs_workload_removes_both_derived_stores(mcs_smiles, tmp_path):
+    out = tmp_path / "mcs.json"
+    series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    for series in (False, True):
+        store = series_queries.mcs_store_path(out, 5, series=series)
+        assert not store.exists(), store
+        assert not series_queries._wal_path(store).exists()
+    assert out.exists()
+
+
+def test_the_mcs_workload_keeps_its_stores_when_asked(mcs_smiles, tmp_path):
+    out = tmp_path / "mcs.json"
+    series_queries.run_mcs_series_workload(
+        size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, keep_store=True)
+    for series in (False, True):
+        assert series_queries.mcs_store_path(out, 5, series=series).exists()
+
+
 def test_run_writes_the_results_bundle_with_provenance(tiny_smiles, tmp_path):
     out = tmp_path / "series_queries.json"
     bundle = series_queries.run_series_query_benchmark(
@@ -382,8 +441,10 @@ def test_the_default_store_is_built_beside_a_results_directory_that_does_not_exi
     # The default store sits beside the output, so a run that creates the results
     # directory only for the JSON write loses the whole build to a missing path.
     out = tmp_path / "results" / "series_queries.json"
+    # keep_store, so the assertion below still has a file to find: a run
+    # removes its store by default.
     bundle = series_queries.run_series_query_benchmark(
-        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, out_path=out)
+        size=72, repeats=1, threads=1, smiles_path=tiny_smiles, out_path=out, keep_store=True)
     assert out.exists()
     default_store = out.parent / "series_queries_n72.duckdb"
     assert Path(bundle["meta"]["store"]) == default_store.resolve()
@@ -539,7 +600,10 @@ def mcs_smiles(tmp_path):
 
 def test_the_mcs_workload_times_both_modes_in_child_processes(mcs_smiles, tmp_path):
     out = tmp_path / "mcs.json"
-    bundle = series_queries.run_mcs_series_workload(size=5, smiles_path=mcs_smiles, out_path=out, pairs=1)
+    # keep_store, so the per-build store assertions below still have files to
+    # find: a run removes its stores by default.
+    bundle = series_queries.run_mcs_series_workload(
+        size=5, smiles_path=mcs_smiles, out_path=out, pairs=1, keep_store=True)
     assert json.loads(out.read_text()) == bundle
     plain, opted = bundle["builds"]["plain"], bundle["builds"]["series"]
     assert (plain["series"], opted["series"]) == (False, True)
