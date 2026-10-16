@@ -157,9 +157,15 @@ jobs:
       - name: Build the Python extension
         run: cmake --build build -j "$(nproc)" --target oemmpa_python
 
+      # No LD_LIBRARY_PATH, deliberately. On Linux the extension links DuckDB
+      # shared, and the release archive's libduckdb.so carries a bare SONAME,
+      # so the import depends on the DuckDB directory being on the module's
+      # RUNPATH. Setting LD_LIBRARY_PATH here resolved it either way, which
+      # left both the RUNPATH and any regression in it untestable: a build
+      # that lost the entry would still have passed. Importing the way a
+      # developer does is the test. The C++ step above keeps the variable,
+      # because the RUNPATH is set on the extension, not on the test binary.
       - name: Python tests
-        env:
-          LD_LIBRARY_PATH: /opt/duckdb/lib
         run: |
           # The whole suite, the strict documentation build included: this job
           # is the one that installs Doxygen, so it is the one that proves the
