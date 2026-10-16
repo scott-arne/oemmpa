@@ -64,7 +64,7 @@ set(OEDESALT_BUILD_PYTHON OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
     oedesalt
     GIT_REPOSITORY https://github.com/scott-arne/oedesalt.git
-    GIT_TAG v0.1.0
+    GIT_TAG v0.1.3
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(oedesalt)
@@ -74,12 +74,23 @@ if(OEMMPA_BUILD_PYTHON)
     # Python bindings cannot be built without SWIG, so fail fast with an
     # explicit message rather than silently producing a build with no _oemmpa
     # extension. Opt out with -DOEMMPA_BUILD_PYTHON=OFF for a C++-only build.
-    find_package(SWIG 4.0)
+    # SWIG 4.4.0 picks Python 3.13-only C API calls from the header version
+    # instead of Py_LIMITED_API, so its stable-ABI wrapper does not compile
+    # against Python 3.13+ headers. 4.4.1 fixed it (swig/swig#3283).
+    if(OEMMPA_USE_STABLE_ABI)
+        set(_OEMMPA_SWIG_MIN 4.4.1)
+    else()
+        set(_OEMMPA_SWIG_MIN 4.0)
+    endif()
+    find_package(SWIG ${_OEMMPA_SWIG_MIN})
     if(NOT SWIG_FOUND)
         message(FATAL_ERROR
-            "OEMMPA_BUILD_PYTHON is ON but SWIG (>= 4.0) was not found. "
-            "Install SWIG to build the Python bindings, or configure with "
-            "-DOEMMPA_BUILD_PYTHON=OFF for a C++-only build.")
+            "OEMMPA_BUILD_PYTHON is ON but SWIG (>= ${_OEMMPA_SWIG_MIN}) was "
+            "not found. SWIG 4.4.0, which Ubuntu 26.04 ships, is too old for "
+            "the stable-ABI build. Install a newer SWIG (pip install "
+            "swig==4.5.1) and pass -DSWIG_EXECUTABLE=<path>, deleting "
+            "CMakeCache.txt first if an older SWIG is cached, or configure "
+            "with -DOEMMPA_BUILD_PYTHON=OFF for a C++-only build.")
     endif()
 endif()
 

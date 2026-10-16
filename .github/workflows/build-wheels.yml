@@ -11,6 +11,10 @@ env:
   # to come from a GitHub repository variable, which made the pin invisible from
   # the repo and let it rot out of step with what actually exists in the bucket.
   OPENEYE_VERSION: "2026.1.0"
+  # One SWIG for every platform and every run. The generated oemmpa.py must
+  # come from the same SWIG as the compiled extension, and an unpinned
+  # install changes the build whenever SWIG publishes a release.
+  SWIG_VERSION: "4.5.1"
   # Official libduckdb C++ release bundle (headers + shared library) pulled from
   # the duckdb/duckdb GitHub releases. Pinned for reproducible wheels; bump in
   # lockstep across all platforms. The PyPI `duckdb` package is unsuitable here
@@ -81,7 +85,7 @@ jobs:
           ${{ matrix.python }} -m venv /opt/venv
           echo "/opt/venv/bin" >> $GITHUB_PATH
           /opt/venv/bin/pip install --upgrade pip setuptools wheel
-          /opt/venv/bin/pip install scikit-build-core ninja cmake build swig auditwheel patchelf
+          /opt/venv/bin/pip install scikit-build-core ninja cmake build "swig==${{ env.SWIG_VERSION }}" auditwheel patchelf
 
       - name: Authenticate to Google Cloud
         id: gcp-auth
@@ -295,9 +299,8 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          brew install swig
           pip install --upgrade pip setuptools wheel
-          pip install scikit-build-core ninja cmake build delocate
+          pip install scikit-build-core ninja cmake build delocate "swig==${{ env.SWIG_VERSION }}"
 
       - name: Authenticate to Google Cloud
         id: gcp-auth
@@ -451,7 +454,7 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          python -m pip install scikit-build-core ninja cmake build swig pytest
+          python -m pip install scikit-build-core ninja cmake build "swig==${{ env.SWIG_VERSION }}" pytest
 
       - name: Authenticate to Google Cloud
         id: gcp-auth
