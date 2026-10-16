@@ -92,8 +92,11 @@ wheel ships rather than whatever is newest.
 different toolchain from the release reports green for something nobody
 ships.
 
-`test_strict_docs_build` is deselected in CI because Doxygen is not installed
-on the runners. Run it locally before changing anything under `docs/`.
+`test_strict_docs_build` runs in `linux-tests`, which installs Doxygen for it.
+The build does not vary by platform, so the macOS job and the release workflow
+skip it rather than pay for a second Doxygen install. Note that Rocky 8 ships
+Doxygen 1.8.14 while a current Homebrew is on 1.18.x, so the two do not
+necessarily agree on what warns.
 
 ## Releases
 

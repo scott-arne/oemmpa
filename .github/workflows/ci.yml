@@ -51,7 +51,8 @@ jobs:
           dnf install -y --allowerasing \
             git curl unzip gcc gcc-c++ cmake ninja-build \
             python3.11 python3.11-devel \
-            zlib-devel cairo findutils
+            zlib-devel cairo findutils \
+            doxygen
 
       - uses: actions/checkout@v6
 
@@ -156,11 +157,11 @@ jobs:
         env:
           LD_LIBRARY_PATH: /opt/duckdb/lib
         run: |
-          # test_strict_docs_build shells out to Doxygen, which is not installed
-          # here and which hangs often enough that the release docs are built
-          # separately; every other test runs.
-          /opt/venv/bin/python -m pytest tests/python \
-            --deselect tests/python/test_docs_build.py::test_strict_docs_build
+          # The whole suite, the strict documentation build included: this job
+          # is the one that installs Doxygen, so it is the one that proves the
+          # docs still build. The build is platform-independent, so running it
+          # here is enough and the other jobs skip it.
+          /opt/venv/bin/python -m pytest tests/python
 
   # macOS runs the same two suites as Linux. It is where development happens and
   # so where a regression is introduced, and it is where the golden fixtures were
@@ -285,7 +286,9 @@ jobs:
 
       - name: Python tests
         run: |
-          # Doxygen is absent here as it is on the Linux runner; see that job.
+          # The strict documentation build runs in the Linux job, which installs
+          # Doxygen for it. The build does not vary by platform, so repeating it
+          # here would buy nothing and cost a Doxygen install per run.
           python -m pytest tests/python \
             --deselect tests/python/test_docs_build.py::test_strict_docs_build
 

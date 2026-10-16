@@ -261,8 +261,9 @@ jobs:
             duckdb==${DUCKDB_VERSION} scipy rdkit pandas \
             sphinx breathe exhale myst-parser sphinx-rtd-theme \
             sphinx-autodoc-typehints
-          # Doxygen is not installed here, and the docs build hangs often enough
-          # that it is not worth gating a release on; every other test runs.
+          # The strict documentation build is skipped here: ci.yml runs it on
+          # every push to master, so the commit a tag points at has already
+          # built the docs, and nothing in a wheel depends on them.
           /opt/venv/bin/python -m pytest tests/python \
             --deselect tests/python/test_docs_build.py::test_strict_docs_build
 
